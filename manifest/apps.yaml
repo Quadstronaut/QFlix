@@ -321,6 +321,17 @@ apps:
       kind: systemd_only
       expect: active
 
+  buildarr:
+    # Declarative *arr state-converger. Pure Python; one-shot run nightly at
+    # 04:30 reconciles Sonarr/Radarr/Prowlarr/Jellyseerr to ~/.apps/buildarr/
+    # buildarr.yml. INTERNAL — no UI, no nginx fragment.
+    class: cron
+    unit: buildarr.timer
+    kuma_monitor: "Buildarr"
+    health:
+      kind: systemd_only
+      expect: active
+
   kometa:
     class: cron
     unit: kometa.timer
