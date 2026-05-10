@@ -25,3 +25,10 @@ EDGEbookmarks.html
 
 scripts/qflix-newsletter/**/__pycache__/
 scripts/qflix-newsletter/**/*.pyc
+
+# Workstation tunnel daemon hardcodes the real seedbox FQDN — treat as secret.
+scripts/manitoba-tunnel.ps1
+
+# Staging dir for the 2026-05-11 inventory-driven cleanup; safe to delete once
+# the operator confirms nothing was accidentally swept.
+.purged-2026-05-*/

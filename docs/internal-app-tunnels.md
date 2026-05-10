@@ -49,15 +49,8 @@ Then open `http://localhost:<local>/` in a browser.
 | Maintainerr | 42007 | `ssh -L 42007:127.0.0.1:42007 quadstronaut@<fqdn>` (start service first: `app-maintainerr start`) |
 | Tdarr | 42018 | `ssh -L 42018:127.0.0.1:42018 quadstronaut@<fqdn>` |
 | Uptime Kuma admin | 42005 | `ssh -L 42005:127.0.0.1:42005 quadstronaut@<fqdn>` |
-| Readarr (parked) | 17042 | `ssh -L 17042:127.0.0.1:17042 quadstronaut@<fqdn>` |
-| Mylar3 (parked) | 17045 | `ssh -L 17045:127.0.0.1:17045 quadstronaut@<fqdn>` |
-| Ombi (parked) | 17046 | `ssh -L 17046:127.0.0.1:17046 quadstronaut@<fqdn>` |
 | Tautulli (also public) | 17014 | `ssh -L 17014:127.0.0.1:17014 quadstronaut@<fqdn>` |
-| Profilarr (deferred install) | 42015 | n/a — install blocked by seedbox Vite OOM |
-| Janitorr (deferred install) | — | n/a — no upstream jar |
-| Suggestarr (deferred install) | — | n/a — same Vite OOM |
 | Buildarr (new) | — | n/a — cron-class, no UI; check `~/.apps/buildarr/logs/buildarr.log` |
-| Watcharr (parked) | — | n/a — no subpath, parked permanently |
 
 Apps without an admin UI:
 - **FlareSolverr** — Cloudflare-bypass headless proxy at `172.17.0.1:17011`; no UI, just an API consumed by Prowlarr.
