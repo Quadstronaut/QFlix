@@ -40,14 +40,14 @@ for f in sonarr2.key sonarr2.port sonarr2.urlbase radarr2.key radarr2.port radar
 done
 sshm 'chmod 600 ~/secrets/*'
 
-# ── Step 3: rsync the package tree to ~/.apps/qflix-newsletter ─────────────
+# ── Step 3: tar+ssh the package tree to ~/.apps/qflix-newsletter ───────────
 # Repo path scripts/qflix-newsletter/ becomes ~/.apps/qflix-newsletter/.
-sshm 'mkdir -p ~/.apps/qflix-newsletter/logs'
-rsync -az --delete \
+# Using tar pipe (rsync isn't always available on the operator's workstation).
+sshm 'mkdir -p ~/.apps/qflix-newsletter/logs && rm -rf ~/.apps/qflix-newsletter/qflix_newsletter ~/.apps/qflix-newsletter/requirements.txt'
+(cd "$HERE/.." && tar czf - \
   --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' --exclude='logs' \
-  -e "ssh -o BatchMode=yes -o ConnectTimeout=10" \
-  "$HERE/../qflix-newsletter/" \
-  "${SSHM_HOST}:.apps/qflix-newsletter/"
+  qflix-newsletter/qflix_newsletter qflix-newsletter/requirements.txt) | \
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "${SSHM_HOST}" 'cd ~/.apps && tar xzf -'
 
 # ── Step 4: venv + requirements ─────────────────────────────────────────────
 sshm "bash -s" <<'VENVSCRIPT'

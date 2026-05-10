@@ -5,6 +5,47 @@ entry captures: when, what, why, how to reverse. New entries on top.
 
 ---
 
+## 2026-05-10 — Phase 3 app sweep: 1 installed, 4 deferred/parked
+
+**Action:** evaluated 5 new apps for install (Suggestarr, Buildarr,
+Profilarr, Janitorr, Watcharr). Only **Buildarr** installed cleanly —
+pure-Python pip install with a nightly 04:30 systemd timer running
+`buildarr run`. Manifest entry added (cron-class, kuma_monitor
+"Buildarr").
+
+**Deferrals & parks** (see `project_phase3-app-installs-2026-05-10`
+memory + `project_seedbox-wasm-oom-blocker`):
+
+| App         | Status   | Reason |
+|-------------|----------|--------|
+| Suggestarr  | DEFER    | Vite frontend build OOMs on seedbox (Ultra.cc per-process heap cap) |
+| Buildarr    | INSTALL  | Pure Python — works |
+| Profilarr   | DEFER    | Same Vite OOM blocker |
+| Janitorr    | DEFER    | No upstream jar; source build risks same OOM; Maintainerr already covers role |
+| Watcharr    | PARK     | No subpath + no subdomain — same Wizarr pattern |
+
+**Why:** Operator approved the 5-app install autonomously. Reality
+intervened: 3 of 5 require JS-runtime build steps that fail on this
+seedbox (WebAssembly heap reservation OOM despite 250GB free RAM —
+appears to be a per-process address-space limit). 1 has no published
+binary. 1 has the same Wizarr-style subpath impossibility.
+
+**Rollback:** `bash scripts/configure/50-buildarr-install.sh` is
+idempotent; to undo, `systemctl --user disable --now buildarr.timer
+buildarr.service && rm -rf ~/.apps/buildarr ~/.config/systemd/user/buildarr.*`.
+
+**Followups for operator:**
+- For Profilarr/Suggestarr: build the React/Vite frontends on
+  operator's workstation, rsync `frontend/dist/` into the seedbox
+  install — this cleanly sidesteps the seedbox memory blocker.
+- For Janitorr: extract jar from `ghcr.io/schaka/janitorr:jvm-stable`
+  using rootless `crane` or `skopeo`; if that succeeds, finish the
+  systemd install with Eclipse Temurin 17.
+- For Watcharr: blocked until upstream lands subpath support
+  (issue #312) or operator obtains a subdomain.
+
+---
+
 ## 2026-05-10 — Conjurr + Newsletterr retired → qflix-newsletter (Path B)
 
 **Action:** introduced `scripts/qflix-newsletter/` (standalone Python
