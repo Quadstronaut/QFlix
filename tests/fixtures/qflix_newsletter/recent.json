@@ -1,0 +1,76 @@
+{
+  "response": {
+    "result": "success",
+    "data": {
+      "recently_added": [
+        {
+          "media_type": "movie",
+          "title": "Dune: Part Two",
+          "year": "2024",
+          "summary": "Paul Atreides unites with Chani and the Fremen.",
+          "thumb": "/library/metadata/12345/thumb",
+          "added_at": "1715212800",
+          "rating": "8.7",
+          "library_name": "Movies",
+          "guids": [{"id": "tmdb://693134"}]
+        },
+        {
+          "media_type": "movie",
+          "title": "The Wild Robot",
+          "year": "2024",
+          "summary": "An orphaned robot adapts to wilderness.",
+          "thumb": "/library/metadata/12346/thumb",
+          "added_at": "1715126400",
+          "rating": "8.3",
+          "library_name": "Movies"
+        },
+        {
+          "media_type": "movie",
+          "title": "Spirited Away",
+          "year": "2001",
+          "summary": "A girl wanders into a world ruled by spirits.",
+          "thumb": "/library/metadata/12347/thumb",
+          "added_at": "1715040000",
+          "rating": "9.2",
+          "library_name": "Anime Movies"
+        },
+        {
+          "media_type": "episode",
+          "title": "The Wedding",
+          "grandparent_title": "Severance",
+          "parent_media_index": "2",
+          "media_index": "8",
+          "year": "2025",
+          "summary": "Mark questions everything.",
+          "thumb": "/library/metadata/22001/thumb",
+          "added_at": "1715299200",
+          "rating": "9.0",
+          "library_name": "TV Shows"
+        },
+        {
+          "media_type": "episode",
+          "title": "The Office",
+          "grandparent_title": "Severance",
+          "parent_media_index": "2",
+          "media_index": "9",
+          "summary": "Tensions rise.",
+          "thumb": "/library/metadata/22002/thumb",
+          "added_at": "1715299500",
+          "library_name": "TV Shows"
+        },
+        {
+          "media_type": "episode",
+          "title": "Episode 3",
+          "grandparent_title": "Frieren: Beyond Journey's End",
+          "parent_media_index": "1",
+          "media_index": "3",
+          "summary": "Frieren meets a familiar face.",
+          "thumb": "/library/metadata/33001/thumb",
+          "added_at": "1715212900",
+          "rating": "9.1",
+          "library_name": "Anime"
+        }
+      ]
+    }
+  }
+}

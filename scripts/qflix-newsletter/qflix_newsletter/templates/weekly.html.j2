@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ ctx.subject }}</title>
+</head>
+<body style="margin:0;padding:0;background:#0a1628;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#cbd5e1;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0a1628;">
+  <tr><td align="center" style="padding:32px 12px;">
+    <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;width:100%;">
+
+      {# Header #}
+      <tr><td style="padding:0 16px 24px 16px;text-align:center;">
+        <div style="font-size:32px;font-weight:700;color:#ff8c42;letter-spacing:.5px;">QFLIX</div>
+        <div style="font-size:14px;color:#7dd3fc;margin-top:4px;">{{ ctx.week_label }}</div>
+      </td></tr>
+
+      {# Pick of the Week #}
+      {% if ctx.pick %}
+      <tr><td style="padding:0 16px 24px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0e1d33;border:1px solid rgba(212,175,55,.35);border-radius:8px;overflow:hidden;">
+          <tr><td style="padding:16px 16px 8px 16px;">
+            <span style="font-size:11px;letter-spacing:1.5px;color:#d4af37;font-weight:700;text-transform:uppercase;">Pick of the Week</span>
+          </td></tr>
+          {% if ctx.pick.thumb_url %}
+          <tr><td align="center" style="padding:0 16px;">
+            <img src="{{ ctx.pick.thumb_url }}" alt="" width="220" style="display:block;max-width:100%;height:auto;border-radius:6px;">
+          </td></tr>
+          {% endif %}
+          <tr><td style="padding:12px 16px 4px 16px;">
+            <h2 style="margin:0;color:#f8fafc;font-size:22px;font-weight:600;">
+              {{ ctx.pick.title }}{% if ctx.pick.year %} <span style="color:#7dd3fc;font-weight:400;">({{ ctx.pick.year }})</span>{% endif %}
+            </h2>
+            {% if ctx.pick.rating %}
+            <div style="margin-top:6px;color:#d4af37;font-size:13px;">★ {{ '%.1f'|format(ctx.pick.rating) }}</div>
+            {% endif %}
+          </td></tr>
+          <tr><td style="padding:8px 16px 16px 16px;color:#cbd5e1;font-size:14px;line-height:1.55;">
+            {{ ctx.pick.summary | truncate(280) }}
+          </td></tr>
+        </table>
+      </td></tr>
+      {% endif %}
+
+      {# New Movies #}
+      {% if ctx.movies %}
+      <tr><td style="padding:8px 16px;">
+        <h3 style="margin:0 0 12px 0;color:#f8fafc;font-size:18px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">New movies</h3>
+      </td></tr>
+      <tr><td style="padding:0 16px 16px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+          {% for chunk in ctx.movies | batch(3, fill_with=None) %}
+          <tr>
+            {% for m in chunk %}
+            <td width="33%" valign="top" style="padding:6px;{% if loop.index > 1 %}{% endif %}">
+              {% if m %}
+              <div style="background:#0e1d33;border:1px solid rgba(125,211,252,.12);border-radius:6px;padding:8px;text-align:center;">
+                {% if m.thumb_url %}
+                <img src="{{ m.thumb_url }}" alt="" width="160" style="display:block;max-width:100%;height:auto;border-radius:4px;margin:0 auto 8px auto;">
+                {% endif %}
+                <div style="color:#f8fafc;font-size:13px;font-weight:600;line-height:1.3;">{{ m.title }}</div>
+                {% if m.year %}<div style="color:#7dd3fc;font-size:11px;margin-top:2px;">{{ m.year }}</div>{% endif %}
+                {% if m.rating %}<div style="color:#d4af37;font-size:11px;margin-top:2px;">★ {{ '%.1f'|format(m.rating) }}</div>{% endif %}
+              </div>
+              {% endif %}
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </table>
+      </td></tr>
+      {% endif %}
+
+      {# New TV (grouped) #}
+      {% if ctx.shows %}
+      <tr><td style="padding:8px 16px;">
+        <h3 style="margin:0 0 12px 0;color:#f8fafc;font-size:18px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">New TV</h3>
+      </td></tr>
+      {% for s in ctx.shows %}
+      <tr><td style="padding:0 16px 8px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0e1d33;border:1px solid rgba(125,211,252,.12);border-radius:6px;">
+          <tr>
+            {% if s.thumb_url %}
+            <td width="80" valign="top" style="padding:8px;">
+              <img src="{{ s.thumb_url }}" alt="" width="64" style="display:block;border-radius:4px;">
+            </td>
+            {% endif %}
+            <td valign="top" style="padding:10px 12px;">
+              <div style="color:#f8fafc;font-size:15px;font-weight:600;">{{ s.show_title }}</div>
+              <div style="color:#7dd3fc;font-size:12px;margin-top:2px;">{{ s.season_episode_label }}</div>
+            </td>
+          </tr>
+        </table>
+      </td></tr>
+      {% endfor %}
+      {% endif %}
+
+      {# Anime Movies #}
+      {% if ctx.anime_movies %}
+      <tr><td style="padding:8px 16px;">
+        <h3 style="margin:0 0 12px 0;color:#f8fafc;font-size:18px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">New anime movies</h3>
+      </td></tr>
+      <tr><td style="padding:0 16px 16px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+          {% for chunk in ctx.anime_movies | batch(3, fill_with=None) %}
+          <tr>
+            {% for m in chunk %}
+            <td width="33%" valign="top" style="padding:6px;">
+              {% if m %}
+              <div style="background:#0e1d33;border:1px solid rgba(125,211,252,.12);border-radius:6px;padding:8px;text-align:center;">
+                {% if m.thumb_url %}<img src="{{ m.thumb_url }}" alt="" width="160" style="display:block;max-width:100%;height:auto;border-radius:4px;margin:0 auto 8px auto;">{% endif %}
+                <div style="color:#f8fafc;font-size:13px;font-weight:600;line-height:1.3;">{{ m.title }}</div>
+                {% if m.year %}<div style="color:#7dd3fc;font-size:11px;margin-top:2px;">{{ m.year }}</div>{% endif %}
+              </div>
+              {% endif %}
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </table>
+      </td></tr>
+      {% endif %}
+
+      {# Anime TV #}
+      {% if ctx.anime_shows %}
+      <tr><td style="padding:8px 16px;">
+        <h3 style="margin:0 0 12px 0;color:#f8fafc;font-size:18px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">New anime TV</h3>
+      </td></tr>
+      {% for s in ctx.anime_shows %}
+      <tr><td style="padding:0 16px 8px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0e1d33;border:1px solid rgba(125,211,252,.12);border-radius:6px;">
+          <tr>
+            {% if s.thumb_url %}<td width="80" valign="top" style="padding:8px;"><img src="{{ s.thumb_url }}" alt="" width="64" style="display:block;border-radius:4px;"></td>{% endif %}
+            <td valign="top" style="padding:10px 12px;">
+              <div style="color:#f8fafc;font-size:15px;font-weight:600;">{{ s.show_title }}</div>
+              <div style="color:#7dd3fc;font-size:12px;margin-top:2px;">{{ s.season_episode_label }}</div>
+            </td>
+          </tr>
+        </table>
+      </td></tr>
+      {% endfor %}
+      {% endif %}
+
+      {# Coming Soon #}
+      {% if ctx.coming_soon %}
+      <tr><td style="padding:16px 16px 8px 16px;">
+        <h3 style="margin:0 0 12px 0;color:#f8fafc;font-size:18px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">Coming soon</h3>
+      </td></tr>
+      <tr><td style="padding:0 16px 16px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+          {% for c in ctx.coming_soon[:12] %}
+          <tr>
+            <td valign="top" style="padding:6px 10px;border-bottom:1px solid rgba(125,211,252,.08);">
+              <div style="color:#f8fafc;font-size:14px;font-weight:600;">
+                {% if c.media_type == 'tv' and c.show_title %}{{ c.show_title }}: {{ c.title }}{% else %}{{ c.title }}{% endif %}
+              </div>
+              <div style="color:#7dd3fc;font-size:11px;margin-top:2px;">
+                {{ c.air_date.strftime('%a %b %d') }}
+                {% if c.media_type == 'tv' and c.season is not none and c.episode is not none %}
+                · S{{ '%02d'|format(c.season) }}E{{ '%02d'|format(c.episode) }}
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+      </td></tr>
+      {% endif %}
+
+      {# AI Picks (BOTTOM by design — operator note: people don't love AI) #}
+      {% if ctx.ai_picks %}
+      <tr><td style="padding:24px 16px 8px 16px;">
+        <h3 style="margin:0 0 4px 0;color:#cbd5e1;font-size:14px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">A few things you might like</h3>
+        <div style="color:#7dd3fc;font-size:11px;opacity:.7;margin-top:4px;">Recommendations from your Plex history</div>
+      </td></tr>
+      <tr><td style="padding:8px 16px 16px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+          {% for p in ctx.ai_picks %}
+          <tr><td style="padding:6px 0;">
+            <div style="background:#0e1d33;border:1px solid rgba(125,211,252,.10);border-radius:6px;padding:10px 12px;">
+              <div style="color:#7dd3fc;font-size:11px;text-transform:uppercase;letter-spacing:1px;">If you liked</div>
+              <div style="color:#f8fafc;font-size:14px;font-weight:600;margin-top:2px;">{{ p.if_you_liked }}</div>
+              <div style="color:#7dd3fc;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-top:8px;">Try</div>
+              <div style="color:#ff8c42;font-size:14px;font-weight:600;margin-top:2px;">{{ p.try_this }}</div>
+              <div style="color:#cbd5e1;font-size:12px;margin-top:6px;line-height:1.5;">{{ p.blurb }}</div>
+            </div>
+          </td></tr>
+          {% endfor %}
+        </table>
+      </td></tr>
+      {% endif %}
+
+      {# Nerd Corner #}
+      {% if ctx.nerd_corner %}
+      <tr><td style="padding:16px 16px 16px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#05101f;border:1px solid rgba(125,211,252,.10);border-radius:6px;">
+          <tr><td style="padding:12px 14px;">
+            <div style="color:#7dd3fc;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;font-weight:700;">Nerd corner</div>
+            <div style="color:#cbd5e1;font-size:12px;margin-top:6px;">
+              <span style="color:#f8fafc;font-weight:600;">{{ ctx.nerd_corner.total_items }}</span> items in library
+              {% for s in ctx.nerd_corner.sections %}
+              · {{ s.name }} <span style="color:#f8fafc;">{{ s.count }}</span>
+              {% endfor %}
+            </div>
+          </td></tr>
+        </table>
+      </td></tr>
+      {% endif %}
+
+      {# Footer #}
+      <tr><td style="padding:24px 16px 32px 16px;text-align:center;">
+        <div style="color:#7dd3fc;font-size:12px;opacity:.7;">
+          Reply to this email if anything's broken. <br>
+          <a href="{{ '{{ UnsubscribeURL }}' }}" style="color:#7dd3fc;text-decoration:underline;">Unsubscribe</a>
+          ·
+          <a href="{{ '{{ MessageURL }}' }}" style="color:#7dd3fc;text-decoration:underline;">View in browser</a>
+        </div>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>

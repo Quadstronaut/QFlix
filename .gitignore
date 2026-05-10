@@ -22,3 +22,6 @@ bookmarks.html
 EDGEbookmarks.html
 **/bookmarks.html
 **/EDGEbookmarks.html
+
+scripts/qflix-newsletter/**/__pycache__/
+scripts/qflix-newsletter/**/*.pyc

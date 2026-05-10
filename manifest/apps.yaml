@@ -260,35 +260,6 @@ apps:
       post_steps:
         - "~/.apps/listmonk/bin/listmonk --install --idempotent --yes"
 
-  conjurr:
-    class: systemd
-    unit: conjurr.service
-    kuma_monitor: "Conjurr"
-    health:
-      kind: http_root
-      port_source: "env_file:~/.apps/conjurr/repo/env/.env:PORT"
-      expect_status: 200
-    upgrade:
-      kind: git_checkout
-      repo_path: "~/.apps/conjurr/repo"
-      post_steps:
-        - "cd ~/.apps/conjurr/repo && .venv/bin/pip install -r requirements.txt"
-
-  newsletterr:
-    class: systemd
-    unit: newsletterr.service
-    kuma_monitor: "Newsletterr"
-    health:
-      kind: http_root
-      port_source: "env_file:~/.apps/newsletterr/repo/env/.env:PORT"
-      expect_status: 200
-    upgrade:
-      kind: git_checkout
-      repo_path: "~/.apps/newsletterr/repo"
-      post_steps:
-        - "cd ~/.apps/newsletterr/repo && .venv/bin/pip install -r requirements.txt"
-        - "cd ~/.apps/newsletterr/repo && .venv/bin/playwright install chromium --if-missing"
-
   tdarr-server:
     class: systemd
     unit: tdarr-server.service
@@ -338,6 +309,17 @@ apps:
       kind: tarball_swap
       url_template: "https://github.com/recyclarr/recyclarr/releases/download/{version}/recyclarr-linux-x64.tar.xz"
       target_path: "~/.apps/recyclarr/bin/recyclarr"
+
+  qflix-newsletter:
+    # Weekly Plex digest. Triggered by qflix-newsletter.timer (Mon 08:00),
+    # which fires the qflix-newsletter.service oneshot. Replaces Conjurr +
+    # Newsletterr (retired 2026-05-10). Source lives in scripts/qflix-newsletter/.
+    class: cron
+    unit: qflix-newsletter.timer
+    kuma_monitor: "Qflix Newsletter"
+    health:
+      kind: systemd_only
+      expect: active
 
   kometa:
     class: cron
