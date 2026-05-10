@@ -1,0 +1,33 @@
+{
+  "_comment": "Operator-curated 21 indexers (public, en-US torrent, Movies+TV). User-supplied 2026-05-07.",
+  "names": [
+    "1337x",
+    "Bangumi Moe",
+    "Demonoid Clone",
+    "ExtraTorrent.st",
+    "Internet Archive",
+    "kickasstorrents.to",
+    "kickasstorrents.ws",
+    "Knaben",
+    "LimeTorrents",
+    "Magnet Cat",
+    "Magnetz",
+    "nekoBT",
+    "Nyaa.si",
+    "The Pirate Bay",
+    "Postman",
+    "SubsPlease",
+    "Torrent Downloads",
+    "Torrent[CORE]",
+    "TorrentDownload",
+    "TorrentGalaxyClone",
+    "Uindex"
+  ],
+  "needs_flaresolverr": [
+    "1337x",
+    "ExtraTorrent.st",
+    "kickasstorrents.to",
+    "kickasstorrents.ws",
+    "TorrentGalaxyClone"
+  ]
+}

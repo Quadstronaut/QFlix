@@ -1,0 +1,8 @@
+[Unit]
+Description=Manitoba maintenance — window watchdog (clears stale lockfile)
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint window watchdog
+StandardOutput=journal
+StandardError=journal

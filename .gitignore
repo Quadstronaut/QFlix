@@ -1,0 +1,24 @@
+secrets/
+*.local
+*.env
+*.env.local
+# Tracked: pinned-version index for the future updater. Contains no secrets.
+!versions.env
+discovery/raw/
+seedbox-layout.env
+*.candidates
+*.df
+*.bak
+.DS_Store
+Thumbs.db
+.claude/
+.playwright-mcp/
+.tmp/
+.tmp-*
+
+# Bookmarks files contain operator-specific FQDNs and internal admin URLs.
+# Operator keeps the working copy at ../EDGEbookmarks.html (outside this repo).
+bookmarks.html
+EDGEbookmarks.html
+**/bookmarks.html
+**/EDGEbookmarks.html

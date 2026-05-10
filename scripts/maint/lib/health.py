@@ -1,0 +1,320 @@
+"""lib/health.py — health probe dispatch.
+
+Dispatches on app.health.kind:
+  http_api      — GET with optional auth header; port + key from secrets
+  http_root     — GET /; port from port_secret or port_source; lenient status
+  systemd_only  — systemctl --user is-active <unit>
+  port_listen   — TCP connect to 127.0.0.1:<port>
+  import_check  — <venv_python> -c "import <module>; print(version)"
+
+All network/subprocess errors are caught; never raises. Latency is None for
+non-network checks (systemd_only, import_check).
+"""
+from __future__ import annotations
+
+import json
+import os
+import socket
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+import requests
+
+from lib.manifest import App
+
+DEFAULT_TIMEOUT_S = 5.0
+_HTTP_ROOT_OK_STATUSES = {200, 302, 401}
+
+
+# ---------------------------------------------------------------------------
+# Public types
+# ---------------------------------------------------------------------------
+
+@dataclass
+class HealthResult:
+    ok: bool
+    latency_ms: Optional[int]
+    reason: str
+
+
+# ---------------------------------------------------------------------------
+# Secrets resolution
+# ---------------------------------------------------------------------------
+
+def _secrets_dir() -> Path:
+    env = os.environ.get("MANITOBA_SECRETS_DIR")
+    if env:
+        return Path(env)
+    repo_root = Path(__file__).parent.parent.parent.parent
+    return repo_root / "secrets"
+
+
+def _secret_read(name: str) -> str:
+    path = _secrets_dir() / name
+    return path.read_text(encoding="utf-8").strip()
+
+
+# ---------------------------------------------------------------------------
+# Port resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_port(app: App) -> int:
+    raw = app.health.raw
+
+    port_source = raw.get("port_source")
+    if port_source:
+        return _port_from_source(port_source)
+
+    port_secret = raw.get("port_secret")
+    if port_secret:
+        return int(_secret_read(port_secret))
+
+    raise ValueError(f"App '{app.name}' health config has neither port_secret nor port_source")
+
+
+def _port_from_source(port_source: str) -> int:
+    # Format: "<kind>:<path>:<KEY>"
+    # On Windows, path may contain a drive letter colon (e.g. C:\...) so we
+    # split on the first ":" to get the kind, then find the last ":" to peel
+    # off the key, leaving everything in between as the path.
+    first_colon = port_source.index(":")
+    kind = port_source[:first_colon]
+    remainder = port_source[first_colon + 1:]  # "<path>:<KEY>"
+    last_colon = remainder.rindex(":")
+    file_path = remainder[:last_colon]
+    key = remainder[last_colon + 1:]
+
+    if kind == "env_file":
+        path = Path(file_path).expanduser()
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith(f"{key}="):
+                    return int(line[len(key) + 1:].strip())
+        raise KeyError(f"Key '{key}' not found in env_file {path}")
+    elif kind == "json_file":
+        path = Path(file_path).expanduser()
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return int(data[key])
+    else:
+        raise ValueError(f"Unknown port_source kind: '{kind}'")
+
+
+# ---------------------------------------------------------------------------
+# URL base resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_urlbase(app: App) -> str:
+    urlbase_secret = app.health.raw.get("urlbase_secret")
+    if not urlbase_secret:
+        return ""
+    try:
+        return _secret_read(urlbase_secret)
+    except FileNotFoundError:
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Probe kinds
+# ---------------------------------------------------------------------------
+
+def _probe_http_api(app: App, timeout_s: float) -> HealthResult:
+    raw = app.health.raw
+    try:
+        port = _resolve_port(app)
+    except Exception as exc:
+        return HealthResult(ok=False, latency_ms=None, reason=f"config error: {exc}")
+
+    urlbase = _resolve_urlbase(app)
+    path_template = raw.get("path_template", "/api/v3/system/status")
+    path = path_template.replace("{urlbase}", urlbase)
+    path = path.replace("//", "/")
+    if not path.startswith("/"):
+        path = "/" + path
+
+    url = f"http://127.0.0.1:{port}{path}"
+
+    headers: dict[str, str] = {}
+    auth_header = raw.get("auth_header")
+    auth_secret = raw.get("auth_secret")
+    if auth_header and auth_secret:
+        try:
+            headers[auth_header] = _secret_read(auth_secret)
+        except FileNotFoundError:
+            pass
+
+    # Optional HTTP Basic auth (e.g. Maintainerr enforces htpasswd Basic
+    # alongside its own X-Api-Key on every endpoint).
+    basic_auth = None
+    basic_user = raw.get("basic_auth_user")
+    basic_secret = raw.get("basic_auth_secret")
+    if basic_user and basic_secret:
+        try:
+            basic_auth = (basic_user, _secret_read(basic_secret))
+        except FileNotFoundError:
+            basic_auth = None
+
+    expect_status = raw.get("expect_status", 200)
+
+    t0 = time.monotonic()
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout_s, auth=basic_auth)
+        latency_ms = int((time.monotonic() - t0) * 1000)
+    except requests.Timeout:
+        return HealthResult(ok=False, latency_ms=None, reason="timeout")
+    except requests.ConnectionError:
+        return HealthResult(ok=False, latency_ms=None, reason="connection refused")
+
+    if resp.status_code == expect_status:
+        return HealthResult(ok=True, latency_ms=latency_ms, reason="ok")
+    return HealthResult(ok=False, latency_ms=latency_ms, reason=f"http {resp.status_code}")
+
+
+def _probe_http_root(app: App, timeout_s: float) -> HealthResult:
+    raw = app.health.raw
+    try:
+        port = _resolve_port(app)
+    except Exception as exc:
+        return HealthResult(ok=False, latency_ms=None, reason=f"config error: {exc}")
+
+    # path_override lets http_root probe a non-root liveness endpoint
+    # (e.g. /healthcheck for audiobookshelf, /komga/ for komga's path-mount).
+    path = raw.get("path_override", "/")
+    if not path.startswith("/"):
+        path = "/" + path
+    url = f"http://127.0.0.1:{port}{path}"
+    expect_status = raw.get("expect_status")
+
+    # Same optional Basic auth as http_api.
+    basic_auth = None
+    basic_user = raw.get("basic_auth_user")
+    basic_secret = raw.get("basic_auth_secret")
+    if basic_user and basic_secret:
+        try:
+            basic_auth = (basic_user, _secret_read(basic_secret))
+        except FileNotFoundError:
+            basic_auth = None
+
+    t0 = time.monotonic()
+    try:
+        resp = requests.get(url, timeout=timeout_s, auth=basic_auth)
+        latency_ms = int((time.monotonic() - t0) * 1000)
+    except requests.Timeout:
+        return HealthResult(ok=False, latency_ms=None, reason="timeout")
+    except requests.ConnectionError:
+        return HealthResult(ok=False, latency_ms=None, reason="connection refused")
+
+    if expect_status is not None:
+        ok = resp.status_code == expect_status
+    else:
+        ok = resp.status_code in _HTTP_ROOT_OK_STATUSES
+
+    if ok:
+        return HealthResult(ok=True, latency_ms=latency_ms, reason="ok")
+    return HealthResult(ok=False, latency_ms=latency_ms, reason=f"http {resp.status_code}")
+
+
+def _probe_systemd_only(app: App, timeout_s: float) -> HealthResult:
+    # Unit name precedence: health.raw.unit (override) > app.raw.unit (the
+    # canonical placement at app top-level, used by Recyclarr / Tdarr-Node /
+    # any cron- or systemd-class app) > getattr(app,"unit",None) for tests.
+    raw = app.health.raw
+    unit = (
+        raw.get("unit")
+        or app.raw.get("unit")
+        or getattr(app, "unit", None)
+    )
+    if not unit:
+        return HealthResult(ok=False, latency_ms=None, reason="no unit configured")
+
+    try:
+        cp = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return HealthResult(ok=False, latency_ms=None, reason="timeout")
+
+    stdout = cp.stdout.strip()
+    if cp.returncode == 0 and stdout == "active":
+        return HealthResult(ok=True, latency_ms=None, reason="active")
+    return HealthResult(ok=False, latency_ms=None, reason=stdout or "unknown")
+
+
+def _probe_port_listen(app: App, timeout_s: float) -> HealthResult:
+    try:
+        port = _resolve_port(app)
+    except Exception as exc:
+        return HealthResult(ok=False, latency_ms=None, reason=f"config error: {exc}")
+
+    t0 = time.monotonic()
+    try:
+        sock = socket.create_connection(("127.0.0.1", port), timeout=timeout_s)
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        sock.close()
+        return HealthResult(ok=True, latency_ms=latency_ms, reason="ok")
+    except ConnectionRefusedError:
+        return HealthResult(ok=False, latency_ms=None, reason="connection refused")
+    except socket.timeout:
+        return HealthResult(ok=False, latency_ms=None, reason="timeout")
+    except OSError as exc:
+        return HealthResult(ok=False, latency_ms=None, reason=f"error: {exc}")
+
+
+def _probe_import_check(app: App, timeout_s: float) -> HealthResult:
+    raw = app.health.raw
+    venv_python = raw.get("venv_python", "python3")
+    module = raw.get("module", "")
+
+    cmd_str = (
+        f"import {module}; "
+        f"print({module}.__version__ if hasattr({module}, '__version__') else 'ok')"
+    )
+
+    try:
+        cp = subprocess.run(
+            [venv_python, "-c", cmd_str],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return HealthResult(ok=False, latency_ms=None, reason="timeout")
+
+    if cp.returncode == 0:
+        reason = cp.stdout.strip() or "ok"
+        return HealthResult(ok=True, latency_ms=None, reason=reason)
+
+    stderr = cp.stderr.strip()[:80]
+    return HealthResult(ok=False, latency_ms=None, reason=stderr or "non-zero exit")
+
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+_PROBES = {
+    "http_api": _probe_http_api,
+    "http_root": _probe_http_root,
+    "systemd_only": _probe_systemd_only,
+    "port_listen": _probe_port_listen,
+    "import_check": _probe_import_check,
+}
+
+
+def probe(app: App, *, timeout_s: float | None = None) -> HealthResult:
+    if timeout_s is None:
+        timeout_s = float(app.defaults.get("health_timeout_s", DEFAULT_TIMEOUT_S))
+
+    kind = app.health.kind
+    fn = _PROBES.get(kind)
+    if fn is None:
+        raise ValueError(f"Unknown health kind '{kind}' for app '{app.name}'")
+
+    return fn(app, timeout_s)

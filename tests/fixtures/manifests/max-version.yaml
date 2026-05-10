@@ -1,0 +1,26 @@
+defaults:
+  health_timeout_s: 5
+  recovery_attempts: 3
+  recovery_backoff_s: [10, 30, 60]
+  lifecycle_timeout_s: 60
+  kuma_recheck_delay_s: 90
+
+apps:
+  tdarr-server:
+    class: systemd
+    unit: tdarr-server.service
+    kuma_monitor: "Tdarr"
+    health:
+      kind: http_api
+      path_template: "/api/v2/status"
+      port_secret: tdarr.server_port
+      expect_status: 200
+    upgrade:
+      kind: zip_swap
+      url_template: "https://storage.tdarr.io/versions/{version}/linux_x64/Tdarr_Server.zip"
+      target_dir: "~/.apps/tdarr/Tdarr_Server"
+      version_pin:
+        source: versions.env
+        key: TDARR_VERSION
+        max: "2.17.01"
+        max_reason: "GLIBC 2.34 required, host has 2.31"

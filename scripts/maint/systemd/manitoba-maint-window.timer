@@ -1,0 +1,11 @@
+[Unit]
+Description=Manitoba maintenance — weekly window timer (Mon 11:00 UTC)
+
+[Timer]
+# Mon 11:00 UTC = 04:00 AZ (Arizona has no DST, fixed UTC-7 year-round).
+OnCalendar=Mon *-*-* 11:00:00 UTC
+Persistent=true
+Unit=manitoba-maint-window.service
+
+[Install]
+WantedBy=timers.target

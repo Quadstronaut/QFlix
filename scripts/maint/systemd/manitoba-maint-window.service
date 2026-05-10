@@ -1,0 +1,12 @@
+[Unit]
+Description=Manitoba maintenance — weekly window orchestrator (Mon 11:00 UTC)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint window run
+# 4h hard ceiling per spec — window is Mon 11:00–15:00 UTC. Add 10 min slack
+# so systemd's TimeoutStartSec doesn't race the watchdog at 15:00.
+TimeoutStartSec=4h 10min
+StandardOutput=journal
+StandardError=journal
