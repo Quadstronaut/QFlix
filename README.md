@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="Q.png" width="160" alt="QFlix logo">
+
 # QFlix
 
 **A reproducible, self-healing Plex stack on a single Ultra.cc shared seedbox.**
