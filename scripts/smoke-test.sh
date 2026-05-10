@@ -340,10 +340,30 @@ if [ -n "$M_PORT" ]; then
   K_PORT=$(sshm "cat ~/secrets/uptimekuma.port 2>/dev/null" </dev/null 2>/dev/null)
   K_KEY=$(sshm "cat ~/secrets/uptimekuma.key 2>/dev/null" </dev/null 2>/dev/null)
   if [ -n "$K_PORT" ] && [ -n "$K_KEY" ]; then
-    K_TOTAL=$(sshm "curl -s -m 5 -u ':$K_KEY' http://127.0.0.1:$K_PORT/metrics 2>/dev/null | grep -c '^monitor_status'" </dev/null 2>/dev/null)
-    K_UP=$(sshm "curl -s -m 5 -u ':$K_KEY' http://127.0.0.1:$K_PORT/metrics 2>/dev/null | grep -E '^monitor_status.* 1$' | wc -l" </dev/null 2>/dev/null)
+    # Pull live monitor_status lines once; build EXTERNAL_GREP from the manifest's
+    # kuma_external_monitors so they don't count toward total or up.
+    K_METRICS=$(sshm "curl -s -m 5 -u ':$K_KEY' http://127.0.0.1:$K_PORT/metrics 2>/dev/null" </dev/null 2>/dev/null)
+    # Build the exclude list: external monitors (from kuma_external_monitors)
+    # PLUS monitors for apps marked parked: true (being-down is the intended
+    # state for parked apps — Ombi is the canonical example).
+    K_EXCLUDE=$(python3 -c '
+import sys, yaml
+m = yaml.safe_load(open("manifest/apps.yaml"))
+ext = list(m.get("kuma_external_monitors", []) or [])
+parked = [a.get("kuma_monitor") for a in (m.get("apps", {}) or {}).values()
+          if a.get("parked") and a.get("kuma_monitor")]
+sys.stdout.write("\n".join(ext + parked))
+' 2>/dev/null | tr -d "\r")
+    if [ -n "$K_EXCLUDE" ]; then
+      EXCLUDE_RE=$(printf '%s\n' "$K_EXCLUDE" | sed 's/[^A-Za-z0-9 ]/./g' | paste -sd'|' -)
+      K_FILTERED=$(echo "$K_METRICS" | grep '^monitor_status' | grep -Ev "monitor_name=\"($EXCLUDE_RE)\"")
+    else
+      K_FILTERED=$(echo "$K_METRICS" | grep '^monitor_status')
+    fi
+    K_TOTAL=$(echo "$K_FILTERED" | grep -c '^monitor_status' 2>/dev/null || echo 0)
+    K_UP=$(echo "$K_FILTERED" | grep -cE ' 1(\.0+)?$' 2>/dev/null || echo 0)
     if [ "${K_TOTAL:-0}" -ge 1 ] && [ "$K_UP" = "$K_TOTAL" ]; then
-      record "maint-kuma-all-up" pass "$K_UP/$K_TOTAL monitors UP"
+      record "maint-kuma-all-up" pass "$K_UP/$K_TOTAL manitoba monitors UP (external excluded)"
     else
       record "maint-kuma-all-up" fail "$K_UP/$K_TOTAL UP — see Kuma UI for which are down"
     fi

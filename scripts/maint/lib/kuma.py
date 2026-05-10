@@ -167,10 +167,16 @@ def audit_monitors(manifest, *, kuma_url: str | None = None,
 
     live_monitors = set(re.findall(r'monitor_status\{[^}]*monitor_name="([^"]+)"', resp.text))
 
+    # Suppress monitors the operator declared external (other projects sharing
+    # this Kuma instance). They count toward live_count but not toward drift.
+    external = manifest.external_monitors() if hasattr(manifest, "external_monitors") else set()
+    kuma_only = (live_monitors - manifest_monitors) - external
+
     return {
         "matched": sorted(manifest_monitors & live_monitors),
         "manifest_only": sorted(manifest_monitors - live_monitors),
-        "kuma_only": sorted(live_monitors - manifest_monitors),
+        "kuma_only": sorted(kuma_only),
+        "external_ignored": sorted(external & live_monitors),
         "live_count": len(live_monitors),
         "manifest_count": len(manifest_monitors),
     }

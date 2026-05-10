@@ -5,6 +5,14 @@ defaults:
   lifecycle_timeout_s: 60
   kuma_recheck_delay_s: 90
 
+# Monitors in our shared Kuma instance that belong to other operator-owned
+# projects. They count toward live_count but never toward drift, and the
+# smoke test excludes them from the all-up count.
+kuma_external_monitors:
+  - "Quadstronix"
+  - "Quadstronix Node 1"
+  - "Quadstronix Node 2"
+
 apps:
 
   # --- UCC apps (managed by Ultra.cc app-<slug> commands) ---

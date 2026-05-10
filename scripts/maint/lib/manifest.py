@@ -84,9 +84,21 @@ class App:
 # ---------------------------------------------------------------------------
 
 class Manifest:
-    def __init__(self, apps: dict[str, App], canaries: dict[str, Canary] | None = None) -> None:
+    def __init__(
+        self,
+        apps: dict[str, App],
+        canaries: dict[str, Canary] | None = None,
+        external_monitors: list[str] | None = None,
+    ) -> None:
         self._apps = apps
         self._canaries: dict[str, Canary] = canaries or {}
+        self._external_monitors: set[str] = set(external_monitors or [])
+
+    def external_monitors(self) -> set[str]:
+        """Kuma monitor names that exist outside this manifest's scope —
+        e.g., monitors owned by a separate project living in the same Kuma
+        instance. The audit uses this to suppress kuma_only false-positives."""
+        return set(self._external_monitors)
 
     def app(self, name: str) -> App:
         try:
@@ -274,4 +286,9 @@ def load(path: str | Path) -> Manifest:
             schedule=schedule,
         )
 
-    return Manifest(apps, canaries)
+    raw_external = data.get("kuma_external_monitors", []) or []
+    if not isinstance(raw_external, list):
+        raise ManifestError("'kuma_external_monitors' must be a YAML list of strings")
+    external_monitors = [str(m) for m in raw_external]
+
+    return Manifest(apps, canaries, external_monitors=external_monitors)
