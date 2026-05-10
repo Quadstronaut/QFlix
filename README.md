@@ -8,28 +8,28 @@ The stack is **production-grade for one operator**. State changes go through tes
 
 ## What's in the stack
 
-**30 apps** (manifest/apps.yaml) + **4 end-to-end canaries**.
+**28 apps** (manifest/apps.yaml) + **4 end-to-end canaries**.
 
 | Role | Apps | Status |
 |---|---|---|
 | Media servers | **Plex** (primary) | live |
-| Media servers (trial) | Jellyfin | **slated for removal** — Plex-only is the direction |
-| Requests + invites | Jellyseerr | migrating to **Overseerr/Seerr** (Plex-native) once Jellyfin is gone |
-| Requests + invites | Ombi | parked (kept for legacy invite flows until Wizarr/alt lands) |
+| Requests + invites | Jellyseerr | live (migration to Seerr queued — Plex-native, post-Jellyfin) |
+| Requests + invites | Ombi | parked (legacy invite flows pending Wizarr/alt) |
 | TV / Movies | Sonarr, Sonarr2 (anime branch), Radarr, Radarr2 (anime) | live |
-| Books / Audiobooks | Readarr | **RETIRED upstream 2026** — replacement under evaluation (Chaptarr / Bookshelf / LazyLibrarian) |
-| Comics | Mylar3 | live |
+| Books / Audiobooks | Readarr | parked (upstream retired 2026; replacement under evaluation) |
+| Comics | Mylar3 | live (parked alongside Readarr book stack) |
 | Subtitles | Bazarr | live |
 | Indexer aggregator | Prowlarr (+ FlareSolverr for Cloudflare) | live |
 | Torrent client | qBittorrent (single client; rTorrent / Deluge / Transmission decommissioned) | live |
-| Stats + analytics | Tautulli, Jellystat | live (Jellystat will follow Jellyfin out) |
+| Stats | Tautulli | live |
 | Library / posters | Maintainerr, Recyclarr (TRaSH-Guides), Kometa | live |
+| Declarative *arr config | **Buildarr** (cron-class, nightly 04:30) | live (operator fills in `~/.apps/buildarr/buildarr.yml`) |
 | Transcoding | Tdarr (server + node, hard-pinned at 2.17.01 — GLIBC blocker) | live |
-| Comms | Listmonk (mass email), Conjurr (recommendations), Newsletterr (weekly digest) | live |
-| Comms | Notifiarr (Discord push) | **being purged** — replaced by direct Discord webhook |
-| Reading | Calibre-Web (empty library bootstrapped at `~/media/CalibreLibrary`), Komga, Kavita, Audiobookshelf | book/audiobook/comic apps about to be parked pending Readarr replacement |
+| Comms | Listmonk (mass email), **qflix-newsletter** (weekly digest, Mon 08:00, Tautulli + Gemini + Listmonk) | live |
+| Reading | Calibre-Web, Komga, Kavita, Audiobookshelf | parked pending Readarr replacement |
 | Dashboard | Homarr (private + public boards, "Qflix" theme) | live |
 | Monitoring | Uptime Kuma + manitoba-maint daemon | live |
+| Operator alerts | direct Discord webhook (`secrets/discord-webhook.url`) | live (replaced Notifiarr passthrough 2026-05-10) |
 
 **4 canaries** (`scripts/canaries/`) probe whole pipelines, not just liveness:
 - **movie** (hourly) — Jellyseerr request → Radarr grab → qBit
@@ -39,31 +39,37 @@ The stack is **production-grade for one operator**. State changes go through tes
 
 ---
 
-## Decisions in flight
+## Decisions made (recent) and in flight
 
-Living list of architectural changes the operator has decided on but not yet executed. These will land across upcoming sessions.
+Architectural changes recently landed and items still pending. Items struck-through are done.
 
-| # | Change | Why |
+| # | Change | Status |
 |---|---|---|
-| 1 | **Purge Notifiarr → Discord webhook direct** | Notifiarr's passthrough integration was silently failing (HTTP 400 — `pass through integration disabled` on operator's account, possibly Patron-only). Direct Discord webhook removes a middleware layer with no functional loss. |
-| 2 | **Replace Readarr** (Chaptarr / Bookshelf / LazyLibrarian) | Readarr was retired upstream 2026 — repo archived, metadata source dead. |
-| 3 | **Investigate Decypharr + Real-Debrid pipeline** | Decypharr is a media gateway that lets *arrs use Real-Debrid as a near-instant download client (qBit-API-compatible). Could replace qBit for cloud-streaming workflow. |
-| 4 | **Purge Jellyfin** | Plex is canonical; Jellyfin trial concluded. Jellystat follows it out. |
-| 5 | **Migrate Jellyseerr → Overseerr/Seerr** | Without Jellyfin, Jellyseerr's Jellyfin-fork advantage disappears. Overseerr is the Plex-native original. |
-| 6 | **Wire Recyclarr fully** (Kuma monitor + maintenance-window upgrade) | Currently installed as cron with `kuma_monitor: null`. Make it visible + auto-upgraded. |
-| 7 | **Park book/comic/audiobook apps** until Readarr replacement is chosen | Readarr is the ingestion piece; reader apps (Calibre-Web, Komga, Kavita, Audiobookshelf, Mylar3) are useful only when there's a fresh ingestion pipeline. |
-| 8 | **Implement #2 decision** | Once Readarr replacement is picked, install + uninstall Readarr. Affects manifest, Calibre-Web library wiring, and Phase 16 stop-list. |
-| 9 | **Stremio-feeding-into-Plex** (Real-Debrid + Zurg/Decypharr + Plex symlinks) | Same architectural answer as #3 — Decypharr + RD makes Stremio's debrid catalog visible to Plex as local files. |
-| 10 | **Confirm Maintainerr replaces Deleterr** | Yes — Maintainerr is the same author's evolution of Deleterr; rule-based deletion + handles Plex collections. No Deleterr install needed. |
+| 1 | ~~Purge Notifiarr → Discord webhook direct~~ | **DONE 2026-05-10** — *arr Notifiarr Connections + Tautulli passthrough deleted, `notifiarr.key` purged, `lib/notify.py` legacy fallback removed. Operator must populate `secrets/discord-webhook.url` for alerts to land. |
+| 2 | **Replace Readarr** (Chaptarr / Bookshelf / LazyLibrarian) | pending — upstream retired 2026, repo archived |
+| 3 | **Investigate Decypharr + Real-Debrid pipeline** | declined 2026-05-09 (operator: staying on traditional indexer + qBit) |
+| 4 | ~~Purge Jellyfin~~ | **DONE 2026-05-10** — Jellyfin + Jellystat uninstalled, manifest cleaned |
+| 5 | **Migrate Jellyseerr → Overseerr/Seerr** | pending — queued post-Jellyfin |
+| 6 | ~~Wire Recyclarr fully~~ | **DONE 2026-05-10** — Kuma monitor "Recyclarr" + auto-heal coverage |
+| 7 | ~~Park book/comic/audiobook apps until Readarr replacement~~ | **DONE 2026-05-10** — Readarr/Mylar3/Calibre-Web/Komga/Kavita/Audiobookshelf marked parked |
+| 8 | **Implement #2 decision** | blocked on #2 |
+| 9 | **Stremio-feeding-into-Plex** | declined 2026-05-09 (same as #3) |
+| 10 | ~~Confirm Maintainerr replaces Deleterr~~ | **DONE** — Maintainerr is the canonical retention engine |
+| 11 | ~~Replace Conjurr + Newsletterr with qflix-newsletter (Path B)~~ | **DONE 2026-05-10** — single Python script (Tautulli + Gemini + Listmonk), Mon-08:00 systemd timer; old apps decom'd, ~626 MB freed (Newsletterr's Playwright Chromium) |
+| 12 | ~~Install Buildarr~~ | **DONE 2026-05-10** — declarative *arr config, nightly 04:30 cron |
+| 13 | **Phase 3 deferred installs** | Suggestarr, Profilarr, Janitorr blocked on Ultra.cc per-process WASM/JVM heap limit; Watcharr parked (no subpath, like Wizarr). See `project_seedbox-wasm-oom-blocker` memory. |
+| 14 | **Jellyseerr public-vs-htpasswd** | open — current state: htpasswd inherits; kickoff calls for `auth_basic off`. Operator decision pending in Phase 5 walkthrough. |
 
 ---
 
-## Architecture in one diagram
+## Architecture
+
+### One-screen overview
 
 ```
                          Operator workstation (Windows)
                                       │
-                                      │ ssh / scp / Playwright
+                                      │ ssh / scp / Playwright Firefox
                                       ▼
   ┌──────────────── Ultra.cc shared seedbox (host netns) ────────────────┐
   │                                                                     │
@@ -75,27 +81,142 @@ Living list of architectural changes the operator has decided on but not yet exe
   │     ├─ webhook   (loopback :42017 — receives Kuma down events)      │
   │     ├─ pusher    (every 60s — health-probe + push status to Kuma    │
   │     │             AND fire recovery.run async on probe failure)     │
-  │     ├─ window    (Mon 04:00–08:00 lock + Notifiarr open/close)      │
+  │     ├─ window    (Mon 04:00–08:00 lock + Discord open/close ping)   │
   │     └─ canary-*  (timers — fire scripts/canaries/*.sh)              │
   │                                                                     │
   │   ~/scripts/maint/cp_upgrade_clicker.py   (Mon 04:30 — Playwright   │
   │     Firefox → cp.ultra.cc → Upgrade & Repair on 12 UCC apps)        │
   │                                                                     │
+  │   ~/.apps/qflix-newsletter/   (Mon 08:00 — Tautulli + Gemini +      │
+  │     Listmonk campaign API; replaces Conjurr + Newsletterr)          │
+  │                                                                     │
+  │   ~/.apps/buildarr/   (nightly 04:30 — declarative YAML reconcile   │
+  │     to Sonarr/Radarr/Prowlarr/Jellyseerr)                           │
+  │                                                                     │
   └─────────────────┬───────────────────────────────────────────────────┘
                     │ /metrics (Basic auth, push-token URLs)
                     ▼
         Uptime Kuma (isolated netns: 127.0.0.1:42005 INSIDE container)
-        29 PUSH monitors + 1 webhook notification target
+        28 PUSH monitors + 1 Discord-webhook notification target
 ```
 
 The "isolated netns" detail matters: Kuma cannot reach the host's loopback. Pusher pushes status TO Kuma. Auto-heal originally relied on Kuma webhook IN — but Kuma can't POST to host-loopback either, so recovery is now triggered directly from the pusher when its probe fails. See `scripts/maint/lib/pusher.py`.
+
+### Data flows (for both beginners and the "show me the wires" crowd)
+
+The stack has four live data flows. Each one starts with a real human action and ends with an artifact. Beginners can follow the arrows; everyone else can drop into the named files for the gory details.
+
+#### 1. Media ingestion — "I want to watch X"
+
+```
+  User taps Jellyseerr ──► Sonarr/Radarr ──► Prowlarr ──► newznab/torznab indexers
+  (or "I just added it"      (`/api/v3/         (`/api/v1/         (or Cloudflare-walled,
+   manually in Sonarr)       command")          search`)            via FlareSolverr at
+                                │                                   172.17.0.1:17011)
+                                │
+                                ▼
+                              qBittorrent (17041) ── grabs torrent ──► ~/data/torrents/...
+                                │
+                                │ on completion (qBit "Run external program")
+                                ▼
+                              Sonarr/Radarr import ── hardlink ──► ~/data/media/Movies/<...>
+                                                                   ~/data/media/TV Shows/<...>
+                                │
+                                │ Bazarr watches *arrs, fetches subs
+                                ▼
+                              ~/data/media/.../<title>.<lang>.srt
+                                │
+                                │ Plex scans ~/data/media/* (auto on completion via
+                                │ scripts/post-import/library-rescan-plex.sh)
+                                ▼
+                              Plex (172.17.1.250:32400) ── available to user
+```
+
+Hardlinks are sacred: the *arrs hardlink (not copy) from `torrents/` into `media/`. That keeps qBit seeding the same physical bytes Plex is streaming. `scripts/smoke-test.sh` step 5 spot-checks linkcount.
+
+#### 2. Library hygiene — "I want my disk back"
+
+```
+  Maintainerr (42007) ── nightly rule pass
+    │
+    ├── "watched 60 days ago + nobody else watched" ──► tag for deletion
+    └── delete from Plex collection + delete file
+                                                  │
+  Recyclarr (cron) ── pulls TRaSH-Guides ──► writes Sonarr/Radarr quality profiles
+                                                  │
+  Kometa (cron)    ── pulls Plex-meta-manager   ──► writes Plex collections/posters
+                                                  │
+  Buildarr (cron 04:30) ── reads buildarr.yml   ──► reconciles *arr settings
+                                                       (declarative — drift becomes nightly fix)
+```
+
+#### 3. Operator visibility — "is anything on fire?"
+
+```
+  manitoba-maint-pusher.service (every 60s)
+    │
+    ├── for each app: probe health (HTTP, systemd state, port listen)
+    ├── push status to Kuma /metrics (Push monitor per app)
+    └── on 3 consecutive probe failures: recovery.trigger_async(app)
+                                              │
+                                              ▼
+                                            lifecycle.start(app) up to 3 times
+                                              │ on still-failing
+                                              ▼
+                                            notify.py ──► Discord webhook
+                                                          (was Notifiarr, retired
+                                                          2026-05-10)
+  Canaries (timers, hourly / 15min / daily):
+    movie / anime    ── Jellyseerr request → Sonarr/Radarr grab → qBit ── ✓
+    deletion         ── Maintainerr 60-day rule audit                    ── ✓
+    mobile-ux        ── Homarr public board renders + redirects          ── ✓
+                          (each pushes Pass/Fail to its own Kuma monitor)
+
+  Operator's permanent SSH tunnel (manitoba-tunnel.ps1) forwards every
+  INTERNAL admin port to localhost:<same-port> so SPA admin UIs (Listmonk,
+  *arrs, Tdarr, Maintainerr) work at root from the workstation's perspective.
+```
+
+#### 4. Subscriber comms — "Mon morning email"
+
+```
+  qflix-newsletter.timer (Mon 08:00, post-maintenance window)
+    │
+    ▼
+  ~/.apps/qflix-newsletter/.venv/bin/python -m qflix_newsletter
+    │
+    ├── Tautulli  ── recently_added (50 items) ──┐
+    ├── Sonarr    ── /calendar (14d window)     ──┤
+    ├── Sonarr2   ── /calendar (14d, anime)     ──┤── normalize → RecentItem / CalendarItem
+    ├── Radarr    ── /calendar (14d)            ──┤
+    ├── Radarr2   ── /calendar (14d, anime)     ──┤
+    ├── TMDB      ── ratings for "Pick of Week" ──┘
+    │
+    ├── Gemini    ── 3 "if you liked X try Y" picks (small, bottom-of-email)
+    │
+    ├── Jinja2    ── render scripts/qflix-newsletter/.../templates/weekly.html.j2
+    │                (Pick of Week → New Movies → New TV → Anime → Coming Soon
+    │                 → AI Picks → Nerd Corner)
+    │
+    └── Listmonk  ── POST /api/campaigns + PUT .../status=running
+                     │
+                     ▼
+                   Listmonk fans out via SMTP → subscribers
+                     │
+                     ▼
+                   "View in browser" link → https://<fqdn>/listmonk/campaign/<uuid>
+                                            (server-rendered; nginx subpath
+                                             rewrites handle CSS/asset paths)
+```
+
+The newsletter is one Python invocation. Failure modes (Tautulli down, Gemini rate-limited, Listmonk down) are caught and logged; the script still ships an email with whatever data it could gather, with the AI section silently empty if Gemini fails. See `scripts/qflix-newsletter/qflix_newsletter/main.py`.
 
 ---
 
 ## Repo layout
 
 ```
-manifest/apps.yaml           # 30 apps + 4 canaries — single source of truth
+manifest/apps.yaml           # 28 apps + 4 canaries — single source of truth
 versions.env                 # Pinned versions (Tdarr only — pin policy lifted 2026-05-09)
 Tuesday.md                   # Design doc — extending Mon maintenance to systemd apps
                              # NB: bookmarks/EDGEbookmarks.html are gitignored — operator keeps a local copy outside the repo
@@ -103,6 +224,7 @@ Tuesday.md                   # Design doc — extending Mon maintenance to syste
 docs/
   operator-deferred.md       # Manual steps that can't be scripted yet
   transition-log.md          # Reversible state-changes log (stop/start/uninstall)
+  internal-app-tunnels.md    # Public/internal split + ssh -L command per INTERNAL app
   secrets-convention.md      # ~/secrets/ inventory + filename rules
   arr-audit-2026-05-09.md    # Most recent *arr stack audit
   arr-audit-actions-*.md     # Audit punch-list
@@ -110,7 +232,7 @@ docs/
   superpowers/               # Plan + spec docs (longer-form designs)
 
 scripts/
-  configure/                 # 44 phased install/configure scripts (numbered 01..61)
+  configure/                 # phased install/configure scripts (numbered 01..61)
                              # Run in numeric order on a fresh seedbox.
   install/                   # Lower-level installer libs (used by configure/)
   lib/                       # Shared bash helpers: ssh, log, secrets, pwgen
@@ -120,7 +242,9 @@ scripts/
   plex/                      # Plex-specific utilities (kill_stream, stream_stats)
   post-import/               # Library-rescan callbacks invoked by *arrs after import
   canaries/                  # 4 end-to-end pipeline checks (bash)
-  smoke-test.sh              # Production smoke (193+ checks across the whole stack)
+  qflix-newsletter/          # Mon-08:00 weekly digest (replaces Conjurr+Newsletterr 2026-05-10)
+                             # Python package: qflix_newsletter/ + tests fixtures + Jinja2 template
+  smoke-test.sh              # Production smoke (190+ checks across the whole stack)
   smoke-test-plex.sh         # Plex-ecosystem-only smoke
 
   maint/                     # The maintenance daemon
@@ -136,7 +260,7 @@ scripts/
       kuma.py         # /metrics client + webhook receiver (canary auto-heal handler)
       pusher.py       # 60s push loop — pushes health to Kuma; auto-heal fires only after 3 CONSECUTIVE failed probes (~180s sustained downtime)
       window.py       # Maintenance-window lockfile + drain logic
-      notify.py       # Operator-escalation ping (Discord webhook direct; Notifiarr passthrough deprecated)
+      notify.py       # Operator-escalation ping (Discord webhook only — Notifiarr removed 2026-05-10)
       state.py        # JSON state file at ~/.opt/maint/state.json
       cli.py          # All argparse subparsers + verb dispatch
       qbit.py         # qBit pw rotation + *arr cascade ('manitoba-maint qbit rotate-pw')
@@ -161,7 +285,6 @@ defaults:
   recovery_attempts: 3
   recovery_backoff_s: [10, 30, 60]
   lifecycle_timeout_s: 60
-  notifiarr_channel: "#notifiarr"
   kuma_recheck_delay_s: 90
 
 apps:
@@ -228,7 +351,7 @@ manitoba-maint qbit rotate-pw --new <pw> [--dry-run]
 |---|---|---|
 | `manitoba-maint-pusher.service` | running | health probe + push to Kuma every 60s; auto-heals on probe failure |
 | `manitoba-maint-webhook.service` | running | receives Kuma down/up events on 127.0.0.1:42017 |
-| `manitoba-maint-window.timer` | Mon 04:00 | window open: lock + Notifiarr ping |
+| `manitoba-maint-window.timer` | Mon 04:00 | window open: lock + Discord webhook ping |
 | `manitoba-maint-window.service` | (oneshot) | actual window logic |
 | `manitoba-maint-window-watchdog.timer` | Mon 15:00 UTC | hard-close + drain queued events |
 | `manitoba-maint-cp-upgrade.timer` | Mon 04:30 | Playwright/Firefox cp.ultra.cc Upgrade & Repair sweep (12 UCC apps) |
@@ -284,7 +407,7 @@ PYTHONPATH=scripts/maint tests/.venv/Scripts/python.exe scripts/maint/bootstrap-
 bash scripts/smoke-test.sh
 ```
 
-Smoke target as of v2: **193+ checks pass**, covering Prowlarr indexers, *arr→qBit reachability, Notifiarr round-trip, Plex/Jellyfin libraries, Maintainerr rules, canary monitor presence, etc.
+Smoke target as of v2: **190+ checks pass**, covering Prowlarr indexers, *arr→qBit reachability, Plex library, Maintainerr rules, qflix-newsletter render + timer, Buildarr timer, canary monitor presence, etc.
 
 ---
 
@@ -314,7 +437,7 @@ Smoke target as of v2: **193+ checks pass**, covering Prowlarr indexers, *arr→
 
 | Pattern | Example |
 |---|---|
-| `<app>.key` | `sonarr.key`, `prowlarr.key`, `notifiarr.key` |
+| `<app>.key` | `sonarr.key`, `prowlarr.key`, `tautulli.key` |
 | `<app>.port` | `sonarr.port` (loopback port 17xxx) |
 | `<app>.urlbase` | `sonarr.urlbase` (e.g. `sonarr` → `/sonarr/...`) |
 | `<app>.host` | `plex.host` (Docker bridge IP if not loopback) |
@@ -331,7 +454,7 @@ See `Tuesday.md` for the design that extends Monday's automated upgrade sweep to
 
 ### Quality / ARR config
 
-- **No 4K profiles** — every Sonarr/Radarr/Recyclarr/Jellyseerr/Jellyfin transcoder caps at 1080p. 4K is per-case operator escalation. (`feedback_no-4k-profiles.md`)
+- **No 4K profiles** — every Sonarr/Radarr/Recyclarr/Jellyseerr/Plex transcoder caps at 1080p. 4K is per-case operator escalation. (`feedback_no-4k-profiles.md`)
 - **TRaSH-Guides custom formats** — applied via Recyclarr to 36 Sonarr / 39 Radarr items per profile. Anime branch (Sonarr2/Radarr2) uses 55 items/profile.
 - **All indexers come from Prowlarr** — manual indexers are an audit smell. `scripts/smoke/arr-audit.py` flags them.
 
@@ -374,7 +497,7 @@ These will bite anyone porting this to a different host:
 
 ## Status
 
-- **v2 SHIPPED.** See `docs/operator-deferred.md` for the residual operator-only items (Newsletterr template UI, Listmonk cutover send, Phase H walkthrough).
+- **v2 SHIPPED.** Post-v2 sweep on 2026-05-10 retired Conjurr/Newsletterr/Jellyfin/Jellystat/Notifiarr; landed qflix-newsletter (Path B Mon-08:00 weekly digest) + Buildarr (declarative *arr config nightly). The cutover newsletter send is the qflix-newsletter end-to-end smoke. See `docs/internal-app-tunnels.md` for the public/internal admin split and `docs/operator-deferred.md` for residual manual steps.
 - **30 apps + 4 canaries** monitored, 29 of which have Kuma push monitors (Tdarr-Node has no kuma_monitor by design — health = systemd_only).
 - **Auto-heal proven end-to-end** via deliberate `app-bazarr stop` test (recovered after 2 attempts).
 - **Monday 04:00–08:00 maintenance window** automated end-to-end for the 12 UCC apps; `Tuesday.md` plans the extension to systemd apps.

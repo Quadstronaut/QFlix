@@ -1,14 +1,12 @@
-"""lib/notify.py — Discord webhook operator-ping (Notifiarr-free).
+"""lib/notify.py — Discord webhook operator-ping.
 
-Reads webhook URL from secrets/discord-webhook.url. Notifiarr passthrough
-was deprecated 2026-05-10 after multiple integration-disabled failures
-on operator's Notifiarr account; direct Discord webhooks remove the
-middleware with no functional loss for this stack's "ping operator on
-auto-heal failure" use case.
+Reads webhook URL from secrets/discord-webhook.url. Sends a Discord-shaped
+embed for auto-heal failures and other operator alerts. If the webhook URL
+is missing, fails loud (logs to notify-fail.log) — there is no fallback.
 
-Falls back to the legacy Notifiarr key if discord-webhook.url is absent
-(eases gradual migration; will be removed when Notifiarr secret is
-purged from the seedbox).
+Notifiarr passthrough was removed 2026-05-10 after the secret was purged
+from the seedbox. Earlier versions had a Notifiarr legacy fallback for
+gradual migration; that path is gone now.
 
 On failure: logs to MANITOBA_STATE_DIR/notify-fail.log (default
 ~/.opt/maint/). Never raises — all errors are swallowed after logging.
@@ -35,8 +33,6 @@ _COLORS = {
     "error":   15158332,  # red
     "critical": 9109504,  # dark red
 }
-
-_NOTIFIARR_ENDPOINT = "https://notifiarr.com/api/v1/notification/passthrough/{key}"
 
 
 def _redact_url(url: str) -> str:
@@ -89,36 +85,6 @@ def _post_discord(webhook_url: str, message: str, level: str) -> tuple[bool, str
         return False, f"unexpected error: {exc}"
 
 
-def _post_notifiarr_legacy(message: str, level: str) -> tuple[bool, str]:
-    """Legacy fallback if discord-webhook.url is absent. Will be removed
-    after the Notifiarr secret is purged."""
-    try:
-        key = _secret_read("notifiarr.key")
-    except Exception as exc:
-        return False, f"no fallback: {exc}"
-
-    color_map = {
-        "info":    "3498db",
-        "warning": "f39c12",
-        "error":   "e74c3c",
-        "critical": "8b0000",
-    }
-    payload = {
-        "notification": {"name": "manitoba-maint", "event": "auto_heal"},
-        "discord": {
-            "color": color_map.get(level, "3498db"),
-            "text": {"description": message[:1900]},
-        },
-    }
-    url = _NOTIFIARR_ENDPOINT.format(key=key)
-    try:
-        resp = requests.post(url, json=payload, timeout=5)
-        resp.raise_for_status()
-        return True, ""
-    except Exception as exc:
-        return False, _redact_url(str(exc))
-
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -164,20 +130,14 @@ def _append_fail_log(level: str, message: str, error: str) -> None:
 # ---------------------------------------------------------------------------
 
 def notify(message: str, level: str = "info") -> bool:
-    """Send a notification to the operator's Discord. Tries the direct
-    webhook first (preferred). Falls back to Notifiarr passthrough only if
-    discord-webhook.url is absent, for migration safety."""
+    """Send a notification to the operator's Discord. Returns False (and
+    logs to notify-fail.log) if the webhook URL is missing or the POST
+    fails — never raises."""
     webhook_url = _try_read_webhook_url()
-    if webhook_url:
-        ok, err = _post_discord(webhook_url, message, level)
-        if ok:
-            return True
-        _append_fail_log(level, message, _redact_url(err))
+    if not webhook_url:
+        _append_fail_log(level, message, "no webhook: secrets/discord-webhook.url missing")
         return False
-
-    # Fallback path — Notifiarr passthrough. Will be removed in a follow-up
-    # commit after the Notifiarr secret is purged from the seedbox.
-    ok, err = _post_notifiarr_legacy(message, level)
+    ok, err = _post_discord(webhook_url, message, level)
     if ok:
         return True
     _append_fail_log(level, message, _redact_url(err))

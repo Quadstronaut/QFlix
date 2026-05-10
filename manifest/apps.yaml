@@ -3,7 +3,6 @@ defaults:
   recovery_attempts: 3
   recovery_backoff_s: [10, 30, 60]
   lifecycle_timeout_s: 60
-  notifiarr_channel: "#notifiarr"
   kuma_recheck_delay_s: 90
 
 apps:

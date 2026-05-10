@@ -60,15 +60,6 @@ for app in sonarr radarr sonarr2 radarr2 readarr; do
   fi
 done
 
-# 4. Notifiarr round-trip
-echo "4. Notifiarr API"
-NOTIF=$(curl -sS -m 10 -H "X-API-Key: $(secret_read notifiarr.key)" "https://notifiarr.com/api/v1/user/validate" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("result","?"))' 2>/dev/null)
-if [ "$NOTIF" = "success" ]; then
-  record "notifiarr-validate" pass
-else
-  record "notifiarr-validate" fail "got '$NOTIF'"
-fi
-
 # 5. Hardlink sanity
 echo "5. Hardlinks"
 HLINKS=$(sshm "find ~/media/Movies -type f -name '*.mkv' 2>/dev/null | head -5 | xargs -I{} stat -c '%h' {} 2>/dev/null | grep -c '^2'" 2>/dev/null || echo 0)
@@ -87,10 +78,11 @@ record "disk-usage" pass "$USAGE"
 
 # 7. Landing page (skip if no homarr port configured yet — Phase 13)
 echo "7. Landing page"
+PUBLIC_HOST=$(secret_read seedbox.host 2>/dev/null || echo "quadstronaut.seedbox.example.com")
 if secret_exists homarr.port; then
   HTPW=$(secret_read htpasswd.password 2>/dev/null || echo "")
   if [ -n "$HTPW" ]; then
-    HITS=$(curl -sk -L -m 15 -u "quadstronaut:$HTPW" "https://quadstronaut.seedbox.example.com/" 2>/dev/null | grep -c -i homarr || echo 0)
+    HITS=$(curl -sk -L -m 15 -u "quadstronaut:$HTPW" "https://${PUBLIC_HOST}/" 2>/dev/null | grep -c -i homarr || echo 0)
     if [ "${HITS:-0}" -ge 1 ]; then
       record "landing-page" pass "/ -> Homarr public board ($HITS hits)"
     else
@@ -132,14 +124,20 @@ for tgt in komga kavita audiobookshelf; do
   fi
 done
 
-# 11. Maintainerr API alive
+# 11. Maintainerr API alive (skip if Maintainerr is parked/stopped)
 echo "11. Maintainerr"
 MT_KEY=$(secret_read maintainerr.key 2>/dev/null || echo "")
 HTPW=$(secret_read htpasswd.password 2>/dev/null || echo "")
-if [ -n "$MT_KEY" ] && [ -n "$HTPW" ]; then
-  CODE=$(curl -sk -m 10 -u "quadstronaut:$HTPW" -H "X-Api-Key: $MT_KEY" -o /dev/null -w "%{http_code}" "https://maintainerr-quadstronaut.seedbox.example.com/api/settings" 2>/dev/null)
+USERPART="${PUBLIC_HOST%%.*}"
+DOMAIN="${PUBLIC_HOST#*.}"
+MT_HOST="maintainerr-${USERPART}.${DOMAIN}"
+MT_RUNNING=$(sshm "systemctl --user is-active maintainerr.service 2>/dev/null" 2>/dev/null || echo "inactive")
+if [ "$MT_RUNNING" != "active" ]; then
+  record "maintainerr-api" skip "service stopped (per operator policy — \`app-maintainerr start\` to use)"
+elif [ -n "$MT_KEY" ] && [ -n "$HTPW" ]; then
+  CODE=$(curl -sk -m 10 -u "quadstronaut:$HTPW" -H "X-Api-Key: $MT_KEY" -o /dev/null -w "%{http_code}" "https://${MT_HOST}/api/settings" 2>/dev/null)
   if [ "$CODE" = "200" ]; then
-    SC=$(curl -sk -m 10 -u "quadstronaut:$HTPW" -H "X-Api-Key: $MT_KEY" "https://maintainerr-quadstronaut.seedbox.example.com/api/settings/sonarr" 2>/dev/null | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null)
+    SC=$(curl -sk -m 10 -u "quadstronaut:$HTPW" -H "X-Api-Key: $MT_KEY" "https://${MT_HOST}/api/settings/sonarr" 2>/dev/null | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null)
     record "maintainerr-api" pass "$SC sonarr instances configured"
   else
     record "maintainerr-api" fail "HTTP $CODE"
@@ -157,30 +155,34 @@ else
   record "qbit-torrents" fail
 fi
 
-# 13b. Conjurr (internal-only, no nginx — admin via SSH tunnel)
-echo "13b. Conjurr"
-CJ_PORT=$(sshm 'grep -oP "^PORT=\K[0-9]+" ~/.apps/conjurr/repo/env/.env 2>/dev/null' 2>/dev/null)
-if [ -n "$CJ_PORT" ]; then
-  CJ_HTTP=$(sshm "curl -sk -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:${CJ_PORT}/" 2>/dev/null)
-  case "$CJ_HTTP" in
-    200|302) record "conjurr-up" pass "HTTP $CJ_HTTP on 127.0.0.1:$CJ_PORT" ;;
-    *)       record "conjurr-up" fail "HTTP $CJ_HTTP" ;;
-  esac
+# 13b. qflix-newsletter (replaces Conjurr+Newsletterr 2026-05-10) — timer scheduled + last run
+echo "13b. qflix-newsletter"
+QN_TIMER=$(sshm "systemctl --user list-timers qflix-newsletter.timer --no-pager 2>/dev/null | grep -c qflix-newsletter.timer" 2>/dev/null)
+if [ "${QN_TIMER:-0}" -ge 1 ]; then
+  record "qflix-newsletter-timer" pass "scheduled (Mon 08:00)"
 else
-  record "conjurr-up" skip "no env/.env"
+  record "qflix-newsletter-timer" fail "timer not scheduled"
+fi
+QN_DRY=$(sshm 'cd ~/.apps/qflix-newsletter && .venv/bin/python -m qflix_newsletter --dry-run 2>&1 | tail -1' 2>/dev/null)
+if echo "$QN_DRY" | grep -q "dry-run: subject="; then
+  record "qflix-newsletter-renders" pass "$(echo "$QN_DRY" | sed 's/.*\(subject=.*\)/\1/' | head -c 80)"
+else
+  record "qflix-newsletter-renders" fail "$(echo "$QN_DRY" | tail -c 100)"
 fi
 
-# 13c. Newsletterr (internal-only)
-echo "13c. Newsletterr"
-NL_PORT=$(sshm 'grep -oP "^PORT=\K[0-9]+" ~/.apps/newsletterr/repo/env/.env 2>/dev/null' 2>/dev/null)
-if [ -n "$NL_PORT" ]; then
-  NL_HTTP=$(sshm "curl -sk -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:${NL_PORT}/" 2>/dev/null)
-  case "$NL_HTTP" in
-    200|302) record "newsletterr-up" pass "HTTP $NL_HTTP on 127.0.0.1:$NL_PORT" ;;
-    *)       record "newsletterr-up" fail "HTTP $NL_HTTP" ;;
-  esac
+# 13c. Buildarr (cron-class — timer scheduled, no UI)
+echo "13c. Buildarr"
+BA_TIMER=$(sshm "systemctl --user list-timers buildarr.timer --no-pager 2>/dev/null | grep -c buildarr.timer" 2>/dev/null)
+if [ "${BA_TIMER:-0}" -ge 1 ]; then
+  record "buildarr-timer" pass "scheduled (nightly 04:30)"
 else
-  record "newsletterr-up" skip "no .env"
+  record "buildarr-timer" fail "timer not scheduled"
+fi
+BA_VER=$(sshm "~/.apps/buildarr/.venv/bin/pip show buildarr 2>/dev/null | grep '^Version:' | awk '{print \$2}'" 2>/dev/null)
+if [ -n "$BA_VER" ]; then
+  record "buildarr-installed" pass "v$BA_VER"
+else
+  record "buildarr-installed" fail "venv missing or buildarr not installed"
 fi
 
 # 13g. python-plexapi venv healthy
@@ -277,27 +279,18 @@ else
   record "recyclarr-no-4k" fail "$UHD_COUNT UHD entries found — policy violation"
 fi
 
-# 13d. Bridge sync count: Newsletterr's auto-list >= Listmonk subscribers
-echo "13d. Newsletterr <- Listmonk bridge"
-NL_RECIP=$(sshm 'sqlite3 ~/.apps/newsletterr/repo/database/data.db "SELECT (length(emails) - length(replace(emails, '"'"'@'"'"', '"'"''"'"'))) FROM email_lists WHERE name = '"'"'Manitoba (auto)'"'"'"' 2>/dev/null)
-if [ -n "${NL_RECIP:-}" ] && [ "${NL_RECIP:-0}" -ge 13 ]; then
-  record "newsletterr-recipients" pass "$NL_RECIP recipients in Manitoba (auto)"
-else
-  record "newsletterr-recipients" fail "expected >=13, got '${NL_RECIP:-}' — bridge sync may not have run"
-fi
-
 # 13. Listmonk health + subscribers (mass-comms Phase 19+20)
 echo "13. Listmonk"
 LM_API_USER=$(secret_read listmonk.api_user 2>/dev/null || echo "")
 LM_API_TOKEN=$(secret_read listmonk.api_token 2>/dev/null || echo "")
 if [ -n "$LM_API_USER" ] && [ -n "$LM_API_TOKEN" ]; then
-  LM_HEALTH=$(curl -sfk -m 5 -u "$LM_API_USER:$LM_API_TOKEN" "https://quadstronaut.seedbox.example.com/listmonk/api/health" 2>/dev/null)
+  LM_HEALTH=$(curl -sfk -m 5 -u "$LM_API_USER:$LM_API_TOKEN" "https://${PUBLIC_HOST}/listmonk/api/health" 2>/dev/null)
   if echo "$LM_HEALTH" | grep -q '"data":true'; then
     record "listmonk-health" pass
   else
     record "listmonk-health" fail "$LM_HEALTH"
   fi
-  LM_SUB=$(curl -sfk -m 10 -u "$LM_API_USER:$LM_API_TOKEN" "https://quadstronaut.seedbox.example.com/listmonk/api/dashboard/counts" 2>/dev/null \
+  LM_SUB=$(curl -sfk -m 10 -u "$LM_API_USER:$LM_API_TOKEN" "https://${PUBLIC_HOST}/listmonk/api/dashboard/counts" 2>/dev/null \
     | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["subscribers"]["total"])' 2>/dev/null)
   if [ "${LM_SUB:-0}" -ge 13 ]; then
     record "listmonk-subscribers" pass "$LM_SUB subscribers"
@@ -372,7 +365,13 @@ fi
 # 15. Phase-15 canaries (movie / anime / deletion / mobile-ux)
 echo "15. Phase-15 canaries"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# canary-deletion depends on Maintainerr's API; skip when Maintainerr is parked.
+MT_RUNNING=$(sshm "systemctl --user is-active maintainerr.service 2>/dev/null" 2>/dev/null || echo "inactive")
 for canary in movie anime deletion mobile-ux; do
+  if [ "$canary" = "deletion" ] && [ "$MT_RUNNING" != "active" ]; then
+    record "canary-$canary" skip "maintainerr.service is parked — \`app-maintainerr start\` to test"
+    continue
+  fi
   if bash "$HERE/canaries/$canary.sh" >/dev/null 2>&1; then
     record "canary-$canary" pass
   else
@@ -391,7 +390,10 @@ if [ -n "$K_PORT" ] && [ -n "$K_KEY" ]; then
   K_METRICS=$(sshm "curl -s -m 5 -u ':$K_KEY' http://127.0.0.1:$K_PORT/metrics 2>/dev/null" </dev/null 2>/dev/null)
   for canary_name in "Canary Movie" "Canary Anime" "Canary Deletion" "Canary Mobile-UX"; do
     slug=$(echo "$canary_name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
-    STATUS=$(echo "$K_METRICS" | grep "monitor_name=\"${canary_name}\"" | grep -oE '[0-9]+$' | head -1)
+    # Filter to monitor_status lines specifically — there are multiple
+    # Prometheus metrics per monitor (status, response_time, cert_days), and
+    # we only want the binary up/down value.
+    STATUS=$(echo "$K_METRICS" | grep "^monitor_status" | grep "monitor_name=\"${canary_name}\"" | grep -oE ' [01](\.[0-9]+)?$' | tr -d ' ' | head -1)
     if [ "${STATUS:-}" = "1" ]; then
       record "canary-kuma-${slug}" pass "monitor_status=1 (up)"
     elif [ -z "${STATUS:-}" ]; then

@@ -9,13 +9,18 @@ source "$ROOT/scripts/lib/ssh.sh"
 
 RES=$(sshm '
 HTPW=$(cat ~/secrets/htpasswd.password)
+PUBLIC_HOST=$(cat ~/secrets/seedbox.host 2>/dev/null || echo "quadstronaut.seedbox.example.com")
+# Per-app subdomain prefix is "<app>-<userpart>" where userpart = first dot-segment
+USERPART=${PUBLIC_HOST%%.*}
+DOMAIN=${PUBLIC_HOST#*.}
+HOMARR_HOST="homarr-upstream-${USERPART}.${DOMAIN}"
 # Root domain (302 → public board)
-ROOT_CODE=$(curl -sk -m 5 -o /dev/null -w "%{http_code}" -u "quadstronaut:$HTPW" https://quadstronaut.seedbox.example.com/)
-ROOT_LOC=$(curl -sk -m 5 -I -u "quadstronaut:$HTPW" https://quadstronaut.seedbox.example.com/ | grep -i ^location: | tr -d "\r" | head -1)
+ROOT_CODE=$(curl -sk -m 5 -o /dev/null -w "%{http_code}" -u "quadstronaut:$HTPW" "https://${PUBLIC_HOST}/")
+ROOT_LOC=$(curl -sk -m 5 -I -u "quadstronaut:$HTPW" "https://${PUBLIC_HOST}/" | grep -i ^location: | tr -d "\r" | head -1)
 # Public board renders
-PUB_CODE=$(curl -sk -m 5 -o /dev/null -w "%{http_code}" -u "quadstronaut:$HTPW" "https://homarr-upstream-quadstronaut.seedbox.example.com/boards/public")
+PUB_CODE=$(curl -sk -m 5 -o /dev/null -w "%{http_code}" -u "quadstronaut:$HTPW" "https://${HOMARR_HOST}/boards/public")
 # HTML size
-HTML_BYTES=$(curl -sk -m 10 -u "quadstronaut:$HTPW" "https://homarr-upstream-quadstronaut.seedbox.example.com/boards/public" | wc -c)
+HTML_BYTES=$(curl -sk -m 10 -u "quadstronaut:$HTPW" "https://${HOMARR_HOST}/boards/public" | wc -c)
 echo "ROOT_CODE=$ROOT_CODE"
 echo "ROOT_LOC=$ROOT_LOC"
 echo "PUB_CODE=$PUB_CODE"
