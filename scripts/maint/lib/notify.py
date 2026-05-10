@@ -59,6 +59,24 @@ def _try_read_webhook_url() -> Optional[str]:
     return None
 
 
+# Levels that should ping the operator. Embeds alone don't trigger a Discord
+# push notification — the user mention has to be in the `content` field.
+_OPERATOR_MENTION_LEVELS = {"error", "critical"}
+
+
+def _operator_id() -> Optional[str]:
+    """Discord user ID to ping for operator-needed events. Numeric snowflake
+    in secrets/discord-operator.id, or None if not configured."""
+    path = _secrets_dir() / "discord-operator.id"
+    try:
+        val = path.read_text(encoding="utf-8").strip()
+        if val.isdigit():
+            return val
+    except FileNotFoundError:
+        pass
+    return None
+
+
 def _post_discord(webhook_url: str, message: str, level: str) -> tuple[bool, str]:
     """POST a Discord-shaped embed payload directly to a webhook URL.
     Returns (ok, error_msg). Never raises."""
@@ -71,6 +89,11 @@ def _post_discord(webhook_url: str, message: str, level: str) -> tuple[bool, str
             "color": color,
         }],
     }
+    if level in _OPERATOR_MENTION_LEVELS:
+        op_id = _operator_id()
+        if op_id:
+            payload["content"] = f"<@{op_id}>"
+            payload["allowed_mentions"] = {"users": [op_id]}
     try:
         resp = requests.post(webhook_url, json=payload, timeout=5)
         resp.raise_for_status()
@@ -93,8 +116,15 @@ def _secrets_dir() -> Path:
     env = os.environ.get("MANITOBA_SECRETS_DIR")
     if env:
         return Path(env)
-    repo_root = Path(__file__).parent.parent.parent.parent
-    return repo_root / "secrets"
+    # Repo-style layout (file at <repo>/scripts/maint/lib/notify.py): secrets
+    # is two more levels up. On the seedbox, only scripts/maint is synced —
+    # not the whole repo — so the repo-relative path resolves to /home which
+    # has no secrets/. Fall back to ~/secrets in that case.
+    repo_root_guess = Path(__file__).parent.parent.parent.parent
+    repo_secrets = repo_root_guess / "secrets"
+    if repo_secrets.is_dir():
+        return repo_secrets
+    return Path.home() / "secrets"
 
 
 def _state_dir() -> Path:
