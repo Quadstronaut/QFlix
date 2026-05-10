@@ -5,6 +5,43 @@ entry captures: when, what, why, how to reverse. New entries on top.
 
 ---
 
+## 2026-05-10 — Conjurr + Newsletterr retired → qflix-newsletter (Path B)
+
+**Action:** introduced `scripts/qflix-newsletter/` (standalone Python
+package, Jinja2 + Tautulli + arr-calendar + Gemini + Listmonk campaign
+API). Deployed via `scripts/configure/49-qflix-newsletter-install.sh`
+to `~/.apps/qflix-newsletter/` with a Mon-08:00 systemd timer
+(`scripts/maint/systemd/qflix-newsletter.{service,timer}`).
+Decommissioned Conjurr + Newsletterr in `49b-conjurr-newsletterr-decom.sh`:
+stop+disable+remove `conjurr.service`/`newsletterr.service`,
+`rm -rf ~/.apps/{conjurr,newsletterr}`, drop heartbeat-conjurr/newsletterr
+crons + scripts, drop `listmonk-to-newsletterr-sync.py` (no longer
+needed). Manifest now has a single `qflix-newsletter` entry (cron-class,
+Kuma monitor "Qflix Newsletter") in place of two.
+
+**Why:** Both apps' missions collapse into one (weekly digest with
+optional AI picks). Single Python script removes ~150 MB of Playwright
+Chromium (Newsletterr) plus the duplicate Flask/HTTP surface, and lets
+us own the email layout end-to-end (Pick of Week → New Movies → New TV
+→ Anime → Coming Soon → AI Picks at bottom → Nerd Corner). See
+`project_qflix-newsletter-replaces-conjurr-newsletterr.md`.
+
+**Rollback:** restore from git: `git revert <this-commit>`, re-run
+`scripts/configure/47-conjurr-install.sh` and `48-newsletterr-install.sh`,
+re-add manifest entries, re-run `bootstrap-kuma-monitors.py`. Cutover
+email is the smoke test — until that send happens, Listmonk + the
+script remain the only validated pieces.
+
+**Followups landing later:**
+- The first real-world send (the cutover email itself) doubles as the
+  smoke test for the new pipeline. If subscribers don't render correctly,
+  fix forward — don't roll back.
+- Custom Listmonk admin/public CSS pasted into Settings → Appearance is
+  imperfect (sidebar+title selectors didn't fully apply). Tracked in
+  `project_listmonk-css-imperfect-2026-05-10.md`; revisit when convenient.
+
+---
+
 ## 2026-05-10 — Jellyfin + Jellystat purged (Plex-only direction)
 
 **Action:** uninstalled both apps via `app-jellyfin uninstall` and

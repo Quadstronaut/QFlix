@@ -1,0 +1,11 @@
+[Unit]
+Description=Qflix weekly newsletter (Tautulli + Gemini + Listmonk)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.apps/qflix-newsletter
+ExecStart=%h/.apps/qflix-newsletter/.venv/bin/python -m qflix_newsletter
+StandardOutput=append:%h/.apps/qflix-newsletter/logs/qflix-newsletter.log
+StandardError=append:%h/.apps/qflix-newsletter/logs/qflix-newsletter.err
