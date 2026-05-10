@@ -19,7 +19,10 @@ for APP in conjurr newsletterr; do
         rm -f ~/.config/systemd/user/${APP}.service; \
         systemctl --user daemon-reload"
 
-  # Remove the install tree (this also drops Playwright's chromium for newsletterr)
+  # Remove the install tree. Playwright's browser cache lives at
+  # ~/.cache/ms-playwright/ and is shared across apps — handled separately
+  # below so we don't accidentally drop Firefox (which cp_upgrade_clicker
+  # uses for the Mon-04:30 maintenance window).
   sshm "rm -rf ~/.apps/${APP}"
 
   # Drop heartbeat cron line + the heartbeat script itself
@@ -37,6 +40,12 @@ sshm '/usr/sbin/nginx -p ~/.apps/nginx/ -c nginx.conf -t && systemctl --user rel
 # Drop the listmonk → newsletterr DB sync cron + script (Newsletterr is gone)
 sshm "(crontab -l 2>/dev/null | grep -v 'listmonk-to-newsletterr-sync') | crontab - 2>/dev/null || true; \
       rm -f ~/scripts/ops/listmonk-to-newsletterr-sync.py"
+
+# Drop Newsletterr's orphaned Playwright Chromium browser caches.
+# Newsletterr was the only Chromium consumer; cp_upgrade_clicker uses Firefox
+# (Chromium SIGTRAPs under Ultra.cc's seccomp filter — see
+# project_cp-ultra-cc-automation memory). Frees ~620 MB.
+sshm 'rm -rf ~/.cache/ms-playwright/chromium-* ~/.cache/ms-playwright/chromium_headless_shell-*'
 
 log_info "Phase 24b complete — Conjurr + Newsletterr removed"
 log_info "Re-run scripts/maint/bootstrap-kuma-monitors.py to drop the orphaned Kuma monitors"
