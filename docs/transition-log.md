@@ -5,6 +5,41 @@ entry captures: when, what, why, how to reverse. New entries on top.
 
 ---
 
+## 2026-05-10 — Phase 4 public/internal audit applied
+
+**Action:** wrote `docs/internal-app-tunnels.md` cataloguing the
+public/internal split per the kickoff and giving exact `ssh -L` commands
+for every INTERNAL app's admin port. Updated the operator's permanent
+tunnel daemon at `~/Documents/GIT/QFlix/scripts/manitoba-tunnel.ps1`:
+removed the now-decom'd conjurr (42015) + newsletterr (42016) +
+jellystat (42008) entries; added qbittorrent (17041) for fast remote
+control; bumped `$CanonicalProbePort` from `42015` (conjurr — gone)
+to `42014` (listmonk — always-on systemd, validated through the tunnel
+during Phase 2.0 smoke); kept `42015` reserved with a comment about
+its staging for Profilarr (deferred). `Stop-StaleTunnels` updated to
+match the new canonical port pattern.
+
+**Why:** the operator's Phase 2.0 smoke validated that the SSH-tunnel
++ root-mount-on-localhost pattern works perfectly for SPA admin UIs
+(Listmonk specifically). That same pattern is the right answer for
+every modern *arr/admin SPA without subpath middleware (Sonarr,
+Maintainerr, Tdarr, etc.). Documenting it explicitly in
+`internal-app-tunnels.md` gives operators a single place to look up
+the right tunnel command and stops the next session from re-deriving
+the same pattern from scratch.
+
+**Open question:** Jellyseerr's nginx fragment does NOT have
+`auth_basic off`, so the outer-nginx htpasswd is in effect — but the
+kickoff lists Jellyseerr as PUBLIC. Either operator has been sharing
+the htpasswd with user-friends (works, but security smell), or a
+single-line change is missing. Documented at the top of
+`internal-app-tunnels.md` as a question for the next session.
+
+**Rollback:** revert this commit; the tunnel daemon will revert to
+its conjurr-canonical state, the doc disappears.
+
+---
+
 ## 2026-05-10 — Phase 3 app sweep: 1 installed, 4 deferred/parked
 
 **Action:** evaluated 5 new apps for install (Suggestarr, Buildarr,
