@@ -73,9 +73,16 @@ no-htpasswd path that the *arr stack uses internally for API calls.
 
 ## Maintainerr caveat
 
-Maintainerr is currently **stopped** (`app-maintainerr stop`) per
-operator policy — running it advertises a UCC subdomain. Restart with
-`app-maintainerr start` before tunneling.
+Maintainerr is **running** as a UCC-managed app (port 42007), reachable
+both via tunnel (`localhost:42007`) AND via the per-app UCC subdomain
+`https://maintainerr-quadstronaut.<fqdn>/` (htpasswd-gated). It's
+listed as INTERNAL in the audit because the right place for admin
+work is the tunnel — the per-app subdomain is an Ultra.cc artifact
+that's harder to lock down.
+
+(A stale comment in `manitoba-tunnel.ps1` claimed it was "stopped";
+that was inaccurate and has been corrected. Maintainerr has been
+running continuously.)
 
 ## How the permanent tunnel daemon picks ports
 

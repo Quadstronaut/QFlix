@@ -10,8 +10,12 @@ source "$ROOT/scripts/lib/ssh.sh"
 RES=$(sshm '
 HTPW=$(cat ~/secrets/htpasswd.password)
 MTKEY=$(cat ~/secrets/maintainerr.key)
+PUBLIC_HOST=$(cat ~/secrets/seedbox.host 2>/dev/null || echo "quadstronaut.seedbox.example.com")
+USERPART=${PUBLIC_HOST%%.*}
+DOMAIN=${PUBLIC_HOST#*.}
+MT_HOST="maintainerr-${USERPART}.${DOMAIN}"
 BASIC=$(printf "quadstronaut:%s" "$HTPW" | base64 -w0)
-RULES=$(curl -sk -m 5 -H "X-Api-Key: $MTKEY" -H "Authorization: Basic $BASIC" https://maintainerr-quadstronaut.seedbox.example.com/api/rules)
+RULES=$(curl -sk -m 5 -H "X-Api-Key: $MTKEY" -H "Authorization: Basic $BASIC" "https://${MT_HOST}/api/rules")
 echo "$RULES" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)

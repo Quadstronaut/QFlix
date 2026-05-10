@@ -124,17 +124,14 @@ for tgt in komga kavita audiobookshelf; do
   fi
 done
 
-# 11. Maintainerr API alive (skip if Maintainerr is parked/stopped)
+# 11. Maintainerr API alive
 echo "11. Maintainerr"
 MT_KEY=$(secret_read maintainerr.key 2>/dev/null || echo "")
 HTPW=$(secret_read htpasswd.password 2>/dev/null || echo "")
 USERPART="${PUBLIC_HOST%%.*}"
 DOMAIN="${PUBLIC_HOST#*.}"
 MT_HOST="maintainerr-${USERPART}.${DOMAIN}"
-MT_RUNNING=$(sshm "systemctl --user is-active maintainerr.service 2>/dev/null" 2>/dev/null || echo "inactive")
-if [ "$MT_RUNNING" != "active" ]; then
-  record "maintainerr-api" skip "service stopped (per operator policy — \`app-maintainerr start\` to use)"
-elif [ -n "$MT_KEY" ] && [ -n "$HTPW" ]; then
+if [ -n "$MT_KEY" ] && [ -n "$HTPW" ]; then
   CODE=$(curl -sk -m 10 -u "quadstronaut:$HTPW" -H "X-Api-Key: $MT_KEY" -o /dev/null -w "%{http_code}" "https://${MT_HOST}/api/settings" 2>/dev/null)
   if [ "$CODE" = "200" ]; then
     SC=$(curl -sk -m 10 -u "quadstronaut:$HTPW" -H "X-Api-Key: $MT_KEY" "https://${MT_HOST}/api/settings/sonarr" 2>/dev/null | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null)
@@ -365,13 +362,7 @@ fi
 # 15. Phase-15 canaries (movie / anime / deletion / mobile-ux)
 echo "15. Phase-15 canaries"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# canary-deletion depends on Maintainerr's API; skip when Maintainerr is parked.
-MT_RUNNING=$(sshm "systemctl --user is-active maintainerr.service 2>/dev/null" 2>/dev/null || echo "inactive")
 for canary in movie anime deletion mobile-ux; do
-  if [ "$canary" = "deletion" ] && [ "$MT_RUNNING" != "active" ]; then
-    record "canary-$canary" skip "maintainerr.service is parked — \`app-maintainerr start\` to test"
-    continue
-  fi
   if bash "$HERE/canaries/$canary.sh" >/dev/null 2>&1; then
     record "canary-$canary" pass
   else
