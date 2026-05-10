@@ -69,19 +69,6 @@ apps:
       urlbase_secret: radarr2.urlbase
       expect_status: 200
 
-  readarr:
-    class: ucc
-    ucc_slug: readarr
-    kuma_monitor: "Readarr"
-    health:
-      kind: http_api
-      path_template: "/{urlbase}/api/v1/system/status"
-      auth_header: "X-Api-Key"
-      auth_secret: readarr.key
-      port_secret: readarr.port
-      urlbase_secret: readarr.urlbase
-      expect_status: 200
-
   prowlarr:
     class: ucc
     ucc_slug: prowlarr
@@ -191,19 +178,6 @@ apps:
       port_secret: calibre-web.port
       expect_status: 200
 
-  mylar3:
-    class: ucc
-    ucc_slug: mylar3
-    kuma_monitor: "Mylar3"
-    health:
-      kind: http_api
-      path_template: "/{urlbase}/api/v1/system/status"
-      auth_header: "apikey"
-      auth_secret: mylar3.key
-      port_secret: mylar3.port
-      urlbase_secret: mylar3.urlbase
-      expect_status: 200
-
   homarr:
     class: ucc
     ucc_slug: homarr
@@ -236,21 +210,35 @@ apps:
       basic_auth_user: "quadstronaut"
       basic_auth_secret: "htpasswd.password"
 
-  ombi:
-    # Currently stopped (parked pending Wizarr-alternative for invites).
-    # Monitor is here so we get visibility if/when ombi is restarted.
-    # parked=true tells the pusher's auto-heal NOT to restart ombi when its
-    # health probe fails — being down is the intended state.
+  unpackerr:
+    # Auto-extracts completed archives from qBittorrent for the *arr stack.
+    # Runs as a Docker-wrapped UCC app (`/app/unpackerr -c /config/unpackerr.conf`).
+    # No HTTP surface and no user systemd unit (UCC runs it under supervisord);
+    # liveness is asserted by smoke-test.sh section 8 (`ps -ef | grep /app/unpackerr`).
+    # kuma_monitor stays null because the pusher has no probe kind that matches
+    # raw-process supervision — adding one is a future maintenance-system bump.
     class: ucc
-    ucc_slug: ombi
-    kuma_monitor: "Ombi"
-    parked: true
+    ucc_slug: unpackerr
+    kuma_monitor: null
     health:
-      kind: http_root
-      port_secret: ombi.port
-      expect_status: 200
+      kind: process_pattern
+      pattern: "/app/unpackerr"
 
   # --- systemd apps (managed by systemctl --user) ---
+
+  postgres:
+    # Database backend for Listmonk (the only consumer in this stack).
+    # UCC runs Postgres under supervisord, not a user systemd unit, so we
+    # can't probe it via systemctl. Health is covered transitively: if
+    # Postgres dies, Listmonk's /health returns false and its monitor
+    # goes red — that's the operator-actionable signal.
+    class: ucc
+    ucc_slug: postgres
+    kuma_monitor: null
+    health:
+      kind: process_pattern
+      pattern: "postgres: checkpointer"
+
 
   listmonk:
     class: systemd
@@ -335,6 +323,16 @@ apps:
     class: cron
     unit: buildarr.timer
     kuma_monitor: "Buildarr"
+    health:
+      kind: systemd_only
+      expect: active
+
+  upgradinatorr:
+    # Re-searches stale *arr grabs across sonarr/sonarr2/radarr/radarr2.
+    # Runs weekly Sun 06:04 via upgradinatorr.timer. ExecStart fans out per app.
+    class: cron
+    unit: upgradinatorr.timer
+    kuma_monitor: "Upgradinatorr"
     health:
       kind: systemd_only
       expect: active
