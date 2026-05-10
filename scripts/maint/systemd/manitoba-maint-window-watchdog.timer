@@ -1,0 +1,12 @@
+[Unit]
+Description=Manitoba maintenance — window watchdog timer (Mon 15:00 UTC)
+
+[Timer]
+# Fires at the end of the 4h window. If the window orchestrator crashed
+# mid-run, the lockfile leaks; the watchdog removes it.
+OnCalendar=Mon *-*-* 15:00:00 UTC
+Persistent=true
+Unit=manitoba-maint-window-watchdog.service
+
+[Install]
+WantedBy=timers.target

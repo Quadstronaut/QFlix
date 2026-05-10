@@ -1,0 +1,386 @@
+defaults:
+  health_timeout_s: 5
+  recovery_attempts: 3
+  recovery_backoff_s: [10, 30, 60]
+  lifecycle_timeout_s: 60
+  notifiarr_channel: "#notifiarr"
+  kuma_recheck_delay_s: 90
+
+apps:
+
+  # --- UCC apps (managed by Ultra.cc app-<slug> commands) ---
+
+  sonarr:
+    class: ucc
+    ucc_slug: sonarr
+    kuma_monitor: "Sonarr"
+    health:
+      kind: http_api
+      path_template: "/{urlbase}/api/v3/system/status"
+      auth_header: "X-Api-Key"
+      auth_secret: sonarr.key
+      port_secret: sonarr.port
+      urlbase_secret: sonarr.urlbase
+      expect_status: 200
+
+  sonarr2:
+    class: ucc
+    ucc_slug: sonarr2
+    kuma_monitor: "Sonarr Anime"
+    health:
+      kind: http_api
+      path_template: "/{urlbase}/api/v3/system/status"
+      auth_header: "X-Api-Key"
+      auth_secret: sonarr2.key
+      port_secret: sonarr2.port
+      urlbase_secret: sonarr2.urlbase
+      expect_status: 200
+
+  radarr:
+    class: ucc
+    ucc_slug: radarr
+    kuma_monitor: "Radarr"
+    health:
+      kind: http_api
+      path_template: "/{urlbase}/api/v3/system/status"
+      auth_header: "X-Api-Key"
+      auth_secret: radarr.key
+      port_secret: radarr.port
+      urlbase_secret: radarr.urlbase
+      expect_status: 200
+
+  radarr2:
+    class: ucc
+    ucc_slug: radarr2
+    kuma_monitor: "Radarr 2"
+    health:
+      kind: http_api
+      path_template: "/{urlbase}/api/v3/system/status"
+      auth_header: "X-Api-Key"
+      auth_secret: radarr2.key
+      port_secret: radarr2.port
+      urlbase_secret: radarr2.urlbase
+      expect_status: 200
+
+  readarr:
+    class: ucc
+    ucc_slug: readarr
+    kuma_monitor: "Readarr"
+    health:
+      kind: http_api
+      path_template: "/{urlbase}/api/v1/system/status"
+      auth_header: "X-Api-Key"
+      auth_secret: readarr.key
+      port_secret: readarr.port
+      urlbase_secret: readarr.urlbase
+      expect_status: 200
+
+  prowlarr:
+    class: ucc
+    ucc_slug: prowlarr
+    kuma_monitor: "Prowlarr"
+    health:
+      kind: http_api
+      path_template: "/{urlbase}/api/v1/system/status"
+      auth_header: "X-Api-Key"
+      auth_secret: prowlarr.key
+      port_secret: prowlarr.port
+      urlbase_secret: prowlarr.urlbase
+      expect_status: 200
+
+  bazarr:
+    class: ucc
+    ucc_slug: bazarr
+    kuma_monitor: "Bazarr"
+    health:
+      kind: http_api
+      path_template: "/{urlbase}/api/system/status"
+      auth_header: "X-Api-Key"
+      auth_secret: bazarr.key
+      port_secret: bazarr.port
+      urlbase_secret: bazarr.urlbase
+      expect_status: 200
+
+  qbittorrent:
+    class: ucc
+    ucc_slug: qbittorrent
+    kuma_monitor: "qBittorrent"
+    health:
+      kind: http_root
+      port_secret: qbittorrent.port
+      expect_status: 200
+
+  plex:
+    # Plex is the canonical media server (per project_plex-primary-jellyfin-trial).
+    # /identity returns 200 + a MediaContainer XML without auth — perfect liveness probe.
+    class: ucc
+    ucc_slug: plex
+    kuma_monitor: "Plex"
+    health:
+      kind: http_root
+      port_secret: plex.port
+      path_override: "/identity"
+      expect_status: 200
+
+  jellyseerr:
+    class: ucc
+    ucc_slug: jellyseerr
+    kuma_monitor: "Jellyseerr"
+    health:
+      kind: http_api
+      path_template: "/api/v1/status"
+      auth_header: "X-Api-Key"
+      auth_secret: jellyseerr.key
+      port_secret: jellyseerr.port
+      expect_status: 200
+
+  tautulli:
+    class: ucc
+    ucc_slug: tautulli
+    kuma_monitor: "Tautulli"
+    health:
+      kind: http_root
+      port_secret: tautulli.port
+      expect_status: 200
+
+  audiobookshelf:
+    class: ucc
+    ucc_slug: audiobookshelf
+    kuma_monitor: "Audiobookshelf"
+    health:
+      kind: http_root
+      port_secret: audiobookshelf.port
+      path_override: "/healthcheck"
+      expect_status: 200
+
+  kavita:
+    class: ucc
+    ucc_slug: kavita
+    kuma_monitor: "Kavita"
+    health:
+      kind: http_api
+      path_template: "/api/health"
+      auth_header: "Authorization"
+      auth_secret: kavita.key
+      port_secret: kavita.port
+      expect_status: 200
+
+  komga:
+    class: ucc
+    ucc_slug: komga
+    kuma_monitor: "Komga"
+    health:
+      kind: http_root
+      port_secret: komga.port
+      path_override: "/komga/"
+      expect_status: 200
+
+  calibre-web:
+    class: ucc
+    ucc_slug: calibre-web
+    kuma_monitor: "Calibre-Web"
+    health:
+      kind: http_root
+      port_secret: calibre-web.port
+      expect_status: 200
+
+  mylar3:
+    class: ucc
+    ucc_slug: mylar3
+    kuma_monitor: "Mylar3"
+    health:
+      kind: http_api
+      path_template: "/{urlbase}/api/v1/system/status"
+      auth_header: "apikey"
+      auth_secret: mylar3.key
+      port_secret: mylar3.port
+      urlbase_secret: mylar3.urlbase
+      expect_status: 200
+
+  homarr:
+    class: ucc
+    ucc_slug: homarr
+    kuma_monitor: "Homarr"
+    health:
+      kind: http_root
+      port_secret: homarr.port
+      expect_status: 200
+
+  flaresolverr:
+    class: ucc
+    ucc_slug: flaresolverr
+    kuma_monitor: null
+    health:
+      kind: http_root
+      port_secret: flaresolverr.port
+      expect_status: 200
+
+  maintainerr:
+    class: ucc
+    ucc_slug: maintainerr
+    kuma_monitor: "Maintainerr"
+    health:
+      kind: http_api
+      path_template: "/api/settings"
+      auth_header: "X-Api-Key"
+      auth_secret: maintainerr.key
+      port_secret: maintainerr.port
+      expect_status: 200
+      basic_auth_user: "quadstronaut"
+      basic_auth_secret: "htpasswd.password"
+
+  ombi:
+    # Currently stopped (parked pending Wizarr-alternative for invites).
+    # Monitor is here so we get visibility if/when ombi is restarted.
+    # parked=true tells the pusher's auto-heal NOT to restart ombi when its
+    # health probe fails — being down is the intended state.
+    class: ucc
+    ucc_slug: ombi
+    kuma_monitor: "Ombi"
+    parked: true
+    health:
+      kind: http_root
+      port_secret: ombi.port
+      expect_status: 200
+
+  # --- systemd apps (managed by systemctl --user) ---
+
+  listmonk:
+    class: systemd
+    unit: listmonk.service
+    kuma_monitor: "Listmonk"
+    health:
+      kind: http_root
+      port_secret: listmonk.port
+      expect_status: 200
+    upgrade:
+      kind: tarball_swap
+      url_template: "https://github.com/knadh/listmonk/releases/download/v{version}/listmonk_v{version}_linux_amd64.tar.gz"
+      target_path: "~/.apps/listmonk/bin/listmonk"
+      post_steps:
+        - "~/.apps/listmonk/bin/listmonk --install --idempotent --yes"
+
+  conjurr:
+    class: systemd
+    unit: conjurr.service
+    kuma_monitor: "Conjurr"
+    health:
+      kind: http_root
+      port_source: "env_file:~/.apps/conjurr/repo/env/.env:PORT"
+      expect_status: 200
+    upgrade:
+      kind: git_checkout
+      repo_path: "~/.apps/conjurr/repo"
+      post_steps:
+        - "cd ~/.apps/conjurr/repo && .venv/bin/pip install -r requirements.txt"
+
+  newsletterr:
+    class: systemd
+    unit: newsletterr.service
+    kuma_monitor: "Newsletterr"
+    health:
+      kind: http_root
+      port_source: "env_file:~/.apps/newsletterr/repo/env/.env:PORT"
+      expect_status: 200
+    upgrade:
+      kind: git_checkout
+      repo_path: "~/.apps/newsletterr/repo"
+      post_steps:
+        - "cd ~/.apps/newsletterr/repo && .venv/bin/pip install -r requirements.txt"
+        - "cd ~/.apps/newsletterr/repo && .venv/bin/playwright install chromium --if-missing"
+
+  tdarr-server:
+    class: systemd
+    unit: tdarr-server.service
+    kuma_monitor: "Tdarr"
+    health:
+      kind: http_api
+      path_template: "/api/v2/status"
+      port_source: "json_file:~/.apps/tdarr/configs/Tdarr_Server_Config.json:serverPort"
+      expect_status: 200
+    upgrade:
+      kind: zip_swap
+      url_template: "https://storage.tdarr.io/versions/{version}/linux_x64/Tdarr_Server.zip"
+      target_dir: "~/.apps/tdarr/Tdarr_Server"
+      version_pin:
+        source: versions.env
+        key: TDARR_VERSION
+        max: "2.17.01"
+        max_reason: "GLIBC 2.34 required, host has 2.31"
+
+  tdarr-node:
+    class: systemd
+    unit: tdarr-node.service
+    kuma_monitor: null
+    health:
+      kind: systemd_only
+      expect: active
+    upgrade:
+      kind: zip_swap
+      url_template: "https://storage.tdarr.io/versions/{version}/linux_x64/Tdarr_Node.zip"
+      target_dir: "~/.apps/tdarr/Tdarr_Node"
+      version_pin:
+        source: versions.env
+        key: TDARR_VERSION
+        max: "2.17.01"
+        max_reason: "GLIBC 2.34 required, host has 2.31"
+
+  # --- cron apps (timer-driven, no lifecycle start/stop) ---
+
+  recyclarr:
+    class: cron
+    unit: recyclarr.timer
+    kuma_monitor: "Recyclarr"
+    health:
+      kind: systemd_only
+      expect: active
+    upgrade:
+      kind: tarball_swap
+      url_template: "https://github.com/recyclarr/recyclarr/releases/download/{version}/recyclarr-linux-x64.tar.xz"
+      target_path: "~/.apps/recyclarr/bin/recyclarr"
+
+  kometa:
+    class: cron
+    unit: kometa.timer
+    kuma_monitor: null
+    health:
+      kind: systemd_only
+      expect: active
+    upgrade:
+      kind: git_checkout
+      repo_path: "~/.apps/kometa/repo"
+      post_steps:
+        - "cd ~/.apps/kometa/repo && .venv/bin/pip install -r requirements.txt"
+
+  # --- library apps (no service, no lifecycle) ---
+
+  python-plexapi:
+    class: library
+    unit: null
+    kuma_monitor: null
+    health:
+      kind: import_check
+      venv_python: "~/.apps/python-plexapi/venv/bin/python"
+      module: "plexapi"
+    upgrade:
+      kind: pip_install
+      venv_python: "~/.apps/python-plexapi/venv/bin/python"
+      package: "plexapi"
+
+canaries:
+  movie:
+    kuma_monitor: "Canary Movie"
+    script: "scripts/canaries/movie.sh"
+    schedule: "hourly"
+  anime:
+    kuma_monitor: "Canary Anime"
+    script: "scripts/canaries/anime.sh"
+    schedule: "hourly"
+  deletion:
+    kuma_monitor: "Canary Deletion"
+    script: "scripts/canaries/deletion.sh"
+    schedule: "daily-0430"
+  mobile-ux:
+    kuma_monitor: "Canary Mobile-UX"
+    script: "scripts/canaries/mobile-ux.sh"
+    schedule: "every-15min"

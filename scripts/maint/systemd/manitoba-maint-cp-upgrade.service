@@ -1,0 +1,10 @@
+[Unit]
+Description=Manitoba maintenance — cp.ultra.cc Upgrade & Repair sweep
+After=network-online.target manitoba-maint-window.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.apps/newsletterr/repo/.venv/bin/python %h/scripts/maint/cp_upgrade_clicker.py
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=14400

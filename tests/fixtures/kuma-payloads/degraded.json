@@ -1,0 +1,18 @@
+{
+  "heartbeat": {
+    "monitorID": 2,
+    "status": 2,
+    "time": "2026-05-09T04:10:00.000Z",
+    "msg": "pending",
+    "important": false,
+    "duration": 0
+  },
+  "monitor": {
+    "id": 2,
+    "name": "Radarr",
+    "url": "http://127.0.0.1:7878/radarr/api/v3/system/status",
+    "type": "http",
+    "interval": 60
+  },
+  "msg": "[Radarr] [⏳ Pending] pending"
+}

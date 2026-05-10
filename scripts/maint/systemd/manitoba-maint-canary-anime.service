@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — anime pipeline (Jellyseerr → Sonarr2)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push anime
+StandardOutput=journal
+StandardError=journal

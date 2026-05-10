@@ -1,0 +1,16 @@
+defaults:
+  health_timeout_s: 5
+  recovery_attempts: 3
+  recovery_backoff_s: [10, 30, 60]
+  lifecycle_timeout_s: 60
+  kuma_recheck_delay_s: 90
+
+apps:
+  sonarr:
+    class: bogus
+    ucc_slug: sonarr
+    kuma_monitor: "Sonarr"
+    health:
+      kind: http_api
+      port_secret: sonarr.port
+      expect_status: 200

@@ -1,0 +1,15 @@
+[Unit]
+Description=Manitoba maintenance — Kuma push-loop (host netns → Kuma /api/push)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/scripts/maint/manitoba-maint pusher
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

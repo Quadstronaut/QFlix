@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Create Maintainerr 60-day deletion rules for Plex libraries.
+
+Spec §7.1/§7.2: 60 days from add, 14-day warning, daily run, delete via *arr.
+Plex has only Movies + TV Shows libraries (Anime is Jellyfin-only and unreachable
+by this Maintainerr deployment).
+"""
+import json, os, ssl, urllib.request, urllib.error
+
+BASE = "https://maintainerr-quadstronaut.seedbox.example.com"
+HTPW = os.environ["HTPW"]
+MTKEY = os.environ["MTKEY"]
+
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+
+import base64
+basic = base64.b64encode(f"quadstronaut:{HTPW}".encode()).decode()
+
+
+def req(path, method="GET", body=None):
+    h = {"X-Api-Key": MTKEY, "Authorization": f"Basic {basic}"}
+    data = None
+    if body is not None:
+        h["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    r = urllib.request.Request(f"{BASE}{path}", data=data, method=method, headers=h)
+    try:
+        with urllib.request.urlopen(r, context=ctx, timeout=30) as resp:
+            t = resp.read().decode()
+            return resp.status, (json.loads(t) if t else None)
+    except urllib.error.HTTPError as e:
+        b = e.read().decode()
+        try:
+            return e.code, json.loads(b)
+        except Exception:
+            return e.code, b
+
+
+# Verify libraries first
+code, libs = req("/api/plex/libraries")
+print(f"Libraries fetch: HTTP {code}")
+if code != 200:
+    raise SystemExit(f"can't proceed — libraries={libs!r}")
+print(f"  {len(libs)} libraries: {[(l['key'], l['title'], l['type']) for l in libs]}")
+
+# Existing rule groups (idempotency)
+code, existing = req("/api/rules")
+existing_names = {g.get("name") for g in (existing or [])}
+print(f"Existing rule groups: {existing_names or '(none)'}")
+
+# Build per-library rule definitions
+# - 60 days total retention: enter collection at day 46 (rule trigger: addDate older than 46d)
+# - deleteAfterDays=14 → 14 days after entering, removed → day 60
+# - daily cron schedule
+DAYS_THRESHOLD = 46   # warning starts here
+DAYS_IN_COLLECTION = 14
+THRESHOLD_SECONDS = DAYS_THRESHOLD * 86400
+
+# rule: Plex.addDate BEFORE (now - 46d)
+# firstVal = [Application.PLEX=0, addDate prop id=0]
+# action = RulePossibility.BEFORE = 5
+# customVal = { ruleTypeId: NUMBER (key '0'), value: '<seconds>' }
+RULE = {
+    "operator": None,        # first rule has no logical operator
+    "action": 5,             # BEFORE
+    "section": 0,
+    "firstVal": [0, 0],      # PLEX, addDate
+    "customVal": {"ruleTypeId": 0, "value": str(THRESHOLD_SECONDS)},
+}
+
+# Map Plex library type to default *arr instance + dataType
+TARGETS = {
+    "movie": {"radarrSettingsId": 1, "sonarrSettingsId": None, "dataType": "movie"},
+    "show":  {"radarrSettingsId": None, "sonarrSettingsId": 1, "dataType": "show"},
+}
+
+# Per-library-title overrides: anime libraries route to the Sonarr2/Radarr2
+# instances (anime branch). Maintainerr Settings ids: 1 = primary, 2 = anime.
+NAME_OVERRIDES = {
+    "Anime":        {"radarrSettingsId": None, "sonarrSettingsId": 2, "dataType": "show"},
+    "Anime Movies": {"radarrSettingsId": 2,    "sonarrSettingsId": None, "dataType": "movie"},
+}
+
+for lib in libs:
+    lib_type = lib["type"]   # 'movie' or 'show'
+    lib_key = str(lib["key"])
+    title = lib["title"]
+    name = f"{title}-60d"
+
+    if name in existing_names:
+        print(f"  [skip] '{name}' already exists")
+        continue
+
+    target = NAME_OVERRIDES.get(title) or TARGETS.get(lib_type)
+    if not target:
+        print(f"  [skip] '{title}' unknown type {lib_type}")
+        continue
+
+    body = {
+        "libraryId": lib_key,
+        "name": name,
+        "description": f"Auto-delete items added more than 60 days ago (warns at day {DAYS_THRESHOLD})",
+        "isActive": True,
+        "arrAction": 0,                       # DELETE
+        "useRules": True,
+        "ruleHandlerCronSchedule": "0 4 * * *",  # daily 04:00
+        "collection": {
+            "visibleOnRecommended": False,
+            "visibleOnHome": False,
+            "deleteAfterDays": DAYS_IN_COLLECTION,
+            "manualCollection": False,
+            "manualCollectionName": "",
+            "keepLogsForMonths": 6,
+            "sortTitle": None,
+            "overlayEnabled": False,
+            "overlayTemplateId": None,
+        },
+        "listExclusions": False,
+        "forceSeerr": False,                  # mark as deleted in Jellyseerr → re-requestable
+        "rules": [RULE],
+        "dataType": target["dataType"],
+        "tautulliWatchedPercentOverride": None,
+        "notifications": [],
+        "radarrSettingsId": target["radarrSettingsId"],
+        "sonarrSettingsId": target["sonarrSettingsId"],
+        "radarrQualityProfileId": None,
+        "sonarrQualityProfileId": None,
+    }
+
+    code, resp = req("/api/rules", method="POST", body=body)
+    if code in (200, 201) and (resp is None or resp.get("code") == 1):
+        print(f"  [ok] '{name}' created — lib={lib_key}, action=DELETE, schedule=daily-04:00")
+    else:
+        print(f"  [FAIL] '{name}' HTTP {code}: {str(resp)[:200]}")
+
+# Final state
+code, final = req("/api/rules")
+print(f"\nRule groups total: {len(final or [])}")
+for g in (final or []):
+    print(f"  - {g.get('name')} (id={g.get('id')}, lib={g.get('libraryId')}, active={g.get('isActive')})")

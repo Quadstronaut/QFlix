@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — movie pipeline (Jellyseerr → Radarr)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push movie
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,12 @@
+[Unit]
+Description=Manitoba maintenance — weekly cp.ultra.cc upgrade sweep
+# Fires Monday 04:30 — 30 min after manitoba-maint-window opens at 04:00.
+# Window holds the lock so any auto-recovery is queued, then drained at
+# window close.
+
+[Timer]
+OnCalendar=Mon *-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

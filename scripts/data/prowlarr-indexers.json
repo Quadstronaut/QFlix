@@ -1,0 +1,14 @@
+{
+  "general": [
+    "1337x", "BitSearch", "EZTV", "Glodls", "Internet Archive",
+    "IsoHunt2", "KickassTorrents", "LimeTorrents", "Solid Torrents",
+    "ShowRSS", "The Pirate Bay", "TheRARBG", "TorrentDownload",
+    "TorrentDownloads", "TorrentGalaxy", "YTS"
+  ],
+  "anime": [
+    "Nyaa.si", "AniDex", "Tokyo Toshokan", "ShanaProject", "subsplease"
+  ],
+  "needs_flaresolverr": [
+    "TorrentGalaxy", "1337x"
+  ]
+}

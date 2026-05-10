@@ -1,0 +1,16 @@
+[Unit]
+Description=Manitoba maintenance — Kuma webhook receiver (loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/scripts/maint/manitoba-maint webhook
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+# Phase-1 design: webhook binds to 127.0.0.1 only, never exposed via nginx.
+
+[Install]
+WantedBy=default.target
