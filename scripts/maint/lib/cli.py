@@ -602,6 +602,10 @@ def _cmd_kuma_audit(args, manifest) -> int:
         print("\nOrphaned in Kuma (not in manifest):")
         for m in report["kuma_only"]:
             print(f"  - {m}")
+    if report.get("external_ignored"):
+        print("\nIgnored (declared external in manifest):")
+        for m in report["external_ignored"]:
+            print(f"  - {m}")
     if not report["manifest_only"] and not report["kuma_only"]:
         print("\nno drift — manifest and Kuma agree.")
         return 0
