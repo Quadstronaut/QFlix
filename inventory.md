@@ -175,17 +175,20 @@ seedbox disagree, the live seedbox wins and this file records both.
 - ✓ Repo `secrets/`: 12 orphan files moved to `.purged-2026-05-10/` (reversible). conjurr/newsletterr/jellyfin/jellystat/readarr/mylar3/ombi entries gone.
 - ✓ `secrets/discord-webhook.url` pushed to seedbox `~/secrets/`. Notification channel now functional.
 
-**Pending operator action — run `scripts/ops/finalize-purge-2026-05-11.sh`:**
+**Resolved seedbox-side (2026-05-11, after operator-driven `finalize-purge` + agent-driven finishers):**
 
-That single script handles the seedbox-side work the auto-classifier blocked the agent from doing:
-- `app-readarr / app-mylar3 / app-ombi` stop + uninstall (backups go to `~/.apps/backup/` first).
-- Move `~/Conjurr/`, `~/scripts/Ultra-*/`, orphan `~/secrets/*` → `~/.purged-2026-05-11/`.
-- Clean crontab: drop Notifiarr-migration commented stubs + empty Conjurr/Newsletterr heartbeat blocks (operator-confirmed diff before install).
-- Kuma SQL: `DELETE FROM monitor WHERE id IN (27,38,42,43,62)` + `INSERT INTO monitor_notification` for Recyclarr (61), Qflix Newsletter (63), Buildarr (64), Tautulli (50), and the 4 canaries (52-55) into channel 1 (QFlix Discord) — fixes 4 zero-notif monitors + 5 single-notif monitors.
-- Restart Kuma so the deletes + new wires take effect.
-- Fire a Discord test ping.
-- Run the full `smoke-test.sh`. Expected 46/46 after the above.
+- ✓ `app-readarr / app-mylar3 / app-ombi` uninstalled (backups in `~/.apps/backup/`); dirs gone from `~/.apps/`.
+- ✓ `~/Conjurr/`, `~/scripts/Ultra-*/` (4 dirs), 12 orphan `~/secrets/*` moved to `~/.purged-2026-05-11/`.
+- ✓ Crontab cleaned: Notifiarr-migration commented stubs + Conjurr/Newsletterr empty heartbeat blocks removed.
+- ✓ Kuma SQL: 5 monitors deleted (#27 Readarr, #38 Mylar3, #42 Conjurr, #43 Newsletterr, #62 Ombi). Notification wires added for Recyclarr (#61), Qflix Newsletter (#63), Buildarr (#64), Tautulli (#50), and the 4 canaries (#52–#55) on channel 1 (QFlix Discord) + channel 2 (auto-heal).
+- ✓ Kuma + manitoba-maint-pusher restarted; all 4 canaries re-pushed via `manitoba-maint canary push`.
+- ✓ New Upgradinatorr Kuma push monitor (#65) created via `bootstrap-kuma-monitors.py`; token in `secrets/kuma-push-tokens.json` (now 26 entries).
+- ✓ `secrets/discord-operator.id` created with the operator's Discord user ID and synced to seedbox; `notify.py` extended to ping that ID via `content: <@id>` (with `allowed_mentions`) on error/critical levels — embeds alone don't trigger a Discord push.
+- ✓ `secrets/seedbox.ssh-host` created — distinct from the public HTTPS `seedbox.host` because Ultra.cc shared seedboxes have a shared SSH FQDN (seedbox.example.com) vs operator-slot HTTPS FQDN (quadstronaut.seedbox.example.com).
+- ✓ `scripts/lib/ssh.sh` reads from the new SSH-host secret; fixed the "Could not resolve seedbox.example.com" failure mode in smoke + canaries.
+- ✓ Full smoke test: **45 pass / 0 fail / 1 skip** (skip is `readarr-qbit` — expected since readarr is purged).
+- ✓ End-to-end Discord operator ping verified (`notify.notify(..., "error")` returned True).
 
-**Known still-not-verified (post-script):**
-- Whether `buildarr.timer` has actually fired once (manifest is correct but the timer's `Last:` column was `-` at session start). The next 04:30 UTC Monday should be the first real run.
-- End-to-end qflix-newsletter render (smoke #13b exercises `--dry-run`, not a real Listmonk POST).
+**Known still-not-verified (require time to pass):**
+- Whether `buildarr.timer` actually fires its weekly 04:30 UTC Monday run cleanly (next is 2026-05-11 04:30 UTC).
+- End-to-end qflix-newsletter render to live subscribers — smoke #13b exercises `--dry-run`, not a real Listmonk POST. Next real send is Mon 08:00 UTC.
