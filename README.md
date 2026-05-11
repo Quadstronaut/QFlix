@@ -11,7 +11,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-45%2F45_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-28_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-26%2F26_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-32%2F32_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -41,7 +41,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 |---|---:|---|
 | Apps in manifest (`manifest/apps.yaml`) | **28** | live on `quadstronaut.seedbox.example.com` |
 | End-to-end canaries (`scripts/canaries/`) | **4** | hourly · hourly · every-15min · daily-0430 |
-| Kuma push monitors (manitoba-owned) | **26** | 26/26 UP after the 2026-05-11 inventory sweep |
+| Kuma push monitors (manitoba-owned) | **32** | 32/32 UP after the 2026-05-11 coverage sweep (every manifest app reports) |
 | Cron + systemd timers | **14** | window-aware (Mon 04–08 UTC drain) |
 | pytest suite (`tests/unit/`) | **202** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -196,11 +196,7 @@ flowchart LR
 Each canary asserts a whole pipeline, not just liveness. Mobile-UX renders the public Homarr board and checks HTML size + the `/` → board redirect. Levels `error` and `critical` add `<@REDACTED>` to the Discord payload so the operator gets a push notification, not just an embed.
 
 > [!NOTE]
-> **6 manifest apps have `kuma_monitor: null`** and don't push to Kuma — they're covered by alternate signals instead:
-> - `flaresolverr` (Prowlarr surfaces its failures), `tdarr-node` (Tdarr Server's `/status` shows registered nodes), `postgres` (Listmonk `/health` is its tripwire)
-> - `unpackerr`, `kometa`, `python-plexapi` — covered by `scripts/smoke-test.sh` rather than continuous monitoring (run the smoke after changes; no Discord ping if they fail mid-week)
->
-> Tradeoff is deliberate: Kuma's HTTP-poll model doesn't fit raw processes / libraries / transitively-monitored deps. Closing the gap with `process_pattern` push monitors is queued for the next Tuesday-session.
+> **Coverage is comprehensive** as of 2026-05-11 — every app in `manifest/apps.yaml` has a Kuma push monitor and reports continuously. `health.py` supports six probe kinds: `http_api`, `http_root` (both with optional `hostname` override for Docker-bridge-only services), `systemd_only`, `port_listen`, `import_check` (tilde-expanded), and `process_pattern` (pgrep-backed for raw processes like `unpackerr` and the Postgres `checkpointer` subprocess).
 
 </details>
 

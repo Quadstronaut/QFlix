@@ -544,6 +544,67 @@ def test_import_check_failure(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# test_process_pattern_*
+# ---------------------------------------------------------------------------
+
+def _make_process_pattern_app(pattern: str | None = "/app/unpackerr") -> App:
+    raw: dict = {"kind": "process_pattern"}
+    if pattern is not None:
+        raw["pattern"] = pattern
+    return App(
+        name="unpackerr",
+        class_="ucc",
+        kuma_monitor="Unpackerr",
+        health=HealthConfig(kind="process_pattern", raw=raw),
+        defaults={"health_timeout_s": 5},
+        upgrade=None,
+        raw={},
+    )
+
+
+def test_process_pattern_match():
+    app = _make_process_pattern_app("/app/unpackerr")
+    cp = CompletedProcess(args=[], returncode=0, stdout="12345\n67890\n", stderr="")
+    with patch("subprocess.run", return_value=cp) as mock_run:
+        result = probe(app)
+
+    assert result.ok is True
+    assert result.latency_ms is None
+    assert "2" in result.reason  # 2 matches
+    called = mock_run.call_args[0][0]
+    assert called[0] == "pgrep"
+    assert "-f" in called
+    assert "/app/unpackerr" in called
+
+
+def test_process_pattern_no_match():
+    app = _make_process_pattern_app("postgres: checkpointer")
+    cp = CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+    with patch("subprocess.run", return_value=cp):
+        result = probe(app)
+
+    assert result.ok is False
+    assert "no process" in result.reason.lower()
+
+
+def test_process_pattern_missing_pattern():
+    app = _make_process_pattern_app(pattern=None)
+    result = probe(app)
+
+    assert result.ok is False
+    assert "pattern" in result.reason.lower()
+
+
+def test_process_pattern_timeout():
+    app = _make_process_pattern_app("/app/unpackerr")
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="pgrep", timeout=5)):
+        result = probe(app)
+
+    assert result.ok is False
+    assert result.reason == "timeout"
+
+
+# ---------------------------------------------------------------------------
 # test_unknown_kind_raises
 # ---------------------------------------------------------------------------
 

@@ -1,14 +1,16 @@
 """lib/health.py — health probe dispatch.
 
 Dispatches on app.health.kind:
-  http_api      — GET with optional auth header; port + key from secrets
-  http_root     — GET /; port from port_secret or port_source; lenient status
-  systemd_only  — systemctl --user is-active <unit>
-  port_listen   — TCP connect to 127.0.0.1:<port>
-  import_check  — <venv_python> -c "import <module>; print(version)"
+  http_api        — GET with optional auth header; port + key from secrets
+  http_root       — GET /; port from port_secret or port_source; lenient status
+  systemd_only    — systemctl --user is-active <unit>
+  port_listen     — TCP connect to 127.0.0.1:<port>
+  import_check    — <venv_python> -c "import <module>; print(version)"
+  process_pattern — pgrep -f <pattern>; for UCC supervisord-managed apps
+                    (unpackerr, postgres) with no HTTP surface or systemd unit
 
 All network/subprocess errors are caught; never raises. Latency is None for
-non-network checks (systemd_only, import_check).
+non-network checks (systemd_only, import_check, process_pattern).
 """
 from __future__ import annotations
 
@@ -136,7 +138,8 @@ def _probe_http_api(app: App, timeout_s: float) -> HealthResult:
     if not path.startswith("/"):
         path = "/" + path
 
-    url = f"http://127.0.0.1:{port}{path}"
+    host = raw.get("hostname", "127.0.0.1")
+    url = f"http://{host}:{port}{path}"
 
     headers: dict[str, str] = {}
     auth_header = raw.get("auth_header")
@@ -186,7 +189,10 @@ def _probe_http_root(app: App, timeout_s: float) -> HealthResult:
     path = raw.get("path_override", "/")
     if not path.startswith("/"):
         path = "/" + path
-    url = f"http://127.0.0.1:{port}{path}"
+    # hostname override lets apps that bind only to the Docker bridge (e.g.
+    # FlareSolverr at 172.17.0.1) be probed from the host netns.
+    host = raw.get("hostname", "127.0.0.1")
+    url = f"http://{host}:{port}{path}"
     expect_status = raw.get("expect_status")
 
     # Same optional Basic auth as http_api.
@@ -269,7 +275,7 @@ def _probe_port_listen(app: App, timeout_s: float) -> HealthResult:
 
 def _probe_import_check(app: App, timeout_s: float) -> HealthResult:
     raw = app.health.raw
-    venv_python = raw.get("venv_python", "python3")
+    venv_python = os.path.expanduser(raw.get("venv_python", "python3"))
     module = raw.get("module", "")
 
     cmd_str = (
@@ -295,6 +301,32 @@ def _probe_import_check(app: App, timeout_s: float) -> HealthResult:
     return HealthResult(ok=False, latency_ms=None, reason=stderr or "non-zero exit")
 
 
+def _probe_process_pattern(app: App, timeout_s: float) -> HealthResult:
+    pattern = app.health.raw.get("pattern")
+    if not pattern:
+        return HealthResult(ok=False, latency_ms=None, reason="no pattern configured")
+
+    try:
+        cp = subprocess.run(
+            ["pgrep", "-f", pattern],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return HealthResult(ok=False, latency_ms=None, reason="timeout")
+    except FileNotFoundError:
+        return HealthResult(ok=False, latency_ms=None, reason="pgrep not found")
+
+    # pgrep: 0 = match, 1 = no match, 2+ = error
+    if cp.returncode == 0:
+        count = len([p for p in cp.stdout.split() if p.strip()])
+        return HealthResult(ok=True, latency_ms=None, reason=f"{count} match(es)")
+    if cp.returncode == 1:
+        return HealthResult(ok=False, latency_ms=None, reason="no process matching pattern")
+    return HealthResult(ok=False, latency_ms=None, reason=f"pgrep exit {cp.returncode}")
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -305,6 +337,7 @@ _PROBES = {
     "systemd_only": _probe_systemd_only,
     "port_listen": _probe_port_listen,
     "import_check": _probe_import_check,
+    "process_pattern": _probe_process_pattern,
 }
 
 
