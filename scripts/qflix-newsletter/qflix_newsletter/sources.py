@@ -202,11 +202,15 @@ def fetch_libraries_table(cfg: Config) -> list[dict]:
 def tmdb_search(read_token: str, kind: str, query: str, year: Optional[int] = None) -> dict:
     """Hit TMDB /search/{movie|tv}; return the first result (or {}).
 
-    Tautulli's `get_metadata` would also give us GUIDs, but there's an
-    internal Tautulli locking bug where any `get_metadata` call issued
-    within ~30s after a `get_recently_added` returns an empty
-    payload (`data: {}`). Reproduces from raw curl, not a Python issue.
-    Searching TMDB by title sidesteps Tautulli entirely.
+    Searching TMDB by title (rather than resolving a TMDB id via Tautulli
+    `get_metadata` and then hitting /movie/{id} or /tv/{id}) keeps the
+    pipeline independent of Tautulli's Plex connection. That was originally
+    a workaround for the `plex.direct` DNS bug — Tautulli's
+    `get_metadata_details` silently returned None when its outbound call
+    to PMS failed (fixed in scripts/configure/50-tautulli-pms-url-fix.sh
+    by pinning pms_url to the local IP). The workaround stayed because
+    title-search is cheaper, public-CDN-friendly, and resilient to future
+    Tautulli/Plex hiccups.
     """
     if not read_token or not query:
         return {}
