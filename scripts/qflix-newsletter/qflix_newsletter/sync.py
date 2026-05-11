@@ -117,7 +117,12 @@ class _ListmonkClient:
 
     def upsert_template(self, name: str, body: str,
                         existing_id: Optional[int]) -> int:
-        payload = {"name": name, "type": "campaign", "body": body,
+        # Listmonk requires `{{ template "content" . }}` exactly once in any
+        # type=campaign template body. Our previews are self-contained, so
+        # we tack the slot on as an HTML comment at the very end where it
+        # won't render visibly.
+        wrapped = body + '\n<!--{{ template "content" . }}-->\n'
+        payload = {"name": name, "type": "campaign", "body": wrapped,
                    "subject": ""}
         if existing_id is None:
             r = requests.post(f"{self.base_url}/api/templates",
