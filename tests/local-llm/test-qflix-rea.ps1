@@ -155,6 +155,29 @@ Test-Case 'Test-OllamaHealth returns false when unreachable' {
     } finally { $Script:OllamaBase = $prev }
 }
 
+# --- Task 6: remote heredoc ---
+Test-Case 'Get-RemoteHeredoc returns bash with all 7 section markers' {
+    $h = Get-RemoteHeredoc
+    foreach ($k in @('arr_logs','journal_errors','cron_mail','maint_state','nginx_errors','plex_errors','kuma_red')) {
+        Assert-True ($h -match $k) "section $k present"
+    }
+    Assert-False ($h -match "`r") 'no CRLF in heredoc'
+}
+
+Test-Case 'Get-RemoteHeredoc references seedbox-correct paths' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h -match 'for app in sonarr sonarr2') '*arr iteration list'
+    Assert-True ($h -match '~/\.apps/\$app/logs/\*\.txt') '*arr log glob'
+    Assert-True ($h -match 'journalctl --user -p err') 'journalctl invocation'
+    Assert-True ($h -match '/var/spool/mail/quadstronaut') 'cron mail spool'
+    Assert-True ($h -match 'uptimekuma/kuma\.db') 'kuma sqlite path'
+}
+
+Test-Case 'Get-RemoteHeredoc templates the section cap' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h -match "SECTION_CAP=$($Script:SectionByteCap)") 'cap value substituted'
+}
+
 Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
     $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
     try {
