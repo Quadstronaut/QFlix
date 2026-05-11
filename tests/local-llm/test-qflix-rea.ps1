@@ -309,6 +309,21 @@ Test-Case 'New-DiscordDeadmanPayload pings operator and uses orange' {
     Assert-True ($p.embeds[0].title -match 'Ollama') 'mentions Ollama'
 }
 
+# --- Task 10: Ollama + Discord I/O ---
+Test-Case 'Invoke-Model returns null on unreachable endpoint' {
+    $prev = $Script:OllamaBase
+    $Script:OllamaBase = 'http://127.0.0.1:1'
+    try {
+        $r = Invoke-Model -Model 'doesnt-matter' -Prompt 'x' -SystemPrompt 'y' -TimeoutSec 3
+        Assert-True ($null -eq $r) 'returns null on connect failure'
+    } finally { $Script:OllamaBase = $prev }
+}
+
+Test-Case 'Send-Discord returns false on bad URL' {
+    $r = Send-Discord -WebhookUrl 'http://127.0.0.1:1/fake' -Payload @{ content='x' }
+    Assert-False $r 'failed POST returns false'
+}
+
 Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
     $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
     try {
