@@ -1,0 +1,2 @@
+# Reserved for workstation-side local-LLM helpers. The .ps1 entries here are gitignored
+# because they hardcode operator-specific paths and the real seedbox FQDN.
