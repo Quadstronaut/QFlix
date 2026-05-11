@@ -1,0 +1,29 @@
+[Unit]
+# Bazarr 2 — a parallel Bazarr instance for the anime *arr pair.
+# Bazarr is hard-capped at one Sonarr + one Radarr per install (upstream
+# wontfix, see docs/anime-subs-deferred.md history), so the only way to
+# cover Sonarr2/Radarr2 is a second Bazarr. Ultra.cc provides app-sonarr2
+# and app-radarr2 but NOT app-bazarr2, so this is a bare-Python install
+# under ~/.apps/bazarr2/ managed here. bazarr2-sync.timer pins this
+# instance to bazarr-1's running version so they never drift.
+Description=Bazarr 2 — subtitles for the anime *arr stack (Sonarr2 + Radarr2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# BAZARR_VERSION is consumed by bazarr/utilities/analytics.py and the
+# /api/system/status response — bazarr2-sync.py rewrites this line in lock-step
+# with each git checkout. Initial value mirrors bazarr-1 at install time.
+Environment="BAZARR_VERSION=1.5.5"
+WorkingDirectory=%h/.apps/bazarr2/bin
+ExecStart=%h/.apps/bazarr2/venv/bin/python %h/.apps/bazarr2/bin/bazarr.py --no-update --config %h/.apps/bazarr2/data
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30
+TasksMax=infinity
+StandardOutput=append:%h/.apps/bazarr2/logs/bazarr2.log
+StandardError=append:%h/.apps/bazarr2/logs/bazarr2.err
+
+[Install]
+WantedBy=default.target

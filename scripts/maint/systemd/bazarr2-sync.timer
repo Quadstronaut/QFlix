@@ -1,0 +1,14 @@
+[Unit]
+Description=bazarr2 version sync — hourly drift check vs bazarr-1
+
+[Timer]
+# Fire shortly after boot so a fresh seedbox catches up immediately, then
+# every hour. Bazarr-1 updates rarely (months apart), so hourly is plenty
+# and keeps the no-op fast path cheap.
+OnBootSec=2min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=bazarr2-sync.service
+
+[Install]
+WantedBy=timers.target

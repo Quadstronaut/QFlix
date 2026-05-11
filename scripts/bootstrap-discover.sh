@@ -46,6 +46,20 @@ fi
 secret_write "bazarr.urlbase" "bazarr"
 log_info "  bazarr: port=${bazarr_port:-?} key=${bazarr_key:+captured}"
 
+# Bazarr 2 (bare-Python install under ~/.apps/bazarr2/) — fixed port 17032,
+# no nginx proxy (loopback-only). config.yaml lives one level deeper than
+# bazarr-1's since --config is a data root, not a config file.
+bazarr2_cfg_path="$(sshm 'test -f ~/.apps/bazarr2/data/config/config.yaml && echo ~/.apps/bazarr2/data/config/config.yaml' || true)"
+if [ -n "$bazarr2_cfg_path" ]; then
+  bazarr2_key="$(sshm "awk '/^auth:/,/^[a-z]/{if(\$1==\"apikey:\"){print \$2; exit}}' $bazarr2_cfg_path 2>/dev/null" || true)"
+  [ -n "$bazarr2_key" ] && secret_write "bazarr2.key" "$bazarr2_key"
+  secret_write "bazarr2.port" "17032"
+  secret_write "bazarr2.urlbase" "bazarr2"
+  log_info "  bazarr2: port=17032 key=${bazarr2_key:+captured}"
+else
+  log_info "  bazarr2: not installed (run scripts/install/06-bazarr2.sh)"
+fi
+
 # Tautulli (config.ini)
 tautulli_key="$(sshm 'awk -F"=" "/^api_key/{gsub(/[[:space:]]/,\"\",\$2); print \$2; exit}" ~/.apps/tautulli/config.ini 2>/dev/null' || true)"
 [ -n "$tautulli_key" ] && secret_write "tautulli.key" "$tautulli_key"
@@ -83,13 +97,13 @@ log_info "Seerr key: capture manually from UI (Settings > General > API Key) int
 # Live-API check: confirm captured ports actually respond to API calls (loopback)
 log_info ""
 log_info "Live-API verification (only for apps with both port + key):"
-for app in sonarr radarr prowlarr readarr sonarr2 radarr2 bazarr; do
+for app in sonarr radarr prowlarr readarr sonarr2 radarr2 bazarr bazarr2; do
   if secret_exists "$app.port" && secret_exists "$app.key"; then
     port="$(secret_read $app.port)"
     key="$(secret_read $app.key)"
     base="$(secret_read $app.urlbase 2>/dev/null || echo $app)"
-    # API versions: bazarr=plain, prowlarr/readarr=v1, sonarr/radarr=v3
-    if [ "$app" = "bazarr" ]; then
+    # API versions: bazarr/bazarr2=plain, prowlarr/readarr=v1, sonarr/radarr=v3
+    if [ "$app" = "bazarr" ] || [ "$app" = "bazarr2" ]; then
       url="http://127.0.0.1:$port/$base/api/system/status"
       hdr="X-API-KEY"
     elif [ "$app" = "prowlarr" ] || [ "$app" = "readarr" ]; then

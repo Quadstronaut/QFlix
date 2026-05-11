@@ -754,8 +754,9 @@
         </p>
         <p>Default forwards:</p>
         <pre><code>sonarr 17026   | sonarr2 17003   | radarr 17027    | radarr2 17008
-prowlarr 17024 | bazarr 17031    | tautulli 17014  | qbittorrent 17041
-listmonk 42014 | uptime-kuma 42005 | tdarr 42018   | maintainerr 42007</code></pre>
+prowlarr 17024 | bazarr 17031    | bazarr2 17032   | tautulli 17014
+qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018
+maintainerr 42007</code></pre>
         <div class="callout tip"><strong>Why <code>ExitOnForwardFailure=no</code>?</strong> A stopped service shouldn't kill the whole tunnel. The poll target is port 42014 (Listmonk, always-on systemd).</div>
       </article>
 
@@ -928,7 +929,7 @@ listmonk 42014 | uptime-kuma 42005 | tdarr 42018   | maintainerr 42007</code></p
 
     <section class="deck" id="sec-arr">
       <h2><span class="num">11</span>The *arr stack</h2>
-      <p class="deck-sub">Sonarr / Sonarr2 / Radarr / Radarr2 / Prowlarr / Bazarr / FlareSolverr.</p>
+      <p class="deck-sub">Sonarr / Sonarr2 / Radarr / Radarr2 / Prowlarr / Bazarr / Bazarr 2 / FlareSolverr.</p>
 
       <article class="card tut" id="q-arr-split" data-tags="sonarr radarr cinema anime split branch naming">
         <h3>Why two Sonarrs and two Radarrs? <a class="qhash" href="#q-arr-split">#</a></h3>

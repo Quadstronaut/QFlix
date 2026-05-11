@@ -95,6 +95,23 @@ apps:
       urlbase_secret: bazarr.urlbase
       expect_status: 200
 
+  bazarr2:
+    # Second Bazarr instance for the anime *arr pair (Sonarr2 + Radarr2).
+    # Bazarr's hardcoded one-Sonarr/one-Radarr limit forces this. Ultra.cc
+    # has no `app-bazarr2`, so it's a bare-Python install under
+    # ~/.apps/bazarr2/ managed by a user systemd unit.
+    class: systemd
+    unit: bazarr2.service
+    kuma_monitor: "Bazarr 2"
+    health:
+      kind: http_api
+      path_template: "/{urlbase}/api/system/status"
+      auth_header: "X-Api-Key"
+      auth_secret: bazarr2.key
+      port_secret: bazarr2.port
+      urlbase_secret: bazarr2.urlbase
+      expect_status: 200
+
   qbittorrent:
     class: ucc
     ucc_slug: qbittorrent
@@ -342,6 +359,19 @@ apps:
     class: cron
     unit: upgradinatorr.service
     kuma_monitor: "Upgradinatorr"
+    health:
+      kind: systemd_oneshot
+
+  bazarr2-sync:
+    # Hourly drift check: pin bazarr2's running version to bazarr-1's by
+    # fetching the matching morpheus65535/bazarr tag, re-applying the
+    # waitress threads=100→4 patch, refreshing deps, and restarting
+    # bazarr2.service. systemd_oneshot probes the .service's Result so a
+    # sync failure surfaces in Kuma/Discord even though the .timer stays
+    # green between fires.
+    class: cron
+    unit: bazarr2-sync.service
+    kuma_monitor: "Bazarr 2 Sync"
     health:
       kind: systemd_oneshot
 

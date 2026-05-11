@@ -44,6 +44,7 @@ Then open `http://localhost:<local>/` in a browser.
 | Radarr (anime) | 17008 | `ssh -L 17008:127.0.0.1:17008 quadstronaut@<fqdn>` |
 | Prowlarr | 17024 | `ssh -L 17024:127.0.0.1:17024 quadstronaut@<fqdn>` |
 | Bazarr | 17031 | `ssh -L 17031:127.0.0.1:17031 quadstronaut@<fqdn>` |
+| Bazarr 2 (anime; internal-only — no nginx proxy) | 17032 | `ssh -L 17032:127.0.0.1:17032 quadstronaut@<fqdn>` — bare-Python install under `~/.apps/bazarr2/` |
 | qBittorrent | 17041 | `ssh -L 17041:127.0.0.1:17041 quadstronaut@<fqdn>` |
 | Maintainerr | 42007 | `ssh -L 42007:127.0.0.1:42007 quadstronaut@<fqdn>` (start service first: `app-maintainerr start`) |
 | Tdarr | 42018 | `ssh -L 42018:127.0.0.1:42018 quadstronaut@<fqdn>` |
