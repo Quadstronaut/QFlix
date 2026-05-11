@@ -324,6 +324,45 @@ Test-Case 'Send-Discord returns false on bad URL' {
     Assert-False $r 'failed POST returns false'
 }
 
+# --- Task 11: prompt helpers ---
+Test-Case 'Get-RepoRoot resolves to actual repo root with secrets/' {
+    $r = Get-RepoRoot
+    Assert-True (Test-Path (Join-Path $r 'secrets')) 'secrets/ exists at returned root'
+    Assert-True (Test-Path (Join-Path $r 'scripts/local-llm/qflix-rea.ps1')) 'script path consistent'
+}
+
+Test-Case 'Build-UserPrompt embeds the blob' {
+    $up = Build-UserPrompt -BlobJson '{"x":1}'
+    Assert-True ($up -match '"x":1') 'blob embedded'
+    Assert-True ($up -match 'JSON array of findings') 'instruction present'
+}
+
+Test-Case 'Get-SystemPrompt mentions Manitoba and JSON schema' {
+    $sp = Get-SystemPrompt
+    Assert-True ($sp -match 'Manitoba') 'mentions Manitoba'
+    Assert-True ($sp -match 'signature') 'mentions signature key'
+    Assert-True ($sp -match 'severity') 'mentions severity key'
+}
+
+Test-Case 'Read-Secret returns null when file absent' {
+    $tmp = Join-Path $env:TEMP "qflix-rea-secrets-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    try {
+        $r = Read-Secret -RepoRoot $tmp -Name 'nonexistent.url'
+        Assert-True ($null -eq $r) 'null for missing file'
+    } finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
+}
+
+Test-Case 'Read-Secret returns trimmed contents when present' {
+    $tmp = Join-Path $env:TEMP "qflix-rea-secrets-$(Get-Random)"
+    New-Item -ItemType Directory -Path (Join-Path $tmp 'secrets') -Force | Out-Null
+    try {
+        Set-Content -LiteralPath (Join-Path $tmp 'secrets/test.id') -Value "  abc123  `n" -Encoding UTF8 -NoNewline
+        $r = Read-Secret -RepoRoot $tmp -Name 'test.id'
+        Assert-Equal 'abc123' $r 'value trimmed'
+    } finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
+}
+
 Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
     $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
     try {
