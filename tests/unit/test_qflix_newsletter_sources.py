@@ -30,6 +30,7 @@ def _config_stub(tmp_path) -> Config:
         listmonk_list_id=1,
         listmonk_template_id=None,
         public_host="seedbox.example.com",
+        poster_cache_dir=tmp_path / "poster-cache",
     )
 
 
