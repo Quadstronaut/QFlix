@@ -220,8 +220,9 @@ flowchart TB
   TMDB[TMDB ratings for Pick of Week]:::src --> norm
 
   py --> norm
+  norm --> mirror[mirror_posters · SHA-keyed cache<br/>TMDB → Tautulli fallback<br/>~/www/images/newsletter/]:::proc
   norm --> ai[Gemini · &quot;if you liked X try Y&quot;<br/>3 picks bottom-of-email]:::proc
-  norm --> jinja[Jinja2 render<br/>weekly.html.j2 · QFlix theme]:::proc
+  mirror --> jinja[Jinja2 render<br/>weekly.html.j2 · QFlix theme]:::proc
   ai --> jinja
 
   jinja --> camp[Listmonk POST /api/campaigns]:::proc
@@ -230,7 +231,7 @@ flowchart TB
   camp --> archive[server-rendered archive<br/>https://fqdn/listmonk/campaign/uuid]:::out
 ```
 
-Email sections: **Pick of Week → New Movies → New TV → New Anime → Coming Soon → AI Picks → Nerd Corner.** Failure modes are isolated — if Gemini rate-limits, the AI section just goes silent; the rest of the email still ships. See `scripts/qflix-newsletter/qflix_newsletter/main.py`.
+Email sections: **Pick of Week → New Movies → New TV → New Anime → Coming Soon → AI Picks → Nerd Corner.** Failure modes are isolated — if Gemini rate-limits, the AI section just goes silent; the rest of the email still ships. Posters are mirrored to `~/www/images/newsletter/<sha>.<ext>` at render time so delivered mail survives upstream TMDB CDN rot; cache is pruned daily by `qflix-poster-cache-prune.timer` (30-day retention). See `scripts/qflix-newsletter/qflix_newsletter/main.py` and `posters.py`.
 
 </details>
 
