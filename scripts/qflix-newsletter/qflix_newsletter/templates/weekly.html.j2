@@ -10,10 +10,14 @@
   <tr><td align="center" style="padding:32px 12px;">
     <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;width:100%;">
 
-      {# Header #}
-      <tr><td style="padding:0 16px 24px 16px;text-align:center;">
-        <div style="font-size:32px;font-weight:700;color:#ff8c42;letter-spacing:.5px;">QFLIX</div>
-        <div style="font-size:14px;color:#7dd3fc;margin-top:4px;">{{ ctx.week_label }}</div>
+      {# Header — hero with Q.png on top-down black→blue→bg gradient #}
+      <tr><td style="padding:0;">
+        <div style="background:linear-gradient(180deg,#000 0%,#1e3a8a 50%,#0a1628 100%);padding:36px 16px 28px 16px;text-align:center;">
+          <img src="https://{{ ctx.public_host }}/images/Q.png" alt="QFlix" width="96" height="96" style="display:inline-block;width:96px;height:96px;border-radius:50%;box-shadow:0 6px 28px rgba(255,255,255,.15),0 4px 24px rgba(30,64,175,.5);">
+          <div style="font-size:38px;font-weight:600;color:#ffffff;letter-spacing:1px;margin-top:14px;">QFlix</div>
+          <div style="width:48px;height:2px;background:#d4af37;margin:10px auto;line-height:0;font-size:0;">&nbsp;</div>
+          <div style="font-size:13px;color:#7dd3fc;">{{ ctx.week_label }}</div>
+        </div>
       </td></tr>
 
       {# Pick of the Week #}
