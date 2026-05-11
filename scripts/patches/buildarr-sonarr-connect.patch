@@ -1,0 +1,21 @@
+--- buildarr_sonarr/config/connect.py.notification-enum-patch.bak	2026-05-11 07:12:01.631277401 +0200
++++ buildarr_sonarr/config/connect.py	2026-05-11 07:12:01.643277921 +0200
+@@ -51,6 +51,9 @@
+     release = 7
+     poster = 8
+     fanart = 9
++    indexer = 10  # QFlix patch 2026-05-11: Sonarr v4
++    custom_formats = 11  # QFlix patch 2026-05-11: Sonarr v4
++    custom_format_score = 12  # QFlix patch 2026-05-11: Sonarr v4
+ 
+ 
+ class OnImportField(BaseEnum):
+@@ -71,6 +74,8 @@
+     release = 10
+     poster = 11
+     fanart = 12
++    custom_formats = 13  # QFlix patch 2026-05-11: Sonarr v4
++    custom_format_score = 14  # QFlix patch 2026-05-11: Sonarr v4
+ 
+ 
+ class GotifyPriority(BaseEnum):

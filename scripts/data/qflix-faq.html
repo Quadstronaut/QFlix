@@ -498,6 +498,10 @@
       <li><a href="#sec-pitfalls">16 &middot; Top 10 screw-ups</a></li>
       <li><a href="#sec-emergency">17 &middot; Emergency playbook</a></li>
     </ul>
+    <h4>Bonus</h4>
+    <ul>
+      <li><a href="#sec-nerd">18 &middot; Nerd Corner &mdash; the tech stack</a></li>
+    </ul>
   </nav>
 
   <main>
@@ -902,6 +906,24 @@ listmonk 42014 | uptime-kuma 42005 | tdarr 42018   | maintainerr 42007</code></p
           Kuma's <code>isDefault=true</code> applies on UI-created monitors at creation time only. For monitors created via the bootstrap script (or any script-driven path), you must explicitly <code>INSERT INTO monitor_notification</code> for each <code>(monitor_id, notification_id)</code> pair. The bootstrap helper does this.
         </p>
       </article>
+
+      <article class="card tut" id="q-smoke-buckets" data-tags="smoke smoke-test 45 production buckets prowlarr hardlinks canary check">
+        <h3>What does the production smoke actually check? <a class="qhash" href="#q-smoke-buckets">#</a></h3>
+        <p>
+          <code>scripts/smoke-test.sh</code> runs ~45 assertions in five buckets. A clean &ldquo;45/45 pass&rdquo; means everything from indexers through subscriber email is reachable. A single failure is operator-actionable &mdash; rerun after every tracked change.
+        </p>
+        <table class="tbl">
+          <thead><tr><th>Bucket</th><th>What it asserts</th></tr></thead>
+          <tbody>
+            <tr><td>1. Prowlarr</td><td>Indexer count &ge; 5; search round-trip for &ldquo;ubuntu&rdquo; returns &ge; 1</td></tr>
+            <tr><td>2. *arr &harr; qBit</td><td><code>testall</code> returns 200 for sonarr / sonarr2 / radarr / radarr2</td></tr>
+            <tr><td>3. Library hygiene</td><td>Hardlink count &ge; 2 on Movies samples; rescan helpers reach Komga / Kavita / Audiobookshelf</td></tr>
+            <tr><td>4. App liveness</td><td>Maintainerr (with sonarr count), qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 4 canaries</td></tr>
+            <tr><td>5. Maintenance system</td><td>Webhook <code>/health</code>, window timer scheduled, manifest validates, pusher active, Kuma drift = 0, Kuma all-up (external + parked excluded)</td></tr>
+          </tbody>
+        </table>
+        <p>A Plex-only subset lives at <code>scripts/smoke-test-plex.sh</code> for when you only want to verify the playback path.</p>
+      </article>
     </section>
 
     <section class="deck" id="sec-arr">
@@ -1178,6 +1200,95 @@ listmonk 42014 | uptime-kuma 42005 | tdarr 42018   | maintainerr 42007</code></p
           <li>Pin the version in <code>versions.env</code> with a <code>max_reason</code> so it doesn't re-upgrade next week.</li>
           <li>Commit the pin to git.</li>
         </ol>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-nerd">
+      <h2><span class="num">18</span>Nerd Corner &mdash; the tech stack</h2>
+      <p class="deck-sub">Every app in QFlix is somebody's open-source project. Here's the tech behind the curtain.</p>
+
+      <article class="card tut" id="q-tech-dotnet" data-tags="dotnet .net mono c-sharp sonarr radarr prowlarr bazarr lidarr kavita recyclarr aspnet">
+        <h3>The .NET wing &mdash; Sonarr, Radarr, Prowlarr, Bazarr, Recyclarr, Kavita <a class="qhash" href="#q-tech-dotnet">#</a></h3>
+        <p>
+          The whole *arr family is C# / ASP.NET Core. For years they ran on <strong>Mono</strong> on Linux because .NET wasn't cross-platform yet &mdash; that's why old install guides still talk about <code>mono-complete</code>. Sonarr v4 (2023) and Radarr v5 finally cut Mono and ship native .NET 6+ runtimes. Saves a lot of memory and one entire dependency layer.
+        </p>
+        <p>
+          <strong>Recyclarr</strong> is also C# / .NET &mdash; it just speaks to the *arr APIs to apply <a href="https://trash-guides.info/">TRaSH-Guide</a> profiles in bulk. <strong>Kavita</strong> (manga / ebook reader) is ASP.NET Core 8 &mdash; one of the few non-*arr .NET apps in the self-hosted media world.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-tech-python" data-tags="python flask jinja kometa buildarr tautulli flaresolverr calibre-web qflix-newsletter selenium">
+        <h3>The Python wing &mdash; Tautulli, Kometa, Buildarr, FlareSolverr, Calibre-Web, qflix-newsletter <a class="qhash" href="#q-tech-python">#</a></h3>
+        <p>
+          <strong>Tautulli</strong> is Flask-based; it's the original community Plex stats dashboard, around since the PlexPy days. <strong>Kometa</strong> (formerly Plex Meta Manager) is a YAML-driven Python pipeline that turns config files into Plex collections + posters. <strong>Buildarr</strong> is &ldquo;Infrastructure-as-Code for *arrs&rdquo; &mdash; declarative YAML in, reconciled *arr settings out (think Terraform, but for Sonarr).
+        </p>
+        <p>
+          <strong>FlareSolverr</strong> drives a headless browser (Selenium / undetected-chromedriver) to solve Cloudflare challenges Prowlarr can't pass on its own. <strong>Calibre-Web</strong> is a Flask front-end on top of the canonical Calibre library DB. <strong>qflix-newsletter</strong> is bespoke &mdash; Python + Jinja2 templates + Google Gemini calls + the Listmonk REST API, ~600 LoC total.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-tech-node" data-tags="node nodejs javascript typescript nestjs nextjs uptimekuma maintainerr tdarr audiobookshelf seerr overseerr jellyseerr homarr vue react">
+        <h3>The Node.js wing &mdash; Uptime Kuma, Maintainerr, Tdarr, Audiobookshelf, Seerr, Homarr <a class="qhash" href="#q-tech-node">#</a></h3>
+        <p>
+          <strong>Uptime Kuma</strong> is by Louis Lam &mdash; started as a personal Hong Kong side-project and became the de-facto self-hosted status page (think open-source UptimeRobot). <strong>Maintainerr</strong> is NestJS (TypeScript) + React; it stepped in after Deleterr was abandoned, and the operator runs it as the 60-day retention engine.
+        </p>
+        <p>
+          <strong>Tdarr</strong> wraps FFmpeg with a Node orchestrator and a worker-node model (&ldquo;servers&rdquo; + &ldquo;nodes&rdquo;). <strong>Audiobookshelf</strong> is Node + Vue with surprisingly good iOS / Android apps for a self-hosted project. <strong>Seerr</strong> (the Overseerr / Jellyseerr family) is Next.js + TypeScript. <strong>Homarr</strong> &mdash; also Next.js &mdash; is the dashboard you see at the QFlix root URL.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-tech-go" data-tags="go golang listmonk unpackerr golift kailash nadh single-binary postgres">
+        <h3>The Go wing &mdash; Listmonk, unpackerr <a class="qhash" href="#q-tech-go">#</a></h3>
+        <p>
+          <strong>Listmonk</strong> is by Kailash Nadh, CTO of Zerodha (India's largest stockbroker, written largely in Go and CommonLisp). It's a single-binary newsletter platform &mdash; Postgres for storage, Mailchimp-class features, zero JVM/Python overhead. QFlix uses it for SMTP fan-out on the Monday digest.
+        </p>
+        <p>
+          <strong>unpackerr</strong> is by <em>golift</em> &mdash; one tiny binary that watches *arr download directories and unrar's archives so qBittorrent and the *arrs don't have to. Runs as a long-lived systemd unit and never makes news, which is the highest praise for an unpacker.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-tech-jvm" data-tags="kotlin spring boot komga jvm java opds">
+        <h3>The JVM wing &mdash; Komga (Kotlin / Spring Boot) <a class="qhash" href="#q-tech-jvm">#</a></h3>
+        <p>
+          <strong>Komga</strong> is one of the very few JVM apps in self-hosted media &mdash; Kotlin on Spring Boot, with first-class OPDS support and excellent Tachiyomi compatibility. Yes, it eats more RAM than a Go app would, but the metadata handling on comics + manga is unmatched, and the schema is sensible enough that you can poke it with plain SQL.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-tech-cpp" data-tags="qbittorrent c++ qt plex utorrent xbmc kodi nginx postgres systemd">
+        <h3>The C / C++ wing &mdash; qBittorrent, Plex, Nginx, Postgres, systemd <a class="qhash" href="#q-tech-cpp">#</a></h3>
+        <p>
+          <strong>qBittorrent</strong> is C++ / Qt &mdash; the spiritual open-source successor to &micro;Torrent. The moment &micro;Torrent went ad-supported in 2012, qBit picked up the torch and never looked back. <strong>Plex Media Server</strong> is mostly C/C++ with Python plugins; its lineage traces back through OSXBMC (2008) to <a href="https://kodi.tv/">XBMC</a>, the original Xbox Media Center.
+        </p>
+        <p>
+          The boring-but-essential stack underneath: <strong>nginx</strong> (Igor Sysoev, 2004) does HTTPS termination + reverse-proxy with QFlix's <code>proxy.d</code> fragments. <strong>PostgreSQL</strong> (1996 &mdash; older than half the apps it supports) holds Listmonk subscriber data. <strong>systemd</strong> (Lennart Poettering, 2010) runs every long-lived service as a user-unit; QFlix has 8 services + 8 timers under <code>~/.config/systemd/user/</code>.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-tech-automation" data-tags="playwright firefox cron systemd timers automation cp.ultra.cc mermaid bash shell">
+        <h3>The automation glue &mdash; Playwright, systemd timers, mermaid, bash <a class="qhash" href="#q-tech-automation">#</a></h3>
+        <p>
+          <strong>Playwright</strong> (Microsoft) drives a real Firefox to click <em>Upgrade &amp; Repair</em> on cp.ultra.cc once a week &mdash; the only operation in QFlix that genuinely requires a browser, because Ultra.cc's control panel has no API. Runs headless under <code>cp_upgrade_clicker.py</code>.
+        </p>
+        <p>
+          <strong>systemd user timers</strong> (not cron) for everything window-related, because timers handle missed runs gracefully across reboots. <strong>cron</strong> still runs a few simple hourly/nightly heartbeats. <strong>mermaid.js</strong> renders the diagrams in the README without any build step. <strong>bash</strong> for ~70% of the install / configure / smoke scripts &mdash; install scripts in <code>scripts/configure/</code> are numbered for execution order.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-tech-ai" data-tags="ai gemini google llm tmdb api newsletter recommendation jinja2">
+        <h3>The AI bit &mdash; Google Gemini, TMDB <a class="qhash" href="#q-tech-ai">#</a></h3>
+        <p>
+          The Monday newsletter's <em>AI Picks</em> section calls <strong>Google Gemini</strong> with a prompt like &ldquo;here's what's in the library and what was recently added &mdash; recommend three under-watched titles in the &lsquo;if you liked X, try Y&rsquo; format.&rdquo; If Gemini rate-limits, the section is gracefully omitted; the rest of the email still ships.
+        </p>
+        <p>
+          <strong>TMDB</strong> (The Movie Database, community-driven, 2008) is the canonical metadata source for everything visual &mdash; Seerr searches against it, Sonarr / Radarr enrich grabs with it, the newsletter pulls thumbnails from its image CDN. Free for non-commercial use, and the data quality genuinely embarrasses some commercial alternatives.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-tech-trash" data-tags="trash-guides recyclarr quality profiles community guides knowledge tdarr">
+        <h3>The community &mdash; TRaSH-Guides, the *arr Discord, the Selfhosted subreddit <a class="qhash" href="#q-tech-trash">#</a></h3>
+        <p>
+          None of this works without the operator-volunteer ecosystem behind it: <strong>TRaSH-Guides</strong> (<a href="https://trash-guides.info/">trash-guides.info</a>) is a single-maintainer-plus-contributors documentation site that has become the canonical source of *arr quality-profile JSON; Recyclarr just consumes it. <strong>r/selfhosted</strong> + the various *arr Discords are where 90% of the &ldquo;why did this break&rdquo; answers live. QFlix's design mostly follows their hard-won conventions &mdash; deviating costs a lot of debugging time.
+        </p>
       </article>
     </section>
 

@@ -59,8 +59,15 @@ _in_flight_mutex = threading.Lock()
 
 
 def _is_recoverable(app: App) -> bool:
-    """Library / cron apps don't have a service to start — skip them."""
-    return app.class_ in {"ucc", "systemd"}
+    """Library apps have no service. Cron apps with a `unit:` field can be
+    re-invoked via systemctl start --wait on their .service — see
+    lifecycle._cron_start_service. Cron entries lacking a unit (pure crontab
+    one-liners) still can't be auto-recovered from here."""
+    if app.class_ in {"ucc", "systemd"}:
+        return True
+    if app.class_ == "cron" and app.raw.get("unit"):
+        return True
+    return False
 
 
 def trigger_async(app: App, *, manifest: Optional[Manifest] = None) -> str:

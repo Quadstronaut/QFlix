@@ -421,6 +421,142 @@ def test_systemd_only_failed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# test_systemd_oneshot_success — last invocation succeeded
+# ---------------------------------------------------------------------------
+
+def test_systemd_oneshot_success():
+    app = _make_app(
+        "systemd_oneshot",
+        port_secret=None,
+        auth_header=None,
+        auth_secret=None,
+        urlbase_secret=None,
+        unit="recyclarr.service",
+    )
+    app.health.raw["unit"] = "recyclarr.service"
+
+    cp = CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="Result=success\nActiveState=inactive\n",
+        stderr="",
+    )
+    with patch("subprocess.run", return_value=cp):
+        result = probe(app)
+
+    assert result.ok is True
+    assert "success" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# test_systemd_oneshot_failed — last invocation exited non-zero
+# ---------------------------------------------------------------------------
+
+def test_systemd_oneshot_failed():
+    app = _make_app(
+        "systemd_oneshot",
+        port_secret=None,
+        auth_header=None,
+        auth_secret=None,
+        urlbase_secret=None,
+        unit="buildarr.service",
+    )
+    app.health.raw["unit"] = "buildarr.service"
+
+    cp = CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="Result=exit-code\nActiveState=failed\n",
+        stderr="",
+    )
+    with patch("subprocess.run", return_value=cp):
+        result = probe(app)
+
+    assert result.ok is False
+    assert "exit-code" in result.reason
+    assert "failed" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# test_systemd_oneshot_in_flight — currently activating, prior Result stale
+# ---------------------------------------------------------------------------
+
+def test_systemd_oneshot_in_flight():
+    """During an active run, ActiveState=activating while Result still holds
+    the PRIOR invocation's value. Treating this as ok is what prevents the
+    recovery loop's 10/30/60s backoff from mis-reading a slow-but-OK run."""
+    app = _make_app(
+        "systemd_oneshot",
+        port_secret=None,
+        auth_header=None,
+        auth_secret=None,
+        urlbase_secret=None,
+        unit="buildarr.service",
+    )
+    app.health.raw["unit"] = "buildarr.service"
+
+    cp = CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="Result=exit-code\nActiveState=activating\n",
+        stderr="",
+    )
+    with patch("subprocess.run", return_value=cp):
+        result = probe(app)
+
+    assert result.ok is True
+    assert "in-flight" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# test_systemd_oneshot_never_ran — fresh install, Result empty
+# ---------------------------------------------------------------------------
+
+def test_systemd_oneshot_never_ran():
+    """A newly-installed timer-driven service has no Result yet; treat as ok
+    so newly-deployed timers don't show red before their first fire."""
+    app = _make_app(
+        "systemd_oneshot",
+        port_secret=None,
+        auth_header=None,
+        auth_secret=None,
+        urlbase_secret=None,
+        unit="brand-new.service",
+    )
+    app.health.raw["unit"] = "brand-new.service"
+
+    cp = CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="Result=\nActiveState=inactive\n",
+        stderr="",
+    )
+    with patch("subprocess.run", return_value=cp):
+        result = probe(app)
+
+    assert result.ok is True
+
+
+# ---------------------------------------------------------------------------
+# test_systemd_oneshot_no_unit — manifest misconfiguration
+# ---------------------------------------------------------------------------
+
+def test_systemd_oneshot_no_unit():
+    app = _make_app(
+        "systemd_oneshot",
+        port_secret=None,
+        auth_header=None,
+        auth_secret=None,
+        urlbase_secret=None,
+        unit=None,
+    )
+
+    result = probe(app)
+    assert result.ok is False
+    assert "no unit" in result.reason
+
+
+# ---------------------------------------------------------------------------
 # test_port_listen_open
 # ---------------------------------------------------------------------------
 

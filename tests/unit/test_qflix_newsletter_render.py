@@ -161,7 +161,7 @@ def test_render_html_produces_a_full_email():
     )
     html = render_html(ctx)
     assert "<!DOCTYPE html>" in html
-    assert "QFLIX" in html
+    assert "QFlix" in html
     assert "Dune: Part Two" in html
     # Listmonk template tokens left intact for server-side substitution
     assert "{{ UnsubscribeURL }}" in html
@@ -177,5 +177,5 @@ def test_render_handles_empty_inputs_without_crashing():
         public_host="seedbox.example.com",
     )
     html = render_html(ctx)
-    assert "QFLIX" in html
+    assert "QFlix" in html
     assert "fresh additions" in ctx.subject

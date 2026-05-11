@@ -478,3 +478,42 @@ class TestRecoveryLocking:
 
         assert results["sonarr"]["event"] == "recovered"
         assert results["radarr"]["event"] == "recovered"
+
+
+# ---------------------------------------------------------------------------
+# Recoverability — class gating for trigger_async
+# ---------------------------------------------------------------------------
+
+class TestIsRecoverable:
+    """`_is_recoverable` decides which classes flow into trigger_async's
+    3-attempt loop. The historical answer was {ucc, systemd}; cron-class
+    timer-driven oneshots (buildarr, recyclarr, ...) joined the recoverable
+    set once lifecycle._cron_start_service let us re-fire their .service."""
+
+    def test_ucc_is_recoverable(self):
+        app = _make_app("sonarr", class_="ucc")
+        assert recovery_mod._is_recoverable(app) is True
+
+    def test_systemd_is_recoverable(self):
+        app = _make_app("listmonk", class_="systemd")
+        assert recovery_mod._is_recoverable(app) is True
+
+    def test_cron_with_unit_is_recoverable(self):
+        # The five timer-driven oneshots (buildarr/recyclarr/kometa/
+        # qflix-newsletter/upgradinatorr) declare a `unit:` field. After
+        # the systemd_oneshot probe lands, those failures need to flow
+        # through the 3-attempt recovery and pings Discord on exhaustion.
+        app = _make_app("buildarr", class_="cron")
+        app.raw["unit"] = "buildarr.service"
+        assert recovery_mod._is_recoverable(app) is True
+
+    def test_cron_without_unit_is_not_recoverable(self):
+        # Pure crontab one-liners (no systemd unit) can't be re-fired via
+        # systemctl, so they stay opted out.
+        app = _make_app("nounit", class_="cron")
+        # raw has no "unit"
+        assert recovery_mod._is_recoverable(app) is False
+
+    def test_library_is_not_recoverable(self):
+        app = _make_app("python-plexapi", class_="library")
+        assert recovery_mod._is_recoverable(app) is False

@@ -1,0 +1,72 @@
+--- buildarr_sonarr/config/import_lists.py.languageprofile-patch.bak	2026-05-11 07:04:20.519304200 +0200
++++ buildarr_sonarr/config/import_lists.py	2026-05-11 07:10:41.435803709 +0200
+@@ -159,11 +159,11 @@
+     This attribute is required.
+     """
+ 
+-    language_profile: NonEmptyStr
++    language_profile: Optional[NonEmptyStr] = None  # QFlix patch 2026-05-11
+     """
+     The name of the language profile list items will be added with.
+ 
+-    This attribute is required.
++    QFlix 2026-05-11: optional (Sonarr v4 removed language profiles, merged into quality).
+     """
+ 
+     series_type: SeriesType = SeriesType.standard
+@@ -237,6 +237,7 @@
+                         (ind for ind, ind_id in language_profile_ids.items() if ind_id == v),
+                     ),
+                     "encoder": lambda v: language_profile_ids[v],
++                    "optional": True,  # QFlix patch 2026-05-11
+                 },
+             ),
+             ("series_type", "seriesType", {}),
+@@ -471,26 +472,34 @@
+ 
+     # FIXME: Determine easier procedure for getting access tokens and test.
+ 
+-    access_token: Password
++    access_token: Optional[Password] = None  # QFlix patch 2026-05-11
+     """
+     Access token for Sonarr from Trakt.
++
++    QFlix 2026-05-11: optional (Sonarr v4 strips value from secret fields on GET).
+     """
+ 
+-    refresh_token: Password
++    refresh_token: Optional[Password] = None  # QFlix patch 2026-05-11
+     """
+     Refresh token for Sonarr from Trakt.
++
++    QFlix 2026-05-11: optional (Sonarr v4 strips value from secret fields on GET).
+     """
+ 
+-    expires: datetime
++    expires: Optional[datetime] = None  # QFlix patch 2026-05-11
+     """
+     Expiry date-time of the access token, preferably in ISO-8601 format and in UTC.
+ 
+     Example: `2023-05-10T15:34:08.117451Z`
++
++    QFlix 2026-05-11: optional (Sonarr v4 may omit this field on GET).
+     """
+ 
+-    auth_user: TraktAuthUser
++    auth_user: Optional[TraktAuthUser] = None  # QFlix patch 2026-05-11
+     """
+     The username being authenticated in Trakt.
++
++    QFlix 2026-05-11: optional (Sonarr v4 may omit this field on GET).
+     """
+ 
+     # rating
+@@ -1222,7 +1231,7 @@
+         )
+         language_profile_ids: Dict[str, int] = (
+             {pro["name"]: pro["id"] for pro in api_get(secrets, "/api/v3/languageprofile")}
+-            if any(importlist["languageProfileId"] for importlist in importlists)
++            if any(importlist.get("languageProfileId", 0) for importlist in importlists)  # QFlix patch 2026-05-11
+             else {}
+         )
+         tag_ids: Dict[str, int] = (

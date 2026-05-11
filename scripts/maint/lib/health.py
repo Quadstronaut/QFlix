@@ -4,13 +4,17 @@ Dispatches on app.health.kind:
   http_api        — GET with optional auth header; port + key from secrets
   http_root       — GET /; port from port_secret or port_source; lenient status
   systemd_only    — systemctl --user is-active <unit>
+  systemd_oneshot — systemctl --user show <unit> -p Result; for timer-driven
+                    oneshot services (buildarr/recyclarr/kometa/...) where
+                    is-active on the .timer always says "active" regardless
+                    of whether the last service invocation succeeded.
   port_listen     — TCP connect to 127.0.0.1:<port>
   import_check    — <venv_python> -c "import <module>; print(version)"
   process_pattern — pgrep -f <pattern>; for UCC supervisord-managed apps
                     (unpackerr, postgres) with no HTTP surface or systemd unit
 
 All network/subprocess errors are caught; never raises. Latency is None for
-non-network checks (systemd_only, import_check, process_pattern).
+non-network checks (systemd_only, systemd_oneshot, import_check, process_pattern).
 """
 from __future__ import annotations
 
@@ -253,6 +257,66 @@ def _probe_systemd_only(app: App, timeout_s: float) -> HealthResult:
     return HealthResult(ok=False, latency_ms=None, reason=stdout or "unknown")
 
 
+def _probe_systemd_oneshot(app: App, timeout_s: float) -> HealthResult:
+    # For timer-driven oneshot .service units, is-active is ~always "inactive"
+    # between runs and "activating" during a run — neither tells us whether
+    # the LAST invocation succeeded. The authoritative signal is the unit's
+    # Result property, set by systemd when the run terminates.
+    #
+    # Result values: success | exit-code | signal | core-dump | timeout |
+    #                oom-kill | watchdog | start-limit-hit | resources
+    # Empty Result means the unit has never been triggered yet (fresh install
+    # before its first scheduled run) — treat as ok so newly-deployed timers
+    # don't show red until their first fire.
+    #
+    # During an in-flight run, Result still reflects the PRIOR invocation;
+    # ActiveState distinguishes "currently running" from "done": activating /
+    # deactivating mean the service is between states and we don't yet know
+    # whether this run will succeed. Treat as ok to avoid flapping during the
+    # recovery loop's 10/30/60s backoff window.
+    raw = app.health.raw
+    unit = (
+        raw.get("unit")
+        or app.raw.get("unit")
+        or getattr(app, "unit", None)
+    )
+    if not unit:
+        return HealthResult(ok=False, latency_ms=None, reason="no unit configured")
+
+    try:
+        cp = subprocess.run(
+            ["systemctl", "--user", "show", unit,
+             "-p", "Result", "-p", "ActiveState", "--no-pager"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return HealthResult(ok=False, latency_ms=None, reason="timeout")
+
+    if cp.returncode != 0:
+        stderr = cp.stderr.strip()[:80]
+        return HealthResult(ok=False, latency_ms=None,
+                            reason=f"systemctl exit {cp.returncode}: {stderr}")
+
+    props: dict[str, str] = {}
+    for line in cp.stdout.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            props[k.strip()] = v.strip()
+
+    result = props.get("Result", "")
+    state = props.get("ActiveState", "")
+
+    if state in ("activating", "deactivating", "reloading"):
+        return HealthResult(ok=True, latency_ms=None, reason=f"in-flight ({state})")
+    if state == "active" or result == "success" or result == "":
+        return HealthResult(ok=True, latency_ms=None,
+                            reason=result or state or "no-run-yet")
+    return HealthResult(ok=False, latency_ms=None,
+                        reason=f"Result={result} ActiveState={state}")
+
+
 def _probe_port_listen(app: App, timeout_s: float) -> HealthResult:
     try:
         port = _resolve_port(app)
@@ -335,6 +399,7 @@ _PROBES = {
     "http_api": _probe_http_api,
     "http_root": _probe_http_root,
     "systemd_only": _probe_systemd_only,
+    "systemd_oneshot": _probe_systemd_oneshot,
     "port_listen": _probe_port_listen,
     "import_check": _probe_import_check,
     "process_pattern": _probe_process_pattern,
