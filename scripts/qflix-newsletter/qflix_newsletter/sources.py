@@ -21,9 +21,9 @@ class RecentItem:
     year: Optional[int]
     summary: str
     thumb_url: Optional[str]
-    tautulli_thumb_url: Optional[str]
     added_at: int
     rating: Optional[float]
+    tautulli_thumb_url: Optional[str] = None
     show_title: Optional[str] = None
     season: Optional[int] = None
     episode: Optional[int] = None
