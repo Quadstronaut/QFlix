@@ -13,6 +13,7 @@ seedbox-layout.env
 Thumbs.db
 .claude/
 .playwright-mcp/
+.superpowers/
 .tmp/
 .tmp-*
 
