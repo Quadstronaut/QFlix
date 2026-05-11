@@ -186,10 +186,11 @@ def mirror_posters(
 ) -> Sequence[RecentItem]:
     """Mirror each item's poster to cache_dir and rewrite item.thumb_url.
 
-    Failures cascade to thumb_url=None (template hides the <img>).
-    Returns the (mutated) items for chainability.
+    Tries item.thumb_url (TMDB after enrich) first, then
+    item.tautulli_thumb_url. Both failures cascade to thumb_url=None.
 
-    Tautulli fallback is added in Task 8.
+    Logs one summary line per call:
+      mirror_posters: tmdb_hit=X tautulli_fallback=Y dead=Z cached=W
     """
     if session is None:
         session = requests.Session()
@@ -201,6 +202,7 @@ def mirror_posters(
         if item.thumb_url is None:
             continue
 
+        # ── Source 1: current thumb_url (TMDB after enrich) ──────────────
         sha = _sha_for(item.thumb_url)
         cached = _cache_lookup(cache_dir, sha)
         if cached is not None:
@@ -217,7 +219,26 @@ def mirror_posters(
             item.thumb_url = _public_url(public_base, sha, path.suffix.lstrip("."))
             continue
 
-        # Task 8 inserts the Tautulli fallback before this point.
+        # ── Source 2: tautulli_thumb_url ─────────────────────────────────
+        if item.tautulli_thumb_url:
+            t_sha = _sha_for(item.tautulli_thumb_url)
+            t_cached = _cache_lookup(cache_dir, t_sha)
+            if t_cached is not None:
+                item.thumb_url = _public_url(public_base, t_sha, t_cached.suffix.lstrip("."))
+                counts["cached"] += 1
+                continue
+
+            outcome, path = _try_one_source_with_retry(
+                item.tautulli_thumb_url, cache_dir, t_sha,
+                session=session, timeout_s=timeout_s, max_bytes=max_bytes,
+            )
+            if outcome == "ok" and path is not None:
+                counts["tautulli_fallback"] += 1
+                item.thumb_url = _public_url(public_base, t_sha, path.suffix.lstrip("."))
+                continue
+
+        # Both sources dead.
+        log.warning("mirror_posters: both sources dead for %r", item.title)
         item.thumb_url = None
         counts["dead"] += 1
 
