@@ -87,7 +87,9 @@ def build_sonarr_payload(name, sonarr_info, *, root_kw, profile_kw,
     lang_id = sonarr_info["langs"][0]["id"] if sonarr_info["langs"] else 1
     payload = {
         "name": name,
-        "hostname": "127.0.0.1",
+        # Seerr runs in Docker (bridge net) — host loopback is unreachable.
+        # 172.17.0.1 is the docker0 gateway → host. Same shape as Tautulli pms_url.
+        "hostname": "172.17.0.1",
         "port": sonarr_info["port"],
         "useSsl": False,
         "apiKey": sonarr_info["key"],
@@ -126,7 +128,7 @@ def build_radarr_payload(name, radarr_info, *, root_kw, profile_kw, is_default):
     root = pick_root(radarr_info["roots"], *root_kw)
     return {
         "name": name,
-        "hostname": "127.0.0.1",
+        "hostname": "172.17.0.1",
         "port": radarr_info["port"],
         "useSsl": False,
         "apiKey": radarr_info["key"],
@@ -155,7 +157,12 @@ def upsert(endpoint, payload, name_field="name"):
         if srv.get(name_field) == target_name:
             sid = srv["id"]
             print(f"  updating {endpoint}#{sid} {target_name!r}")
-            code, resp = seerr("PUT", f"/api/v1/settings/{endpoint}/{sid}", {**srv, **payload})
+            # Seerr 3.2.0 rejects `id` in the PUT body as a read-only field;
+            # the id is already encoded in the path. Strip it from the merged
+            # payload so repeat runs are clean no-ops instead of HTTP 400s.
+            merged = {**srv, **payload}
+            merged.pop("id", None)
+            code, resp = seerr("PUT", f"/api/v1/settings/{endpoint}/{sid}", merged)
             return code, resp
     print(f"  creating {endpoint} {target_name!r}")
     return seerr("POST", f"/api/v1/settings/{endpoint}", payload)
