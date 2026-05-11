@@ -43,7 +43,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 | End-to-end canaries (`scripts/canaries/`) | **4** | hourly · hourly · every-15min · daily-0430 |
 | Kuma push monitors (manitoba-owned) | **32** | 32/32 UP after the 2026-05-11 coverage sweep (every manifest app reports) |
 | Cron + systemd timers | **14** | window-aware (Mon 04–08 UTC drain) |
-| pytest suite (`tests/unit/`) | **202** | pure-Python, no SSH |
+| pytest suite (`tests/unit/`) | **236** | pure-Python, no SSH (231 pass · 5 skip) |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
 
 > [!NOTE]
@@ -375,7 +375,7 @@ scripts/
     systemd/                 # 8 services + 8 timers → ~/.config/systemd/user/
 
 secrets/                     # gitignored — per-secret one-line files
-tests/                       # 202 pytest tests (unit/) — pure-Python, no SSH
+tests/                       # 236 pytest tests (unit/) — pure-Python, no SSH
 ```
 
 ---
