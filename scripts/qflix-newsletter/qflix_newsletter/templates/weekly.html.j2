@@ -26,16 +26,16 @@
       </td></tr>
       {{ filmstrip() }}
 
-      {# Pick of the Week #}
+      {# Pick of the Week — gold corner ribbon replaces standalone label row #}
       {% if ctx.pick %}
-      <tr><td style="padding:0 16px 24px 16px;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0e1d33;border:1px solid rgba(212,175,55,.35);border-radius:8px;overflow:hidden;">
-          <tr><td style="padding:16px 16px 8px 16px;">
-            <span style="font-size:11px;letter-spacing:1.5px;color:#d4af37;font-weight:700;text-transform:uppercase;">Pick of the Week</span>
+      <tr><td style="padding:20px 16px 24px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0e1d33;border:1px solid rgba(212,175,55,.4);border-radius:8px;overflow:hidden;position:relative;">
+          <tr><td style="padding:0;position:relative;">
+            <div style="position:absolute;top:18px;left:-38px;background:linear-gradient(135deg,#e8c456,#b8941f);color:#0a1628;padding:4px 44px;transform:rotate(-30deg);font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;box-shadow:0 2px 8px rgba(0,0,0,.5);z-index:2;">Pick of the Week</div>
           </td></tr>
           {% if ctx.pick.thumb_url %}
-          <tr><td align="center" style="padding:0 16px;">
-            <img src="{{ ctx.pick.thumb_url }}" alt="" width="220" style="display:block;max-width:100%;height:auto;border-radius:6px;">
+          <tr><td align="center" style="padding:24px 16px 8px 16px;">
+            <img src="{{ ctx.pick.thumb_url }}" alt="" width="220" style="display:block;max-width:100%;height:auto;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.7);">
           </td></tr>
           {% endif %}
           <tr><td style="padding:12px 16px 4px 16px;">

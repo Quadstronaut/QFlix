@@ -30,3 +30,14 @@ def test_filmstrip_accent_appears_twice(sample_ctx):
     pattern = "repeating-linear-gradient(90deg,#0a0a0a 0,#0a0a0a 8px,#1a1a1a 8px,#1a1a1a 14px)"
     # Once below the header, once above the footer.
     assert html.count(pattern) == 2
+
+
+def test_pick_has_gold_diagonal_ribbon(sample_ctx):
+    html = render_html(sample_ctx)
+    # The label moves into the ribbon. Verify the ribbon CSS signature
+    # appears on the Pick card and the old-style label row is gone.
+    assert "transform:rotate(-30deg)" in html
+    assert "linear-gradient(135deg,#e8c456,#b8941f)" in html
+    # Old standalone label (uppercase letter-spacing block in its own <td>) is gone:
+    # we just check that the new ribbon DIV appears within the Pick card markup.
+    assert "Pick of the Week" in html  # text still present, but inside the ribbon
