@@ -149,6 +149,24 @@ def _cron_status(app: App, timeout_s: float) -> LifecycleResult:
     return result
 
 
+def _cron_start_service(app: App, timeout_s: float) -> LifecycleResult:
+    # Re-invoke a oneshot's .service unit (the recovery flow's analogue of
+    # restart for cron-class apps). reset-failed clears the prior failed
+    # state so start can fire; --wait blocks until the run terminates so the
+    # subsequent health probe sees the new Result rather than the old one.
+    #
+    # Manifest convention: timer-driven apps now declare `unit: <name>.service`
+    # — we read it directly. Tolerate a stale `<name>.timer` value by stripping
+    # the suffix; the .timer is a scheduler, not the thing we want to run.
+    unit = app.raw.get("unit") or ""
+    if unit.endswith(".timer"):
+        unit = unit[: -len(".timer")] + ".service"
+
+    # reset-failed: never fails fatally for a never-failed unit; ignore exit.
+    _run(["systemctl", "--user", "reset-failed", unit], timeout_s)
+    return _run(["systemctl", "--user", "start", "--wait", unit], timeout_s)
+
+
 # ---------------------------------------------------------------------------
 # Public API: start/stop/restart/status
 # ---------------------------------------------------------------------------
@@ -159,6 +177,8 @@ def start(app: App, *, timeout_s: float | None = None) -> LifecycleResult:
         return _ucc_verb(app, "start", t)
     if app.class_ == "systemd":
         return _systemd_verb(app, "start", t)
+    if app.class_ == "cron" and app.raw.get("unit"):
+        return _cron_start_service(app, t)
     if app.class_ in ("cron", "library"):
         return _not_applicable()
     raise LifecycleError(f"unknown class '{app.class_}' for app '{app.name}'")
@@ -181,6 +201,8 @@ def restart(app: App, *, timeout_s: float | None = None) -> LifecycleResult:
         return _ucc_verb(app, "restart", t)
     if app.class_ == "systemd":
         return _systemd_verb(app, "restart", t)
+    if app.class_ == "cron" and app.raw.get("unit"):
+        return _cron_start_service(app, t)
     if app.class_ in ("cron", "library"):
         return _not_applicable()
     raise LifecycleError(f"unknown class '{app.class_}' for app '{app.name}'")

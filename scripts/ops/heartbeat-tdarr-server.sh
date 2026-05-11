@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Restart Tdarr Server if dead. Quiet on success. Reads port from server config.
+# XDG_RUNTIME_DIR required for `systemctl --user` from cron (no user-bus
+# inherited otherwise). The curl /api/v2/status probe usually succeeds before
+# we reach the systemctl fallback, but if it doesn't, we need bus access.
+: "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+export XDG_RUNTIME_DIR
 set -uo pipefail
 CONF="$HOME/.apps/tdarr/configs/Tdarr_Server_Config.json"
 PORT=$(grep -oP '"serverPort":\s*\K[0-9]+' "$CONF" 2>/dev/null)

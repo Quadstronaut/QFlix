@@ -206,8 +206,40 @@ def test_systemd_status_returns_is_active():
 # cron class tests
 # ---------------------------------------------------------------------------
 
-def test_cron_start_returns_not_applicable():
+def test_cron_start_invokes_systemctl_start_wait_on_service_unit():
+    # Manifest convention is `unit: <name>.service` for timer-driven oneshots.
+    # The recovery flow needs --wait so the subsequent health probe reads the
+    # new Result, not the prior invocation's.
+    app = _cron_app(unit="buildarr.service")
+    cp = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    with patch("subprocess.run", return_value=cp) as mock_run:
+        result = start(app)
+
+    calls = [c.args[0] for c in mock_run.call_args_list]
+    # Two calls: reset-failed (clear prior state) then start --wait.
+    assert calls[0] == ["systemctl", "--user", "reset-failed", "buildarr.service"]
+    assert calls[1] == ["systemctl", "--user", "start", "--wait", "buildarr.service"]
+    assert result.ok is True
+
+
+def test_cron_start_strips_timer_suffix_if_someone_passed_one():
+    # Defensive: legacy manifests may still have `unit: <name>.timer`. The .timer
+    # is a scheduler — starting it does not invoke the service. Strip to .service.
     app = _cron_app(unit="recyclarr.timer")
+    cp = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    with patch("subprocess.run", return_value=cp) as mock_run:
+        start(app)
+
+    last_args = mock_run.call_args_list[-1].args[0]
+    assert last_args == ["systemctl", "--user", "start", "--wait", "recyclarr.service"]
+
+
+def test_cron_start_without_unit_returns_not_applicable():
+    # Pure crontab-driven cron entries (no systemd unit) can't be auto-recovered
+    # via systemctl; fall through to not-applicable.
+    app = _cron_app(unit=None)
 
     with patch("subprocess.run") as mock_run:
         result = start(app)
@@ -218,6 +250,8 @@ def test_cron_start_returns_not_applicable():
 
 
 def test_cron_stop_returns_not_applicable():
+    # Stopping a oneshot doesn't make conceptual sense — the operator disables
+    # the timer instead. Keep stop a no-op for cron.
     app = _cron_app()
 
     with patch("subprocess.run") as mock_run:
@@ -228,15 +262,18 @@ def test_cron_stop_returns_not_applicable():
     assert result.reason == "not applicable"
 
 
-def test_cron_restart_returns_not_applicable():
-    app = _cron_app()
+def test_cron_restart_invokes_systemctl_start_wait():
+    # restart on cron = same as start (re-fire the oneshot). The recovery loop
+    # only calls start, but the public restart() should behave consistently.
+    app = _cron_app(unit="kometa.service")
+    cp = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
-    with patch("subprocess.run") as mock_run:
+    with patch("subprocess.run", return_value=cp) as mock_run:
         result = restart(app)
 
-    mock_run.assert_not_called()
-    assert result.ok is False
-    assert result.reason == "not applicable"
+    last_args = mock_run.call_args_list[-1].args[0]
+    assert last_args == ["systemctl", "--user", "start", "--wait", "kometa.service"]
+    assert result.ok is True
 
 
 def test_cron_status_runs_is_active_on_timer_unit():

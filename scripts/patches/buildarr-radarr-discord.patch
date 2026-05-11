@@ -1,0 +1,28 @@
+--- buildarr_radarr/config/settings/notifications/discord.py.notification-enum-patch.bak	2026-05-11 07:14:31.561771684 +0200
++++ buildarr_radarr/config/settings/notifications/discord.py	2026-05-11 07:14:31.573772204 +0200
+@@ -42,6 +42,7 @@
+     indexer = 10
+     custom_formats = 11
+     custom_format_score = 12
++    tags = 13  # QFlix patch 2026-05-11: Radarr v6
+ 
+ 
+ class OnImportField(BaseEnum):
+@@ -58,6 +59,9 @@
+     release = 10
+     poster = 11
+     fanart = 12
++    tags = 13  # QFlix patch 2026-05-11: Radarr v6
++    custom_formats = 14  # QFlix patch 2026-05-11: Radarr v6
++    custom_format_score = 15  # QFlix patch 2026-05-11: Radarr v6
+ 
+ 
+ class OnManualInteractionField(BaseEnum):
+@@ -71,6 +75,7 @@
+     download_title = 7
+     poster = 8
+     fanart = 9
++    tags = 10  # QFlix patch 2026-05-11: Radarr v6
+ 
+ 
+ class DiscordNotification(Notification):

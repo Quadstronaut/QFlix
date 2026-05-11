@@ -1,0 +1,23 @@
+--- buildarr_sonarr/config/profiles/release.py.preferred-patch.bak	2026-05-11 06:36:25.000000000 +0200
++++ buildarr_sonarr/config/profiles/release.py	2026-05-11 06:37:25.000000000 +0200
+@@ -213,13 +213,19 @@
+                 "preferred",
+                 "preferred",
+                 {
++                    # QFlix patch 2026-05-11: Sonarr v4 dropped "preferred" from
++                    # release-profile responses (replaced by Custom Formats).
++                    # Mark optional so buildarr falls back to the local default
++                    # (empty list) when remote omits the key.
++                    "optional": True,
+                     "decoder": lambda v: [
+                         PreferredWord(term=p["key"], score=p["value"]) for p in v
+                     ],
+                     "encoder": lambda v: [{"key": p.term, "value": p.score} for p in v],
+                 },
+             ),
+-            ("include_preferred_when_renaming", "includePreferredWhenRenaming", {}),
++            # QFlix patch 2026-05-11: Sonarr v4 dropped includePreferredWhenRenaming. Optional.
++            ("include_preferred_when_renaming", "includePreferredWhenRenaming", {"optional": True}),
+             (
+                 "indexer",
+                 "indexerId",

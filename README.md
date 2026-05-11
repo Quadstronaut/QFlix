@@ -29,8 +29,8 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
   <a href="#project-timeline">Timeline</a> ·
   <a href="#manifest--single-source-of-truth">Manifest</a> ·
   <a href="#repo-layout">Repo layout</a> ·
-  <a href="#operating-the-stack">Operating</a> ·
-  <a href="#pointers">Pointers</a>
+  <a href="#how-its-run">How it's run</a> ·
+  <a href="#where-to-dig-in">Dig in</a>
 </p>
 
 ---
@@ -166,7 +166,7 @@ flowchart TB
   PR[prune-text-libraries.sh<br/>nightly 04:00]:::nightly --> txt[ebook/audiobook/comic/manga<br/>>365d → delete + rescan]
 ```
 
-Recyclarr, Kometa, Buildarr, and Upgradinatorr are cron-class — no UI, observe via `journalctl --user -u <name>.service`.
+Recyclarr, Kometa, Buildarr, and Upgradinatorr are cron-class — no UI, just systemd timers firing oneshot services.
 
 </details>
 
@@ -268,6 +268,7 @@ timeline
             : Jellyseerr → Seerr swap (v3.2.0 install, 4 *arr servers via API, trustProxy on)
             : Smoke 45/45/0 · public-access bookmarks audited + fixed
             : End-user + operator FAQ page shipped at /faq/ (74 KB self-contained)
+            : Buildarr patched to manage Sonarr v4 + Radarr v6 (7 venv edits at scripts/patches/, idempotent re-apply, Result=success on all 4 instances)
 ```
 
 ---
@@ -275,7 +276,7 @@ timeline
 ## Manifest — single source of truth
 
 > [!IMPORTANT]
-> `manifest/apps.yaml` is the **only** place that records "what apps exist." Health probes, systemd units, Kuma monitors, recovery, upgrade — all read from here. If you change a port, change it in `secrets/` and the pusher picks it up; if you add an app, add a manifest entry and `~/bin/manitoba-maint kuma audit` will tell you whether the Kuma monitor needs creating.
+> `manifest/apps.yaml` is the **only** place that records "what apps exist." Health probes, systemd units, Kuma monitors, recovery, and the weekly upgrader all read from here.
 
 <details><summary>Schema</summary>
 
@@ -380,99 +381,40 @@ tests/                       # 236 pytest tests (unit/) — pure-Python, no SSH
 
 ---
 
-## Operating the stack
+## How it's run
 
-<details><summary>Maintenance window — Mon 04:00–08:00 UTC</summary>
+QFlix runs unattended most of the week. Four things are worth knowing if you're reading the code or wondering how the lights stay on:
 
-`manitoba-maint-window.timer` fires `window.service` Monday 11:00 CEST (04:00 UTC). The service:
+<a id="notification-channel"></a>
 
-1. Posts a "window open" message to Discord.
-2. Acquires `~/.opt/maint/window.lock` (the watchdog at 17:00 clears stale locks).
-3. Runs Recyclarr (TRaSH sync), Kometa (collections/posters), Buildarr (declarative *arr reconcile).
-4. Runs `manitoba-maint upgrade` per manifest (Playwright cp.ultra.cc click for UCC apps; in-place swap for systemd-class apps).
-5. Restores prior service state from the discovery snapshot.
-6. Releases the lock + posts "window closed" with summary.
+- **Maintenance window — Mon 04:00–08:00 UTC.** The only time the stack is allowed to break itself. Recyclarr syncs TRaSH-Guides, Kometa rebuilds collections, Buildarr reconciles *arr config, and the Playwright upgrader clicks *Upgrade & Repair* on cp.ultra.cc per app. Auto-heal is paused for the duration so restarts don't race the upgrades. → [FAQ §8](https://quadstronaut.seedbox.example.com/faq/#sec-window)
+- **Self-heal loop.** Outside the window, a pusher probes every app every 60 s and pushes status to Uptime Kuma. After 3 consecutive failures it tries up to 3 restarts (10 s · 30 s · 60 s back-off) before paging on Discord. Most outages resolve inside 2 minutes without the operator touching anything. → [FAQ §10](https://quadstronaut.seedbox.example.com/faq/#sec-monitoring)
+- **One alert channel.** A single Discord webhook with an operator `@ping` on `error` / `critical` levels (Notifiarr was retired 2026-05-10). → [FAQ §15](https://quadstronaut.seedbox.example.com/faq/#sec-discord)
+- **Smoke test.** `scripts/smoke-test.sh` runs ~45 assertions across Prowlarr, *arr↔qBit, hardlinks, app liveness, and the maintenance system. Run after every tracked change. → [FAQ — what does 45/45 cover](https://quadstronaut.seedbox.example.com/faq/#q-smoke-buckets)
 
-During the window, the pusher's auto-heal is paused — restarts during scheduled work would race the upgrade clicker.
+### What's reachable without the SSH tunnel
 
-**Out-of-window timers** (by design):
-- `upgradinatorr.timer` fires Sun 06:04 — pre-window stale-grab re-search, so by Monday the *arr stack is already chasing fresh releases.
-- `qflix-newsletter.timer` fires Mon 08:00 — post-window so the digest reflects whatever the window just upgraded.
-
-</details>
-
-<details id="notification-channel"><summary>Notification channel — Discord webhook + operator @ping</summary>
-
-Notifiarr was purged on 2026-05-10. `secrets/discord-webhook.url` is the single channel for operator-actionable alerts. Two notification objects exist in Kuma:
-
-| Kuma channel | Wired to | Purpose |
-|---|---|---|
-| `Mission Control - QFlix` (default) | every manitoba monitor | Discord — operator visibility |
-| `Manitoba auto-heal webhook` (default) | every manitoba monitor | internal — fires `recovery.trigger_async` |
-
-Levels `error` and `critical` from `scripts/maint/lib/notify.py` add a `<@REDACTED>` mention in the Discord `content` field (the embed alone doesn't trigger a push). The user-ID lives in `secrets/discord-operator.id` so the code stays clean. Tautulli and the 4 canaries had been wired to only the auto-heal webhook (silent failures); Recyclarr / Buildarr / Qflix Newsletter had been wired to neither. Both gaps were closed during the 2026-05-11 inventory sweep.
-
-</details>
-
-<details><summary>SSH tunnel — admin surface</summary>
-
-`scripts/manitoba-tunnel.ps1` runs as a Windows scheduled task (`\Archangel\Manitoba SSH Tunnel`). It mirrors local-port → server-port so bookmarks read naturally (`localhost:17026/sonarr/` = the seedbox Sonarr). Default forwards:
-
-```text
-sonarr 17026 · sonarr2 17003 · radarr 17027 · radarr2 17008
-prowlarr 17024 · bazarr 17031 · tautulli 17014 · qbittorrent 17041
-listmonk 42014 (canonical probe) · uptime-kuma 42005 · tdarr 42018 · maintainerr 42007
-```
-
-`ExitOnForwardFailure=no` — a stopped service doesn't kill the whole tunnel. Test-Tunnel polls only port 42014 (Listmonk, always-on systemd).
-
-</details>
-
-<details><summary>Public vs internal surface</summary>
-
-| App | Where | Auth |
+| Surface | URL | Auth |
 |---|---|---|
 | Plex | `https://<fqdn>/web/` | Plex SSO |
-| Seerr | `https://<fqdn>/seerr/` | Plex SSO (issue submission inline on each title) |
-| FAQ &amp; tutorial | `https://<fqdn>/faq/` | none (self-contained static page) |
-| Homarr (public board) | `https://<fqdn>/` (root redirect) | none |
-| Homarr (admin board) | `https://<fqdn>/board/private` | htpasswd |
-| Tautulli (read-only stats) | `https://<fqdn>/tautulli/` | none (`auth_basic off` in nginx fragment) |
+| Seerr (requests) | `https://<fqdn>/seerr/` | Plex SSO |
+| FAQ + tutorial | `https://<fqdn>/faq/` | none |
+| Homarr (public board) | `https://<fqdn>/` | none |
+| Tautulli (read-only stats) | `https://<fqdn>/tautulli/` | none |
 | Audiobookshelf | `https://audiobookshelf-<user>.<domain>/` | htpasswd |
-| Calibre-Web / Kavita / Komga / Listmonk archive | `https://<fqdn>/<slug>/` | none |
-| Listmonk admin | tunnel `localhost:42014` | Listmonk's own login |
+| Calibre-Web · Kavita · Komga · Listmonk archive | `https://<fqdn>/<slug>/` | per-app login or none |
 | Kuma status page | `https://<fqdn>/status/manitoba` | none |
-| Kuma admin | tunnel `localhost:42005` | Kuma's own login |
-| Every *arr admin | tunnel `localhost:<port>/<urlbase>/` | each app's own auth |
 
-Outer Ultra.cc nginx terminates HTTPS and applies htpasswd by default. User-level proxy fragments in `~/.apps/nginx/proxy.d/<app>.conf` opt out via `auth_basic off`. Audiobookshelf uses the subdomain form because the path form returns 404 on this slot — confirmed via the 2026-05-11 bookmark audit.
-
-</details>
-
-<details><summary>Smoke test — what 45/45 means</summary>
-
-`scripts/smoke-test.sh` runs ~45 checks in five buckets:
-
-1. **Prowlarr** — indexer count ≥ 5; search round-trip returns ≥ 1 for "ubuntu"
-2. **\*arr↔qBit** — `testall` returns 200 for sonarr/sonarr2/radarr/radarr2
-3. **Library hygiene** — hardlink count ≥ 2 on Movies samples; rescan helpers reach Komga/Kavita/Audiobookshelf
-4. **App liveness** — Maintainerr (with sonarr count), qBittorrent (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer, Recyclarr no-4k policy, Listmonk health + subscriber count, all 4 canaries
-5. **Maintenance system** — webhook /health, window timer scheduled, manifest validates, pusher active, Kuma drift = 0, Kuma all-up (with external + parked excluded)
-
-A single failure here means an operator-actionable signal; rerun the smoke after each tracked change.
-
-</details>
+Every *arr admin UI, Kuma admin, Listmonk admin, and qBittorrent live behind a workstation SSH tunnel and never touch the public surface. → [FAQ §7 for the tunnel setup](https://quadstronaut.seedbox.example.com/faq/#sec-tunnel)
 
 ---
 
-## Pointers
+## Where to dig in
 
-- **End-user / operator FAQ + tutorial** → live page at [quadstronaut.seedbox.example.com/faq/](https://quadstronaut.seedbox.example.com/faq/) (source: [`scripts/data/qflix-faq.html`](scripts/data/qflix-faq.html), nginx fragment [`scripts/data/qflix-faq.conf`](scripts/data/qflix-faq.conf)). 17 sections, 50+ Q&amp;As, covers requesting media, anime routing, the maintenance window, hardlinks, Kuma phantom monitors, the top 10 recurring screw-ups, and an emergency playbook.
-- **Where's X installed/configured?** → [`inventory.md`](inventory.md)
-- **How do I add a new app?** → add an entry to `manifest/apps.yaml`, run <kbd>~/bin/manitoba-maint manifest validate</kbd>, then <kbd>manitoba-maint kuma audit</kbd> to see if the Kuma monitor needs creating.
-- **Something's broken — what fires?** → manitoba-maint pusher tries 3 restarts, then notifies Discord with an operator @ping. Check `~/.opt/maint/state.json` for the failure log, <kbd>journalctl --user -u manitoba-maint-pusher</kbd> for traces.
-- **Operator deferred items / open questions** → [`docs/operator-deferred.md`](docs/operator-deferred.md)
-- **Reversibility log of all stop/start/uninstall** → [`docs/transition-log.md`](docs/transition-log.md)
+- **End-user + contributor FAQ** → [quadstronaut.seedbox.example.com/faq/](https://quadstronaut.seedbox.example.com/faq/) — 18 sections, 70 Q&As. Covers requesting media, anime routing, why things disappear, the maintenance window, hardlinks, the top 10 recurring screw-ups, an emergency playbook, and a Nerd Corner that walks through every technology QFlix is built on. Source lives in [`scripts/data/qflix-faq.html`](scripts/data/qflix-faq.html).
+- **What's installed where on the seedbox?** → [`inventory.md`](inventory.md) — the live source of truth, kept in sync with the manifest.
+- **What apps exist?** → [`manifest/apps.yaml`](manifest/apps.yaml) — the single source of truth for health probes, monitors, recovery, and the upgrader.
+- **Public status page** → [Uptime Kuma](https://quadstronaut.seedbox.example.com/status/manitoba) — every monitor, no login.
 
 <div align="center">
 <sub><br><img src="Q.png" width="48" alt=""><br><b>QFlix</b> · single operator · single manifest · single window<br><sub><code>quadstronaut.seedbox.example.com</code></sub></sub>

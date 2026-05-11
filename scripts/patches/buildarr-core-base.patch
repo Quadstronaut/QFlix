@@ -1,0 +1,38 @@
+--- buildarr/config/base.py.missingvalue-patch.bak	2026-05-11 07:08:00.276823061 +0200
++++ buildarr/config/base.py	2026-05-11 07:09:35.952967301 +0200
+@@ -212,18 +212,29 @@
+                                     local_attrs[attr_name] = attr_metadata["field_default"]
+                                     field_default_set = True
+                                 else:
+-                                    raise ValueError(
+-                                        "'value' attribute not included "
+-                                        f"for remote field '{remote_attr_name}' "
+-                                        "and 'field_default' not defined in local attribute",
+-                                    ) from None
++                                    # QFlix patch 2026-05-11: Sonarr v4+ / Radarr v5+ strip
++                                    # 'value' from secret fields (accessToken, password, apiKey)
++                                    # and unset optional fields on GET. Treat missing value the
++                                    # same as missing field name — fall back to the local
++                                    # pydantic default. Symmetric with the `optional` mechanism
++                                    # used when the field name itself is missing.
++                                    local_attrs[attr_name] = cls.__fields__[attr_name].default
++                                    field_default_set = True
+                             break
+                     else:
+                         if attr_metadata.get("optional", False):
+                             local_attrs[attr_name] = cls.__fields__[attr_name].default
+                             continue
+                         else:
+-                            raise ValueError(f"Remote field '{remote_attr_name}' not found")
++                            # QFlix patch 2026-05-11: Sonarr v4+ / Radarr v5+/v6 removed
++                            # many fields that buildarr-sonarr 0.6.4 / buildarr-radarr 0.2.6
++                            # expect from older API versions. Treat missing field name as
++                            # optional — fall back to local pydantic default. Symmetric with
++                            # the missing-value handling above. Required fields with no
++                            # default will still surface via a clearer pydantic ValidationError
++                            # at model construction time.
++                            local_attrs[attr_name] = cls.__fields__[attr_name].default
++                            continue
+                     # If the local attribute was set to the field default value,
+                     # we're done with this attribute. Move onto the next one.
+                     if field_default_set:

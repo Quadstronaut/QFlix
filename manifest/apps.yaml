@@ -296,11 +296,12 @@ apps:
 
   recyclarr:
     class: cron
-    unit: recyclarr.timer
+    # unit is the .service (not the .timer) so health probe reads the last
+    # invocation's Result via systemd_oneshot. The .timer remains the scheduler.
+    unit: recyclarr.service
     kuma_monitor: "Recyclarr"
     health:
-      kind: systemd_only
-      expect: active
+      kind: systemd_oneshot
     upgrade:
       kind: tarball_swap
       url_template: "https://github.com/recyclarr/recyclarr/releases/download/{version}/recyclarr-linux-x64.tar.xz"
@@ -311,40 +312,45 @@ apps:
     # which fires the qflix-newsletter.service oneshot. Replaces Conjurr +
     # Newsletterr (retired 2026-05-10). Source lives in scripts/qflix-newsletter/.
     class: cron
-    unit: qflix-newsletter.timer
+    unit: qflix-newsletter.service
     kuma_monitor: "Qflix Newsletter"
     health:
-      kind: systemd_only
-      expect: active
+      kind: systemd_oneshot
 
   buildarr:
-    # Declarative *arr state-converger. Pure Python; one-shot run nightly at
-    # 04:30 reconciles Sonarr/Radarr/Prowlarr/Seerr to ~/.apps/buildarr/
-    # buildarr.yml. INTERNAL — no UI, no nginx fragment.
+    # Manages all 4 *arr instances (sonarr, sonarr2, radarr, radarr2) via
+    # declarative YAML, fired by buildarr.timer Mon-Sun 04:30. Probe is
+    # systemd_oneshot — reads the .service ExecMainStatus, so a buildarr
+    # failure surfaces in Kuma/Discord immediately rather than being masked
+    # by the timer's perpetual "active" state.
+    #
+    # buildarr-sonarr 0.6.4 + buildarr-radarr 0.2.6 are not natively compatible
+    # with Sonarr v4 / Radarr v6 — see scripts/configure/60-buildarr-patches.sh
+    # and scripts/patches/buildarr-*.patch for the 7 in-venv edits that bridge
+    # the gap. When upstream catches up the operator can `pip install -U
+    # buildarr buildarr-sonarr buildarr-radarr` and retire the patches (the
+    # script's header documents the removal path).
     class: cron
-    unit: buildarr.timer
+    unit: buildarr.service
     kuma_monitor: "Buildarr"
     health:
-      kind: systemd_only
-      expect: active
+      kind: systemd_oneshot
 
   upgradinatorr:
     # Re-searches stale *arr grabs across sonarr/sonarr2/radarr/radarr2.
     # Runs weekly Sun 06:04 via upgradinatorr.timer. ExecStart fans out per app.
     class: cron
-    unit: upgradinatorr.timer
+    unit: upgradinatorr.service
     kuma_monitor: "Upgradinatorr"
     health:
-      kind: systemd_only
-      expect: active
+      kind: systemd_oneshot
 
   kometa:
     class: cron
-    unit: kometa.timer
+    unit: kometa.service
     kuma_monitor: "Kometa"
     health:
-      kind: systemd_only
-      expect: active
+      kind: systemd_oneshot
     upgrade:
       kind: git_checkout
       repo_path: "~/.apps/kometa/repo"

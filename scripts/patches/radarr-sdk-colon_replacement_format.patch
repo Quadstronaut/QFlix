@@ -1,0 +1,9 @@
+--- radarr/models/colon_replacement_format.py.smart-patch.bak	2026-05-11 06:36:25.000000000 +0200
++++ radarr/models/colon_replacement_format.py	2026-05-11 06:36:25.000000000 +0200
+@@ -34,4 +34,6 @@
+     DASH = 'dash'
+     SPACEDASH = 'spaceDash'
+     SPACEDASHSPACE = 'spaceDashSpace'
++    # QFlix patch 2026-05-11: Radarr v5 added "smart" as a colon-replacement option.
++    SMART = 'smart'
+ 

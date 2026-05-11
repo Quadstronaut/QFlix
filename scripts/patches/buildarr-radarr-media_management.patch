@@ -1,0 +1,10 @@
+--- buildarr_radarr/config/settings/media_management.py.colon-replacement-patch.bak	2026-05-11 07:13:26.566956416 +0200
++++ buildarr_radarr/config/settings/media_management.py	2026-05-11 07:13:26.694961960 +0200
+@@ -41,6 +41,7 @@
+     dash = "dash"
+     space_dash = "spaceDash"
+     space_dash_space = "spaceDashSpace"
++    smart = "smart"  # QFlix patch 2026-05-11: Radarr v5+ added smart colon-replacement
+ 
+ 
+ class PropersAndRepacks(BaseEnum):
