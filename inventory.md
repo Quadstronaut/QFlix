@@ -134,7 +134,13 @@ Verified live: all four `~/scripts/Ultra-*/` dirs purged (Version-Notifier, App-
 | Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `P:\Documents\GIT\QFlix\scripts\manitoba-tunnel.ps1` | powershell daemon | runs on operator workstation (Windows Task: `\Archangel\Manitoba SSH Tunnel`) | Permanent SSH tunnel for 10 INTERNAL admin ports | NO | n/a | n/a | n/a | self-healing (Test-Tunnel via 42014) | n/a | Gitignored (hardcodes real FQDN). Post-2026-05-11: readarr/mylar3/ombi forwards + 42015-reserved-for-Profilarr comment removed. |
-| `P:\Documents\GIT\EDGEbookmarks.html` | html | n/a | Local browser bookmarks dashboard (gitignored) | NO | n/a | n/a | n/a | n/a | n/a | 860 lines, one dir above repo per convention. Cleaned 2026-05-11: ombi/mylar3/readarr tiles removed. |
+| `P:\Documents\GIT\EDGEbookmarks.html` | html | n/a | Local browser bookmarks dashboard (gitignored) | NO | n/a | n/a | n/a | n/a | n/a | 860 lines, one dir above repo per convention. Cleaned 2026-05-11: ombi/mylar3/readarr tiles removed; FAQ tile added. |
+
+## N. Documentation served by user-nginx
+
+| Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `~/www/qflix-faq/index.html` (74 KB) | static html | served by user-nginx | End-user + operator FAQ + tutorial · 17 sections, 50+ Q&amp;As; blue-themed self-contained page | NO (regenerate from `scripts/data/qflix-faq.html` in repo) | Public | `https://quadstronaut.seedbox.example.com/faq/` | n/a (static) | n/a | n/a (covered transitively by canary-mobile-ux: if nginx down, that canary goes red) | Deployed 2026-05-11. Nginx fragment `~/.apps/nginx/proxy.d/qflix-faq.conf` opts out of htpasswd via `auth_basic off`. Repo source: `scripts/data/qflix-faq.html` + `scripts/data/qflix-faq.conf`. |
 
 ---
 
