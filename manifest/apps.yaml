@@ -116,16 +116,16 @@ apps:
       path_override: "/identity"
       expect_status: 200
 
-  jellyseerr:
+  seerr:
     class: ucc
-    ucc_slug: jellyseerr
-    kuma_monitor: "Jellyseerr"
+    ucc_slug: seerr
+    kuma_monitor: "Seerr"
     health:
       kind: http_api
       path_template: "/api/v1/status"
       auth_header: "X-Api-Key"
-      auth_secret: jellyseerr.key
-      port_secret: jellyseerr.port
+      auth_secret: seerr.key
+      port_secret: seerr.port
       expect_status: 200
 
   tautulli:
@@ -318,7 +318,7 @@ apps:
 
   buildarr:
     # Declarative *arr state-converger. Pure Python; one-shot run nightly at
-    # 04:30 reconciles Sonarr/Radarr/Prowlarr/Jellyseerr to ~/.apps/buildarr/
+    # 04:30 reconciles Sonarr/Radarr/Prowlarr/Seerr to ~/.apps/buildarr/
     # buildarr.yml. INTERNAL — no UI, no nginx fragment.
     class: cron
     unit: buildarr.timer

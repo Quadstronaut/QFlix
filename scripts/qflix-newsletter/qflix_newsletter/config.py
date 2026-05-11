@@ -110,5 +110,5 @@ class Config:
                 if maybe_read_secret("listmonk.template_id", d)
                 else None
             ),
-            public_host="quadstronaut.seedbox.example.com",
+            public_host=(maybe_read_secret("seedbox.host", d) or "quadstronaut.seedbox.example.com"),
         )

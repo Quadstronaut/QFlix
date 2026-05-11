@@ -32,7 +32,7 @@ seedbox disagree, the live seedbox wins and this file records both.
 | bazarr | ucc | yes | Subtitles | NO | Internal | tunnel `http://localhost:17031/bazarr/` | yes | yes (pusher) | 2 |  |
 | qbittorrent | ucc | yes (qbittorrent.service v5.0.3) | Download client | NO | Internal (operator-public via /qbittorrent/) | tunnel `http://localhost:17041/` · public `https://…/qbittorrent/` (htpasswd + qBit auth) | yes | yes (pusher) | 2 | No `~/.apps/qbittorrent/` dir — config at system level; manifest probes via http_root. |
 | plex | ucc | yes | Media server (canonical) | NO | Public | `https://quadstronaut.seedbox.example.com/web/` (Plex SSO) | yes | yes (pusher) | 2 |  |
-| jellyseerr | ucc | yes | User request portal | NO | Public (but htpasswd still in front — see docs) | `https://quadstronaut.seedbox.example.com/jellyseerr/` · tunnel `localhost:42013` (if added) | yes | yes (pusher) | 2 | Operator-stated end-state is Seerr (not Jellyseerr). Migration queued. Fragment lacks `auth_basic off;`. |
+| seerr | ucc | yes (Docker container `seerr-quadstronaut`, v3.2.0) | User request portal + issue tracking | NO | Public — `https://quadstronaut.seedbox.example.com/seerr/` AND canonical `https://seerr-quadstronaut.seedbox.example.com/` | port 42011 (Docker) · loopback `http://127.0.0.1:42011/` | yes (Mon 04-08) | yes (pusher; manifest `kuma_monitor: "Seerr"`, health probes `/api/v1/status` with `seerr.key`) | 2 | Installed 2026-05-11 via `app-seerr install` v3.2.0; Jellyseerr stopped + purged → `~/.purged-2026-05-11/jellyseerr-install/`. API key in `~/secrets/seerr.key`. 4 *arr servers configured via API (Sonarr Cinema default + Sonarr Anime non-default + Radarr Cinema default + Radarr Anime non-default; idempotent script `scripts/configure/30-seerr-arrs.py`). `trustProxy: true` on `/api/v1/settings/network` for the nginx reverse proxy. **Anime auto-routing caveat:** per [docs.seerr.dev](https://docs.seerr.dev/using-seerr/settings/services) only `isDefault`/`is4k` are documented routing axes — no cross-server anime field exists. Users pick "Sonarr Anime" / "Radarr Anime" from the per-request server dropdown in the Seerr UI. Restart confirmed clean 2026-05-11 (`app-seerr restart` → 8s warmup → HTTP 200 both loopback + via nginx). |
 | tautulli | ucc | yes | Plex stats (read-only public) | NO | Public | `https://…/tautulli/` (auth_basic off confirmed) · tunnel `localhost:17014` | yes | yes (pusher) | **1** | Only 1 notif channel wired (vs 2 elsewhere). |
 | audiobookshelf | ucc | yes | Audiobook server | NO | Internal | tunnel via port `secrets/audiobookshelf.port` | yes | yes (pusher) | 2 |  |
 | kavita | ucc | yes | Manga / comics / ebook reader | NO | Internal | tunnel via port `secrets/kavita.port` | yes | yes (pusher) | 2 |  |
@@ -97,8 +97,8 @@ seedbox disagree, the live seedbox wins and this file records both.
 
 | Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| manitoba-maint-canary-movie.timer | systemd | scheduled (hourly) | Jellyseerr → Radarr movie path canary | NO | n/a | n/a | n/a | n/a | **1** (Kuma) |  |
-| manitoba-maint-canary-anime.timer | systemd | scheduled (hourly) | Jellyseerr → Sonarr2 anime path canary | NO | n/a | n/a | n/a | n/a | **1** |  |
+| manitoba-maint-canary-movie.timer | systemd | scheduled (hourly) | Seerr → Radarr movie path canary | NO | n/a | n/a | n/a | n/a | **1** (Kuma) |  |
+| manitoba-maint-canary-anime.timer | systemd | scheduled (hourly) | Seerr → Sonarr2 anime path canary | NO | n/a | n/a | n/a | n/a | **1** |  |
 | manitoba-maint-canary-deletion.timer | systemd | scheduled (Mon 04:30) | Maintainerr 60-day deletion-rule audit | NO | n/a | n/a | n/a | n/a | **1** |  |
 | manitoba-maint-canary-mobile-ux.timer | systemd | scheduled (every 15m) | Homarr public board reachability | NO | n/a | n/a | n/a | n/a | **1** |  |
 | scripts/canaries/{movie,anime,deletion,mobile-ux}.sh | script | invoked by services above | (see services) | NO | n/a | n/a | n/a | n/a | (via Kuma push) |  |
@@ -111,7 +111,7 @@ seedbox disagree, the live seedbox wins and this file records both.
 | heartbeat-tdarr-server.sh | cron */5m | yes | Restart Tdarr Server on /api/v2/status fail | NO | n/a | n/a | n/a | (auto-heal) | (silent) |  |
 | heartbeat-tdarr-node.sh | cron */5m | yes | Restart Tdarr Node if systemd inactive | NO | n/a | n/a | n/a | (auto-heal) | (silent) |  |
 | heartbeat-maint-webhook.sh | cron */5m | yes | Restart maint-webhook on /health fail | NO | n/a | n/a | n/a | (auto-heal) | (silent) |  |
-| listmonk-sync.py | cron 04:00 daily | scheduled | Plex friends + Jellyseerr → Listmonk subscribers | NO | n/a | n/a | yes | n/a (idempotent) | (silent) | Logs to `~/.apps/listmonk/logs/sync.log`. |
+| listmonk-sync.py | cron 04:00 daily | scheduled | Plex friends + Seerr → Listmonk subscribers | NO | n/a | n/a | yes | n/a (idempotent) | (silent) | Logs to `~/.apps/listmonk/logs/sync.log`. |
 | arr-housekeeping.py --missing | cron 04:00 mostdays | scheduled | Find/grab missing episodes | NO | n/a | n/a | yes | n/a | (silent) | Excludes Mondays (maint window). |
 | arr-housekeeping.py --unstick | cron :15 hourly | scheduled | Bump stuck-on-import queue items | NO | n/a | n/a | n/a | n/a | (silent) |  |
 | kill_stream.sh --max 2 | cron every-minute | yes | Cap concurrent Plex streams at 2 | NO | n/a | n/a | n/a | n/a | (silent) | Pairs with stream_stats.sh. |

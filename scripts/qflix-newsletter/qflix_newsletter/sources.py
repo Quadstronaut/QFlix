@@ -58,9 +58,13 @@ def _tautulli_call(cfg: Config, cmd: str, **params) -> dict:
 def fetch_recently_added(cfg: Config, count: int = 50) -> list[RecentItem]:
     data = _tautulli_call(cfg, "get_recently_added", count=count)
     raw_rows = data.get("recently_added", []) or []
+    # Use the public Tautulli URL for thumb proxy — emails are read by Gmail/etc.
+    # which can't reach the seedbox loopback. The internal cfg.tautulli_url
+    # stays loopback for API calls (lower latency, no nginx round-trip).
+    public_tautulli = f"https://{cfg.public_host}/tautulli"
     out: list[RecentItem] = []
     for row in raw_rows:
-        out.append(_recent_from_tautulli(row, cfg.tautulli_url))
+        out.append(_recent_from_tautulli(row, public_tautulli))
     return out
 
 

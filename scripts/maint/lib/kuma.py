@@ -332,7 +332,7 @@ class KumaWebhookHandler(http.server.BaseHTTPRequestHandler):
         state_path: Path,
     ) -> None:
         """Canary recovery is a one-shot re-fire of the canary's systemd
-        service. Canaries fail when the underlying pipeline (Plex / Jellyseerr
+        service. Canaries fail when the underlying pipeline (Plex / Seerr
         / Sonarr) is broken — re-firing only helps for transient blips. We
         try once on every Kuma down event; any persistent failure surfaces
         via Discord (Kuma's other notification target). No 3-attempt loop —

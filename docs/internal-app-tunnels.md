@@ -17,18 +17,17 @@ individual commands below.
 | Surface | Public FQDN | Internal admin (tunnel) |
 |---------|-------------|-------------------------|
 | Plex | `https://<fqdn>/web/` (Plex's own SSO) | direct, no admin tunnel |
-| Jellyseerr (user requests) | `https://<fqdn>/jellyseerr/` ⚠ see note below | n/a — users self-auth |
+| Seerr (user requests) | `https://<fqdn>/seerr/` (path) or `https://seerr-<user>.<fqdn>/` (subdomain) | n/a — users self-auth |
 | Homarr (public board) | `https://<fqdn>/` (root redirect) | `https://<fqdn>/board/private` (htpasswd) |
 | Tautulli (read-only stats) | `https://<fqdn>/tautulli/` | n/a |
 | Listmonk (campaign archive) | `https://<fqdn>/listmonk/campaign/<uuid>` | tunnel: `localhost:42014` |
 | Kuma (public status page) | `https://<fqdn>/status/manitoba` | `localhost:42005` |
 
-**⚠ Jellyseerr note:** the kickoff lists Jellyseerr as PUBLIC, but its
-nginx fragment (`~/.apps/nginx/proxy.d/jellyseerr.conf`) does NOT set
-`auth_basic off`, so the outer nginx's htpasswd is still in effect. If
-the operator wants user-friends to reach `https://<fqdn>/jellyseerr/`
-without sharing the htpasswd password, add `auth_basic off;` to the
-location block. Currently undecided — may be intentional double-auth.
+**Seerr note:** the kickoff lists Seerr as PUBLIC. Post-2026-05-11 install,
+Seerr runs as a Docker container (`seerr-quadstronaut`) on port 42011 with
+the nginx fragment `~/.apps/nginx/proxy.d/seerr.conf` proxying both the
+path `/seerr/` and the canonical per-app subdomain
+`https://seerr-quadstronaut.<fqdn>/`. Users authenticate via Plex SSO.
 
 ## Internal admin tunnels (one-off SSH commands)
 

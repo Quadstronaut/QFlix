@@ -56,8 +56,8 @@ tautulli_port="$(discover_port_via_nginx tautulli)"
 ombi_port="$(discover_port_via_nginx ombi)"
 [ -n "$ombi_port" ] && secret_write "ombi.port" "$ombi_port"
 
-# Jellyfin / Jellyseerr / Maintainerr — may not be installed; capture port if nginx has it
-for app in jellyfin jellyseerr maintainerr flaresolverr unpackerr jellystat uptimekuma readarr mylar3 komga kavita calibre-web audiobookshelf homarr-upstream homarr; do
+# Seerr / Maintainerr / etc — may not be installed; capture port if nginx has it
+for app in seerr maintainerr flaresolverr unpackerr uptimekuma komga kavita calibre-web audiobookshelf homarr-upstream homarr; do
   port="$(discover_port_via_nginx "$app")"
   [ -n "$port" ] && secret_write "$app.port" "$port"
 done
@@ -74,11 +74,9 @@ log_info "Plex token: capture manually from https://app.plex.tv (X-Plex-Token in
 # Maintainerr API — generated in DB at first-run; capture from UI Settings → API
 log_info "Maintainerr key: capture manually from UI (Settings > API) into secrets/maintainerr.key"
 
-# Jellyseerr API — config at ~/.apps/jellyseerr/config/settings.json (only after install)
-jellyseerr_settings="$(sshm 'jq -r ".main.apiKey" ~/.apps/jellyseerr/config/settings.json 2>/dev/null' || true)"
-if [ -n "$jellyseerr_settings" ] && [ "$jellyseerr_settings" != "null" ]; then
-  secret_write "jellyseerr.key" "$jellyseerr_settings"
-fi
+# Seerr API — config is inside the Docker container `seerr-quadstronaut`.
+# Operator must capture from Seerr UI → Settings → General → API Key into secrets/seerr.key.
+log_info "Seerr key: capture manually from UI (Settings > General > API Key) into secrets/seerr.key"
 
 # Notifiarr — already in secrets/notifiarr.key
 

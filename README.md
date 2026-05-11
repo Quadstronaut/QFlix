@@ -1,12 +1,20 @@
 <div align="center">
 
-<img src="Q.png" width="160" alt="QFlix logo">
+<img src="Q.png" width="180" alt="QFlix">
 
 # QFlix
 
 **A reproducible, self-healing Plex stack on a single Ultra.cc shared seedbox.**
 
-One operator. One manifest. One maintenance window. Everything else is wires.
+_One operator. One manifest. One maintenance window. Everything else is wires._
+
+<p>
+  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-45%2F45_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-28_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-26%2F26_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
+  <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
+</p>
 
 <sub>install scripts · single-source manifest · Python maintenance daemon · Playwright cp.ultra.cc upgrade clicker · Kuma-integrated auto-recovery · end-to-end canaries · weekly AI-curated newsletter</sub>
 
@@ -14,18 +22,32 @@ One operator. One manifest. One maintenance window. Everything else is wires.
 
 ---
 
+<p align="center">
+  <a href="#at-a-glance">At a glance</a> ·
+  <a href="#required-apps">Required apps</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#project-timeline">Timeline</a> ·
+  <a href="#manifest--single-source-of-truth">Manifest</a> ·
+  <a href="#repo-layout">Repo layout</a> ·
+  <a href="#operating-the-stack">Operating</a> ·
+  <a href="#pointers">Pointers</a>
+</p>
+
+---
+
 ## At a glance
 
 | Surface | Count | State |
 |---|---:|---|
-| Apps in manifest (`manifest/apps.yaml`) | 28 | live on `quadstronaut.seedbox.example.com` |
-| End-to-end canaries (`scripts/canaries/`) | 4 | hourly · hourly · every-15min · daily-0430 |
-| Kuma push monitors (manitoba-owned) | 23 | 23/23 UP after the 2026-05-10 orphan purge |
-| Cron + systemd timers | 14 | window-aware (Mon 04–08 UTC drain) |
-| pytest suite (`tests/unit/`) | 202 | pure-Python, no SSH |
-| Notification channels | 1 | Discord webhook (`secrets/discord-webhook.url`) |
+| Apps in manifest (`manifest/apps.yaml`) | **28** | live on `quadstronaut.seedbox.example.com` |
+| End-to-end canaries (`scripts/canaries/`) | **4** | hourly · hourly · every-15min · daily-0430 |
+| Kuma push monitors (manitoba-owned) | **26** | 26/26 UP after the 2026-05-11 inventory sweep |
+| Cron + systemd timers | **14** | window-aware (Mon 04–08 UTC drain) |
+| pytest suite (`tests/unit/`) | **202** | pure-Python, no SSH |
+| Notification channels | **1** | Discord webhook + operator @ping on error/critical |
 
-> The string `seedbox.example.com` is the **sanitized** form for the public repo. Operator-local clones substitute the real FQDN from `secrets/seedbox.host`.
+> [!NOTE]
+> The string `seedbox.example.com` is the **sanitized** form for the public repo. Operator-local clones substitute the real FQDN from `secrets/seedbox.host` (and `secrets/seedbox.ssh-host` when the SSH host differs from the public HTTPS host — typical on shared Ultra.cc where SSH lands on the shared box but HTTPS lands on the operator slot).
 
 ---
 
@@ -35,12 +57,12 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 
 | Role | App | Why it's load-bearing |
 |---|---|---|
-| 🟢 Media server | **Plex** | Canonical (Jellyfin trial concluded 2026-05; Plex is the only library users see) |
-| 🟢 User requests | **Seerr** *(currently Jellyseerr; migration queued)* | The user-facing front door — "I want X" |
-| 🟢 Indexers | **Prowlarr** | Single aggregator; *arr stack reads from here, not raw indexers |
-| 🟢 TV | **Sonarr** + **Sonarr2** (anime branch) | One per release-naming convention |
-| 🟢 Movies | **Radarr** + **Radarr2** (anime branch) | Same split |
-| 🟢 Retention | **Maintainerr** | 60-day "watched + nobody else cared" deletion engine |
+| 🟠 Media server | **Plex** | Canonical (Jellyfin trial concluded 2026-05-10; Plex is the only library users see) |
+| 🟠 User requests | **Seerr** | The user-facing front door — "I want X" + in-item issue reporting |
+| 🟠 Indexers | **Prowlarr** | Single aggregator; *arr stack reads from here, not raw indexers |
+| 🟠 TV | **Sonarr** + **Sonarr2** (anime branch) | One per release-naming convention |
+| 🟠 Movies | **Radarr** + **Radarr2** (anime branch) | Same split |
+| 🟠 Retention | **Maintainerr** | 60-day "watched + nobody else cared" deletion engine |
 
 Surrounding cast (Bazarr, qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 4 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
 
@@ -48,14 +70,15 @@ Surrounding cast (Bazarr, qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, 
 
 ## Architecture
 
-### High-level
+### High level
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#0e1d33','primaryTextColor':'#f8fafc','primaryBorderColor':'#ff8c42','lineColor':'#7dd3fc','secondaryColor':'#05101f','tertiaryColor':'#0a1628','clusterBkg':'#05101f','clusterBorder':'#7dd3fc','edgeLabelBackground':'#0a1628','fontFamily':'Segoe UI, Roboto, sans-serif'}}}%%
 flowchart LR
-  classDef ext fill:#1d2230,stroke:#6ee7b7,color:#fff
-  classDef user fill:#11141b,stroke:#7aa2ff,color:#fff
-  classDef seedbox fill:#161a23,stroke:#fbbf24,color:#fff
-  classDef kuma fill:#0b0d12,stroke:#f0abfc,color:#fff
+  classDef ext fill:#0e1d33,stroke:#ff8c42,color:#f8fafc
+  classDef user fill:#0e1d33,stroke:#7dd3fc,color:#f8fafc
+  classDef seedbox fill:#0a1628,stroke:#d4af37,color:#f8fafc
+  classDef kuma fill:#05101f,stroke:#7dd3fc,color:#f8fafc
 
   user[Operator workstation<br/>Windows + SSH tunnel]:::user
   friends[Friends + family<br/>Plex SSO]:::ext
@@ -66,13 +89,13 @@ flowchart LR
     nginx[user-nginx<br/>proxy.d fragments]:::seedbox
     plex[Plex]:::seedbox
     arr[Sonarr · Sonarr2 · Radarr · Radarr2<br/>Prowlarr · Bazarr · qBittorrent]:::seedbox
-    requests[Jellyseerr → migrating to Seerr]:::seedbox
+    requests[Seerr<br/>requests + issue tracking]:::seedbox
     maint[manitoba-maint<br/>pusher · webhook · window · canary-*]:::seedbox
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 23 push monitors)]:::kuma
-  discord[Discord webhook<br/>secrets/discord-webhook.url]:::ext
+  kuma[(Uptime Kuma<br/>isolated netns · 26 push monitors)]:::kuma
+  discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex
   friends -->|HTTPS| nginx --> requests
@@ -85,17 +108,19 @@ flowchart LR
   comms -->|SMTP| friends
 ```
 
-The "isolated netns" detail matters: Kuma cannot reach the host's loopback. That's why **pusher pushes status TO Kuma** and **auto-heal fires from the pusher itself** (not from a Kuma webhook), once it sees three consecutive failed probes.
+> [!IMPORTANT]
+> The "isolated netns" detail matters: Kuma cannot reach the host's loopback. That's why **pusher pushes status TO Kuma** and **auto-heal fires from the pusher itself** (not from a Kuma webhook), once it sees three consecutive failed probes.
 
 ### Four data flows
 
 <details><summary><b>1. Media ingestion</b> — "I want to watch X"</summary>
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#0e1d33','primaryTextColor':'#f8fafc','primaryBorderColor':'#ff8c42','lineColor':'#7dd3fc','secondaryColor':'#05101f','tertiaryColor':'#0a1628','actorBkg':'#0e1d33','actorBorder':'#ff8c42','actorTextColor':'#f8fafc','signalColor':'#7dd3fc','signalTextColor':'#cbd5e1','labelBoxBkgColor':'#0e1d33','labelTextColor':'#d4af37','noteBkgColor':'#05101f','noteTextColor':'#cbd5e1'}}}%%
 sequenceDiagram
   autonumber
   participant U as User
-  participant J as Jellyseerr
+  participant J as Seerr
   participant S as Sonarr / Radarr
   participant P as Prowlarr
   participant F as FlareSolverr
@@ -125,9 +150,10 @@ Hardlinks are sacred — *arrs hardlink, never copy. `scripts/smoke-test.sh` ste
 <details><summary><b>2. Library hygiene</b> — "I want my disk back"</summary>
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#0e1d33','primaryTextColor':'#f8fafc','primaryBorderColor':'#ff8c42','lineColor':'#7dd3fc','secondaryColor':'#05101f','tertiaryColor':'#0a1628','clusterBkg':'#05101f','clusterBorder':'#7dd3fc','edgeLabelBackground':'#0a1628','fontFamily':'Segoe UI, Roboto, sans-serif'}}}%%
 flowchart TB
-  classDef nightly fill:#1d2230,stroke:#fbbf24
-  classDef weekly fill:#161a23,stroke:#7aa2ff
+  classDef nightly fill:#0e1d33,stroke:#ff8c42,color:#f8fafc
+  classDef weekly fill:#0a1628,stroke:#d4af37,color:#f8fafc
   M[Maintainerr<br/>nightly rule pass]:::nightly
   M -->|watched ≥60d + nobody else watched| del{tag for delete}
   del -->|pass 1| collDel[delete from Plex collection]
@@ -144,21 +170,22 @@ Recyclarr, Kometa, Buildarr, and Upgradinatorr are cron-class — no UI, observe
 
 </details>
 
-<details><summary><b>3. Operator visibility</b> — "is anything on fire?"</summary>
+<details id="operator-visibility"><summary><b>3. Operator visibility</b> — "is anything on fire?"</summary>
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#0e1d33','primaryTextColor':'#f8fafc','primaryBorderColor':'#ff8c42','lineColor':'#7dd3fc','secondaryColor':'#05101f','tertiaryColor':'#0a1628','clusterBkg':'#05101f','clusterBorder':'#7dd3fc','edgeLabelBackground':'#0a1628','fontFamily':'Segoe UI, Roboto, sans-serif'}}}%%
 flowchart LR
-  classDef probe fill:#1d2230,stroke:#7aa2ff
-  classDef alert fill:#161a23,stroke:#fda4af
+  classDef probe fill:#0e1d33,stroke:#7dd3fc,color:#f8fafc
+  classDef alert fill:#0a1628,stroke:#ff8c42,color:#f8fafc
 
   P[manitoba-maint-pusher<br/>every 60s]:::probe
   P -->|probe http/systemd/process| status{healthy?}
   status -->|yes| push1[push UP to Kuma]
   status -->|3× fail| recovery[recovery.trigger_async]
   recovery -->|lifecycle.start ≤3 attempts| status
-  recovery -->|still failing| notify[notify.py<br/>Discord webhook]:::alert
+  recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>23 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>26 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
   C3[Canary deletion · daily 04:30]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K
@@ -166,17 +193,18 @@ flowchart LR
   K -->|status page| public[/HTTPS /status/manitoba/]
 ```
 
-Each canary asserts a whole pipeline, not just liveness. Mobile-UX renders the public Homarr board and checks HTML size + the `/` → board redirect.
+Each canary asserts a whole pipeline, not just liveness. Mobile-UX renders the public Homarr board and checks HTML size + the `/` → board redirect. Levels `error` and `critical` add `<@REDACTED>` to the Discord payload so the operator gets a push notification, not just an embed.
 
 </details>
 
-<details><summary><b>4. Subscriber comms</b> — Monday morning AI-curated digest</summary>
+<details><summary><b>4. Subscriber comms</b> — Monday-morning AI-curated digest</summary>
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#0e1d33','primaryTextColor':'#f8fafc','primaryBorderColor':'#ff8c42','lineColor':'#7dd3fc','secondaryColor':'#05101f','tertiaryColor':'#0a1628','clusterBkg':'#05101f','clusterBorder':'#7dd3fc','edgeLabelBackground':'#0a1628','fontFamily':'Segoe UI, Roboto, sans-serif'}}}%%
 flowchart TB
-  classDef src fill:#161a23,stroke:#7aa2ff
-  classDef proc fill:#1d2230,stroke:#fbbf24
-  classDef out fill:#11141b,stroke:#6ee7b7
+  classDef src fill:#0a1628,stroke:#7dd3fc,color:#f8fafc
+  classDef proc fill:#0e1d33,stroke:#ff8c42,color:#f8fafc
+  classDef out fill:#0e1d33,stroke:#d4af37,color:#f8fafc
 
   timer[qflix-newsletter.timer<br/>Mon 08:00 — post-maintenance]:::proc
   timer --> py[~/.apps/qflix-newsletter/.venv/bin/python -m qflix_newsletter]:::proc
@@ -189,7 +217,7 @@ flowchart TB
   TMDB[TMDB ratings for Pick of Week]:::src --> norm
 
   py --> norm
-  norm --> ai[Gemini · "if you liked X try Y"<br/>3 picks bottom-of-email]:::proc
+  norm --> ai[Gemini · &quot;if you liked X try Y&quot;<br/>3 picks bottom-of-email]:::proc
   norm --> jinja[Jinja2 render<br/>weekly.html.j2 · QFlix theme]:::proc
   ai --> jinja
 
@@ -208,6 +236,7 @@ Email sections: **Pick of Week → New Movies → New TV → New Anime → Comin
 ## Project timeline
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#0e1d33','primaryTextColor':'#f8fafc','primaryBorderColor':'#ff8c42','lineColor':'#7dd3fc','secondaryColor':'#05101f','tertiaryColor':'#0a1628','cScale0':'#ff8c42','cScale1':'#7dd3fc','cScale2':'#d4af37','cScale3':'#0e1d33','fontFamily':'Segoe UI, Roboto, sans-serif'}}}%%
 timeline
   title Recent decisions + state changes
   2025-09 : Initial QFlix bring-up
@@ -230,15 +259,19 @@ timeline
   2026-05-11 : Repo renamed Optimize-Manitoba → QFlix
             : readarr / mylar3 / ombi purged
             : unpackerr + upgradinatorr + postgres added to manifest
-            : 4 silent monitors (Recyclarr · Buildarr · Qflix Newsletter · …) wired to Discord
+            : 4 silent monitors wired to Discord
             : inventory.md created as live source of truth
+            : Discord operator @ping on error/critical
+            : Jellyseerr → Seerr swap (v3.2.0 install, 4 *arr servers via API, trustProxy on)
+            : Smoke 45/45/0 · public-access bookmarks audited + fixed
 ```
 
 ---
 
 ## Manifest — single source of truth
 
-`manifest/apps.yaml` is the only place that records "what apps exist." Health probes, systemd units, Kuma monitors, recovery, upgrade — all read from here.
+> [!IMPORTANT]
+> `manifest/apps.yaml` is the **only** place that records "what apps exist." Health probes, systemd units, Kuma monitors, recovery, upgrade — all read from here. If you change a port, change it in `secrets/` and the pusher picks it up; if you add an app, add a manifest entry and `~/bin/manitoba-maint kuma audit` will tell you whether the Kuma monitor needs creating.
 
 <details><summary>Schema</summary>
 
@@ -286,7 +319,7 @@ apps:
 
 | Class | Started via | Stopped via | Typical example |
 |---|---|---|---|
-| `ucc` | `app-<slug> start` (UCC wrapper) | `app-<slug> stop` | sonarr, jellyseerr, plex |
+| `ucc` | `app-<slug> start` (UCC wrapper) | `app-<slug> stop` | sonarr, seerr, plex |
 | `systemd` | `systemctl --user start <unit>` | matching `stop` | listmonk, tdarr-server |
 | `cron` | timer fires service (oneshot) | n/a — fires + exits | recyclarr, buildarr, qflix-newsletter |
 | `library` | n/a — no service | n/a | python-plexapi |
@@ -299,7 +332,7 @@ The pusher dispatches on `class` for both lifecycle ops and probe selection.
 
 ## Repo layout
 
-```
+```text
 manifest/apps.yaml           # 28 apps + 4 canaries — single source of truth
 versions.env                 # pinned versions (Tdarr only — pin policy lifted 2026-05-09)
 inventory.md                 # live snapshot of every artifact on the seedbox
@@ -317,7 +350,7 @@ docs/
 scripts/
   bootstrap-discover.sh      # fresh-seedbox discovery
   manitoba-tunnel.ps1        # workstation SSH tunnel daemon (gitignored — hardcodes FQDN)
-  smoke-test.sh              # production smoke (~46 checks across the whole stack)
+  smoke-test.sh              # production smoke (~45 checks across the whole stack)
   smoke-test-plex.sh         # Plex-ecosystem-only smoke
   canaries/                  # 4 end-to-end pipeline checks (bash)
   configure/                 # phased install/configure scripts (numbered)
@@ -360,7 +393,7 @@ During the window, the pusher's auto-heal is paused — restarts during schedule
 
 </details>
 
-<details><summary>Notification channel — Discord webhook only</summary>
+<details id="notification-channel"><summary>Notification channel — Discord webhook + operator @ping</summary>
 
 Notifiarr was purged on 2026-05-10. `secrets/discord-webhook.url` is the single channel for operator-actionable alerts. Two notification objects exist in Kuma:
 
@@ -369,15 +402,15 @@ Notifiarr was purged on 2026-05-10. `secrets/discord-webhook.url` is the single 
 | `Mission Control - QFlix` (default) | every manitoba monitor | Discord — operator visibility |
 | `Manitoba auto-heal webhook` (default) | every manitoba monitor | internal — fires `recovery.trigger_async` |
 
-Tautulli and the 4 canaries had been wired to only the auto-heal webhook (silent failures); Recyclarr / Buildarr / Qflix Newsletter had been wired to neither. Both gaps were closed during the 2026-05-11 inventory sweep.
+Levels `error` and `critical` from `scripts/maint/lib/notify.py` add a `<@REDACTED>` mention in the Discord `content` field (the embed alone doesn't trigger a push). The user-ID lives in `secrets/discord-operator.id` so the code stays clean. Tautulli and the 4 canaries had been wired to only the auto-heal webhook (silent failures); Recyclarr / Buildarr / Qflix Newsletter had been wired to neither. Both gaps were closed during the 2026-05-11 inventory sweep.
 
 </details>
 
 <details><summary>SSH tunnel — admin surface</summary>
 
-`scripts/manitoba-tunnel.ps1` runs as a Windows scheduled task (`\Archangel\Manitoba SSH Tunnel`). It mirrors local-port → server-port so bookmarks read naturally (`localhost:17026/sonarr/` = the seedbox Sonarr). 10 forwards by default:
+`scripts/manitoba-tunnel.ps1` runs as a Windows scheduled task (`\Archangel\Manitoba SSH Tunnel`). It mirrors local-port → server-port so bookmarks read naturally (`localhost:17026/sonarr/` = the seedbox Sonarr). Default forwards:
 
-```
+```text
 sonarr 17026 · sonarr2 17003 · radarr 17027 · radarr2 17008
 prowlarr 17024 · bazarr 17031 · tautulli 17014 · qbittorrent 17041
 listmonk 42014 (canonical probe) · uptime-kuma 42005 · tdarr 42018 · maintainerr 42007
@@ -392,26 +425,27 @@ listmonk 42014 (canonical probe) · uptime-kuma 42005 · tdarr 42018 · maintain
 | App | Where | Auth |
 |---|---|---|
 | Plex | `https://<fqdn>/web/` | Plex SSO |
-| Jellyseerr | `https://<fqdn>/jellyseerr/` | htpasswd (will lift to public when Seerr migration lands) |
+| Seerr | `https://<fqdn>/seerr/` | Plex SSO (issue submission inline on each title) |
 | Homarr (public board) | `https://<fqdn>/` (root redirect) | none |
 | Homarr (admin board) | `https://<fqdn>/board/private` | htpasswd |
 | Tautulli (read-only stats) | `https://<fqdn>/tautulli/` | none (`auth_basic off` in nginx fragment) |
-| Listmonk campaign archive | `https://<fqdn>/listmonk/campaign/<uuid>` | none |
+| Audiobookshelf | `https://audiobookshelf-<user>.<domain>/` | htpasswd |
+| Calibre-Web / Kavita / Komga / Listmonk archive | `https://<fqdn>/<slug>/` | none |
 | Listmonk admin | tunnel `localhost:42014` | Listmonk's own login |
 | Kuma status page | `https://<fqdn>/status/manitoba` | none |
 | Kuma admin | tunnel `localhost:42005` | Kuma's own login |
 | Every *arr admin | tunnel `localhost:<port>/<urlbase>/` | each app's own auth |
 
-Outer Ultra.cc nginx terminates HTTPS and applies htpasswd by default. User-level proxy fragments in `~/.apps/nginx/proxy.d/<app>.conf` opt out via `auth_basic off`.
+Outer Ultra.cc nginx terminates HTTPS and applies htpasswd by default. User-level proxy fragments in `~/.apps/nginx/proxy.d/<app>.conf` opt out via `auth_basic off`. Audiobookshelf uses the subdomain form because the path form returns 404 on this slot — confirmed via the 2026-05-11 bookmark audit.
 
 </details>
 
-<details><summary>Smoke test — what 46/46 means</summary>
+<details><summary>Smoke test — what 45/45 means</summary>
 
-`scripts/smoke-test.sh` runs ~46 checks in five buckets:
+`scripts/smoke-test.sh` runs ~45 checks in five buckets:
 
 1. **Prowlarr** — indexer count ≥ 5; search round-trip returns ≥ 1 for "ubuntu"
-2. **\*arr↔qBit** — `testall` returns 200 for sonarr/sonarr2/radarr/radarr2/readarr
+2. **\*arr↔qBit** — `testall` returns 200 for sonarr/sonarr2/radarr/radarr2
 3. **Library hygiene** — hardlink count ≥ 2 on Movies samples; rescan helpers reach Komga/Kavita/Audiobookshelf
 4. **App liveness** — Maintainerr (with sonarr count), qBittorrent (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer, Recyclarr no-4k policy, Listmonk health + subscriber count, all 4 canaries
 5. **Maintenance system** — webhook /health, window timer scheduled, manifest validates, pusher active, Kuma drift = 0, Kuma all-up (with external + parked excluded)
@@ -424,14 +458,19 @@ A single failure here means an operator-actionable signal; rerun the smoke after
 
 ## Honesty about the trail
 
-The prior session shipped Phases 1–7 plus a Notifiarr purge but burned operator confidence with one bad claim: **Maintainerr was running the whole time, even though a stale comment in the tunnel script — repeated into the smoke test and an internal doc — said it was "intentionally parked."** That cascade is what this README's inventory-first approach exists to prevent. The single source of truth is `inventory.md`, built from a live seedbox query. Where docs and seedbox disagree, the seedbox wins and the docs get updated in the same response.
+> [!WARNING]
+> The 2026-05-10 session shipped Phases 1–7 plus the Notifiarr purge but burned operator confidence with one bad claim: **Maintainerr was running the whole time, even though a stale comment in the tunnel script — repeated into the smoke test and an internal doc — said it was "intentionally parked."** That cascade is what this README's inventory-first approach exists to prevent. The single source of truth is `inventory.md`, built from a live seedbox query. Where docs and seedbox disagree, the seedbox wins and the docs get updated in the same response.
 
 ---
 
 ## Pointers
 
-- **Where's X installed/configured?** → `inventory.md`
-- **How do I add a new app?** → add an entry to `manifest/apps.yaml`, run `~/bin/manitoba-maint manifest validate`, then `manitoba-maint kuma audit` to see if the Kuma monitor needs creating.
-- **Something's broken — what fires?** → manitoba-maint pusher tries 3 restarts, then notifies Discord. Check `~/.opt/maint/state.json` for the failure log, `journalctl --user -u manitoba-maint-pusher` for traces.
-- **Operator deferred items / open questions** → `docs/operator-deferred.md`
-- **Reversibility log of all stop/start/uninstall** → `docs/transition-log.md`
+- **Where's X installed/configured?** → [`inventory.md`](inventory.md)
+- **How do I add a new app?** → add an entry to `manifest/apps.yaml`, run <kbd>~/bin/manitoba-maint manifest validate</kbd>, then <kbd>manitoba-maint kuma audit</kbd> to see if the Kuma monitor needs creating.
+- **Something's broken — what fires?** → manitoba-maint pusher tries 3 restarts, then notifies Discord with an operator @ping. Check `~/.opt/maint/state.json` for the failure log, <kbd>journalctl --user -u manitoba-maint-pusher</kbd> for traces.
+- **Operator deferred items / open questions** → [`docs/operator-deferred.md`](docs/operator-deferred.md)
+- **Reversibility log of all stop/start/uninstall** → [`docs/transition-log.md`](docs/transition-log.md)
+
+<div align="center">
+<sub><br><img src="Q.png" width="48" alt=""><br><b>QFlix</b> · single operator · single manifest · single window<br><sub><code>quadstronaut.seedbox.example.com</code></sub></sub>
+</div>

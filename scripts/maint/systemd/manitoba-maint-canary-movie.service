@@ -1,5 +1,5 @@
 [Unit]
-Description=Manitoba canary — movie pipeline (Jellyseerr → Radarr)
+Description=Manitoba canary — movie pipeline (Seerr → Radarr)
 After=network-online.target
 
 [Service]

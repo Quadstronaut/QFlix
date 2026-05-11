@@ -16,7 +16,7 @@ The cp clicker covers 12 UCC apps via `Upgrade & Repair`. Everything else upgrad
 | `tarball_swap`   | listmonk, recyclarr                                                                             | GitHub Releases API → latest tag |
 | `zip_swap`       | tdarr-server, tdarr-node                                                                        | **PINNED 2.17.01 — DO NOT upgrade**, GLIBC blocker |
 | `pip_install`    | python-plexapi                                                                                  | PyPI latest |
-| **NOT IN MANIFEST** — installed via unofficial-installers, behavior TBD | sonarr2, radarr2, audiobookshelf, kavita, komga, calibre-web, jellyfin, jellyseerr, jellystat, mylar3, flaresolverr | varies — investigate per app |
+| **NOT IN MANIFEST** — installed via unofficial-installers, behavior TBD | sonarr2, radarr2, audiobookshelf, kavita, komga, calibre-web, flaresolverr | varies — investigate per app |
 
 The "NOT IN MANIFEST" group is the unknown — those apps were installed via the unofficial-installer scripts (e.g. `app-sonarr2 install`). They may have their own update verbs or may need git/binary-swap treatment.
 
@@ -66,7 +66,7 @@ Trivial: drop the `==<version>` constraint when no pin. `pip install --upgrade p
 
 Tdarr stays pinned at 2.17.01. The version_pin block is intentional. **Do not change** Tdarr's behavior — the upgrade flow remains pin-driven for it.
 
-### Unofficial-installer apps (Sonarr2, Radarr2, Audiobookshelf, Kavita, Komga, Calibre-Web, Jellyfin, Jellyseerr, Jellystat, Mylar3, Flaresolverr)
+### Unofficial-installer apps (Sonarr2, Radarr2, Audiobookshelf, Kavita, Komga, Calibre-Web, Flaresolverr)
 
 **Investigation pass first** — these aren't in the manifest at all. Tuesday work has two phases for each:
 

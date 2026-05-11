@@ -88,7 +88,7 @@ operator wants the duplicate path.
 After all CLI/API smoke turns green, run a one-link-at-a-time UI
 walkthrough with the operator covering:
 - Homarr public board renders, all tiles clickable
-- Jellyseerr request flow end-to-end
+- Seerr request flow end-to-end
 - Plex streaming a recently-added title
 - Calibre-Web admin login (rotated password)
 - Tautulli notifications fire to Discord on Watched
