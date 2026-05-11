@@ -48,8 +48,42 @@ if (-not (Test-Path $scriptPath)) {
 }
 . $scriptPath
 
-# Cases populated in later tasks. Runner stub for Task 1 only verifies dot-sourcing works.
+# --- Sentinel ---
 Test-Case 'script dot-sources without executing main' { Assert-True $true 'no-op sentinel' }
+
+# --- Task 2: state I/O ---
+Test-Case 'Get-StateDir returns APPDATA path and creates dir' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        $d = Get-StateDir
+        Assert-Equal (Join-Path $env:APPDATA 'qflix-rea') $d 'path is APPDATA\qflix-rea'
+        Assert-True (Test-Path $d) 'dir was created'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'Read-State returns defaults when file absent' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        $s = Read-State
+        Assert-Equal '' $s.last_heartbeat_date 'default last_heartbeat_date'
+        Assert-Equal '' $s.last_ollama_dead_ping 'default last_ollama_dead_ping'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'Write-State then Read-State roundtrips' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        Write-State @{ last_heartbeat_date = '2026-05-11'; last_ollama_dead_ping = '' }
+        $s = Read-State
+        Assert-Equal '2026-05-11' $s.last_heartbeat_date 'persisted heartbeat date'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
 
 # Summary
 Write-Host "`n========================================" -F White
