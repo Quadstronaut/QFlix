@@ -1,6 +1,7 @@
 """Listmonk delivery tests — verify request shape; no live API."""
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +26,7 @@ def _cfg() -> Config:
         listmonk_list_id=7,
         listmonk_template_id=42,
         public_host="seedbox.example.com",
+        poster_cache_dir=Path("/tmp/poster-cache"),
     )
 
 

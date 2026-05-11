@@ -23,6 +23,7 @@ class RecentItem:
     thumb_url: Optional[str]
     added_at: int
     rating: Optional[float]
+    tautulli_thumb_url: Optional[str] = None
     show_title: Optional[str] = None
     season: Optional[int] = None
     episode: Optional[int] = None
@@ -99,6 +100,7 @@ def _recent_from_tautulli(row: dict, tautulli_base: str) -> RecentItem:
         year=year,
         summary=row.get("summary") or "",
         thumb_url=thumb_url,
+        tautulli_thumb_url=thumb_url,  # preserved for fallback after TMDB enrich
         added_at=int(row.get("added_at") or 0),
         rating=rating,
         show_title=row.get("grandparent_title") if is_episode else None,

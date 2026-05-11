@@ -1,0 +1,268 @@
+"""Mirror newsletter posters to a local cache and rewrite URLs.
+
+Inserted between enrich_with_tmdb() and build_email_context() in the
+pipeline. For each item it tries TMDB then Tautulli; the first source
+that yields a valid image is copied to <cache_dir>/<sha>.<ext> and the
+item's thumb_url is rewritten to a public_base URL.
+
+Every failure mode degrades to thumb_url=None (template hides the
+<img>). The newsletter never fails to send because of a poster issue.
+"""
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import time
+from pathlib import Path
+from typing import Optional, Sequence
+
+import requests
+
+from .sources import RecentItem
+
+log = logging.getLogger(__name__)
+
+_MAGIC_PREFIX_BYTES = 12
+_DEFAULT_CHUNK_SIZE = 64 * 1024
+
+# Content-Type → file extension. File extensions match the nginx allowlist
+# in scripts/data/qflix-images.conf.
+_EXT_BY_TYPE = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+}
+
+
+def _sha_for(url: str) -> str:
+    """sha256 hex of url, first 16 chars. Stable namespace for cache keys."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+
+
+def _ext_for(content_type: Optional[str]) -> Optional[str]:
+    """Return file extension if content_type is in the allowlist, else None."""
+    if not content_type:
+        return None
+    primary = content_type.split(";", 1)[0].strip().lower()
+    return _EXT_BY_TYPE.get(primary)
+
+
+def _fetch_and_write_one(
+    url: str,
+    cache_dir: Path,
+    sha: str,
+    *,
+    session: requests.Session,
+    timeout_s: float,
+    max_bytes: int,
+) -> tuple[str, Optional[Path]]:
+    """One source attempt. Returns ('ok'|'retry'|'fail', target_path_or_None).
+
+    'retry' = transient (5xx or ConnectionError) — caller may sleep + retry.
+    'fail'  = permanent (4xx, validation failure) — give up on this URL.
+    """
+    target_path: Optional[Path] = None
+    tmp_path: Optional[Path] = None
+    try:
+        with session.get(url, timeout=timeout_s, stream=True) as resp:
+            if 500 <= resp.status_code < 600:
+                return "retry", None
+            if resp.status_code != 200:
+                return "fail", None
+
+            content_type = resp.headers.get("Content-Type", "")
+            ext = _ext_for(content_type)
+            if ext is None:
+                return "fail", None
+
+            target_path = cache_dir / f"{sha}.{ext}"
+            tmp_path = target_path.with_suffix(target_path.suffix + ".tmp")
+
+            cl_raw = resp.headers.get("Content-Length")
+            if cl_raw is not None:
+                try:
+                    if int(cl_raw) > max_bytes:
+                        return "fail", None
+                except ValueError:
+                    pass
+
+            written = 0
+            magic_prefix = b""
+            magic_checked = False
+            pending_writes: list[bytes] = []
+            with tmp_path.open("wb") as f:
+                for chunk in resp.iter_content(chunk_size=_DEFAULT_CHUNK_SIZE):
+                    if not chunk:
+                        continue
+                    written += len(chunk)
+                    if written > max_bytes:
+                        return "fail", None
+                    if not magic_checked:
+                        magic_prefix += chunk
+                        pending_writes.append(chunk)
+                        if len(magic_prefix) >= _MAGIC_PREFIX_BYTES:
+                            if not _validate_magic_bytes(magic_prefix, content_type):
+                                return "fail", None
+                            magic_checked = True
+                            for buffered in pending_writes:
+                                f.write(buffered)
+                            pending_writes = []
+                    else:
+                        f.write(chunk)
+                if not magic_checked:
+                    return "fail", None
+
+        os.replace(tmp_path, target_path)
+        return "ok", target_path
+    except requests.ConnectionError:
+        return "retry", None
+    except (requests.RequestException, OSError):
+        return "fail", None
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            if target_path is None or not target_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+
+
+_RETRY_BACKOFF_S = 1.0
+
+
+def _try_one_source_with_retry(
+    url: str,
+    cache_dir: Path,
+    sha: str,
+    *,
+    session: requests.Session,
+    timeout_s: float,
+    max_bytes: int,
+) -> tuple[str, Optional[Path]]:
+    """Run _fetch_and_write_one once; on 'retry' outcome, sleep and try once more.
+
+    Final outcome is bubbled up unchanged — 'ok', 'fail', or 'retry'.
+    """
+    outcome, path = _fetch_and_write_one(
+        url, cache_dir, sha,
+        session=session, timeout_s=timeout_s, max_bytes=max_bytes,
+    )
+    if outcome == "retry":
+        time.sleep(_RETRY_BACKOFF_S)
+        outcome, path = _fetch_and_write_one(
+            url, cache_dir, sha,
+            session=session, timeout_s=timeout_s, max_bytes=max_bytes,
+        )
+    return outcome, path
+
+
+_KNOWN_EXTS = ("jpg", "png", "webp", "gif")
+_NEWSLETTER_URL_PATH = "/images/newsletter/"
+
+
+def _cache_lookup(cache_dir: Path, sha: str) -> Optional[Path]:
+    """Return an already-cached file for this sha, if one exists."""
+    for ext in _KNOWN_EXTS:
+        p = cache_dir / f"{sha}.{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def _public_url(public_base: str, sha: str, ext: str) -> str:
+    return f"{public_base.rstrip('/')}{_NEWSLETTER_URL_PATH}{sha}.{ext}"
+
+
+def mirror_posters(
+    items: Sequence[RecentItem],
+    *,
+    cache_dir: Path,
+    public_base: str,
+    session: Optional[requests.Session] = None,
+    timeout_s: float = 10.0,
+    max_bytes: int = 2 * 1024 * 1024,
+) -> Sequence[RecentItem]:
+    """Mirror each item's poster to cache_dir and rewrite item.thumb_url.
+
+    Tries item.thumb_url (TMDB after enrich) first, then
+    item.tautulli_thumb_url. Both failures cascade to thumb_url=None.
+
+    Logs one summary line per call:
+      mirror_posters: tmdb_hit=X tautulli_fallback=Y dead=Z cached=W
+    """
+    if session is None:
+        session = requests.Session()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    counts = {"tmdb_hit": 0, "tautulli_fallback": 0, "dead": 0, "cached": 0}
+
+    for item in items:
+        if item.thumb_url is None:
+            continue
+
+        # ── Source 1: current thumb_url (TMDB after enrich) ──────────────
+        sha = _sha_for(item.thumb_url)
+        cached = _cache_lookup(cache_dir, sha)
+        if cached is not None:
+            item.thumb_url = _public_url(public_base, sha, cached.suffix.lstrip("."))
+            counts["cached"] += 1
+            continue
+
+        outcome, path = _try_one_source_with_retry(
+            item.thumb_url, cache_dir, sha,
+            session=session, timeout_s=timeout_s, max_bytes=max_bytes,
+        )
+        if outcome == "ok" and path is not None:
+            counts["tmdb_hit"] += 1
+            item.thumb_url = _public_url(public_base, sha, path.suffix.lstrip("."))
+            continue
+
+        # ── Source 2: tautulli_thumb_url ─────────────────────────────────
+        if item.tautulli_thumb_url:
+            t_sha = _sha_for(item.tautulli_thumb_url)
+            t_cached = _cache_lookup(cache_dir, t_sha)
+            if t_cached is not None:
+                item.thumb_url = _public_url(public_base, t_sha, t_cached.suffix.lstrip("."))
+                counts["cached"] += 1
+                continue
+
+            outcome, path = _try_one_source_with_retry(
+                item.tautulli_thumb_url, cache_dir, t_sha,
+                session=session, timeout_s=timeout_s, max_bytes=max_bytes,
+            )
+            if outcome == "ok" and path is not None:
+                counts["tautulli_fallback"] += 1
+                item.thumb_url = _public_url(public_base, t_sha, path.suffix.lstrip("."))
+                continue
+
+        # Both sources dead.
+        log.warning("mirror_posters: both sources dead for %r", item.title)
+        item.thumb_url = None
+        counts["dead"] += 1
+
+    log.info(
+        "mirror_posters: tmdb_hit=%d tautulli_fallback=%d dead=%d cached=%d",
+        counts["tmdb_hit"], counts["tautulli_fallback"], counts["dead"], counts["cached"],
+    )
+    return items
+
+
+def _validate_magic_bytes(prefix: bytes, content_type: str) -> bool:
+    """Match first 12 bytes of response body against claimed Content-Type.
+
+    Defeats a server that mislabels HTML/text as an image.
+    """
+    if len(prefix) < 12:
+        return False
+    primary = content_type.split(";", 1)[0].strip().lower()
+    if primary == "image/png":
+        return prefix[:8] == b"\x89PNG\r\n\x1a\n"
+    if primary == "image/jpeg":
+        return prefix[:3] == b"\xff\xd8\xff"
+    if primary == "image/gif":
+        return prefix[:6] in (b"GIF87a", b"GIF89a")
+    if primary == "image/webp":
+        return prefix[:4] == b"RIFF" and prefix[8:12] == b"WEBP"
+    return False
