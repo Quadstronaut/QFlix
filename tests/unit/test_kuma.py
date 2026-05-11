@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from lib.kuma import monitor_status
+from lib.kuma import monitor_status, monitors_status
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +176,58 @@ class TestMonitorStatusAuth:
         assert result == "up"
         url_called = mock_get.call_args[0][0]
         assert url_called.startswith("http://127.0.0.1:")
+
+
+# ---------------------------------------------------------------------------
+# Batch monitors_status
+# ---------------------------------------------------------------------------
+
+_METRICS_BATCH = (
+    '# HELP monitor_status Monitor Status\n'
+    '# TYPE monitor_status gauge\n'
+    'monitor_status{monitor_name="Sonarr",monitor_type="http"} 1\n'
+    'monitor_status{monitor_name="Radarr",monitor_type="http"} 0\n'
+    'monitor_status{monitor_name="Plex",monitor_type="http"} 1\n'
+    'monitor_status{monitor_name="Pending Thing",monitor_type="http"} 2\n'
+)
+
+
+class TestMonitorsStatusBatch:
+    def test_returns_status_for_every_requested_name(self):
+        with patch("lib.kuma.requests.get", return_value=_mock_response(_METRICS_BATCH)), \
+             patch("lib.kuma._secret_read", side_effect=_secret_key_only):
+            result = monitors_status(["Sonarr", "Radarr", "Plex"])
+        assert result == {"Sonarr": "up", "Radarr": "down", "Plex": "up"}
+
+    def test_unknown_for_monitors_not_in_response(self):
+        with patch("lib.kuma.requests.get", return_value=_mock_response(_METRICS_BATCH)), \
+             patch("lib.kuma._secret_read", side_effect=_secret_key_only):
+            result = monitors_status(["Sonarr", "GhostMonitor"])
+        assert result == {"Sonarr": "up", "GhostMonitor": "unknown"}
+
+    def test_pending_or_maintenance_treated_as_unknown(self):
+        with patch("lib.kuma.requests.get", return_value=_mock_response(_METRICS_BATCH)), \
+             patch("lib.kuma._secret_read", side_effect=_secret_key_only):
+            result = monitors_status(["Pending Thing"])
+        assert result == {"Pending Thing": "unknown"}
+
+    def test_network_failure_marks_all_unknown(self):
+        with patch("lib.kuma.requests.get", side_effect=requests.ConnectionError("refused")), \
+             patch("lib.kuma._secret_read", side_effect=_secret_key_only):
+            result = monitors_status(["Sonarr", "Radarr"])
+        assert result == {"Sonarr": "unknown", "Radarr": "unknown"}
+
+    def test_empty_names_short_circuits(self):
+        with patch("lib.kuma.requests.get") as mock_get:
+            result = monitors_status([])
+        assert result == {}
+        mock_get.assert_not_called()
+
+    def test_single_metrics_fetch_for_many_monitors(self):
+        with patch("lib.kuma.requests.get", return_value=_mock_response(_METRICS_BATCH)) as mock_get, \
+             patch("lib.kuma._secret_read", side_effect=_secret_key_only):
+            monitors_status(["Sonarr", "Radarr", "Plex"])
+        assert mock_get.call_count == 1
 
 
 # ===========================================================================
