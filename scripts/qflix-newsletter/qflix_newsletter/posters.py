@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -124,6 +125,35 @@ def _fetch_and_write_one(
                     tmp_path.unlink()
                 except OSError:
                     pass
+
+
+_RETRY_BACKOFF_S = 1.0
+
+
+def _try_one_source_with_retry(
+    url: str,
+    cache_dir: Path,
+    sha: str,
+    *,
+    session: requests.Session,
+    timeout_s: float,
+    max_bytes: int,
+) -> tuple[str, Optional[Path]]:
+    """Run _fetch_and_write_one once; on 'retry' outcome, sleep and try once more.
+
+    Final outcome is bubbled up unchanged — 'ok', 'fail', or 'retry'.
+    """
+    outcome, path = _fetch_and_write_one(
+        url, cache_dir, sha,
+        session=session, timeout_s=timeout_s, max_bytes=max_bytes,
+    )
+    if outcome == "retry":
+        time.sleep(_RETRY_BACKOFF_S)
+        outcome, path = _fetch_and_write_one(
+            url, cache_dir, sha,
+            session=session, timeout_s=timeout_s, max_bytes=max_bytes,
+        )
+    return outcome, path
 
 
 def _validate_magic_bytes(prefix: bytes, content_type: str) -> bool:

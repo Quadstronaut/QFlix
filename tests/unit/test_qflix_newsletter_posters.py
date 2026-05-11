@@ -249,3 +249,80 @@ def test_fetch_and_write_one_handles_connection_error(tmp_path):
     )
     assert outcome == "retry"
     assert path is None
+
+
+# ── _try_one_source_with_retry ──────────────────────────────────────────────
+
+def test_retry_succeeds_after_5xx(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 13
+
+    session = MagicMock()
+    session.get.side_effect = [
+        _err_response(503),                   # first attempt fails
+        _ok_response("image/jpeg", jpeg),     # retry succeeds
+    ]
+
+    with patch("qflix_newsletter.posters.time.sleep") as mock_sleep:
+        outcome, path = posters._try_one_source_with_retry(
+            "https://example/poster.jpg", cache_dir, "abc1234567890def",
+            session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+        )
+
+    assert outcome == "ok"
+    assert path is not None and path.exists()
+    assert session.get.call_count == 2
+    mock_sleep.assert_called_once_with(1.0)
+
+
+def test_retry_succeeds_after_connection_error(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 13
+    import requests as _r
+
+    session = MagicMock()
+    session.get.side_effect = [
+        _r.ConnectionError("boom"),
+        _ok_response("image/jpeg", jpeg),
+    ]
+
+    with patch("qflix_newsletter.posters.time.sleep"):
+        outcome, path = posters._try_one_source_with_retry(
+            "https://example/poster.jpg", cache_dir, "abc1234567890def",
+            session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+        )
+
+    assert outcome == "ok"
+    assert session.get.call_count == 2
+
+
+def test_no_retry_on_fail_outcome(tmp_path):
+    """4xx returns 'fail', which should NOT be retried."""
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    session = MagicMock()
+    session.get.return_value = _err_response(404)
+
+    with patch("qflix_newsletter.posters.time.sleep") as mock_sleep:
+        outcome, path = posters._try_one_source_with_retry(
+            "https://example/poster.jpg", cache_dir, "abc1234567890def",
+            session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+        )
+
+    assert outcome == "fail"
+    assert session.get.call_count == 1
+    mock_sleep.assert_not_called()
+
+
+def test_retry_gives_up_after_one_attempt(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    session = MagicMock()
+    session.get.return_value = _err_response(503)
+
+    with patch("qflix_newsletter.posters.time.sleep"):
+        outcome, path = posters._try_one_source_with_retry(
+            "https://example/poster.jpg", cache_dir, "abc1234567890def",
+            session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+        )
+
+    assert outcome == "retry"  # bubble up final outcome
+    assert session.get.call_count == 2  # original + 1 retry
