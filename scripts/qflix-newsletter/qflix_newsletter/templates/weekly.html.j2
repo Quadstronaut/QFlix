@@ -238,13 +238,16 @@
 
       {{ filmstrip() }}
 
-      {# Footer #}
-      <tr><td style="padding:24px 16px 32px 16px;text-align:center;">
-        <div style="color:#7dd3fc;font-size:12px;opacity:.7;">
-          Reply to this email if anything's broken. <br>
-          <a href="{{ '{{ UnsubscribeURL }}' }}" style="color:#7dd3fc;text-decoration:underline;">Unsubscribe</a>
-          ·
-          <a href="{{ '{{ MessageURL }}' }}" style="color:#7dd3fc;text-decoration:underline;">View in browser</a>
+      {# Footer — bg→black gradient, 40px Q monogram, operator-corrected tagline #}
+      <tr><td style="padding:0;">
+        <div style="background:linear-gradient(180deg,#0a1628 0%,#000 100%);padding:28px 16px 36px 16px;text-align:center;">
+          <img src="https://{{ ctx.public_host }}/images/Q.png" alt="" width="40" height="40" style="display:inline-block;width:40px;height:40px;border-radius:50%;box-shadow:0 2px 12px rgba(30,64,175,.4);">
+          <div style="color:#cbd5e1;font-size:12px;margin-top:10px;letter-spacing:.3px;">QFlix · Crafted with precision 🩷 Quadstronaut</div>
+          <div style="color:#7dd3fc;font-size:11px;opacity:.5;margin-top:10px;">
+            <a href="{{ '{{ UnsubscribeURL }}' }}" style="color:#7dd3fc;text-decoration:underline;">Unsubscribe</a>
+            ·
+            <a href="{{ '{{ MessageURL }}' }}" style="color:#7dd3fc;text-decoration:underline;">View in browser</a>
+          </div>
         </div>
       </td></tr>
     </table>

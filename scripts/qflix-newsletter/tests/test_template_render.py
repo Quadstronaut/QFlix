@@ -86,3 +86,15 @@ def test_movie_poster_cards_have_gold_border_and_shadow(sample_ctx):
     # Baseline count check: movies + anime_movies cards used the cyan border;
     # those should now use the gold one. Loose assertion via gold count >= 2.
     assert html.count("border:1px solid rgba(212,175,55,.4)") >= 2
+
+
+def test_footer_uses_corrected_tagline_and_bg_to_black_gradient(sample_ctx):
+    html = render_html(sample_ctx)
+    # Exact tagline (note pink heart, not red).
+    assert "QFlix · Crafted with precision 🩷 Quadstronaut" in html
+    # Background fades from body color into pure black at the bottom.
+    assert "linear-gradient(180deg,#0a1628 0%,#000 100%)" in html
+    # 40px Q.png monogram is present in footer.
+    assert 'width="40"' in html  # the only 40px-wide image in the template
+    # Old "Reply to this email if anything's broken" text is gone.
+    assert "Reply to this email if anything's broken" not in html
