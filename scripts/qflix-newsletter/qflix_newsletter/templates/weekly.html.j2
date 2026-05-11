@@ -9,6 +9,9 @@
   <div style="height:18px;background:repeating-linear-gradient(90deg,#0a0a0a 0,#0a0a0a 8px,#1a1a1a 8px,#1a1a1a 14px);border-top:1px solid #2a2a2a;border-bottom:1px solid #2a2a2a;line-height:0;font-size:0;">&nbsp;</div>
 </td></tr>
 {%- endmacro %}
+{% macro count_badge(text) -%}
+<span style="background:#1e40af;color:#fff;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600;margin-left:6px;vertical-align:middle;">{{ text }}</span>
+{%- endmacro %}
 {% macro section_divider() -%}
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:6px;">
   <tr>
@@ -65,7 +68,7 @@
       {# New Movies #}
       {% if ctx.movies %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🎬 New movies</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🎬 New movies{{ count_badge(ctx.movies | length) }}</h3>
 {{ section_divider() }}
       </td></tr>
       <tr><td style="padding:0 16px 16px 16px;">
@@ -95,7 +98,7 @@
       {# New TV (grouped) #}
       {% if ctx.shows %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">📺 New TV</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">📺 New TV{{ count_badge((ctx.shows | length | string) + ' shows · ' + (ctx.shows | sum(attribute='episode_count') | string) + ' eps') }}</h3>
 {{ section_divider() }}
       </td></tr>
       {% for s in ctx.shows %}
@@ -120,7 +123,7 @@
       {# Anime Movies #}
       {% if ctx.anime_movies %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🌸 New anime movies</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🌸 New anime movies{{ count_badge(ctx.anime_movies | length) }}</h3>
 {{ section_divider() }}
       </td></tr>
       <tr><td style="padding:0 16px 16px 16px;">
@@ -147,7 +150,7 @@
       {# Anime TV #}
       {% if ctx.anime_shows %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🍙 New anime TV</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🍙 New anime TV{{ count_badge((ctx.anime_shows | length | string) + ' shows · ' + (ctx.anime_shows | sum(attribute='episode_count') | string) + ' eps') }}</h3>
 {{ section_divider() }}
       </td></tr>
       {% for s in ctx.anime_shows %}
@@ -168,7 +171,7 @@
       {# Coming Soon #}
       {% if ctx.coming_soon %}
       <tr><td style="padding:16px 16px 8px 16px;">
-        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🗓 Coming soon</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🗓 Coming soon{{ count_badge(ctx.coming_soon[:12] | length) }}</h3>
 {{ section_divider() }}
       </td></tr>
       <tr><td style="padding:0 16px 16px 16px;">
