@@ -53,7 +53,12 @@ def test_fetch_recently_added_normalizes_movie_and_episode(tmp_path):
     assert movie.year == 2024
     assert movie.rating == pytest.approx(8.7)
     assert movie.tmdb_id == 693134
-    assert movie.thumb_url and movie.thumb_url.startswith("http://127.0.0.1:42000/tautulli/pms_image_proxy")
+    # Pre-enrichment thumb_url points at the seedbox's public Tautulli proxy.
+    # enrich_with_tmdb later rewrites this to image.tmdb.org (see the
+    # dedicated test below).
+    assert movie.thumb_url and movie.thumb_url.startswith(
+        "https://seedbox.example.com/tautulli/pms_image_proxy"
+    )
 
     ep = next(i for i in items if i.show_title == "Severance" and i.episode == 8)
     assert ep.media_type == "episode"
@@ -103,3 +108,110 @@ def test_extract_tmdb_id_handles_string_and_dict_guids():
     assert sources._extract_tmdb_id({"guids": ["tmdb://9876"]}) == 9876
     assert sources._extract_tmdb_id({"guids": [{"id": "imdb://tt000001"}]}) is None
     assert sources._extract_tmdb_id({}) is None
+
+
+def test_enrich_with_tmdb_rewrites_thumb_to_image_cdn(tmp_path):
+    cfg = _config_stub(tmp_path)
+    cfg.tmdb_read_token = "tmdb-test-token"
+
+    movie = sources.RecentItem(
+        media_type="movie",
+        title="Dune: Part Two",
+        year=2024,
+        summary="",
+        thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/12345/thumb",
+        added_at=1715212800,
+        rating=None,
+    )
+    ep1 = sources.RecentItem(
+        media_type="episode",
+        title="Pure Gold",
+        year=None,
+        summary="",
+        thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/6492/thumb",
+        added_at=1715299200,
+        rating=None,
+        show_title="The Curse of Oak Island",
+        season=13,
+        episode=1,
+    )
+    # Second episode of the same show — must hit the show-search cache, no second TMDB call.
+    ep2 = sources.RecentItem(
+        media_type="episode",
+        title="Dust in the Wind",
+        year=None,
+        summary="",
+        thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/6491/thumb",
+        added_at=1715212900,
+        rating=None,
+        show_title="The Curse of Oak Island",
+        season=13,
+        episode=2,
+    )
+    # Movie that TMDB has no result for → thumb dropped.
+    orphan = sources.RecentItem(
+        media_type="movie",
+        title="Forgotten Title That TMDB Does Not Know",
+        year=None,
+        summary="",
+        thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/9999/thumb",
+        added_at=1715000000,
+        rating=None,
+    )
+    # Season rows have no useful poster source — should be cleared, no TMDB call.
+    season = sources.RecentItem(
+        media_type="season",
+        title="Season 24",
+        year=None,
+        summary="",
+        thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/5766/thumb",
+        added_at=1715200000,
+        rating=None,
+    )
+
+    call_count = {"movie": 0, "tv": 0}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        if "api.themoviedb.org/3/search/movie" in url:
+            call_count["movie"] += 1
+            q = (params or {}).get("query", "")
+            if q.startswith("Dune"):
+                return _mock_response({"results": [{"poster_path": "/dune2.jpg", "vote_average": 8.7}]})
+            return _mock_response({"results": []})
+        if "api.themoviedb.org/3/search/tv" in url:
+            call_count["tv"] += 1
+            q = (params or {}).get("query", "")
+            if "Oak Island" in q:
+                return _mock_response({"results": [{"poster_path": "/oakisland.jpg", "vote_average": 8.4}]})
+            return _mock_response({"results": []})
+        raise AssertionError(f"unexpected GET {url} params={params}")
+
+    with patch.object(sources.requests, "get", side_effect=fake_get):
+        out = sources.enrich_with_tmdb(cfg, [movie, ep1, ep2, orphan, season])
+
+    assert out[0].thumb_url == "https://image.tmdb.org/t/p/w342/dune2.jpg"
+    assert out[0].rating == pytest.approx(8.7)
+    assert out[1].thumb_url == "https://image.tmdb.org/t/p/w342/oakisland.jpg"
+    assert out[2].thumb_url == "https://image.tmdb.org/t/p/w342/oakisland.jpg"  # cache hit
+    assert out[3].thumb_url is None
+    assert out[4].thumb_url is None
+    # Show search was called once despite two episodes from the same show.
+    assert call_count["tv"] == 1
+    # Two distinct movie titles → two movie searches.
+    assert call_count["movie"] == 2
+
+
+def test_enrich_with_tmdb_passthrough_without_token(tmp_path):
+    cfg = _config_stub(tmp_path)
+    assert cfg.tmdb_read_token is None
+    item = sources.RecentItem(
+        media_type="movie",
+        title="X",
+        year=None,
+        summary="",
+        thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/foo",
+        added_at=0,
+        rating=None,
+    )
+    out = sources.enrich_with_tmdb(cfg, [item])
+    assert out[0].thumb_url == item.thumb_url
