@@ -7,9 +7,8 @@ Sets:
 - secondary_color          → rich gold    (#d4af37)
 - item_radius              → "lg" (already default; keep)
 - icon_color               → light-blue   (#7dd3fc)
-- logo_image_url           → inline SVG (3 stacked servers in light blue
-                              with white "Qflix" wordmark)
-- favicon_image_url        → small SVG (3 stacked servers, no text)
+- logo_image_url           → Q.png (repo banner, served from GitHub raw)
+- favicon_image_url        → Q.png (same — square 512×512 RGBA)
 - background_image_url     → SVG gradient (midnight-blue → near-black)
 - custom_css               → full Qflix theme (see _custom_css below)
 
@@ -42,40 +41,15 @@ INK           = "#f8fafc"       # body text on dark
 INK_MUTED     = "#cbd5e1"       # secondary text
 
 
-# ---- Inline SVG assets ----------------------------------------------------
+# ---- Brand assets ---------------------------------------------------------
 
-LOGO_SVG = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 64" width="240" height="64">
-  <defs>
-    <linearGradient id="goldStroke" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="{GOLD_BRIGHT}"/>
-      <stop offset="100%" stop-color="{GOLD}"/>
-    </linearGradient>
-  </defs>
-  <!-- 3 stacked servers, light blue -->
-  <g transform="translate(8,8)" stroke="url(#goldStroke)" stroke-width="0.6">
-    <rect x="0"  y="0"  width="48" height="12" rx="2" fill="{SKY_BLUE}"/>
-    <rect x="0"  y="16" width="48" height="12" rx="2" fill="{SKY_BLUE}" opacity="0.85"/>
-    <rect x="0"  y="32" width="48" height="12" rx="2" fill="{SKY_BLUE}" opacity="0.7"/>
-    <circle cx="42" cy="6"  r="1.6" fill="{ORANGE_WARM}"/>
-    <circle cx="42" cy="22" r="1.6" fill="{ORANGE_WARM}"/>
-    <circle cx="42" cy="38" r="1.6" fill="{ORANGE_WARM}"/>
-  </g>
-  <!-- wordmark -->
-  <text x="68" y="44"
-        font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Inter,sans-serif"
-        font-size="36" font-weight="800" letter-spacing="-1"
-        fill="{INK}">Qflix</text>
-</svg>"""
+# Logo + favicon: Q.png (repo banner, 512×512 RGBA) served from GitHub raw.
+# Pinned to the main branch so the dashboard tracks the canonical brand mark
+# automatically when the repo is updated.
+Q_PNG_URL = "https://raw.githubusercontent.com/Quadstronaut/QFlix/main/Q.png"
 
-FAVICON_SVG = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <rect x="6"  y="6"  width="52" height="14" rx="3" fill="{SKY_BLUE}"/>
-  <rect x="6"  y="24" width="52" height="14" rx="3" fill="{SKY_BLUE}" opacity="0.85"/>
-  <rect x="6"  y="42" width="52" height="14" rx="3" fill="{SKY_BLUE}" opacity="0.7"/>
-  <circle cx="50" cy="13" r="2" fill="{ORANGE_WARM}"/>
-  <circle cx="50" cy="31" r="2" fill="{ORANGE_WARM}"/>
-  <circle cx="50" cy="49" r="2" fill="{ORANGE_WARM}"/>
-</svg>"""
-
+# Background stays inline SVG — radial gradient, tiny payload, no need
+# to round-trip GitHub on every page load.
 BACKGROUND_SVG = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" width="1920" height="1080">
   <defs>
     <radialGradient id="vignette" cx="50%" cy="35%" r="80%">
@@ -295,25 +269,21 @@ main.mantine-AppShell-main .mantine-Stack-root > .mantine-Group-root > .mantine-
 }}
 
 /* ============================================================
-   Header logo — Homarr hard-codes width=32 height=32 on the
-   <img class="logo">, but our SVG is 240x64 (icon + wordmark).
-   Override so it renders at proper aspect ratio + visible size.
-   This is the ONE icon-sizing exemption.
+   Header logo — Q.png is 512×512 square; Homarr hard-codes
+   width=32 height=32 on <img class="logo">. Render at 44×44
+   with a subtle golden glow so it reads as a brand mark
+   rather than a tile icon. The "Qflix" page-title text shows
+   to the right of the logo (no wordmark in Q.png itself).
    ============================================================ */
 
 img.logo,
 header img.logo,
 header.mantine-AppShell-header img.logo {{
-  width: auto !important;
+  width: 44px !important;
   height: 44px !important;
-  max-width: 220px !important;
   object-fit: contain;
-}}
-
-/* Hide the duplicate "Qflix" page-title text next to the logo —
-   the wordmark is already baked into the SVG logo. */
-header.mantine-AppShell-header img.logo + * {{
-  display: none !important;
+  border-radius: 8px;
+  filter: drop-shadow(0 1px 4px rgba(212, 175, 55, 0.35));
 }}
 
 /* ============================================================
@@ -479,8 +449,8 @@ main.mantine-AppShell-main .mantine-Title-root {{
 
 
 def apply_to_board(db_path: str, board_name: str = "public") -> None:
-    logo_uri       = _data_uri_svg(LOGO_SVG)
-    favicon_uri    = _data_uri_svg(FAVICON_SVG)
+    logo_uri       = Q_PNG_URL
+    favicon_uri    = Q_PNG_URL
     background_uri = _data_uri_svg(BACKGROUND_SVG)
 
     db = sqlite3.connect(db_path)
