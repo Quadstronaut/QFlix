@@ -107,8 +107,8 @@ def _ok_response(content_type: str, body: bytes, content_length: Optional[int] =
     resp.headers = headers
     resp.iter_content = MagicMock(return_value=iter([body]))
     resp.raise_for_status = MagicMock()
-    resp.__enter__ = lambda self: self
-    resp.__exit__ = lambda self, *a: None
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
     return resp
 
 
