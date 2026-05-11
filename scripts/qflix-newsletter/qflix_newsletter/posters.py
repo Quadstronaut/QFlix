@@ -88,6 +88,7 @@ def _fetch_and_write_one(
             written = 0
             magic_prefix = b""
             magic_checked = False
+            pending_writes: list[bytes] = []
             with tmp_path.open("wb") as f:
                 for chunk in resp.iter_content(chunk_size=_DEFAULT_CHUNK_SIZE):
                     if not chunk:
@@ -97,11 +98,16 @@ def _fetch_and_write_one(
                         return "fail", None
                     if not magic_checked:
                         magic_prefix += chunk
+                        pending_writes.append(chunk)
                         if len(magic_prefix) >= _MAGIC_PREFIX_BYTES:
                             if not _validate_magic_bytes(magic_prefix, content_type):
                                 return "fail", None
                             magic_checked = True
-                    f.write(chunk)
+                            for buffered in pending_writes:
+                                f.write(buffered)
+                            pending_writes = []
+                    else:
+                        f.write(chunk)
                 if not magic_checked:
                     return "fail", None
 
