@@ -66,6 +66,22 @@ def test_fetch_recently_added_normalizes_movie_and_episode(tmp_path):
     assert ep.library_name == "TV Shows"
 
 
+def test_fetch_recently_added_preserves_tautulli_thumb_url(tmp_path):
+    """tautulli_thumb_url survives enrich_with_tmdb so it can be a fallback source."""
+    cfg = _config_stub(tmp_path)
+    fixture = json.loads((FIXTURES / "recent.json").read_text())
+    with patch.object(sources.requests, "get", return_value=_mock_response(fixture)):
+        items = sources.fetch_recently_added(cfg, count=10)
+
+    movie = next(i for i in items if i.title == "Dune: Part Two")
+    assert movie.tautulli_thumb_url is not None
+    assert movie.tautulli_thumb_url.startswith(
+        "https://seedbox.example.com/tautulli/pms_image_proxy"
+    )
+    # Equal to thumb_url at this stage; enrich_with_tmdb will diverge them.
+    assert movie.tautulli_thumb_url == movie.thumb_url
+
+
 def test_fetch_recently_added_propagates_tautulli_failure(tmp_path):
     cfg = _config_stub(tmp_path)
     bad = {"response": {"result": "error", "message": "broken"}}
@@ -120,6 +136,7 @@ def test_enrich_with_tmdb_rewrites_thumb_to_image_cdn(tmp_path):
         year=2024,
         summary="",
         thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/12345/thumb",
+        tautulli_thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/12345/thumb",
         added_at=1715212800,
         rating=None,
     )
@@ -129,6 +146,7 @@ def test_enrich_with_tmdb_rewrites_thumb_to_image_cdn(tmp_path):
         year=None,
         summary="",
         thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/6492/thumb",
+        tautulli_thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/6492/thumb",
         added_at=1715299200,
         rating=None,
         show_title="The Curse of Oak Island",
@@ -142,6 +160,7 @@ def test_enrich_with_tmdb_rewrites_thumb_to_image_cdn(tmp_path):
         year=None,
         summary="",
         thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/6491/thumb",
+        tautulli_thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/6491/thumb",
         added_at=1715212900,
         rating=None,
         show_title="The Curse of Oak Island",
@@ -155,6 +174,7 @@ def test_enrich_with_tmdb_rewrites_thumb_to_image_cdn(tmp_path):
         year=None,
         summary="",
         thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/9999/thumb",
+        tautulli_thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/9999/thumb",
         added_at=1715000000,
         rating=None,
     )
@@ -165,6 +185,7 @@ def test_enrich_with_tmdb_rewrites_thumb_to_image_cdn(tmp_path):
         year=None,
         summary="",
         thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/5766/thumb",
+        tautulli_thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/metadata/5766/thumb",
         added_at=1715200000,
         rating=None,
     )
@@ -210,6 +231,7 @@ def test_enrich_with_tmdb_passthrough_without_token(tmp_path):
         year=None,
         summary="",
         thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/foo",
+        tautulli_thumb_url="https://seedbox.example.com/tautulli/pms_image_proxy?img=/foo",
         added_at=0,
         rating=None,
     )
