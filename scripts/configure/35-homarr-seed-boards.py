@@ -37,6 +37,9 @@ ADMIN_EXTRA_APPS = [
     ("qBittorrent",     "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/qbittorrent.svg",     "https://quadstronaut.seedbox.example.com/qbittorrent/"),
     ("autobrr",         "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/autobrr.svg",         "https://quadstronaut.seedbox.example.com/autobrr/"),
     ("Bazarr",          "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/bazarr.svg",          "https://quadstronaut.seedbox.example.com/bazarr/"),
+    # Bazarr 2 (anime *arr pair) intentionally has no tile — it's internal-only
+    # (loopback 127.0.0.1:17032/bazarr2/, no nginx proxy) so there's no public
+    # URL to link from a browser. Reach it via the manitoba-tunnel daemon.
     ("Maintainerr",     "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/maintainerr.svg",     "https://maintainerr-quadstronaut.seedbox.example.com/"),
     ("Jellystat",       "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/jellyfin.svg",        "https://jellystat-quadstronaut.seedbox.example.com/"),
     ("Notifiarr",       "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/notifiarr.svg",       "https://notifiarr.com/"),
