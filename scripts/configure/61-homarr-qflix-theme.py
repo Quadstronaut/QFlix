@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Apply the 'Qflix' theme to a Homarr board (default: public).
+"""Apply the 'QFlix' theme to a Homarr board (default: public).
 
 Sets:
-- page_title / meta_title  → "Qflix"
+- page_title / meta_title  → "QFlix"
 - primary_color            → warm orange  (#ff8c42)
 - secondary_color          → rich gold    (#d4af37)
 - item_radius              → "lg" (already default; keep)
@@ -10,7 +10,7 @@ Sets:
 - logo_image_url           → Q.png (repo banner, served from GitHub raw)
 - favicon_image_url        → Q.png (same — square 512×512 RGBA)
 - background_image_url     → SVG gradient (midnight-blue → near-black)
-- custom_css               → full Qflix theme (see _custom_css below)
+- custom_css               → full QFlix theme (see _custom_css below)
 
 Idempotent. Re-running just overwrites. Per-board via --board <name>
 (default: public).
@@ -75,7 +75,7 @@ def _data_uri_svg(svg: str) -> str:
 # ---- Custom CSS -----------------------------------------------------------
 
 CUSTOM_CSS = f"""/* ============================================================
-   Qflix — Quadstronaut Flix
+   QFlix — Quadstronaut Flix
    Dark midnight blue · warm orange · golden accents
    ============================================================ */
 
@@ -272,7 +272,7 @@ main.mantine-AppShell-main .mantine-Stack-root > .mantine-Group-root > .mantine-
    Header logo — Q.png is 512×512 square; Homarr hard-codes
    width=32 height=32 on <img class="logo">. Render at 44×44
    with a subtle golden glow so it reads as a brand mark
-   rather than a tile icon. The "Qflix" page-title text shows
+   rather than a tile icon. The "QFlix" page-title text shows
    to the right of the logo (no wordmark in Q.png itself).
    ============================================================ */
 
@@ -479,8 +479,8 @@ def apply_to_board(db_path: str, board_name: str = "public") -> None:
         WHERE id = ?
         """,
         (
-            "Qflix",
-            "Qflix · Quadstronaut Flix",
+            "QFlix",
+            "QFlix · Quadstronaut Flix",
             ORANGE_WARM,
             GOLD,
             "lg",
@@ -496,7 +496,7 @@ def apply_to_board(db_path: str, board_name: str = "public") -> None:
     )
     db.commit()
     db.close()
-    print(f"[ok] applied Qflix theme to board '{board_name}' (id={board_id})")
+    print(f"[ok] applied QFlix theme to board '{board_name}' (id={board_id})")
 
 
 def main() -> int:
