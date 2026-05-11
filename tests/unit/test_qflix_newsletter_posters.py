@@ -132,3 +132,120 @@ def test_fetch_and_write_one_happy_path(tmp_path):
     assert path.read_bytes() == jpeg_body
     # No .tmp left behind
     assert not (cache_dir / f"{sha}.jpg.tmp").exists()
+
+
+def _err_response(status: int, content_type: str = "text/html"):
+    resp = MagicMock()
+    resp.status_code = status
+    resp.headers = {"Content-Type": content_type}
+    resp.iter_content = MagicMock(return_value=iter([b""]))
+    resp.raise_for_status = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def test_fetch_and_write_one_4xx_returns_fail(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    session = MagicMock()
+    session.get.return_value = _err_response(404)
+
+    outcome, path = posters._fetch_and_write_one(
+        "https://example/poster.jpg", cache_dir, "abc1234567890def",
+        session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+    )
+    assert outcome == "fail"
+    assert path is None
+    assert list(cache_dir.iterdir()) == []
+
+
+def test_fetch_and_write_one_5xx_returns_retry(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    session = MagicMock()
+    session.get.return_value = _err_response(503)
+
+    outcome, path = posters._fetch_and_write_one(
+        "https://example/poster.jpg", cache_dir, "abc1234567890def",
+        session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+    )
+    assert outcome == "retry"
+    assert path is None
+
+
+def test_fetch_and_write_one_rejects_non_image_content_type(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    session = MagicMock()
+    session.get.return_value = _ok_response("text/html", b"<html></html>" + b"\x00" * 12)
+
+    outcome, path = posters._fetch_and_write_one(
+        "https://example/poster.jpg", cache_dir, "abc1234567890def",
+        session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+    )
+    assert outcome == "fail"
+    assert list(cache_dir.iterdir()) == []
+
+
+def test_fetch_and_write_one_rejects_magic_byte_mismatch(tmp_path):
+    """Content-Type says PNG but body is HTML."""
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    session = MagicMock()
+    session.get.return_value = _ok_response("image/png", b"<html><head" + b"\x00\x00")
+
+    outcome, path = posters._fetch_and_write_one(
+        "https://example/poster.jpg", cache_dir, "abc1234567890def",
+        session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+    )
+    assert outcome == "fail"
+    assert list(cache_dir.iterdir()) == []
+
+
+def test_fetch_and_write_one_refuses_oversized_via_content_length(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    session = MagicMock()
+    body = b"\xff\xd8\xff" + b"\x00" * 100
+    session.get.return_value = _ok_response("image/jpeg", body, content_length=3_000_000)
+
+    outcome, path = posters._fetch_and_write_one(
+        "https://example/poster.jpg", cache_dir, "abc1234567890def",
+        session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+    )
+    assert outcome == "fail"
+    assert list(cache_dir.iterdir()) == []
+
+
+def test_fetch_and_write_one_aborts_when_stream_exceeds_max_bytes(tmp_path):
+    """No Content-Length header; the streamed body exceeds the cap."""
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    jpeg_chunks = [b"\xff\xd8\xff" + b"\x00" * 13] + [b"\x00" * 1_000_000 for _ in range(3)]
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {"Content-Type": "image/jpeg"}
+    resp.iter_content = MagicMock(return_value=iter(jpeg_chunks))
+    resp.raise_for_status = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+
+    session = MagicMock()
+    session.get.return_value = resp
+
+    outcome, path = posters._fetch_and_write_one(
+        "https://example/poster.jpg", cache_dir, "abc1234567890def",
+        session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+    )
+    assert outcome == "fail"
+    assert list(cache_dir.iterdir()) == []
+
+
+def test_fetch_and_write_one_handles_connection_error(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    import requests as _r
+    session = MagicMock()
+    session.get.side_effect = _r.ConnectionError("boom")
+
+    outcome, path = posters._fetch_and_write_one(
+        "https://example/poster.jpg", cache_dir, "abc1234567890def",
+        session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+    )
+    assert outcome == "retry"
+    assert path is None
