@@ -52,6 +52,7 @@ class Config:
     listmonk_template_id: Optional[int]
 
     public_host: str
+    poster_cache_dir: Path
 
     @classmethod
     def from_env(cls, secrets_dir: Optional[Path] = None) -> "Config":
@@ -71,6 +72,12 @@ class Config:
 
         listmonk_port = read_secret("listmonk.port", d)
         listmonk_list_id_raw = maybe_read_secret("listmonk.list_id", d) or "1"
+
+        poster_cache_override = os.environ.get("QFLIX_POSTER_CACHE_DIR")
+        if poster_cache_override:
+            poster_cache_dir = Path(poster_cache_override)
+        else:
+            poster_cache_dir = Path.home() / "www" / "images" / "newsletter"
 
         return cls(
             tautulli_url=f"http://127.0.0.1:{tautulli_port}/tautulli",
@@ -111,4 +118,5 @@ class Config:
                 else None
             ),
             public_host=(maybe_read_secret("seedbox.host", d) or "quadstronaut.seedbox.example.com"),
+            poster_cache_dir=poster_cache_dir,
         )

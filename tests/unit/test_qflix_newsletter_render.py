@@ -25,6 +25,7 @@ def _movie(title: str, *, rating=None, year=2024, library="Movies", thumb="/x/th
         year=year,
         summary="lorem ipsum dolor sit amet " * 20,
         thumb_url=thumb,
+        tautulli_thumb_url=thumb,
         added_at=1715212800,
         rating=rating,
         library_name=library,
@@ -38,6 +39,7 @@ def _episode(show: str, season: int, ep: int, *, library="TV Shows", thumb="/x/t
         year=2025,
         summary="episode summary",
         thumb_url=thumb,
+        tautulli_thumb_url=thumb,
         added_at=1715212900,
         rating=None,
         show_title=show,
@@ -179,3 +181,59 @@ def test_render_handles_empty_inputs_without_crashing():
     html = render_html(ctx)
     assert "QFlix" in html
     assert "fresh additions" in ctx.subject
+
+
+import re
+from unittest.mock import MagicMock, patch
+
+from qflix_newsletter import main as nl_main
+
+
+def test_render_pipeline_rewrites_images_to_local_cache(tmp_path):
+    """Full pipeline dry-run: every <img> src that should be a poster
+    must point at the local /images/newsletter/ path."""
+    out_html = tmp_path / "out.html"
+    cache_dir = tmp_path / "cache"
+
+    secrets = tmp_path / "secrets"; secrets.mkdir()
+    for n, v in {
+        "tautulli.key": "tk", "tautulli.port": "42000",
+        "sonarr.key": "sk", "sonarr.port": "42010", "sonarr.urlbase": "sonarr",
+        "radarr.key": "rk", "radarr.port": "42011", "radarr.urlbase": "radarr",
+        "listmonk.api_user": "u", "listmonk.api_token": "tok", "listmonk.port": "42014",
+        "seedbox.host": "seedbox.example.com",
+    }.items():
+        (secrets / n).write_text(v)
+
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 13
+
+    with patch("qflix_newsletter.main.fetch_recently_added", return_value=[
+        _movie("Bugonia", thumb="https://image.tmdb.org/t/p/w342/bugonia.jpg"),
+    ]), patch("qflix_newsletter.main.enrich_with_tmdb", side_effect=lambda cfg, items: items), \
+         patch("qflix_newsletter.main.fetch_all_calendars", return_value=[]), \
+         patch("qflix_newsletter.main.fetch_libraries_table", return_value=[]), \
+         patch("qflix_newsletter.main.fetch_ai_picks", return_value=[]), \
+         patch("qflix_newsletter.posters.requests.Session") as mock_sess_cls, \
+         patch.dict("os.environ", {"QFLIX_POSTER_CACHE_DIR": str(cache_dir)}):
+
+        sess = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"Content-Type": "image/jpeg", "Content-Length": str(len(jpeg))}
+        resp.iter_content = MagicMock(return_value=iter([jpeg]))
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        sess.get.return_value = resp
+        mock_sess_cls.return_value = sess
+
+        rc = nl_main.run(dry_run=True, out_html=out_html, secrets_dir=secrets)
+
+    assert rc == 0
+    html = out_html.read_text(encoding="utf-8")
+    imgs = re.findall(r'<img[^>]+src="([^"]+)"', html)
+    assert imgs, "expected at least one <img> in rendered HTML"
+    poster_srcs = [s for s in imgs if "/images/newsletter/" in s]
+    assert poster_srcs, "expected at least one mirrored poster src"
+    for src in poster_srcs:
+        assert re.search(r"/images/newsletter/[0-9a-f]{16}\.(jpg|png|webp|gif)$", src), \
+            f"unexpected poster src format: {src}"
