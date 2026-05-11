@@ -225,6 +225,51 @@ Test-Case 'ConvertFrom-FetchedBlob base64-decodes sources' {
     Assert-Equal '' $r.sources.cron_mail 'empty section stays empty'
 }
 
+# --- Task 8: consensus grouping ---
+Test-Case 'Get-Consensus groups by signature, max severity wins' {
+    $findings = @(
+        @{ time='2026-05-11T04:30:11Z'; app='buildarr'; file='journal:buildarr.service'; severity='warning'; summary='short'; excerpt='excerpt-A'; signature='buildarr:pydantic'; _model='qwen3:8b' },
+        @{ time='2026-05-11T04:30:11Z'; app='buildarr'; file='journal:buildarr.service'; severity='error';   summary='a longer summary about the same issue'; excerpt='excerpt-B (longer)'; signature='buildarr:pydantic'; _model='qwen3-coder:30b' },
+        @{ time='2026-05-11T05:00:00Z'; app='nginx';    file='nginx/error.log'; severity='error'; summary='502'; excerpt='upstream'; signature='nginx:502'; _model='qwen3-coder:30b' }
+    )
+    $groups = @(Get-Consensus -Findings $findings)
+    Assert-Equal 2 $groups.Count 'two groups'
+    $bg = $groups | Where-Object { $_.signature -eq 'buildarr:pydantic' } | Select-Object -First 1
+    Assert-Equal 'error' $bg.severity 'severity escalated to error'
+    Assert-Equal 2 @($bg.models_flagged).Count 'two models flagged'
+    Assert-Equal 'a longer summary about the same issue' $bg.summary 'longest summary kept'
+    Assert-Equal 'excerpt-B (longer)' $bg.excerpt 'longest excerpt kept'
+}
+
+Test-Case 'Get-Consensus normalizes signature case and whitespace' {
+    $findings = @(
+        @{ time='t'; app='a'; file='f'; severity='error'; summary='s'; excerpt='e'; signature='Foo:Bar';   _model='m1' },
+        @{ time='t'; app='a'; file='f'; severity='error'; summary='s'; excerpt='e'; signature=' foo:bar '; _model='m2' }
+    )
+    $groups = @(Get-Consensus -Findings $findings)
+    Assert-Equal 1 $groups.Count 'collapsed to one group'
+}
+
+Test-Case 'Get-Consensus drops findings with empty signature' {
+    $findings = @(
+        @{ time='t'; app='a'; file='f'; severity='error'; summary='s'; excerpt='e'; signature=''; _model='m1' }
+    )
+    $groups = @(Get-Consensus -Findings $findings)
+    Assert-Equal 0 $groups.Count 'no groups for empty signature'
+}
+
+Test-Case 'Get-Consensus sorts severity desc then time asc' {
+    $findings = @(
+        @{ time='2026-05-11T10:00:00Z'; app='a'; file='f'; severity='warning'; summary='s'; excerpt='e'; signature='w1'; _model='m1' },
+        @{ time='2026-05-11T09:00:00Z'; app='a'; file='f'; severity='error';   summary='s'; excerpt='e'; signature='e1'; _model='m1' },
+        @{ time='2026-05-11T08:00:00Z'; app='a'; file='f'; severity='error';   summary='s'; excerpt='e'; signature='e2'; _model='m1' }
+    )
+    $groups = @(Get-Consensus -Findings $findings)
+    Assert-Equal 'e2' $groups[0].signature 'earliest error first'
+    Assert-Equal 'e1' $groups[1].signature 'later error second'
+    Assert-Equal 'w1' $groups[2].signature 'warning last'
+}
+
 Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
     $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
     try {
