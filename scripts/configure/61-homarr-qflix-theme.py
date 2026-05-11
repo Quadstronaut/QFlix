@@ -44,9 +44,9 @@ INK_MUTED     = "#cbd5e1"       # secondary text
 # ---- Brand assets ---------------------------------------------------------
 
 # Logo + favicon: Q.png (repo banner, 512×512 RGBA) served from GitHub raw.
-# Pinned to the main branch so the dashboard tracks the canonical brand mark
+# Pinned to the master branch so the dashboard tracks the canonical brand mark
 # automatically when the repo is updated.
-Q_PNG_URL = "https://raw.githubusercontent.com/Quadstronaut/QFlix/main/Q.png"
+Q_PNG_URL = "https://raw.githubusercontent.com/Quadstronaut/QFlix/master/Q.png"
 
 # Background stays inline SVG — radial gradient, tiny payload, no need
 # to round-trip GitHub on every page load.

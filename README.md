@@ -465,13 +465,6 @@ A single failure here means an operator-actionable signal; rerun the smoke after
 
 ---
 
-## Honesty about the trail
-
-> [!WARNING]
-> The 2026-05-10 session shipped Phases 1–7 plus the Notifiarr purge but burned operator confidence with one bad claim: **Maintainerr was running the whole time, even though a stale comment in the tunnel script — repeated into the smoke test and an internal doc — said it was "intentionally parked."** That cascade is what this README's inventory-first approach exists to prevent. The single source of truth is `inventory.md`, built from a live seedbox query. Where docs and seedbox disagree, the seedbox wins and the docs get updated in the same response.
-
----
-
 ## Pointers
 
 - **End-user / operator FAQ + tutorial** → live page at [quadstronaut.seedbox.example.com/faq/](https://quadstronaut.seedbox.example.com/faq/) (source: [`scripts/data/qflix-faq.html`](scripts/data/qflix-faq.html), nginx fragment [`scripts/data/qflix-faq.conf`](scripts/data/qflix-faq.conf)). 17 sections, 50+ Q&amp;As, covers requesting media, anime routing, the maintenance window, hardlinks, Kuma phantom monitors, the top 10 recurring screw-ups, and an emergency playbook.
