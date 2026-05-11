@@ -21,13 +21,24 @@ import xml.etree.ElementTree as ET
 
 HOME = os.path.expanduser("~")
 SECRETS = os.path.join(HOME, "secrets")
-LM_HOST = "https://quadstronaut.seedbox.example.com/listmonk"
 SSL_CTX = ssl.create_default_context()
 
 
 def s(name):
     with open(os.path.join(SECRETS, name)) as f:
         return f.read().strip()
+
+
+def _maybe(name, default):
+    try:
+        return s(name)
+    except FileNotFoundError:
+        return default
+
+
+# Public host from secrets/seedbox.host (real FQDN on seedbox; sanitized
+# fallback when developing off-seedbox so the repo doesn't leak the FQDN).
+LM_HOST = f"https://{_maybe('seedbox.host', 'quadstronaut.seedbox.example.com')}/listmonk"
 
 
 def lm_auth():
