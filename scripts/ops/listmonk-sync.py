@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Phase 20.2 — Nightly reconcile: Plex friends + Seerr -> Listmonk.
+"""Nightly reconcile: Plex friends + Seerr users -> Listmonk Subscribers.
 
-Runs on the seedbox via cron. Idempotent: never removes subscribers (operators
-self-unsubscribe via Listmonk link). Adds new users to the appropriate source
-list and All Members.
+Single-list model. Every user lands in the canonical Subscribers list
+(id from ~/secrets/listmonk.list_id); the originating source is recorded
+on the subscriber via attribs.source ("plex" | "seerr"). Idempotent —
+never removes subscribers (they self-unsubscribe via Listmonk link).
 
-Secrets live in ~/secrets/<name> on the seedbox (one file per secret, gitignored
-in the source repo and operator-deployed via the install script).
-
-Logs to stderr (cron will tee to ~/.apps/listmonk/logs/sync.log).
+Secrets live in ~/secrets/<name> on the seedbox (one file per secret,
+gitignored in the source repo). Logs to stderr (cron tees to
+~/.apps/listmonk/logs/sync.log).
 """
 import base64
 import json
@@ -17,7 +17,6 @@ import ssl
 import sys
 import urllib.error
 import urllib.request
-import xml.etree.ElementTree as ET
 
 HOME = os.path.expanduser("~")
 SECRETS = os.path.join(HOME, "secrets")
@@ -36,8 +35,6 @@ def _maybe(name, default):
         return default
 
 
-# Public host from secrets/seedbox.host (real FQDN on seedbox; sanitized
-# fallback when developing off-seedbox so the repo doesn't leak the FQDN).
 LM_HOST = f"https://{_maybe('seedbox.host', 'quadstronaut.seedbox.example.com')}/listmonk"
 
 
@@ -54,14 +51,6 @@ def lm_req(method, path, body=None):
         return json.loads(raw) if raw else {}
 
 
-def get_list_id_by_name(name):
-    res = lm_req("GET", "/api/lists?per_page=all")["data"]["results"]
-    for L in res:
-        if L["name"] == name:
-            return int(L["id"])
-    raise RuntimeError(f"list not found: {name!r}")
-
-
 def fetch_subscribers_by_email():
     out = {}
     page = 1
@@ -76,20 +65,26 @@ def fetch_subscribers_by_email():
     return out
 
 
-def upsert(email, name, list_ids, attribs, existing_map):
+def upsert(email, name, list_id, source, existing_map):
     body = {
         "email": email,
         "name": name,
         "status": "enabled",
-        "lists": list_ids,
+        "lists": [list_id],
         "preconfirm_subscriptions": True,
-        "attribs": attribs,
+        "attribs": {"source": source},
     }
     existing = existing_map.get(email.lower())
     if existing:
         sid = int(existing["id"])
         existing_lists = {int(L["id"]) for L in existing.get("lists") or []}
-        body["lists"] = sorted(existing_lists | set(list_ids))
+        body["lists"] = sorted(existing_lists | {list_id})
+        # Preserve existing attribs but record source if absent or different
+        existing_attribs = existing.get("attribs") or {}
+        if existing_attribs.get("source") != source:
+            body["attribs"] = {**existing_attribs, "source": source}
+        else:
+            body["attribs"] = existing_attribs
         try:
             lm_req("PUT", f"/api/subscribers/{sid}", body)
             return "updated"
@@ -102,8 +97,8 @@ def upsert(email, name, list_ids, attribs, existing_map):
 
 
 def fetch_plex_friends():
-    """Plex.tv /api/v2/friends — returns currently shared friends with email
-    when available. Some friends ('home' accounts) have no email; skip them.
+    """Plex.tv /api/v2/friends — currently shared friends with email when available.
+    Home accounts have no email; skip them.
     """
     token = s("plex.token")
     req = urllib.request.Request(
@@ -144,21 +139,18 @@ def fetch_seerr_users():
 
 
 def main() -> int:
-    main_id = get_list_id_by_name("All Members")
-    plex_id = get_list_id_by_name("Plex friends")
-    seerr_id = get_list_id_by_name("Seerr requesters")
-
+    list_id = int(s("listmonk.list_id"))
     existing = fetch_subscribers_by_email()
-    print(f"snapshot: {len(existing)} existing subscribers", file=sys.stderr)
+    print(f"snapshot: {len(existing)} existing subscribers (target list_id={list_id})", file=sys.stderr)
 
     deltas = {"created": 0, "updated": 0, "noop": 0, "errors": 0}
 
     sources = [
-        ("plex", fetch_plex_friends, plex_id),
-        ("seerr", fetch_seerr_users, seerr_id),
+        ("plex", fetch_plex_friends),
+        ("seerr", fetch_seerr_users),
     ]
 
-    for tag, fetcher, list_id in sources:
+    for tag, fetcher in sources:
         try:
             users = fetcher()
         except Exception as e:
@@ -168,7 +160,7 @@ def main() -> int:
         print(f"  {tag}: {len(users)} users with email", file=sys.stderr)
         for email, name in users:
             try:
-                action = upsert(email, name, [main_id, list_id], {"source": tag}, existing)
+                action = upsert(email, name, list_id, tag, existing)
                 deltas[action] = deltas.get(action, 0) + 1
             except Exception as e:
                 print(f"  ! {tag} upsert {email}: {e}", file=sys.stderr)
