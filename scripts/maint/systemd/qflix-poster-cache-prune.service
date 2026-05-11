@@ -1,0 +1,10 @@
+[Unit]
+Description=QFlix newsletter poster cache 30-day prune
+
+[Service]
+# `%h` expands to $HOME under user systemd. -mtime +30 deletes files
+# whose mtime is older than 30 days (so a freshly cached poster lives
+# exactly 30 days from write).
+Type=oneshot
+ExecStart=/usr/bin/find %h/www/images/newsletter -type f -mtime +30 -delete
+ExecStart=/usr/bin/find %h/www/images/newsletter -type f -name "*.tmp" -mmin +60 -delete
