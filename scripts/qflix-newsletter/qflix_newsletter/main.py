@@ -11,6 +11,7 @@ from . import __version__
 from .ai import fetch_ai_picks
 from .config import Config
 from .delivery import create_and_send_campaign
+from .posters import mirror_posters
 from .render import build_email_context, render_html
 from .sources import (
     enrich_with_tmdb,
@@ -49,6 +50,11 @@ def run(
 
     recent = fetch_recently_added(cfg, count=DEFAULT_RECENT_COUNT)
     recent = enrich_with_tmdb(cfg, recent)
+    recent = mirror_posters(
+        recent,
+        cache_dir=cfg.poster_cache_dir,
+        public_base=f"https://{cfg.public_host}",
+    )
     coming = fetch_all_calendars(cfg, days=DEFAULT_CALENDAR_DAYS)
 
     library_stats = _build_library_stats(cfg)
