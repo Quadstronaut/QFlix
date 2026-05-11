@@ -10,7 +10,7 @@ live seedbox wins and this file records both.
 - **28 apps in `manifest/apps.yaml`** (19 UCC, 3 systemd, 5 cron, 1 library); all 28 present on seedbox.
 - **35 Kuma monitors** total: 32 manitoba (incl. 4 canary push monitors + 6 added 2026-05-11 for FlareSolverr / Unpackerr / Postgres / Tdarr Node / Kometa / PlexAPI) + 3 quadstronix external. **32/32 manitoba UP.** Every app in the manifest now actively reports to Kuma.
 - All 32 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
-- Notification channel: single Discord webhook + operator @ping (`<@REDACTED>`) on `error` / `critical` levels via `scripts/maint/lib/notify.py`.
+- Notification channel: single Discord webhook + operator @ping (user-id read from `secrets/discord-operator.id`) on `error` / `critical` levels via `scripts/maint/lib/notify.py`.
 - Last full smoke: **45 pass / 0 fail / 0 skip** (2026-05-11).
 
 **Q2 coverage gap closed 2026-05-11** — the prior 6 apps that didn't push to Kuma (flaresolverr / unpackerr / postgres / tdarr-node / kometa / python-plexapi) now all have monitors. Required two `health.py` fixes: `os.path.expanduser` on the `venv_python` field (import_check), and a new optional `hostname` override on http_root/http_api (so FlareSolverr's Docker-bridge bind at `172.17.0.1:17011` is probable from host netns).
