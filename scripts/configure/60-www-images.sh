@@ -21,18 +21,18 @@ source "$HERE/../lib/log.sh"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 # ── Step 1: copy assets to seedbox ──────────────────────────────────────────
-log "deploying brand assets to ~/www/images/"
+log_info "deploying brand assets to ~/www/images/"
 sshm 'mkdir -p ~/www/images && chmod 755 ~/www/images'
 scpm_to "$REPO_ROOT/Q.png"               "~/www/images/Q.png"
 scpm_to "$REPO_ROOT/scripts/data/_blank.png" "~/www/images/_blank.png"
 sshm 'chmod 644 ~/www/images/*.png'
 
 # ── Step 2: deploy nginx fragment ───────────────────────────────────────────
-log "deploying nginx fragment"
+log_info "deploying nginx fragment"
 scpm_to "$REPO_ROOT/scripts/data/qflix-images.conf" "~/.apps/nginx/proxy.d/qflix-images.conf"
 
 # ── Step 3: ensure server_tokens off in nginx.conf (idempotent) ─────────────
-log "patching nginx.conf for server_tokens off"
+log_info "patching nginx.conf for server_tokens off"
 sshm 'bash -s' <<'REMOTE'
 set -euo pipefail
 CFG=$HOME/.apps/nginx/nginx.conf
@@ -56,12 +56,12 @@ fi
 REMOTE
 
 # ── Step 4: restart user-nginx ──────────────────────────────────────────────
-log "restarting user-nginx"
+log_info "restarting user-nginx"
 sshm 'app-nginx restart'
 sleep 5
 
 # ── Step 5: smoke tests ─────────────────────────────────────────────────────
-log "smoke tests"
+log_info "smoke tests"
 PUB_HOST=$(cat "$REPO_ROOT/secrets/seedbox.host" 2>/dev/null || echo "quadstronaut.seedbox.example.com")
 
 # Positive: Q.png returns 200.
@@ -102,4 +102,4 @@ if curl -sI "https://$PUB_HOST/images/Q.png" | grep -iE '^server:.*nginx/[0-9]';
 fi
 echo "  PASS: nginx version not exposed (server_tokens off)"
 
-log "deploy + smoke complete"
+log_info "deploy + smoke complete"
