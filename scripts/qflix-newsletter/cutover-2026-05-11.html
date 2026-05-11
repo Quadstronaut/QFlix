@@ -171,18 +171,18 @@
       </td></tr>
 
       <!-- ============================================================
-           DASHBOARD CTA — "see what's on right now"
+           HOMARR LANDING PAGE — "your one bookmark"
            ============================================================ -->
       <tr><td style="padding:16px 16px;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:linear-gradient(135deg,#0e1d33 0%,#0a1628 100%);border:1px solid rgba(212,175,55,.40);border-radius:10px;">
           <tr><td style="padding:24px;">
-            <div style="font-size:11px;letter-spacing:2px;color:#d4af37;font-weight:700;text-transform:uppercase;">Your one bookmark</div>
+            <div style="font-size:11px;letter-spacing:2px;color:#d4af37;font-weight:700;text-transform:uppercase;">Your one bookmark · powered by Homarr</div>
             <div style="font-size:22px;color:#f8fafc;font-weight:700;margin-top:6px;line-height:1.25;">qflix.quadstronix.dev</div>
-            <div style="font-size:14px;color:#cbd5e1;margin-top:8px;line-height:1.55;">One short URL that lands you on the central hub — what's newly added, what's trending on the box, and one-click buttons to Plex, Seerr, the FAQ, and everything else. <b>Bookmark this one address</b> and you can stop hunting for the long link.</div>
+            <div style="font-size:14px;color:#cbd5e1;margin-top:8px;line-height:1.55;">A short URL that lands you on the <b>Homarr dashboard</b> — what's newly added, what's trending on the box, the latest newsletter, and one-click buttons to Plex, Seerr, and the FAQ. <b>Bookmark this one address</b> and you can stop hunting for the long link.</div>
             <div style="margin-top:18px;">
               <a href="https://qflix.quadstronix.dev/"
                  style="display:inline-block;background:#d4af37;color:#0a1628;font-size:15px;font-weight:700;text-decoration:none;padding:14px 24px;border-radius:8px;letter-spacing:.5px;">
-                ★ &nbsp;Open qflix.quadstronix.dev
+                ★ &nbsp;Open the Homarr dashboard
               </a>
             </div>
           </td></tr>
@@ -231,6 +231,75 @@
            style="display:inline-block;background:transparent;color:#d4af37;font-size:14px;font-weight:600;text-decoration:underline;padding:6px 12px;letter-spacing:.5px;">
           → Read the full FAQ (17 sections + emergency playbook)
         </a>
+      </td></tr>
+
+      <!-- ============================================================
+           WHY THIS IS BETTER (the nerdy stats card)
+           ============================================================ -->
+      <tr><td style="padding:32px 16px 8px 16px;">
+        <div style="font-size:11px;letter-spacing:2px;color:#d4af37;font-weight:700;text-transform:uppercase;">For the curious</div>
+        <div style="font-size:20px;color:#f8fafc;font-weight:600;margin-top:4px;">Why the new stack is better</div>
+        <div style="font-size:13px;color:#7dd3fc;margin-top:6px;line-height:1.55;">The old setup was a pile of hand-tended scripts. The new one is a single manifest of <b>28 apps</b> that watch themselves and call for help when they fall over — so you don't have to text me asking if the box is up.</div>
+      </td></tr>
+
+      <tr><td style="padding:8px 16px 16px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0e1d33;border:1px solid rgba(125,211,252,.18);border-radius:8px;">
+          <tr>
+            <td valign="top" width="50%" style="padding:16px 14px;border-right:1px solid rgba(125,211,252,.12);border-bottom:1px solid rgba(125,211,252,.12);">
+              <div style="font-size:28px;color:#ff8c42;font-weight:800;line-height:1;">28</div>
+              <div style="font-size:12px;color:#cbd5e1;margin-top:6px;line-height:1.5;">apps in the manifest — one source of truth, reproducible from scratch</div>
+            </td>
+            <td valign="top" width="50%" style="padding:16px 14px;border-bottom:1px solid rgba(125,211,252,.12);">
+              <div style="font-size:28px;color:#7dd3fc;font-weight:800;line-height:1;">32/32</div>
+              <div style="font-size:12px;color:#cbd5e1;margin-top:6px;line-height:1.5;">Kuma push monitors UP — every app reports its own heartbeat every 60s</div>
+            </td>
+          </tr>
+          <tr>
+            <td valign="top" width="50%" style="padding:16px 14px;border-right:1px solid rgba(125,211,252,.12);border-bottom:1px solid rgba(125,211,252,.12);">
+              <div style="font-size:28px;color:#d4af37;font-weight:800;line-height:1;">4</div>
+              <div style="font-size:12px;color:#cbd5e1;margin-top:6px;line-height:1.5;">end-to-end canaries — every 15min · hourly · daily — actually exercise the stack</div>
+            </td>
+            <td valign="top" width="50%" style="padding:16px 14px;border-bottom:1px solid rgba(125,211,252,.12);">
+              <div style="font-size:28px;color:#34d399;font-weight:800;line-height:1;">236</div>
+              <div style="font-size:12px;color:#cbd5e1;margin-top:6px;line-height:1.5;">automated tests guard every change before it ships</div>
+            </td>
+          </tr>
+          <tr>
+            <td valign="top" width="50%" style="padding:16px 14px;border-right:1px solid rgba(125,211,252,.12);">
+              <div style="font-size:28px;color:#ff8c42;font-weight:800;line-height:1;">Mon 04–08</div>
+              <div style="font-size:12px;color:#cbd5e1;margin-top:6px;line-height:1.5;">UTC drain window — all maintenance happens while you're asleep</div>
+            </td>
+            <td valign="top" width="50%" style="padding:16px 14px;">
+              <div style="font-size:28px;color:#7dd3fc;font-weight:800;line-height:1;">1</div>
+              <div style="font-size:12px;color:#cbd5e1;margin-top:6px;line-height:1.5;">operator, one manifest, one maintenance window — everything else is wires</div>
+            </td>
+          </tr>
+        </table>
+      </td></tr>
+
+      <tr><td style="padding:8px 16px 8px 16px;">
+        <div style="font-size:14px;color:#cbd5e1;line-height:1.7;">
+          <b style="color:#f8fafc;">In plain English:</b> if something falls over at 3am, the maintenance daemon notices within a minute and either fixes it or pings me on Discord. The Monday email is AI-curated — only the picks worth your time, not a wall of every file added. Issues you report in Seerr auto-trigger a re-grab. Hardlinks mean a download doesn't double the disk. And the whole thing is rebuildable from one manifest if the seedbox ever vanishes.
+        </div>
+      </td></tr>
+
+      <!-- ============================================================
+           GITHUB REPO CTA — "peek under the hood"
+           ============================================================ -->
+      <tr><td style="padding:24px 16px 16px 16px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0e1d33;border:1px solid rgba(125,211,252,.25);border-radius:10px;">
+          <tr><td style="padding:22px 20px;">
+            <div style="font-size:11px;letter-spacing:2px;color:#7dd3fc;font-weight:700;text-transform:uppercase;">Built in the open</div>
+            <div style="font-size:18px;color:#f8fafc;font-weight:700;margin-top:6px;line-height:1.3;">Curious? Peek under the hood.</div>
+            <div style="font-size:13px;color:#cbd5e1;margin-top:8px;line-height:1.6;">Every script, runbook, and self-healing trick is on GitHub. If you're a tinkerer, fork it for your own server. If you're not, ignore this — nothing on your end requires it.</div>
+            <div style="margin-top:14px;">
+              <a href="https://github.com/Quadstronaut/QFlix"
+                 style="display:inline-block;background:transparent;color:#7dd3fc;font-size:14px;font-weight:700;text-decoration:none;padding:10px 18px;border-radius:6px;border:2px solid #7dd3fc;letter-spacing:.5px;">
+                ⌂ &nbsp;github.com/Quadstronaut/QFlix
+              </a>
+            </div>
+          </td></tr>
+        </table>
       </td></tr>
 
       <!-- ============================================================
