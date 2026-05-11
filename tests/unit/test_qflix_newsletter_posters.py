@@ -436,3 +436,109 @@ def test_mirror_posters_strips_trailing_slash_in_public_base(tmp_path):
     assert items[0].thumb_url is not None
     assert "example.com//" not in items[0].thumb_url
     assert items[0].thumb_url.startswith("https://seedbox.example.com/images/newsletter/")
+
+
+# ── Task 8: Tautulli fallback chain ─────────────────────────────────────────
+
+def test_mirror_posters_falls_back_to_tautulli_on_tmdb_404(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 13
+
+    session = MagicMock()
+    session.get.side_effect = [
+        _err_response(404),                   # TMDB 404
+        _ok_response("image/jpeg", jpeg),     # Tautulli succeeds
+    ]
+
+    tautulli_url = "https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/x"
+    tmdb_url = "https://image.tmdb.org/t/p/w342/abc.jpg"
+    expected_sha = posters._sha_for(tautulli_url)
+
+    items = [_item(thumb=tmdb_url, tautulli=tautulli_url)]
+    posters.mirror_posters(
+        items, cache_dir=cache_dir,
+        public_base="https://seedbox.example.com", session=session,
+    )
+
+    assert items[0].thumb_url == f"https://seedbox.example.com/images/newsletter/{expected_sha}.jpg"
+    assert (cache_dir / f"{expected_sha}.jpg").exists()
+    assert session.get.call_count == 2
+
+
+def test_mirror_posters_both_dead_sets_none(tmp_path, caplog):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+
+    session = MagicMock()
+    session.get.side_effect = [
+        _err_response(404),  # TMDB 404
+        _err_response(404),  # Tautulli 404
+    ]
+
+    items = [_item(title="Borked Title")]
+    with caplog.at_level("WARNING", logger="qflix_newsletter.posters"):
+        posters.mirror_posters(
+            items, cache_dir=cache_dir,
+            public_base="https://seedbox.example.com", session=session,
+        )
+
+    assert items[0].thumb_url is None
+    assert any("Borked Title" in r.message for r in caplog.records)
+
+
+def test_mirror_posters_summary_log_counts_tautulli_fallback(tmp_path, caplog):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 13
+
+    session = MagicMock()
+    session.get.side_effect = [
+        _err_response(404),
+        _ok_response("image/jpeg", jpeg),
+    ]
+
+    items = [_item()]
+    with caplog.at_level("INFO", logger="qflix_newsletter.posters"):
+        posters.mirror_posters(
+            items, cache_dir=cache_dir,
+            public_base="https://seedbox.example.com", session=session,
+        )
+
+    summary = [r.message for r in caplog.records if "mirror_posters:" in r.message]
+    assert summary
+    assert "tautulli_fallback=1" in summary[-1]
+
+
+def test_mirror_posters_skips_tautulli_if_none(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    session = MagicMock()
+    session.get.return_value = _err_response(404)
+
+    items = [_item(tautulli=None)]
+    posters.mirror_posters(
+        items, cache_dir=cache_dir,
+        public_base="https://seedbox.example.com", session=session,
+    )
+
+    assert items[0].thumb_url is None
+    assert session.get.call_count == 1  # only TMDB attempted
+
+
+def test_mirror_posters_tautulli_cache_hit(tmp_path):
+    """Tautulli-keyed cache hit should also short-circuit network."""
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    tmdb_url = "https://image.tmdb.org/t/p/w342/abc.jpg"
+    tautulli_url = "https://seedbox.example.com/tautulli/pms_image_proxy?img=/library/x"
+    t_sha = posters._sha_for(tautulli_url)
+    (cache_dir / f"{t_sha}.jpg").write_bytes(b"\xff\xd8\xff\x00")
+
+    session = MagicMock()
+    session.get.return_value = _err_response(404)  # TMDB still 404, but Tautulli is cached
+
+    items = [_item(thumb=tmdb_url, tautulli=tautulli_url)]
+    posters.mirror_posters(
+        items, cache_dir=cache_dir,
+        public_base="https://seedbox.example.com", session=session,
+    )
+
+    assert items[0].thumb_url == f"https://seedbox.example.com/images/newsletter/{t_sha}.jpg"
+    # TMDB was attempted; Tautulli was a cache hit (no second GET)
+    assert session.get.call_count == 1
