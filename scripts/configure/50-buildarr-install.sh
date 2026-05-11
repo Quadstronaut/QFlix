@@ -35,8 +35,7 @@ fi
   'buildarr>=0.7' \
   'buildarr-sonarr' \
   'buildarr-radarr' \
-  'buildarr-prowlarr' \
-  'buildarr-jellyseerr'
+  'buildarr-prowlarr'
 .venv/bin/pip show buildarr | grep -E "^(Name|Version):"
 VENVSCRIPT
 

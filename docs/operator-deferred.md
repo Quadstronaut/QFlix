@@ -127,7 +127,7 @@ Drive this from the agent prompt — see Task #19 in the session task list.
 
 - ✓ Plex token, host, port → `secrets/plex.{token,host,port}` (port via Docker 172.17.1.250:32400)
 - ✓ Jellyfin API key → `secrets/jellyfin.key`
-- ✓ Jellyseerr API key → `secrets/jellyseerr.key`
+- ✓ Seerr API key → `secrets/seerr.key`
 - ✓ All *arr API keys (Sonarr/Radarr/Sonarr2/Radarr2/Readarr/Mylar3/Prowlarr) → `secrets/<arr>.key`
 - ✓ qBit credentials → `secrets/qbittorrent.{user,password}`
 - ✓ Notifiarr API key → `secrets/notifiarr.key`
