@@ -325,6 +325,19 @@ Test-Case 'Send-Discord returns false on bad URL' {
 }
 
 # --- Task 11: prompt helpers ---
+Test-Case 'Get-FieldOrEmpty returns empty for missing field on pscustomobject' {
+    $obj = [pscustomobject]@{ a = 'x' }
+    Assert-Equal 'x' (Get-FieldOrEmpty $obj 'a') 'present field'
+    Assert-Equal '' (Get-FieldOrEmpty $obj 'b') 'missing field returns empty'
+    Assert-Equal '' (Get-FieldOrEmpty $null 'a') 'null object returns empty'
+}
+
+Test-Case 'Get-FieldOrEmpty handles hashtables too' {
+    $h = @{ a = 1 }
+    Assert-Equal '1' (Get-FieldOrEmpty $h 'a') 'hashtable present'
+    Assert-Equal '' (Get-FieldOrEmpty $h 'b') 'hashtable missing'
+}
+
 Test-Case 'Get-RepoRoot resolves to actual repo root with secrets/' {
     $r = Get-RepoRoot
     Assert-True (Test-Path (Join-Path $r 'secrets')) 'secrets/ exists at returned root'
