@@ -28,6 +28,8 @@ class RecentItem:
     episode: Optional[int] = None
     library_name: Optional[str] = None
     tmdb_id: Optional[int] = None
+    rating_key: Optional[str] = None
+    grandparent_rating_key: Optional[str] = None
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -89,6 +91,8 @@ def _recent_from_tautulli(row: dict, tautulli_base: str) -> RecentItem:
         year = None
     season_raw = row.get("parent_media_index")
     episode_raw = row.get("media_index")
+    rk_raw = row.get("rating_key")
+    grk_raw = row.get("grandparent_rating_key")
     return RecentItem(
         media_type=mt,
         title=row.get("title") or "",
@@ -102,6 +106,8 @@ def _recent_from_tautulli(row: dict, tautulli_base: str) -> RecentItem:
         episode=int(episode_raw) if episode_raw not in (None, "") else None,
         library_name=row.get("library_name"),
         tmdb_id=_extract_tmdb_id(row),
+        rating_key=str(rk_raw) if rk_raw not in (None, "") else None,
+        grandparent_rating_key=str(grk_raw) if grk_raw not in (None, "") else None,
         raw=row,
     )
 
@@ -193,33 +199,86 @@ def fetch_libraries_table(cfg: Config) -> list[dict]:
     return data.get("data", []) or []
 
 
-def fetch_tmdb_rating(read_token: str, tmdb_id: int, kind: str) -> Optional[float]:
-    """Return TMDB vote_average for a given tmdb_id. `kind` is 'movie' or 'tv'."""
-    if not read_token or not tmdb_id:
-        return None
-    url = f"https://api.themoviedb.org/3/{kind}/{tmdb_id}"
+def tmdb_search(read_token: str, kind: str, query: str, year: Optional[int] = None) -> dict:
+    """Hit TMDB /search/{movie|tv}; return the first result (or {}).
+
+    Tautulli's `get_metadata` would also give us GUIDs, but there's an
+    internal Tautulli locking bug where any `get_metadata` call issued
+    within ~30s after a `get_recently_added` returns an empty
+    payload (`data: {}`). Reproduces from raw curl, not a Python issue.
+    Searching TMDB by title sidesteps Tautulli entirely.
+    """
+    if not read_token or not query:
+        return {}
+    url = f"https://api.themoviedb.org/3/search/{kind}"
     headers = {"Authorization": f"Bearer {read_token}"}
+    params: dict = {"query": query, "include_adult": "false"}
+    if year and kind == "movie":
+        params["year"] = year
+    if year and kind == "tv":
+        params["first_air_date_year"] = year
     try:
-        r = requests.get(url, headers=headers, timeout=DEFAULT_TIMEOUT_S)
+        r = requests.get(url, headers=headers, params=params, timeout=DEFAULT_TIMEOUT_S)
         if r.status_code != 200:
-            return None
-        v = r.json().get("vote_average")
-        return float(v) if v is not None else None
+            return {}
+        results = (r.json() or {}).get("results") or []
+        return results[0] if results else {}
     except (requests.RequestException, ValueError):
-        return None
+        return {}
 
 
 def enrich_with_tmdb(cfg: Config, items: Iterable[RecentItem]) -> list[RecentItem]:
+    """Rewrite each item's `thumb_url` to a TMDB image-CDN URL so mail
+    clients can render it (the prior Tautulli /pms_image_proxy URL was
+    session-cookie gated and never rendered in email), and backfill
+    `rating` from TMDB's vote_average.
+
+    Resolution uses TMDB search-by-title:
+      * movies → /search/movie?query=<title>&year=<year>
+      * episodes → /search/tv?query=<show_title>  (one call per show, deduped)
+      * other types (e.g. `season`) → no poster.
+
+    Items that can't be matched have `thumb_url` set to None so the
+    template skips the <img> tag gracefully instead of showing a
+    broken-image icon (which is what every recipient currently sees).
+    """
+    items = list(items)
     if not cfg.tmdb_read_token:
-        return list(items)
-    out: list[RecentItem] = []
+        return items
+
+    movie_cache: dict[tuple[str, Optional[int]], dict] = {}
+    show_cache: dict[str, dict] = {}
+
     for item in items:
-        if item.rating is not None or not item.tmdb_id:
-            out.append(item)
+        if item.media_type == "movie":
+            key = (item.title.lower().strip(), item.year)
+            result = movie_cache.get(key)
+            if result is None:
+                result = tmdb_search(cfg.tmdb_read_token, "movie", item.title, item.year)
+                movie_cache[key] = result
+        elif item.media_type == "episode":
+            show = (item.show_title or item.title).strip()
+            key2 = show.lower()
+            result = show_cache.get(key2)
+            if result is None:
+                result = tmdb_search(cfg.tmdb_read_token, "tv", show)
+                show_cache[key2] = result
+        else:
+            item.thumb_url = None
             continue
-        kind = "movie" if item.media_type == "movie" else "tv"
-        rating = fetch_tmdb_rating(cfg.tmdb_read_token, item.tmdb_id, kind)
-        if rating is not None:
-            item.rating = rating
-        out.append(item)
-    return out
+
+        poster = result.get("poster_path") if result else None
+        if poster:
+            item.thumb_url = f"https://image.tmdb.org/t/p/w342{poster}"
+        else:
+            item.thumb_url = None
+
+        if item.rating is None and result:
+            v = result.get("vote_average")
+            if v not in (None, ""):
+                try:
+                    item.rating = float(v)
+                except (TypeError, ValueError):
+                    pass
+
+    return items
