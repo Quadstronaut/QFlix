@@ -522,6 +522,25 @@ def test_mirror_posters_skips_tautulli_if_none(tmp_path):
     assert session.get.call_count == 1  # only TMDB attempted
 
 
+def test_fetch_and_write_one_oserror_during_write_cleans_up(tmp_path):
+    """If f.write raises (e.g., disk full), no .jpg and no .tmp should remain."""
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 13
+    session = MagicMock()
+    session.get.return_value = _ok_response("image/jpeg", jpeg)
+    sha = "abcdef0123456789"
+
+    with patch("pathlib.Path.open", side_effect=OSError("disk full")):
+        outcome, path = posters._fetch_and_write_one(
+            "https://example/poster.jpg", cache_dir, sha,
+            session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+        )
+
+    assert outcome == "fail"
+    assert not (cache_dir / f"{sha}.jpg").exists()
+    assert not (cache_dir / f"{sha}.jpg.tmp").exists()
+
+
 def test_mirror_posters_tautulli_cache_hit(tmp_path):
     """Tautulli-keyed cache hit should also short-circuit network."""
     cache_dir = tmp_path / "cache"; cache_dir.mkdir()
