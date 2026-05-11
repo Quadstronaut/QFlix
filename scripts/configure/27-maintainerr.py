@@ -51,6 +51,11 @@ current["plex_hostname"] = os.environ["PLEX_HOST"]
 current["plex_port"] = int(os.environ["PLEX_PORT"])
 current["plex_ssl"] = 0
 current["plex_auth_token"] = os.environ["PLEX_TOKEN"]
+# plex_manual_mode=1 leaves the Plex client uninitialized (logs:
+# "Plex connection failed (manual mode active — skipping re-discovery)"),
+# even when hostname/port/machine_id are correct. Auto-discovery via
+# the token is what actually populates the client state, so force 0.
+current["plex_manual_mode"] = 0
 current["media_server_type"] = 1  # 1 = Plex
 current["seerr_url"] = f"http://172.17.0.1:{os.environ['JS_PORT']}"
 current["seerr_api_key"] = os.environ["JS_KEY"]
@@ -104,13 +109,19 @@ def upsert_radarr(label, port, base, key):
 upsert_radarr("Radarr",  os.environ["RADARR_PORT"],  os.environ.get("RADARR_BASE", "radarr"),  os.environ["RADARR_KEY"])
 upsert_radarr("Radarr2", os.environ["RADARR2_PORT"], os.environ.get("RADARR2_BASE", "radarr2"), os.environ["RADARR2_KEY"])
 
-# 4. Tests
-print("\n=== 4. Connection tests ===")
-for kind in ("plex", "overseerr"):
-    code, resp = req(f"/api/settings/test/{kind}", method="POST", body={})
-    status = (resp or {}).get("status") if isinstance(resp, dict) else "?"
-    msg = (resp or {}).get("message", "") if isinstance(resp, dict) else ""
-    print(f"  {kind:10s} ->HTTP {code} status={status} {msg[:80]}")
+# 4. Sanity probe: hit /api/plex/libraries — confirms the adapter we just
+# configured can actually talk to Plex. The old /api/settings/test/{plex,
+# overseerr} endpoints were removed in Maintainerr 2025.06.26 (plex → 404,
+# others → 400 demanding url+api_key in body); doing a real /api/plex/libraries
+# is a more honest probe anyway since that's what 27b-maintainerr-rules.py
+# needs.
+print("\n=== 4. Plex adapter probe ===")
+code, libs = req("/api/plex/libraries")
+if code == 200 and isinstance(libs, list):
+    print(f"  plex adapter OK — {len(libs)} libraries visible")
+else:
+    msg = (libs.get("message") if isinstance(libs, dict) else str(libs))[:120]
+    print(f"  ! plex adapter unhealthy: HTTP {code} {msg}")
 
 # Final: list configured instances
 print("\n=== Final: configured instances ===")

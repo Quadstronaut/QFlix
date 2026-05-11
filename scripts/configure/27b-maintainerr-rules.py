@@ -6,8 +6,23 @@ Plex has only Movies + TV Shows libraries (Anime is Jellyfin-only and unreachabl
 by this Maintainerr deployment).
 """
 import json, os, ssl, urllib.request, urllib.error
+from pathlib import Path
 
-BASE = "https://maintainerr-quadstronaut.seedbox.example.com"
+
+def _seedbox_host() -> str:
+    # Allow env override (for tests / dry-runs from a workstation); otherwise
+    # read the real FQDN from ~/secrets/seedbox.host — same pattern as
+    # scripts/canaries/deletion.sh. The sanitized placeholder is never used
+    # at runtime; it only appears in committed text.
+    env = os.environ.get("PUBLIC_HOST")
+    if env:
+        return env
+    return Path("~/secrets/seedbox.host").expanduser().read_text(encoding="utf-8").strip()
+
+
+_HOST = _seedbox_host()
+_USERPART, _DOMAIN = _HOST.split(".", 1)
+BASE = f"https://maintainerr-{_USERPART}.{_DOMAIN}"
 HTPW = os.environ["HTPW"]
 MTKEY = os.environ["MTKEY"]
 
