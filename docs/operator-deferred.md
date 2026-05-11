@@ -131,6 +131,6 @@ Drive this from the agent prompt — see Task #19 in the session task list.
 - ✓ All *arr API keys (Sonarr/Radarr/Sonarr2/Radarr2/Readarr/Mylar3/Prowlarr) → `secrets/<arr>.key`
 - ✓ qBit credentials → `secrets/qbittorrent.{user,password}`
 - ✓ Notifiarr API key → `secrets/notifiarr.key`
-- ✓ Komga / Kavita / Audiobookshelf / Calibre-Web / Maintainerr / Bazarr / Tautulli API keys → `secrets/<app>.key`
+- ✓ Komga / Kavita / Audiobookshelf / Calibre-Web / Maintainerr / Bazarr / Bazarr 2 / Tautulli API keys → `secrets/<app>.key`
 - ✓ htpasswd password → `secrets/htpasswd.password` (= shared admin password)
 - ✓ Listmonk API user + token → `secrets/listmonk.{api_user,api_token}`

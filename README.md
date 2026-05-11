@@ -64,7 +64,7 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 | 🟠 Movies | **Radarr** + **Radarr2** (anime branch) | Same split |
 | 🟠 Retention | **Maintainerr** | 60-day "watched + nobody else cared" deletion engine |
 
-Surrounding cast (Bazarr, qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 4 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
+Surrounding cast (Bazarr, Bazarr 2, qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 4 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
 
 ---
 
@@ -88,7 +88,7 @@ flowchart LR
     direction TB
     nginx[user-nginx<br/>proxy.d fragments]:::seedbox
     plex[Plex]:::seedbox
-    arr[Sonarr · Sonarr2 · Radarr · Radarr2<br/>Prowlarr · Bazarr · qBittorrent]:::seedbox
+    arr[Sonarr · Sonarr2 · Radarr · Radarr2<br/>Prowlarr · Bazarr · Bazarr 2 · qBittorrent]:::seedbox
     requests[Seerr<br/>requests + issue tracking]:::seedbox
     maint[manitoba-maint<br/>pusher · webhook · window · canary-*]:::seedbox
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox

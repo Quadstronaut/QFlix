@@ -59,6 +59,42 @@ for app in sonarr radarr sonarr2 radarr2; do
   fi
 done
 
+# 3b. Bazarr2 — bare-Python install, anime *arr pair
+echo "3b. bazarr2"
+B2_KEY=$(secret_read bazarr2.key 2>/dev/null || echo "")
+B2_PORT=$(secret_read bazarr2.port 2>/dev/null || echo "")
+if [ -n "$B2_KEY" ] && [ -n "$B2_PORT" ]; then
+  CODE=$(sshm "curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'X-API-KEY: $B2_KEY' http://127.0.0.1:$B2_PORT/bazarr2/api/system/status")
+  if [ "$CODE" = "200" ]; then
+    record "bazarr2-api" pass "127.0.0.1:$B2_PORT/bazarr2"
+  else
+    record "bazarr2-api" fail "HTTP $CODE"
+  fi
+  B2_ACTIVE=$(sshm "systemctl --user is-active bazarr2.service 2>/dev/null" || echo "unknown")
+  if [ "$B2_ACTIVE" = "active" ]; then
+    record "bazarr2-service" pass
+  else
+    record "bazarr2-service" fail "state=$B2_ACTIVE"
+  fi
+  # bazarr2-sync timer scheduled + last run not failed.
+  B2S_TIMER=$(sshm "systemctl --user list-timers bazarr2-sync.timer --no-pager 2>/dev/null | grep -c bazarr2-sync.timer" 2>/dev/null)
+  if [ "${B2S_TIMER:-0}" -ge 1 ]; then
+    record "bazarr2-sync-timer" pass "scheduled hourly"
+  else
+    record "bazarr2-sync-timer" fail "timer not scheduled"
+  fi
+  B2S_RESULT=$(sshm "systemctl --user show bazarr2-sync.service -p Result --value 2>/dev/null" 2>/dev/null)
+  case "$B2S_RESULT" in
+    success|"") record "bazarr2-sync-last-run" pass "result=${B2S_RESULT:-pending}" ;;
+    *) record "bazarr2-sync-last-run" fail "result=$B2S_RESULT" ;;
+  esac
+else
+  record "bazarr2-api" skip "no bazarr2.{key,port} secrets"
+  record "bazarr2-service" skip "no bazarr2.{key,port} secrets"
+  record "bazarr2-sync-timer" skip "no bazarr2.{key,port} secrets"
+  record "bazarr2-sync-last-run" skip "no bazarr2.{key,port} secrets"
+fi
+
 # 5. Hardlink sanity
 echo "5. Hardlinks"
 HLINKS=$(sshm "find ~/media/Movies -type f -name '*.mkv' 2>/dev/null | head -5 | xargs -I{} stat -c '%h' {} 2>/dev/null | grep -c '^2'" 2>/dev/null || echo 0)

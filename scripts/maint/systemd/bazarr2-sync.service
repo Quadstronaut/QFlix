@@ -1,0 +1,22 @@
+[Unit]
+# Pins bazarr2's version to bazarr-1's running version. When bazarr-1 (LSIO
+# Docker, updated by Ultra.cc) moves to a new tag, this oneshot fetches the
+# matching morpheus65535/bazarr tag, re-applies the waitress threads=100→4
+# patch, refreshes deps, and restarts bazarr2. Fired hourly by
+# bazarr2-sync.timer. systemd_oneshot health probe reads Result on the
+# .service so a sync failure surfaces in Kuma/Discord.
+Description=bazarr2 version sync — match bazarr2 to bazarr-1's running version
+After=network-online.target bazarr2.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Empty by default; populated by scripts/maint/bootstrap-kuma-monitors.py
+# after the "Bazarr 2 Sync" push monitor is created in Kuma.
+Environment="BAZARR2_SYNC_KUMA_TOKEN="
+ExecStart=%h/.apps/bazarr2/venv/bin/python %h/.opt/maint/bazarr2-sync.py
+StandardOutput=append:%h/.opt/maint/bazarr2-sync.log
+StandardError=append:%h/.opt/maint/bazarr2-sync.err
+
+[Install]
+WantedBy=default.target
