@@ -15,9 +15,11 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import requests
+
+from .sources import RecentItem
 
 log = logging.getLogger(__name__)
 
@@ -155,9 +157,6 @@ def _try_one_source_with_retry(
         )
     return outcome, path
 
-
-from typing import Sequence
-from .sources import RecentItem
 
 _KNOWN_EXTS = ("jpg", "png", "webp", "gif")
 _NEWSLETTER_URL_PATH = "/images/newsletter/"
