@@ -49,3 +49,16 @@ def test_section_dividers_use_diamond_ornament(sample_ctx):
     assert "&#9670;" in html or "◆" in html
     # Old solid border-bottom underline on h3 must be gone.
     assert "border-bottom:1px solid rgba(125,211,252,.18)" not in html
+
+
+def test_section_labels_have_emoji_prefixes(sample_ctx):
+    html = render_html(sample_ctx)
+    # Each section label gains exactly one leading emoji.
+    assert "🎬 New movies" in html
+    assert "📺 New TV" in html
+    # Coming soon present in fixture
+    assert "🗓 Coming soon" in html
+    # AI picks section (smaller heading)
+    assert "✨ A few things you might like" in html
+    # Nerd corner uses a <div> label, also gets the emoji
+    assert "🤓 Nerd corner" in html
