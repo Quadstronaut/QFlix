@@ -211,6 +211,8 @@ def test_enrich_with_tmdb_rewrites_thumb_to_image_cdn(tmp_path):
         out = sources.enrich_with_tmdb(cfg, [movie, ep1, ep2, orphan, season])
 
     assert out[0].thumb_url == "https://image.tmdb.org/t/p/w342/dune2.jpg"
+    assert out[0].tautulli_thumb_url.startswith("https://seedbox.example.com/tautulli/pms_image_proxy")
+    assert out[0].tautulli_thumb_url != out[0].thumb_url
     assert out[0].rating == pytest.approx(8.7)
     assert out[1].thumb_url == "https://image.tmdb.org/t/p/w342/oakisland.jpg"
     assert out[2].thumb_url == "https://image.tmdb.org/t/p/w342/oakisland.jpg"  # cache hit
