@@ -267,6 +267,7 @@ timeline
             : Discord operator @ping on error/critical
             : Jellyseerr → Seerr swap (v3.2.0 install, 4 *arr servers via API, trustProxy on)
             : Smoke 45/45/0 · public-access bookmarks audited + fixed
+            : End-user + operator FAQ page shipped at /faq/ (74 KB self-contained)
 ```
 
 ---
@@ -433,6 +434,7 @@ listmonk 42014 (canonical probe) · uptime-kuma 42005 · tdarr 42018 · maintain
 |---|---|---|
 | Plex | `https://<fqdn>/web/` | Plex SSO |
 | Seerr | `https://<fqdn>/seerr/` | Plex SSO (issue submission inline on each title) |
+| FAQ &amp; tutorial | `https://<fqdn>/faq/` | none (self-contained static page) |
 | Homarr (public board) | `https://<fqdn>/` (root redirect) | none |
 | Homarr (admin board) | `https://<fqdn>/board/private` | htpasswd |
 | Tautulli (read-only stats) | `https://<fqdn>/tautulli/` | none (`auth_basic off` in nginx fragment) |
@@ -472,6 +474,7 @@ A single failure here means an operator-actionable signal; rerun the smoke after
 
 ## Pointers
 
+- **End-user / operator FAQ + tutorial** → live page at [quadstronaut.seedbox.example.com/faq/](https://quadstronaut.seedbox.example.com/faq/) (source: [`scripts/data/qflix-faq.html`](scripts/data/qflix-faq.html), nginx fragment [`scripts/data/qflix-faq.conf`](scripts/data/qflix-faq.conf)). 17 sections, 50+ Q&amp;As, covers requesting media, anime routing, the maintenance window, hardlinks, Kuma phantom monitors, the top 10 recurring screw-ups, and an emergency playbook.
 - **Where's X installed/configured?** → [`inventory.md`](inventory.md)
 - **How do I add a new app?** → add an entry to `manifest/apps.yaml`, run <kbd>~/bin/manitoba-maint manifest validate</kbd>, then <kbd>manitoba-maint kuma audit</kbd> to see if the Kuma monitor needs creating.
 - **Something's broken — what fires?** → manitoba-maint pusher tries 3 restarts, then notifies Discord with an operator @ping. Check `~/.opt/maint/state.json` for the failure log, <kbd>journalctl --user -u manitoba-maint-pusher</kbd> for traces.

@@ -1,0 +1,1274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>QFlix · FAQ &amp; Tutorial</title>
+<style>
+  :root {
+    --bg-0:        #05101f;
+    --bg-1:        #0a1628;
+    --bg-2:        #0e1d33;
+    --bg-3:        #142544;
+    --line:        #1f3055;
+    --line-soft:   #142344;
+    --fg-0:        #f8fafc;
+    --fg-1:        #e2e8f0;
+    --fg-2:        #cbd5e1;
+    --fg-3:        #94a3b8;
+    --accent:      #7dd3fc;
+    --accent-2:    #7aa2ff;
+    --accent-soft: rgba(125, 211, 252, .15);
+    --gold:        #d4af37;
+    --gold-bright: #f5c842;
+    --warn:        #ff8c42;
+    --good:        #6ee7b7;
+    --danger:      #f87171;
+    --plex:        #e5a00d;
+    --shadow:      0 8px 32px rgba(0, 0, 0, .55), 0 1px 0 rgba(255, 255, 255, .04) inset;
+    --radius:      14px;
+    --radius-sm:   10px;
+    --t:           180ms cubic-bezier(.2, .7, .3, 1);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 90px; }
+  body {
+    margin: 0;
+    font: 17.5px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI Variable",
+                      "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: var(--fg-1);
+    background:
+      radial-gradient(1400px 700px at 8% -10%, #14274d 0%, transparent 60%),
+      radial-gradient(1400px 700px at 100% 0%, #1a2756 0%, transparent 60%),
+      linear-gradient(180deg, var(--bg-0) 0%, var(--bg-0) 100%);
+    background-attachment: fixed;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px dotted rgba(125, 211, 252, .4);
+    transition: color var(--t), border-color var(--t);
+  }
+  a:hover, a:focus-visible {
+    color: var(--gold-bright);
+    border-bottom-color: var(--gold-bright);
+    outline: none;
+  }
+  ::selection { background: var(--accent); color: var(--bg-0); }
+  header.top {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    background: rgba(5, 16, 31, .82);
+    border-bottom: 1px solid var(--line);
+  }
+  .top-inner {
+    max-width: 1180px; margin: 0 auto;
+    padding: 16px 24px 14px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 18px; align-items: center;
+  }
+  .brand {
+    display: inline-flex; align-items: center; gap: 12px;
+    font-weight: 700; letter-spacing: .3px;
+    color: var(--fg-0); border-bottom: 0;
+    font-size: 19px;
+  }
+  .brand-mark {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: linear-gradient(135deg, #7dd3fc 0%, #7aa2ff 60%, #d4af37 100%);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, .08),
+                0 6px 18px rgba(125, 211, 252, .35);
+    display: grid; place-items: center;
+    font: 800 16px/1 "Segoe UI", sans-serif; color: #05101f;
+  }
+  .brand small {
+    color: var(--fg-2); font-weight: 500;
+    margin-left: 2px; font-size: 15px;
+  }
+  .search-wrap {
+    position: relative; display: flex; align-items: center;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    transition: border-color var(--t), box-shadow var(--t);
+  }
+  .search-wrap:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-soft);
+  }
+  .search-wrap svg {
+    width: 18px; height: 18px;
+    margin: 0 10px 0 14px;
+    color: var(--fg-3); flex: none;
+  }
+  .search-wrap input {
+    flex: 1; background: transparent; border: 0; outline: 0;
+    color: var(--fg-0); padding: 13px 12px 13px 0;
+    font: inherit; font-size: 16px;
+  }
+  .search-wrap input::placeholder { color: var(--fg-3); }
+  .search-wrap kbd {
+    margin-right: 10px;
+    font: 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--fg-2);
+    background: var(--bg-3);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 4px 7px;
+  }
+  .top-meta {
+    color: var(--fg-3);
+    font-size: 13.5px;
+    text-align: right;
+  }
+  .top-meta b { color: var(--fg-1); font-variant-numeric: tabular-nums; }
+  .layout {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 28px 24px 100px;
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 32px;
+    align-items: start;
+  }
+  nav.toc {
+    position: sticky; top: 96px;
+    align-self: start;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+    padding: 16px 18px;
+    background: linear-gradient(180deg, var(--bg-1) 0%, rgba(10, 22, 40, .8) 100%);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    font-size: 15px;
+  }
+  nav.toc h4 {
+    margin: 0 0 8px;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--fg-3);
+    text-transform: uppercase;
+    letter-spacing: 1.4px;
+  }
+  nav.toc h4 + h4 { margin-top: 18px; }
+  nav.toc ul { list-style: none; padding: 0; margin: 0 0 6px; }
+  nav.toc li { margin: 2px 0; }
+  nav.toc a {
+    display: block;
+    color: var(--fg-2);
+    padding: 5px 10px;
+    border-radius: 6px;
+    border-bottom: 0;
+    line-height: 1.35;
+  }
+  nav.toc a:hover, nav.toc a.active {
+    color: var(--fg-0);
+    background: var(--accent-soft);
+  }
+  nav.toc a.active { color: var(--gold-bright); font-weight: 600; }
+  main { min-width: 0; }
+  .hero {
+    padding: 36px 32px 30px;
+    background: linear-gradient(150deg, var(--bg-2) 0%, var(--bg-1) 100%);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    margin-bottom: 28px;
+  }
+  .hero h1 {
+    margin: 0 0 8px;
+    font-size: 38px;
+    line-height: 1.1;
+    letter-spacing: -.5px;
+    color: var(--fg-0);
+    font-weight: 800;
+  }
+  .hero .lede {
+    margin: 0 0 16px;
+    font-size: 17px;
+    color: var(--fg-2);
+    max-width: 720px;
+  }
+  .hero .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 5px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--bg-3);
+    color: var(--fg-2);
+    border-bottom: 1px solid var(--line);
+  }
+  .pill.pill-good   { color: var(--good);   border-color: rgba(110, 231, 183, .35); background: rgba(110, 231, 183, .08); }
+  .pill.pill-plex   { color: var(--plex);   border-color: rgba(229, 160, 13,  .4);  background: rgba(229, 160, 13,  .10); }
+  .pill.pill-warn   { color: var(--warn);   border-color: rgba(255, 140, 66,  .4);  background: rgba(255, 140, 66,  .08); }
+  .pill.pill-accent { color: var(--accent); border-color: rgba(125, 211, 252, .4);  background: rgba(125, 211, 252, .08); }
+  .pill.pill-gold   { color: var(--gold-bright); border-color: rgba(212, 175, 55, .4); background: rgba(212, 175, 55, .08); }
+  .pill .dot {
+    width: 6px; height: 6px; border-radius: 999px; background: currentColor;
+    box-shadow: 0 0 8px currentColor;
+  }
+  section.deck {
+    margin-top: 36px;
+    scroll-margin-top: 90px;
+  }
+  section.deck > h2 {
+    margin: 0 0 4px;
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--fg-0);
+    letter-spacing: -.2px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  section.deck > h2 .num {
+    display: inline-grid; place-items: center;
+    width: 34px; height: 34px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: var(--bg-0);
+    font: 800 16px/1 "Segoe UI", sans-serif;
+    flex: none;
+  }
+  section.deck > .deck-sub {
+    margin: 0 0 18px 46px;
+    color: var(--fg-3);
+    font-size: 15px;
+  }
+  .card {
+    background: var(--bg-1);
+    border: 1px solid var(--line-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+    padding: 22px 26px 20px;
+    margin: 14px 0;
+    box-shadow: var(--shadow);
+    scroll-margin-top: 90px;
+    transition: border-color var(--t), transform var(--t);
+  }
+  .card.tut    { border-left-color: var(--gold); }
+  .card.user   { border-left-color: var(--accent); }
+  .card.warn   { border-left-color: var(--warn); }
+  .card.danger { border-left-color: var(--danger); }
+  .card.good   { border-left-color: var(--good); }
+  .card:target {
+    border-color: var(--gold-bright);
+    box-shadow: var(--shadow), 0 0 0 2px rgba(212, 175, 55, .25);
+  }
+  .card h3 {
+    margin: 0 0 10px;
+    font-size: 20px;
+    color: var(--fg-0);
+    font-weight: 700;
+    letter-spacing: -.1px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .card h3 .qhash {
+    color: var(--fg-3);
+    font-weight: 500;
+    font-size: 14px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    border-bottom: 0;
+  }
+  .card h3 .qhash:hover { color: var(--accent); }
+  .card p { margin: 8px 0; color: var(--fg-1); }
+  .card ul, .card ol { margin: 8px 0; padding-left: 26px; color: var(--fg-1); }
+  .card li { margin: 5px 0; }
+  .card li::marker { color: var(--accent); }
+  .card strong { color: var(--fg-0); }
+  .card em { color: var(--fg-2); font-style: normal; font-weight: 600; }
+  code, kbd, samp {
+    font: 14.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--bg-3);
+    color: var(--gold-bright);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px 7px;
+    word-break: break-word;
+  }
+  kbd {
+    color: var(--fg-0);
+    background: linear-gradient(180deg, var(--bg-3) 0%, var(--bg-2) 100%);
+    box-shadow: 0 1px 0 var(--line);
+    padding: 3px 8px;
+    font-size: 13.5px;
+  }
+  pre {
+    margin: 12px 0;
+    padding: 16px 18px;
+    background: #03080f;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    overflow-x: auto;
+    line-height: 1.55;
+  }
+  pre code {
+    background: transparent; border: 0; padding: 0;
+    color: var(--fg-1); font-size: 14px;
+  }
+  .callout {
+    margin: 14px 0;
+    padding: 12px 16px 12px 44px;
+    border-radius: var(--radius-sm);
+    border: 1px solid;
+    position: relative;
+    font-size: 15.5px;
+  }
+  .callout::before {
+    content: "";
+    position: absolute; left: 14px; top: 14px;
+    width: 20px; height: 20px;
+    background: currentColor;
+    -webkit-mask: var(--ico) no-repeat center / contain;
+            mask: var(--ico) no-repeat center / contain;
+  }
+  .callout.tip {
+    color: var(--accent);
+    border-color: rgba(125, 211, 252, .35);
+    background: rgba(125, 211, 252, .05);
+    --ico: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 2a7 7 0 0 0-4 12.7V18a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-3.3A7 7 0 0 0 12 2zm-2 20h4'  fill='none' stroke='%23fff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  }
+  .callout.tip > * { color: var(--fg-1); }
+  .callout.tip strong { color: var(--accent); }
+  .callout.warn {
+    color: var(--warn);
+    border-color: rgba(255, 140, 66, .4);
+    background: rgba(255, 140, 66, .05);
+    --ico: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 3 2 21h20L12 3zm0 6v6m0 3v.01' fill='none' stroke='%23fff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  }
+  .callout.warn > * { color: var(--fg-1); }
+  .callout.warn strong { color: var(--warn); }
+  .callout.danger {
+    color: var(--danger);
+    border-color: rgba(248, 113, 113, .4);
+    background: rgba(248, 113, 113, .07);
+    --ico: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='9' fill='none' stroke='%23fff' stroke-width='2.2'/><path d='M12 7v6m0 3v.01' fill='none' stroke='%23fff' stroke-width='2.2' stroke-linecap='round'/></svg>");
+  }
+  .callout.danger > * { color: var(--fg-1); }
+  .callout.danger strong { color: var(--danger); }
+  .callout.good {
+    color: var(--good);
+    border-color: rgba(110, 231, 183, .35);
+    background: rgba(110, 231, 183, .06);
+    --ico: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='m4 12 5 5L20 6' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  }
+  .callout.good > * { color: var(--fg-1); }
+  .callout.good strong { color: var(--good); }
+  .tbl {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0;
+    font-size: 15px;
+  }
+  .tbl th, .tbl td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  .tbl th {
+    color: var(--fg-3); font-weight: 600;
+    font-size: 12.5px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    background: rgba(20, 37, 68, .35);
+    border-bottom: 1px solid var(--line);
+  }
+  .tbl tr:last-child td { border-bottom: 0; }
+  .tbl code { font-size: 13.5px; }
+  details.deep {
+    margin: 10px 0 0;
+    border: 1px dashed var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg-2);
+    padding: 0 14px;
+  }
+  details.deep > summary {
+    cursor: pointer;
+    padding: 8px 0;
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 14.5px;
+    list-style: none;
+    user-select: none;
+  }
+  details.deep > summary::before {
+    content: "\25B6";
+    display: inline-block;
+    margin-right: 8px;
+    color: var(--fg-3);
+    transition: transform var(--t);
+  }
+  details.deep[open] > summary::before { transform: rotate(90deg); }
+  details.deep > *:not(summary) { padding-bottom: 10px; }
+  details.deep p { margin: 6px 0; font-size: 15px; color: var(--fg-2); }
+  .card.hide, section.deck.hide { display: none; }
+  #empty {
+    display: none; padding: 80px 24px;
+    text-align: center; color: var(--fg-2);
+  }
+  #empty.show { display: block; }
+  #empty h3 { color: var(--fg-0); margin: 0 0 8px; font-size: 22px; }
+  footer {
+    max-width: 1180px;
+    margin: 60px auto 32px;
+    padding: 20px 24px 0;
+    border-top: 1px solid var(--line);
+    color: var(--fg-3);
+    font-size: 14px;
+    text-align: center;
+  }
+  footer a { border-bottom: 0; }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    nav.toc { position: static; max-height: none; }
+    .top-inner { grid-template-columns: 1fr; gap: 10px; }
+    .top-meta { text-align: left; }
+    .hero h1 { font-size: 28px; }
+    .card { padding: 18px 18px 16px; }
+    .card h3 { font-size: 18px; flex-wrap: wrap; }
+    body { font-size: 17px; }
+  }
+  html.big { font-size: 118%; }
+  html.big code, html.big pre code { font-size: 16px; }
+  .text-size-toggle {
+    display: inline-flex; align-items: center; gap: 8px;
+    margin-left: 14px; padding: 6px 10px;
+    background: var(--bg-3); border: 1px solid var(--line);
+    border-radius: 999px; color: var(--fg-2);
+    cursor: pointer; font: 600 13px/1 "Segoe UI", sans-serif;
+    transition: border-color var(--t), color var(--t);
+  }
+  .text-size-toggle:hover, .text-size-toggle.on {
+    color: var(--gold-bright); border-color: var(--gold);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="#top"><span class="brand-mark">Q</span>QFlix <small>· FAQ &amp; Tutorial</small></a>
+    <label class="search-wrap" for="q">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Search FAQ &mdash; try &lsquo;seerr&rsquo;, &lsquo;buffering&rsquo;, &lsquo;tunnel&rsquo;, &lsquo;hardlink&rsquo; ..." autocomplete="off" spellcheck="false">
+      <kbd>/</kbd>
+    </label>
+    <div class="top-meta">
+      <b id="visible">&ndash;</b><span> of </span><b id="total">&ndash;</b> answers
+      <button class="text-size-toggle" id="bigtext" aria-pressed="false" title="Toggle larger text">Aa+</button>
+    </div>
+  </div>
+</header>
+
+<div class="layout" id="top">
+
+  <nav class="toc" aria-label="Table of contents">
+    <h4>For everyone</h4>
+    <ul>
+      <li><a href="#sec-getting-started">1 &middot; Getting started</a></li>
+      <li><a href="#sec-requests">2 &middot; Requesting media</a></li>
+      <li><a href="#sec-playback">3 &middot; Watching</a></li>
+      <li><a href="#sec-books">4 &middot; Books, comics, audiobooks</a></li>
+      <li><a href="#sec-newsletter">5 &middot; Newsletter</a></li>
+      <li><a href="#sec-deletion">6 &middot; Why things disappear</a></li>
+    </ul>
+    <h4>For the operator</h4>
+    <ul>
+      <li><a href="#sec-tunnel">7 &middot; SSH tunnel &amp; admin</a></li>
+      <li><a href="#sec-window">8 &middot; Maintenance window</a></li>
+      <li><a href="#sec-manifest">9 &middot; Manifest &amp; new apps</a></li>
+      <li><a href="#sec-monitoring">10 &middot; Kuma &amp; canaries</a></li>
+      <li><a href="#sec-arr">11 &middot; The *arr stack</a></li>
+      <li><a href="#sec-qbit">12 &middot; qBittorrent</a></li>
+      <li><a href="#sec-fs">13 &middot; Files, hardlinks, disk</a></li>
+      <li><a href="#sec-tdarr">14 &middot; Tdarr transcoding</a></li>
+      <li><a href="#sec-discord">15 &middot; Discord notifications</a></li>
+      <li><a href="#sec-pitfalls">16 &middot; Top 10 screw-ups</a></li>
+      <li><a href="#sec-emergency">17 &middot; Emergency playbook</a></li>
+    </ul>
+  </nav>
+
+  <main>
+
+    <div class="hero">
+      <h1>QFlix &middot; FAQ &amp; tutorial</h1>
+      <p class="lede">
+        Everything you might need to know about this self-healing Plex stack, the day-to-day
+        usage, and the most common ways it breaks. Press <kbd>/</kbd> to search,
+        click any answer to deep-link it, hit <kbd>Aa+</kbd> in the header for bigger type.
+      </p>
+      <div class="pills">
+        <span class="pill pill-plex"><span class="dot"></span>Plex-primary</span>
+        <span class="pill pill-good"><span class="dot"></span>Self-healing</span>
+        <span class="pill pill-accent"><span class="dot"></span>Single manifest</span>
+        <span class="pill pill-gold"><span class="dot"></span>Mon 04&ndash;08 UTC window</span>
+        <span class="pill pill-warn"><span class="dot"></span>Discord-only alerts</span>
+      </div>
+    </div>
+
+    <section class="deck" id="sec-getting-started">
+      <h2><span class="num">1</span>Getting started</h2>
+      <p class="deck-sub">First time landing on QFlix? Start here.</p>
+
+      <article class="card user" id="q-what-is-qflix" data-tags="overview intro plex">
+        <h3>What is QFlix? <a class="qhash" href="#q-what-is-qflix">#</a></h3>
+        <p>
+          QFlix is a private media server running on a single Ultra.cc shared seedbox.
+          You watch movies, TV, anime, and read books / comics / manga / audiobooks through it.
+          One operator runs the whole thing; everything else (download, transcode, organize,
+          metadata, deletion, alerts, newsletter) is automated.
+        </p>
+        <p>
+          <strong>Front door for users:</strong> Plex for video, Seerr for requests,
+          Audiobookshelf / Komga / Kavita / Calibre-Web for the printed shelves.
+          That's it &mdash; you don't need to know about the dozen other apps holding it up.
+        </p>
+      </article>
+
+      <article class="card user" id="q-how-to-sign-in" data-tags="sign-in login plex sso seerr account">
+        <h3>How do I sign in? <a class="qhash" href="#q-how-to-sign-in">#</a></h3>
+        <ol>
+          <li>Get a Plex invite from the operator (one-time; you'll see the library appear in your Plex apps).</li>
+          <li><strong>Plex</strong>: open <a href="https://app.plex.tv/desktop/">app.plex.tv</a> or any Plex app. Sign in with the same email you got the invite for.</li>
+          <li><strong>Seerr</strong> (requests): open <a href="https://quadstronaut.seedbox.example.com/seerr/">seerr</a> and click <em>Sign in with Plex</em>. Same Plex account &mdash; no separate password.</li>
+        </ol>
+        <div class="callout tip"><strong>Heads-up:</strong> the first sign-in into Seerr may take 10&ndash;20 seconds while it links to your Plex profile. Don't refresh &mdash; give it a beat.</div>
+      </article>
+
+      <article class="card user" id="q-where-is-everything" data-tags="urls bookmarks links audiobookshelf komga kavita calibre">
+        <h3>Where is everything? <a class="qhash" href="#q-where-is-everything">#</a></h3>
+        <table class="tbl">
+          <thead><tr><th>I want to...</th><th>Open this</th><th>Auth</th></tr></thead>
+          <tbody>
+            <tr><td>Watch movies / TV / anime</td><td>Plex apps or <code>app.plex.tv</code></td><td>Plex SSO</td></tr>
+            <tr><td>Request a new title</td><td><a href="https://quadstronaut.seedbox.example.com/seerr/">/seerr/</a></td><td>Plex SSO</td></tr>
+            <tr><td>Browse the dashboard</td><td>the operator's Homarr (root URL)</td><td>none for the public board</td></tr>
+            <tr><td>See what's playing right now</td><td><a href="https://quadstronaut.seedbox.example.com/tautulli/">/tautulli/</a></td><td>none (read-only stats)</td></tr>
+            <tr><td>Read ebooks</td><td><code>/calibre-web/</code> or Kavita</td><td>per-app login</td></tr>
+            <tr><td>Read comics / manga</td><td>Komga or Kavita</td><td>per-app login</td></tr>
+            <tr><td>Listen to audiobooks</td><td>the Audiobookshelf subdomain</td><td>per-app login</td></tr>
+          </tbody>
+        </table>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-requests">
+      <h2><span class="num">2</span>Requesting media</h2>
+      <p class="deck-sub">The Seerr flow &mdash; what works, what doesn't, and how anime routing actually behaves.</p>
+
+      <article class="card user" id="q-how-request" data-tags="seerr request movie tv anime new title">
+        <h3>How do I request a movie or show? <a class="qhash" href="#q-how-request">#</a></h3>
+        <ol>
+          <li>Open <a href="https://quadstronaut.seedbox.example.com/seerr/">Seerr</a>.</li>
+          <li>Search the title, click <em>Request</em>.</li>
+          <li>For TV: pick seasons (or &ldquo;All seasons&rdquo;).</li>
+          <li>Done. Seerr hands it to Sonarr / Radarr, which hands it to qBittorrent, which downloads, which feeds Plex.</li>
+        </ol>
+        <div class="callout tip"><strong>How long?</strong> Popular catalogue items show up in Plex within minutes. Obscure stuff: hours. Brand-new releases: whenever a public/private tracker has it.</div>
+      </article>
+
+      <article class="card user" id="q-anime-routing" data-tags="anime sonarr2 radarr2 anime routing dropdown advanced">
+        <h3>I requested anime &mdash; why didn't it go to the &ldquo;Anime&rdquo; server? <a class="qhash" href="#q-anime-routing">#</a></h3>
+        <p>
+          Seerr has four backend servers configured: <em>Sonarr Cinema</em>, <em>Sonarr Anime</em>, <em>Radarr Cinema</em>, <em>Radarr Anime</em>. The Cinema ones are the default. Per the
+          <a href="https://docs.seerr.dev/using-seerr/settings/services">Seerr docs</a>, the only routing axes the API understands are
+          <code>isDefault</code> and <code>is4k</code> &mdash; there is <strong>no</strong> cross-server &ldquo;anime&rdquo; genre flag.
+        </p>
+        <p>
+          So: <strong>for anime, expand <em>Advanced</em> on the request panel</strong> and pick
+          <code>Sonarr Anime</code> / <code>Radarr Anime</code> from the server dropdown before clicking Request. Otherwise it lands in the Cinema server.
+        </p>
+        <div class="callout warn"><strong>Common screw-up:</strong> hitting Request fast without expanding Advanced. The episode files will still show up, just in the wrong library and with non-anime release-naming rules.</div>
+      </article>
+
+      <article class="card user" id="q-pending" data-tags="seerr stuck pending approval not downloading">
+        <h3>My request says &ldquo;Pending&rdquo; &mdash; what's it waiting for? <a class="qhash" href="#q-pending">#</a></h3>
+        <p>One of three things:</p>
+        <ol>
+          <li><strong>Approval.</strong> Seerr is set to auto-approve trusted Plex users but unknown / new accounts can land in a manual queue. Ping the operator.</li>
+          <li><strong>No grab yet.</strong> Sonarr / Radarr is searching but trackers have nothing matching the quality profile. The next scheduled re-search picks it up. Anime / obscure foreign releases can take days.</li>
+          <li><strong>The *arr server didn't get it.</strong> Rare. If it's been hours and Tautulli shows the title isn't even queued, ping the operator &mdash; usually the *arr restart at the next maintenance window fixes it.</li>
+        </ol>
+      </article>
+
+      <article class="card user" id="q-issue" data-tags="seerr report issue subtitles audio missing wrong">
+        <h3>The file is there but it's broken &mdash; wrong audio, missing subs, etc. <a class="qhash" href="#q-issue">#</a></h3>
+        <p>
+          Don't request the title again &mdash; that won't replace what's there. Use Seerr's <em>Report Issue</em> button on the title page. Categories: <em>Video</em>, <em>Audio</em>, <em>Subtitles</em>, <em>Other</em>. The operator sees these in the Seerr inbox and either re-grabs the file, or Bazarr re-fetches subs, or Tdarr re-transcodes.
+        </p>
+      </article>
+
+      <article class="card user" id="q-cant-find" data-tags="seerr search not found missing tmdb">
+        <h3>Seerr can't find the title I want <a class="qhash" href="#q-cant-find">#</a></h3>
+        <p>
+          Seerr only knows about titles that exist in TheMovieDB (TMDB). If TMDB has it, Seerr finds it. If not &mdash; usually rare foreign films, fan-edits, very-very-new releases &mdash; the operator can add it to Sonarr / Radarr directly. Ping them with the title + year + IMDB or TMDB link if you can find one.
+        </p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-playback">
+      <h2><span class="num">3</span>Watching</h2>
+      <p class="deck-sub">Plex playback problems and how to recover.</p>
+
+      <article class="card user" id="q-buffering" data-tags="plex buffering slow transcoding direct play network">
+        <h3>Plex keeps buffering / pausing to &ldquo;Direct stream&rdquo; <a class="qhash" href="#q-buffering">#</a></h3>
+        <p>Usually one of these:</p>
+        <ul>
+          <li><strong>Your connection.</strong> Test your download speed. 4K HEVC needs ~25 Mbps sustained; HD ~6 Mbps.</li>
+          <li><strong>Transcoding tax.</strong> If your client can't direct-play the file (wrong codec, wrong container, subtitles burned in), Plex transcodes &mdash; and this server has a shared CPU. Try setting <em>Quality</em> to the original resolution but a lower bitrate, or use a client that direct-plays more formats (Plex desktop, Apple TV).</li>
+          <li><strong>Stream-cap.</strong> The operator caps total concurrent streams at <strong>2</strong> via a kill-stream cron (Plex Pass feature). The 3rd stream gets killed within 60 seconds.</li>
+        </ul>
+      </article>
+
+      <article class="card user" id="q-cant-connect" data-tags="plex server unavailable cant connect offline">
+        <h3>Plex says &ldquo;Server unavailable&rdquo; <a class="qhash" href="#q-cant-connect">#</a></h3>
+        <ol>
+          <li>Open <a href="https://status.plex.tv/">status.plex.tv</a> &mdash; Plex's own service goes down a few times a year.</li>
+          <li>Check the QFlix <a href="https://quadstronaut.seedbox.example.com/status/manitoba">Uptime Kuma status page</a>. If Plex is red there, the operator has been pinged already and it's auto-healing.</li>
+          <li>Force-quit your Plex client and reopen. SSO tokens occasionally need a kick.</li>
+        </ol>
+        <div class="callout tip"><strong>Self-heal:</strong> if Plex is down, the manitoba-maint pusher tries up to 3 restarts (10s / 30s / 60s back-off) before paging the operator. Usually it's back inside 2 minutes.</div>
+      </article>
+
+      <article class="card user" id="q-streamcap" data-tags="plex stream killed two streams cap">
+        <h3>My stream got cut off mid-show <a class="qhash" href="#q-streamcap">#</a></h3>
+        <p>
+          The stack enforces a hard 2-concurrent-stream cap. If three people are streaming and you joined third, your stream gets terminated. Coordinate, or talk to the operator about who needs priority.
+        </p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-books">
+      <h2><span class="num">4</span>Books, comics, audiobooks</h2>
+      <p class="deck-sub">Yes, QFlix isn't just movies. Here's the printed/spoken side.</p>
+
+      <article class="card user" id="q-books-where" data-tags="ebooks epub komga kavita calibre audiobookshelf">
+        <h3>Where do I read / listen? <a class="qhash" href="#q-books-where">#</a></h3>
+        <table class="tbl">
+          <thead><tr><th>Format</th><th>Reader</th><th>Note</th></tr></thead>
+          <tbody>
+            <tr><td>EPUB / PDF ebooks</td><td>Calibre-Web or Kavita</td><td>Calibre-Web has the better catalogue UI</td></tr>
+            <tr><td>Comics (CBZ/CBR)</td><td>Komga (preferred) or Kavita</td><td>Komga has better mobile reader</td></tr>
+            <tr><td>Manga</td><td>Kavita</td><td>Designed for it</td></tr>
+            <tr><td>Audiobooks</td><td>Audiobookshelf (subdomain URL)</td><td>iOS / Android apps work great</td></tr>
+          </tbody>
+        </table>
+        <div class="callout warn"><strong>Limited library.</strong> The text-side libraries are pruned of anything &gt; 365 days unread to keep disk under control. Re-request anything that's vanished.</div>
+      </article>
+
+      <article class="card user" id="q-abs-app" data-tags="audiobookshelf mobile app android ios">
+        <h3>How do I use Audiobookshelf on my phone? <a class="qhash" href="#q-abs-app">#</a></h3>
+        <ol>
+          <li>Install <em>Audiobookshelf</em> from the App Store / Play Store.</li>
+          <li>Server URL: the audiobookshelf-&lt;operator&gt;.&lt;domain&gt; URL the operator gave you (it's a subdomain, not a path).</li>
+          <li>Sign in with the account the operator created for you.</li>
+        </ol>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-newsletter">
+      <h2><span class="num">5</span>Newsletter</h2>
+      <p class="deck-sub">The weekly AI-curated digest.</p>
+
+      <article class="card user" id="q-newsletter" data-tags="newsletter listmonk qflix-newsletter weekly digest email subscribe">
+        <h3>What is the Monday newsletter and how do I subscribe? <a class="qhash" href="#q-newsletter">#</a></h3>
+        <p>
+          Every Monday at 08:00 UTC (after the maintenance window closes) a Python job (<code>qflix-newsletter</code>) renders a digest of what's new in Plex, what's on deck for the next two weeks, and an AI section that says &ldquo;if you liked X, try Y&rdquo; &mdash; and emails it via Listmonk.
+        </p>
+        <p>
+          Subscribers are pulled from two places automatically: <strong>your Plex friends list</strong> and <strong>Seerr users</strong>. If you're in either, you're already subscribed. Unsubscribe link at the bottom of every email &mdash; that's standard Listmonk and works instantly.
+        </p>
+        <p>Email sections: Pick of Week &rarr; New Movies &rarr; New TV &rarr; New Anime &rarr; Coming Soon &rarr; AI Picks &rarr; Nerd Corner.</p>
+      </article>
+
+      <article class="card user" id="q-newsletter-missing" data-tags="newsletter not received spam blocked listmonk">
+        <h3>I didn't get this week's email <a class="qhash" href="#q-newsletter-missing">#</a></h3>
+        <ul>
+          <li>Check spam &mdash; first send to a new address often lands there.</li>
+          <li>Confirm the email on file. The operator can look you up in Listmonk.</li>
+          <li>If Gemini was rate-limited that week, the AI section just doesn't appear; the rest of the email still sends.</li>
+          <li>If the maintenance window over-ran, the Monday 08:00 trigger fires anyway &mdash; it doesn't wait.</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-deletion">
+      <h2><span class="num">6</span>Why things disappear</h2>
+      <p class="deck-sub">QFlix is a self-pruning library &mdash; here's the rules.</p>
+
+      <article class="card user" id="q-why-deleted" data-tags="maintainerr deletion retention 60 days watched">
+        <h3>Something I watched is gone &mdash; what gives? <a class="qhash" href="#q-why-deleted">#</a></h3>
+        <p>
+          QFlix runs <strong>Maintainerr</strong> nightly. The rule on movies is roughly: <em>if you watched it &ge; 60 days ago and nobody else has watched it</em>, it gets removed (from Plex collection first, then from disk). This keeps the disk usable on a shared seedbox.
+        </p>
+        <p>
+          Re-request via Seerr and it'll be re-grabbed. The 60-day clock restarts.
+        </p>
+        <div class="callout tip"><strong>Want a title preserved?</strong> The operator can pin items to skip the Maintainerr rule. Just ask.</div>
+      </article>
+
+      <article class="card user" id="q-text-prune" data-tags="ebook audiobook comic deleted text-libraries prune">
+        <h3>An ebook / audiobook I had is gone <a class="qhash" href="#q-text-prune">#</a></h3>
+        <p>
+          A separate nightly job (<code>prune-text-libraries.sh</code>) trims anything in the ebook / audiobook / comic / manga shelves that hasn't been touched in 365 days, then triggers a rescan. Re-request the title and it'll come back.
+        </p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-tunnel">
+      <h2><span class="num">7</span>SSH tunnel &amp; admin</h2>
+      <p class="deck-sub">For the operator. Public surfaces are HTTPS; admin surfaces require the tunnel.</p>
+
+      <article class="card tut" id="q-tunnel-setup" data-tags="ssh tunnel powershell daemon manitoba-tunnel.ps1 workstation">
+        <h3>How does the SSH tunnel work? <a class="qhash" href="#q-tunnel-setup">#</a></h3>
+        <p>
+          <code>scripts/manitoba-tunnel.ps1</code> is a PowerShell daemon registered as a Windows scheduled task (<code>\Archangel\Manitoba SSH Tunnel</code>). It mirrors workstation <em>local-port &rarr; server-port</em> so bookmarks read naturally &mdash; <code>localhost:17026/sonarr/</code> on your machine = Sonarr on the seedbox.
+        </p>
+        <p>Default forwards:</p>
+        <pre><code>sonarr 17026   | sonarr2 17003   | radarr 17027    | radarr2 17008
+prowlarr 17024 | bazarr 17031    | tautulli 17014  | qbittorrent 17041
+listmonk 42014 | uptime-kuma 42005 | tdarr 42018   | maintainerr 42007</code></pre>
+        <div class="callout tip"><strong>Why <code>ExitOnForwardFailure=no</code>?</strong> A stopped service shouldn't kill the whole tunnel. The poll target is port 42014 (Listmonk, always-on systemd).</div>
+      </article>
+
+      <article class="card tut warn" id="q-tunnel-dead" data-tags="tunnel dead loopback localhost refused not connecting">
+        <h3>I can't reach <code>localhost:17026</code> &mdash; tunnel down? <a class="qhash" href="#q-tunnel-dead">#</a></h3>
+        <ol>
+          <li><kbd>Win</kbd>+<kbd>R</kbd> &rarr; <code>taskschd.msc</code> &rarr; look for <code>\Archangel\Manitoba SSH Tunnel</code>. Is it running?</li>
+          <li>From PowerShell: <code>Test-NetConnection localhost -Port 42014</code> &mdash; Listmonk is the always-on canary.</li>
+          <li>If the task is running but the port test fails: kill it and re-run. SSH multiplexing can wedge after long sleeps.</li>
+          <li>If the task isn't running: <code>schtasks /Run /TN &quot;\Archangel\Manitoba SSH Tunnel&quot;</code>.</li>
+        </ol>
+        <div class="callout warn"><strong>FQDN gotcha:</strong> the script is gitignored because it hardcodes the real FQDN. If you cloned QFlix fresh, re-create it with your operator slot's host.</div>
+      </article>
+
+      <article class="card tut" id="q-cant-resolve-fqdn" data-tags="ssh resolve hostname seedbox.example.com sanitized">
+        <h3>Smoke test says &ldquo;Could not resolve seedbox.example.com&rdquo; <a class="qhash" href="#q-cant-resolve-fqdn">#</a></h3>
+        <p>
+          The repo uses <code>seedbox.example.com</code> as a sanitized placeholder. Operator-local clones need both:
+        </p>
+        <ul>
+          <li><code>secrets/seedbox.host</code> &mdash; the public HTTPS FQDN (operator slot, e.g. <code>quadstronaut.seedbox.example.com</code>).</li>
+          <li><code>secrets/seedbox.ssh-host</code> &mdash; the SSH FQDN, which on Ultra.cc shared boxes is the <em>shared</em> hostname (e.g. <code>seedbox.example.com</code>), not the slot subdomain.</li>
+        </ul>
+        <p>If you only set one, smoke + canaries will fail on whichever the other was needed for. Both lines, single-line files, no trailing newline.</p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-window">
+      <h2><span class="num">8</span>Maintenance window</h2>
+      <p class="deck-sub">Mondays, 04:00&ndash;08:00 UTC. The only time the stack is allowed to break itself.</p>
+
+      <article class="card tut" id="q-window-what-happens" data-tags="maintenance window monday upgrade recyclarr kometa buildarr cp.ultra.cc">
+        <h3>What happens during the window? <a class="qhash" href="#q-window-what-happens">#</a></h3>
+        <ol>
+          <li>Posts &ldquo;window open&rdquo; to Discord.</li>
+          <li>Grabs <code>~/.opt/maint/window.lock</code> (a watchdog at 17:00 clears any stale lock).</li>
+          <li>Runs Recyclarr (TRaSH-Guide sync), Kometa (collections / posters), Buildarr (declarative *arr config).</li>
+          <li>Runs <code>manitoba-maint upgrade</code> per manifest &mdash; Playwright clicks <em>Upgrade &amp; Repair</em> on cp.ultra.cc for UCC apps, in-place tarball/zip swap for systemd apps.</li>
+          <li>Restores prior service state from the discovery snapshot.</li>
+          <li>Releases the lock + posts &ldquo;window closed&rdquo; with a summary.</li>
+        </ol>
+        <p>
+          Pusher auto-heal is <strong>paused</strong> for the window so restarts don't race the upgrade clicker.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-out-of-window" data-tags="upgradinatorr newsletter monday sunday timer out-of-window">
+        <h3>Why do upgradinatorr and the newsletter fire outside the window? <a class="qhash" href="#q-out-of-window">#</a></h3>
+        <ul>
+          <li><strong>upgradinatorr.timer</strong> fires <strong>Sun 06:04</strong> &mdash; pre-window stale-grab re-search, so by Monday the *arr stack is already chasing fresh releases (good for the post-window cleanup pass).</li>
+          <li><strong>qflix-newsletter.timer</strong> fires <strong>Mon 08:00</strong> &mdash; post-window so the digest reflects whatever the window just upgraded.</li>
+        </ul>
+      </article>
+
+      <article class="card tut warn" id="q-window-overrun" data-tags="window overrun lock stale watchdog stuck">
+        <h3>The window started but never closed <a class="qhash" href="#q-window-overrun">#</a></h3>
+        <p>
+          The watchdog timer fires at <strong>Mon 17:00</strong> and clears stale <code>~/.opt/maint/window.lock</code>. If you arrive Monday afternoon and the lock is still held, either:
+        </p>
+        <ul>
+          <li>Wait until 17:00 &mdash; the watchdog will clear it.</li>
+          <li>Manually: <code>rm ~/.opt/maint/window.lock</code> and post to Discord that you did it.</li>
+        </ul>
+        <p>Don't kill <code>manitoba-maint-window.service</code> mid-run unless you're sure the Playwright upgrade-clicker isn't actively driving cp.ultra.cc &mdash; half-clicked upgrades are recoverable but annoying.</p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-manifest">
+      <h2><span class="num">9</span>Manifest &amp; new apps</h2>
+      <p class="deck-sub">The manifest is the only place that records &ldquo;what apps exist&rdquo;.</p>
+
+      <article class="card tut" id="q-add-app" data-tags="manifest apps.yaml new app validate audit kuma_monitor">
+        <h3>How do I add a new app? <a class="qhash" href="#q-add-app">#</a></h3>
+        <ol>
+          <li>Add an entry to <code>manifest/apps.yaml</code>. Pick a class: <code>ucc</code> (managed by <code>app-&lt;slug&gt;</code>), <code>systemd</code>, <code>cron</code>, or <code>library</code>.</li>
+          <li>Pick a health probe kind: <code>http_api</code>, <code>http_root</code>, <code>systemd_only</code>, <code>port_listen</code>, <code>import_check</code>, or <code>process_pattern</code>.</li>
+          <li>Validate: <code>~/bin/manitoba-maint manifest validate</code>.</li>
+          <li>Create the Kuma monitor: <code>~/bin/manitoba-maint kuma audit</code> reports missing monitors; the bootstrap script creates them and writes the push-token into <code>secrets/kuma-push-tokens.json</code>.</li>
+          <li>Wire notifications: every new monitor must attach to both <em>Mission Control - QFlix</em> (Discord) and <em>Manitoba auto-heal webhook</em>. The bootstrap script does the SQL <code>INSERT INTO monitor_notification</code> dance.</li>
+          <li>Restart pusher: <code>systemctl --user restart manitoba-maint-pusher</code>.</li>
+        </ol>
+        <details class="deep"><summary>Probe-kind cheat sheet</summary>
+          <p><strong>http_api</strong> &mdash; for *arr-style apps with an <code>X-Api-Key</code> header. Needs <code>port_secret</code>, <code>auth_secret</code>, <code>path_template</code>, optional <code>urlbase_secret</code>.</p>
+          <p><strong>http_root</strong> &mdash; plain GET to <code>/</code> on a port. Optional <code>hostname</code> override for Docker-bridge-only services (e.g. FlareSolverr at <code>172.17.0.1:17011</code>).</p>
+          <p><strong>systemd_only</strong> &mdash; just checks the systemd unit is <code>active (running)</code>.</p>
+          <p><strong>port_listen</strong> &mdash; TCP connect to <code>localhost:&lt;port&gt;</code>.</p>
+          <p><strong>import_check</strong> &mdash; for Python libraries: <code>venv_python -c &quot;import X&quot;</code>. Tilde-expanded.</p>
+          <p><strong>process_pattern</strong> &mdash; pgrep-backed; for raw processes like <code>unpackerr</code> or the Postgres <code>checkpointer</code> subprocess.</p>
+        </details>
+      </article>
+
+      <article class="card tut" id="q-remove-app" data-tags="manifest remove purge uninstall app-X uninstall .purged backup">
+        <h3>How do I remove an app? <a class="qhash" href="#q-remove-app">#</a></h3>
+        <ol>
+          <li>Stop it: <code>app-&lt;slug&gt; stop</code> (or <code>systemctl --user stop &lt;unit&gt;</code>).</li>
+          <li>Uninstall (UCC backs up to <code>~/.apps/backup/</code> automatically): <code>app-&lt;slug&gt; uninstall</code>.</li>
+          <li>Remove the manifest entry from <code>manifest/apps.yaml</code>.</li>
+          <li>Move related secrets into a dated quarantine: <code>mv ~/secrets/&lt;slug&gt;.* ~/.purged-$(date +%F)/</code> (reversible).</li>
+          <li>Delete the Kuma monitor + push token: SQL delete from <code>monitor</code>, then prune the entry from <code>secrets/kuma-push-tokens.json</code>.</li>
+          <li>Remove the nginx fragment: <code>rm ~/.apps/nginx/proxy.d/&lt;slug&gt;.conf; app-nginx reload</code>.</li>
+          <li>Restart pusher; smoke; commit the manifest change.</li>
+        </ol>
+        <div class="callout warn"><strong>Don't <code>rm -rf</code> directly</strong> &mdash; always move to <code>~/.purged-YYYY-MM-DD/</code> first. The 2026-05-10 purges all kept dated quarantine dirs and that has paid off twice already.</div>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-monitoring">
+      <h2><span class="num">10</span>Kuma &amp; canaries</h2>
+      <p class="deck-sub">Push monitors, status page, and the 4 end-to-end canaries.</p>
+
+      <article class="card tut" id="q-kuma-arch" data-tags="kuma push monitor pusher webhook netns isolation 60 seconds">
+        <h3>Why is auto-heal in the pusher and not in a Kuma webhook? <a class="qhash" href="#q-kuma-arch">#</a></h3>
+        <p>
+          Kuma runs in an isolated network namespace on Ultra.cc and <strong>cannot reach the host loopback</strong>. That's why the pusher pushes status TO Kuma every 60 s, and the pusher itself fires the auto-heal (<code>recovery.trigger_async</code>) after 3 consecutive failed probes &mdash; not Kuma.
+        </p>
+        <p>Kuma's role is visibility (status page + Discord) and the public alert side. The actual healing decision is in <code>scripts/maint/lib/recovery.py</code>.</p>
+      </article>
+
+      <article class="card tut" id="q-canaries" data-tags="canary movie anime deletion mobile-ux pipeline end-to-end">
+        <h3>What do the 4 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
+        <table class="tbl">
+          <thead><tr><th>Canary</th><th>Cadence</th><th>Asserts</th></tr></thead>
+          <tbody>
+            <tr><td><code>canary-movie</code></td><td>hourly</td><td>Seerr &rarr; Radarr &rarr; import &rarr; Plex movie path works end-to-end</td></tr>
+            <tr><td><code>canary-anime</code></td><td>hourly</td><td>Seerr &rarr; Sonarr2 &rarr; import &rarr; Plex anime path works (the <em>second</em> server matters)</td></tr>
+            <tr><td><code>canary-deletion</code></td><td>Mon 04:30</td><td>Maintainerr's 60-day rule fires and at least one file actually got deleted that week</td></tr>
+            <tr><td><code>canary-mobile-ux</code></td><td>every 15 min</td><td>Public Homarr board still renders + the <code>/</code> &rarr; board redirect still works</td></tr>
+          </tbody>
+        </table>
+        <p>Each canary pushes a status to Kuma. If Kuma goes red, the operator gets pinged. If a canary's underlying script crashes (vs. silently returning OK), <code>journalctl --user -u manitoba-maint-canary-&lt;name&gt;.service</code> has the traceback.</p>
+      </article>
+
+      <article class="card tut warn" id="q-phantom-monitors" data-tags="kuma phantom monitor cache restart canary push">
+        <h3>I deleted a Kuma monitor in SQL &mdash; it's still showing on the status page <a class="qhash" href="#q-phantom-monitors">#</a></h3>
+        <p>
+          Kuma 2.x caches monitors in memory. SQL <code>DELETE</code> while Kuma is running diverges the DB from the in-memory cache, and the deleted monitor will linger until restart.
+        </p>
+        <ol>
+          <li><code>app-uptimekuma restart</code></li>
+          <li>Wait &ge; 10 s for the in-memory cache to rebuild.</li>
+          <li>For push monitors only: <code>~/bin/manitoba-maint canary push &lt;name&gt;</code> once per monitor &mdash; the <code>/metrics</code> Prometheus endpoint filters by post-restart heartbeats, so until each canary has pushed at least once, audits show drift.</li>
+        </ol>
+      </article>
+
+      <article class="card tut" id="q-kuma-default-notif" data-tags="kuma notification isDefault default new monitor not attaching">
+        <h3>I set a notification channel as default but new monitors aren't using it <a class="qhash" href="#q-kuma-default-notif">#</a></h3>
+        <p>
+          Kuma's <code>isDefault=true</code> applies on UI-created monitors at creation time only. For monitors created via the bootstrap script (or any script-driven path), you must explicitly <code>INSERT INTO monitor_notification</code> for each <code>(monitor_id, notification_id)</code> pair. The bootstrap helper does this.
+        </p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-arr">
+      <h2><span class="num">11</span>The *arr stack</h2>
+      <p class="deck-sub">Sonarr / Sonarr2 / Radarr / Radarr2 / Prowlarr / Bazarr / FlareSolverr.</p>
+
+      <article class="card tut" id="q-arr-split" data-tags="sonarr radarr cinema anime split branch naming">
+        <h3>Why two Sonarrs and two Radarrs? <a class="qhash" href="#q-arr-split">#</a></h3>
+        <p>
+          Release naming for anime is different enough from western TV / film that mixing them confuses the quality profiles and the renamer. So each is split by <em>release-naming convention</em>, not by genre:
+        </p>
+        <ul>
+          <li><strong>Sonarr</strong> / <strong>Radarr</strong> &mdash; cinema-style releases (English subs baked into release name, Scene / P2P naming).</li>
+          <li><strong>Sonarr2</strong> / <strong>Radarr2</strong> &mdash; anime-style (group brackets, episode numbering, etc.). Configured with anime-specific Prowlarr indexers and TRaSH anime profiles via Recyclarr.</li>
+        </ul>
+      </article>
+
+      <article class="card tut warn" id="q-cloudflare" data-tags="flaresolverr cloudflare 403 walled indexer prowlarr 172.17.0.1">
+        <h3>An indexer is returning 403 / Cloudflare-walled <a class="qhash" href="#q-cloudflare">#</a></h3>
+        <p>
+          Prowlarr is configured to route Cloudflare-protected indexers through FlareSolverr. FlareSolverr listens on <code>172.17.0.1:&lt;flaresolverr.port&gt;</code> (Docker bridge), not host loopback.
+        </p>
+        <ul>
+          <li><strong>Verify FlareSolverr is up:</strong> Kuma monitor &ldquo;FlareSolverr&rdquo; pushes every 60 s. If red, pusher will restart up to 3 times.</li>
+          <li><strong>Verify Prowlarr points at it:</strong> Settings &rarr; Indexers &rarr; FlareSolverr &rarr; URL should be <code>http://172.17.0.1:17011</code> (use the real port from <code>secrets/flaresolverr.port</code>).</li>
+          <li><strong>Smoke test:</strong> <code>scripts/smoke-test.sh</code> step 1 asserts &ge; 5 indexers + a search round-trip works.</li>
+        </ul>
+      </article>
+
+      <article class="card tut" id="q-stuck-import" data-tags="arr stuck queue import unstick housekeeping">
+        <h3>Sonarr / Radarr queue is stuck on <em>Importing</em> <a class="qhash" href="#q-stuck-import">#</a></h3>
+        <p>
+          A cron at <code>:15</code> hourly runs <code>arr-housekeeping.py --unstick</code> which forces re-import on items wedged in the queue. If you can't wait, run it manually:
+        </p>
+        <pre><code>~/bin/manitoba-maint arr-housekeeping unstick</code></pre>
+        <p>Common root cause: qBittorrent finished but didn't fire the &ldquo;Run external program on completion&rdquo; &mdash; check qBit Preferences &rarr; Downloads &rarr; External program is configured.</p>
+      </article>
+
+      <article class="card tut" id="q-recyclarr-buildarr" data-tags="recyclarr buildarr trash kometa declarative profile sync">
+        <h3>Recyclarr vs Buildarr vs Kometa &mdash; what does each do? <a class="qhash" href="#q-recyclarr-buildarr">#</a></h3>
+        <table class="tbl">
+          <thead><tr><th>Tool</th><th>Fires</th><th>What it changes</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Recyclarr</strong></td><td>Sun 04:51 weekly</td><td>Pulls TRaSH-Guides quality profile JSON &rarr; applies to all 4 *arr servers</td></tr>
+            <tr><td><strong>Buildarr</strong></td><td>Mon 04:30 in-window</td><td>Declarative <code>buildarr.yml</code> &rarr; reconciles every other *arr setting (indexer list, download client, notifications, custom formats)</td></tr>
+            <tr><td><strong>Kometa</strong></td><td>Mon 03:37 weekly</td><td>Plex collections, posters, smart playlists (Plex Meta Manager)</td></tr>
+          </tbody>
+        </table>
+        <p>If a quality profile mysteriously reverts, it's Recyclarr or Buildarr undoing your manual change at the next window. Edit the YAML, not the *arr UI.</p>
+      </article>
+
+      <article class="card tut" id="q-prowlarr-sync" data-tags="prowlarr sync indexer push add new app">
+        <h3>I added an indexer in Prowlarr but Sonarr/Radarr don't see it <a class="qhash" href="#q-prowlarr-sync">#</a></h3>
+        <p>
+          Prowlarr pushes indexers to the *arrs via <em>Apps</em> &rarr; <em>Sync App Indexers</em>. Click that, or wait for the next scheduled sync (15 min by default). If the new indexer didn't appear in the *arr after the sync, double-check the App entry in Prowlarr points at the correct URL + API key.
+        </p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-qbit">
+      <h2><span class="num">12</span>qBittorrent</h2>
+      <p class="deck-sub">The download client. Most failures here look like &ldquo;stuck&rdquo; or &ldquo;not seeding&rdquo;.</p>
+
+      <article class="card tut" id="q-qbit-stuck" data-tags="qbittorrent stuck no peers not downloading metadata">
+        <h3>A torrent has been stuck at 0% / &ldquo;Downloading metadata&rdquo; forever <a class="qhash" href="#q-qbit-stuck">#</a></h3>
+        <ul>
+          <li><strong>Dead torrent.</strong> No seeders left. The *arr will mark it failed and grab the next release at the next re-search. Or remove it manually and force a re-search in Sonarr/Radarr.</li>
+          <li><strong>Tracker dead / firewalled.</strong> Check the tracker's status page. Private trackers will sometimes go down for hours.</li>
+          <li><strong>Disk full.</strong> See &sect; 13 below.</li>
+        </ul>
+      </article>
+
+      <article class="card tut" id="q-qbit-ratio" data-tags="qbittorrent seeding ratio tracker private cross-seed">
+        <h3>Ratio is dropping on private trackers <a class="qhash" href="#q-qbit-ratio">#</a></h3>
+        <p>
+          QFlix doesn't run cross-seed (yet). On private trackers, hardlinks preserve seeding while the file is in the Plex library &mdash; verify with smoke test step 5 (linkcount &ge; 2). If hardlinks aren't working, your seeding files get deleted after import and you bleed ratio. See &sect; 13.
+        </p>
+      </article>
+
+      <article class="card tut warn" id="q-qbit-external-program" data-tags="qbittorrent external program completion run sonarr import">
+        <h3>Imports aren't happening &mdash; qBit finishes but Sonarr does nothing <a class="qhash" href="#q-qbit-external-program">#</a></h3>
+        <p>
+          qBit's <em>Run external program on torrent completion</em> setting must be configured to ping each *arr's <code>/api/v3/command</code>. If you nuked qBit config or did a fresh install, this resets and silently breaks imports.
+        </p>
+        <p>Fix: qBit &rarr; Options &rarr; Downloads &rarr; <em>Run external program on torrent completion</em> should call <code>~/bin/post-import.sh &quot;%F&quot; &quot;%L&quot; &quot;%N&quot;</code> (or whatever the post-import dispatcher is named in this repo).</p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-fs">
+      <h2><span class="num">13</span>Files, hardlinks, disk</h2>
+      <p class="deck-sub">The shared seedbox runs on someone else's filesystem rules. Respect them or pay the disk-bill.</p>
+
+      <article class="card tut" id="q-hardlinks" data-tags="hardlink copy inode linkcount path import seedbox shared filesystem">
+        <h3>Why hardlinks matter so much <a class="qhash" href="#q-hardlinks">#</a></h3>
+        <p>
+          <em>Hardlinks</em> let one file exist at two paths with the same inode &mdash; one copy on disk, two filenames. The *arr stack uses this to import torrents into the Plex library without duplicating the file: qBittorrent keeps seeding from <code>~/data/torrents/</code> while Plex sees the same bytes at <code>~/data/media/</code>.
+        </p>
+        <p>
+          If hardlinks break (e.g., torrents and media end up on different mountpoints), the *arr quietly falls back to <em>copy</em> &mdash; doubling the disk usage and breaking seeding when Maintainerr later deletes the Plex copy.
+        </p>
+        <p>Smoke test step 5 spot-checks <code>linkcount &ge; 2</code> on a sample of Movies. If that fails, fix the *arr download client config so the import path is on the same mountpoint as the torrent path.</p>
+      </article>
+
+      <article class="card tut danger" id="q-disk-full" data-tags="disk full quota seedbox 100% maintainerr clear space">
+        <h3>The seedbox is full / over quota <a class="qhash" href="#q-disk-full">#</a></h3>
+        <ol>
+          <li>Check: <code>df -h ~</code> on the seedbox.</li>
+          <li>Trigger Maintainerr immediately: <code>app-maintainerr restart; curl -X POST http://localhost:42007/api/rules/runall</code>.</li>
+          <li>Manually purge old <code>~/.purged-YYYY-MM-DD/</code> quarantine dirs that have aged out.</li>
+          <li>Check qBit for completed torrents past their seed ratio that you can remove.</li>
+          <li>Run <code>scripts/maint/qbit-trim.py</code> (operator script that removes the lowest-ratio completed torrents).</li>
+        </ol>
+        <div class="callout danger"><strong>Hard limit:</strong> on Ultra.cc, the user slot has a quota. Hit it and writes start failing silently &mdash; imports stop, Plex transcodes start dying mid-stream. Watch <code>scripts/smoke-test.sh</code> step 6 for &ldquo;disk usage&rdquo; alerts.</div>
+      </article>
+
+      <article class="card tut" id="q-snapraid" data-tags="snapraid parity backup seedbox shared filesystem">
+        <h3>Is there a backup? <a class="qhash" href="#q-snapraid">#</a></h3>
+        <p>
+          No. Ultra.cc shared seedboxes are <em>not</em> backed up by the provider. Media is considered ephemeral &mdash; if a drive dies, the *arr stack re-downloads everything. The only state worth caring about is in <code>~/.apps/&lt;app&gt;/data/</code> dirs (per-app SQLite DBs) and <code>~/secrets/</code>.
+        </p>
+        <p>The <code>~/.purged-YYYY-MM-DD/</code> convention is the only &ldquo;backup&rdquo; for in-flight deletions. Keep them around for at least 30 days before final removal.</p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-tdarr">
+      <h2><span class="num">14</span>Tdarr transcoding</h2>
+      <p class="deck-sub">Background re-encode to keep file sizes sane.</p>
+
+      <article class="card tut" id="q-tdarr-glibc" data-tags="tdarr glibc version pin v2.17 ultra.cc shared seedbox">
+        <h3>Why is Tdarr pinned to v2.17.01? <a class="qhash" href="#q-tdarr-glibc">#</a></h3>
+        <p>
+          Tdarr &gt; 2.17.x requires a newer GLIBC than what's installed on the Ultra.cc base image. Upgrading would break the binary. Pinned via <code>versions.env</code> &rarr; <code>TDARR_VERSION=2.17.01</code> with <code>max_reason: &quot;GLIBC blocker&quot;</code>. The maintenance window upgrader respects the pin.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-tdarr-queue" data-tags="tdarr stuck node down queue empty workers">
+        <h3>Tdarr queue isn't moving <a class="qhash" href="#q-tdarr-queue">#</a></h3>
+        <ul>
+          <li>Verify the <em>node</em> service is up: <code>systemctl --user status tdarr-node.service</code>. Heartbeat cron restarts on inactive.</li>
+          <li>Verify the node is connected to the server in the Tdarr UI (<code>localhost:42018/tdarr</code> via tunnel).</li>
+          <li>If both are up but queue is empty: Tdarr scan hasn't picked up new files. Tdarr &rarr; Libraries &rarr; Scan / Run.</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-discord">
+      <h2><span class="num">15</span>Discord notifications</h2>
+      <p class="deck-sub">One webhook, two Kuma channels, operator @ping.</p>
+
+      <article class="card tut" id="q-discord-channels" data-tags="discord webhook notifiarr notification kuma mission-control auto-heal">
+        <h3>Two Kuma notification channels &mdash; what's the difference? <a class="qhash" href="#q-discord-channels">#</a></h3>
+        <table class="tbl">
+          <thead><tr><th>Channel</th><th>Default</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>Mission Control - QFlix</code></td><td>yes</td><td>Discord embed for operator visibility &mdash; every Manitoba monitor wires to it</td></tr>
+            <tr><td><code>Manitoba auto-heal webhook</code></td><td>yes</td><td>Internal &mdash; fires <code>recovery.trigger_async</code> via the maint-webhook</td></tr>
+          </tbody>
+        </table>
+        <p>Both must be wired on every monitor. Tautulli and the 4 canaries were wired only to the auto-heal one for a long stretch (silent failures); fixed 2026-05-11.</p>
+      </article>
+
+      <article class="card tut" id="q-discord-ping" data-tags="discord operator ping mention content allowed_mentions notify level">
+        <h3>I want a Discord push notification &mdash; embed alone doesn't work <a class="qhash" href="#q-discord-ping">#</a></h3>
+        <p>
+          Discord only sends mobile push when the message <code>content</code> field contains a real <code>&lt;@user_id&gt;</code> mention. Embeds alone are silent.
+        </p>
+        <p>
+          QFlix's <code>scripts/maint/lib/notify.py</code> appends <code>&lt;@REDACTED&gt;</code> (operator user-id, read from <code>secrets/discord-operator.id</code>) to the content field on levels <code>error</code> and <code>critical</code>, plus <code>allowed_mentions: { users: [&lt;id&gt;] }</code> to bypass the no-mentions guard on the webhook. Levels <code>info</code> / <code>warn</code> stay silent.
+        </p>
+      </article>
+
+      <article class="card tut" id="q-no-notifiarr" data-tags="notifiarr removed purged discord direct webhook">
+        <h3>Where did Notifiarr go? <a class="qhash" href="#q-no-notifiarr">#</a></h3>
+        <p>
+          Purged 2026-05-10. QFlix doesn't need a third-party notification proxy &mdash; every signal source now posts directly to <code>secrets/discord-webhook.url</code>. If you find a stale Notifiarr reference in a comment or script, it's safe to delete (or grep for it: <code>grep -ri notifiarr scripts/</code>).
+        </p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-pitfalls">
+      <h2><span class="num">16</span>Top 10 screw-ups</h2>
+      <p class="deck-sub">The recurring own-goals. Memorize these.</p>
+
+      <article class="card warn" id="q-pitfall-1" data-tags="anime advanced server dropdown sonarr2 radarr2 request">
+        <h3>1. Forgetting to expand &ldquo;Advanced&rdquo; on Seerr anime requests <a class="qhash" href="#q-pitfall-1">#</a></h3>
+        <p>The anime servers are non-default. Files end up in the wrong library if you click Request without picking the Anime server. See <a href="#q-anime-routing">&sect; 2</a>.</p>
+      </article>
+
+      <article class="card warn" id="q-pitfall-2" data-tags="ssh tunnel sleep wedge multiplexing test-tunnel">
+        <h3>2. Assuming a wedged SSH tunnel will self-heal <a class="qhash" href="#q-pitfall-2">#</a></h3>
+        <p>It won't always. <code>ExitOnForwardFailure=no</code> means failed forwards just stay broken &mdash; the daemon keeps trying but the existing wedged session blocks. Solution: kill the scheduled task, re-run it. See <a href="#q-tunnel-dead">&sect; 7</a>.</p>
+      </article>
+
+      <article class="card warn" id="q-pitfall-3" data-tags="hardlinks mountpoint copy fallback ratio dropping">
+        <h3>3. Letting hardlinks silently break <a class="qhash" href="#q-pitfall-3">#</a></h3>
+        <p>Torrents and media on different mountpoints &rarr; *arr copies instead of links &rarr; double disk usage + private-tracker ratio death. Smoke step 5 catches it; act on the failure immediately.</p>
+      </article>
+
+      <article class="card warn" id="q-pitfall-4" data-tags="verify before claiming verify-before maintainerr false-park drift">
+        <h3>4. Claiming &ldquo;X is parked / removed&rdquo; without verifying live state <a class="qhash" href="#q-pitfall-4">#</a></h3>
+        <p>The 2026-05-10 Maintainerr false-park incident: a stale comment said Maintainerr was &ldquo;intentionally parked&rdquo;; it had been running fine for weeks. Verify against the seedbox before writing any &ldquo;not running&rdquo; claim. <code>inventory.md</code> is the source of truth.</p>
+      </article>
+
+      <article class="card warn" id="q-pitfall-5" data-tags="restart wait seerr probe immediately too fast">
+        <h3>5. Probing a service immediately after restart <a class="qhash" href="#q-pitfall-5">#</a></h3>
+        <p>After <code>app-X restart</code>, the process exits and re-launches but the port rebind takes a few seconds. Sleep &ge; 10 s before the first probe, especially for Docker-class services (Seerr).</p>
+      </article>
+
+      <article class="card warn" id="q-pitfall-6" data-tags="kuma SQL delete cache phantom monitor restart">
+        <h3>6. Editing Kuma SQL while Kuma is running <a class="qhash" href="#q-pitfall-6">#</a></h3>
+        <p>Kuma caches monitors in memory. SQL <code>DELETE</code> + no restart = phantom monitor on the status page. Always restart after schema edits. See <a href="#q-phantom-monitors">&sect; 10</a>.</p>
+      </article>
+
+      <article class="card warn" id="q-pitfall-7" data-tags="default notification new monitor isDefault not attaching">
+        <h3>7. Assuming <code>isDefault=true</code> auto-attaches to new monitors <a class="qhash" href="#q-pitfall-7">#</a></h3>
+        <p>It doesn't, for script-created monitors. Always explicit-INSERT into <code>monitor_notification</code>. See <a href="#q-kuma-default-notif">&sect; 10</a>.</p>
+      </article>
+
+      <article class="card warn" id="q-pitfall-8" data-tags="tilde expansion python subprocess venv_python expanduser">
+        <h3>8. Subprocess in Python doesn't expand <code>~</code> <a class="qhash" href="#q-pitfall-8">#</a></h3>
+        <p>The Q2 import_check probe crashed for weeks because <code>subprocess.run([&quot;~/.apps/python-plexapi/venv/bin/python&quot;, ...])</code> doesn't tilde-expand. Always <code>os.path.expanduser()</code> first.</p>
+      </article>
+
+      <article class="card warn" id="q-pitfall-9" data-tags="docker bridge hostname 172.17.0.1 flaresolverr loopback bind">
+        <h3>9. Probing a Docker-bridge service on <code>127.0.0.1</code> <a class="qhash" href="#q-pitfall-9">#</a></h3>
+        <p>FlareSolverr binds <code>172.17.0.1:17011</code>, not loopback. Use the <code>hostname</code> override on the manifest health probe. The health probe now supports this; remember to set it.</p>
+      </article>
+
+      <article class="card warn" id="q-pitfall-10" data-tags="auth_basic htpasswd nginx fragment public path off">
+        <h3>10. New public path returning 401 Unauthorized <a class="qhash" href="#q-pitfall-10">#</a></h3>
+        <p>The outer Ultra.cc nginx applies htpasswd by default. To make a path public, the proxy.d fragment must include <code>auth_basic off;</code>. Listmonk, Tautulli, and Seerr all rely on this. Without it, end-users hit a basic-auth dialog they don't have credentials for.</p>
+      </article>
+    </section>
+
+    <section class="deck" id="sec-emergency">
+      <h2><span class="num">17</span>Emergency playbook</h2>
+      <p class="deck-sub">If something is on fire <em>right now</em>.</p>
+
+      <article class="card danger" id="q-er-plex-down" data-tags="plex down emergency restart pusher manual heal">
+        <h3>Plex is down and the auto-heal didn't fix it <a class="qhash" href="#q-er-plex-down">#</a></h3>
+        <ol>
+          <li>SSH to seedbox.</li>
+          <li><code>app-plex status</code> &mdash; is it actually stopped, or just unreachable?</li>
+          <li><code>app-plex restart</code>. Wait 30 s.</li>
+          <li>Probe: <code>curl -sI -o /dev/null -w '%{http_code}\n' http://localhost:32400/web/</code> &rarr; should be 401 (auth wall, but server up).</li>
+          <li>If still failing: <code>journalctl --user -u plex.service -n 80</code>. Common: storage path missing (mount failed), claim token expired (re-claim in cp.ultra.cc).</li>
+          <li>Force a pusher recompute: <code>systemctl --user restart manitoba-maint-pusher</code>.</li>
+        </ol>
+      </article>
+
+      <article class="card danger" id="q-er-disk" data-tags="disk full emergency space recovery write-fail">
+        <h3>The disk is full <a class="qhash" href="#q-er-disk">#</a></h3>
+        <p>See <a href="#q-disk-full">&sect; 13</a>. Sequence: <code>df -h</code> &rarr; run Maintainerr &rarr; purge oldest <code>~/.purged-*</code> &rarr; qBit cleanup &rarr; re-check.</p>
+      </article>
+
+      <article class="card danger" id="q-er-everything" data-tags="everything red on fire down restart all">
+        <h3>Multiple monitors red, can't tell what's the root cause <a class="qhash" href="#q-er-everything">#</a></h3>
+        <ol>
+          <li>Check <code>~/.opt/maint/state.json</code> for the pusher's latest failure log.</li>
+          <li><code>journalctl --user -u manitoba-maint-pusher -n 200</code> &mdash; look for the first failure (a downstream often cascades).</li>
+          <li>Common root cause: nginx down (everything 502), Postgres down (Listmonk red), seedbox over quota (everything write-fails).</li>
+          <li>Get nginx up first: <code>app-nginx restart</code>.</li>
+          <li>Then disk: <code>df -h</code>.</li>
+          <li>Then per-app: <code>~/bin/manitoba-maint kuma audit</code> to see the current red list.</li>
+        </ol>
+      </article>
+
+      <article class="card danger" id="q-er-rollback" data-tags="rollback upgrade window broke revert app-backup">
+        <h3>The Monday window broke something &mdash; how do I roll back? <a class="qhash" href="#q-er-rollback">#</a></h3>
+        <ol>
+          <li>Identify the upgraded app: <code>journalctl --user -u manitoba-maint-window.service -n 200</code>.</li>
+          <li>UCC apps have a backup at <code>~/.apps/backup/&lt;slug&gt;-&lt;old-version&gt;.tar.gz</code>.</li>
+          <li><code>app-&lt;slug&gt; stop; tar -xzf ~/.apps/backup/&lt;slug&gt;-... -C ~/.apps/; app-&lt;slug&gt; start</code>.</li>
+          <li>Pin the version in <code>versions.env</code> with a <code>max_reason</code> so it doesn't re-upgrade next week.</li>
+          <li>Commit the pin to git.</li>
+        </ol>
+      </article>
+    </section>
+
+    <div id="empty">
+      <h3>No matches</h3>
+      <p>Press <kbd>Esc</kbd> to clear the search.</p>
+    </div>
+
+  </main>
+</div>
+
+<footer>
+  <p>QFlix &middot; <a href="https://github.com/Quadstronaut/QFlix">github.com/Quadstronaut/QFlix</a> &middot;
+     <a href="https://quadstronaut.seedbox.example.com/status/manitoba">status</a> &middot;
+     <a href="https://quadstronaut.seedbox.example.com/seerr/">seerr</a> &middot;
+     <a href="https://quadstronaut.seedbox.example.com/tautulli/">tautulli</a></p>
+  <p style="margin-top:8px;color:var(--fg-3);">Self-contained page &mdash; no external scripts. Press <kbd>/</kbd> to search.</p>
+</footer>
+
+<script>
+  (function () {
+    'use strict';
+    var q       = document.getElementById('q');
+    var visEl   = document.getElementById('visible');
+    var totEl   = document.getElementById('total');
+    var empty   = document.getElementById('empty');
+    var bigBtn  = document.getElementById('bigtext');
+    var cards   = Array.prototype.slice.call(document.querySelectorAll('.card'));
+    var decks   = Array.prototype.slice.call(document.querySelectorAll('section.deck'));
+    var tocLinks= Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+
+    // Build search index per card
+    cards.forEach(function (c) {
+      var h3 = c.querySelector('h3');
+      var ttl = h3 ? h3.innerText.replace('#','').trim() : '';
+      c._idx = (ttl + ' ' + (c.dataset.tags || '') + ' ' + c.innerText).toLowerCase();
+    });
+    totEl.textContent = cards.length;
+
+    function applyFilter() {
+      var term = (q.value || '').trim().toLowerCase();
+      var visible = 0;
+      cards.forEach(function (c) {
+        var show = !term || c._idx.indexOf(term) !== -1;
+        c.classList.toggle('hide', !show);
+        if (show) visible++;
+      });
+      decks.forEach(function (d) {
+        var any = Array.prototype.slice.call(d.querySelectorAll('.card'))
+                       .some(function (c) { return !c.classList.contains('hide'); });
+        d.classList.toggle('hide', !any);
+      });
+      visEl.textContent = visible;
+      empty.classList.toggle('show', visible === 0);
+    }
+    q.addEventListener('input', applyFilter);
+    applyFilter();
+
+    // Keyboard: '/' focuses search, Esc clears it
+    document.addEventListener('keydown', function (e) {
+      if (e.key === '/' && document.activeElement !== q) {
+        e.preventDefault(); q.focus(); q.select();
+      } else if (e.key === 'Escape' && document.activeElement === q) {
+        q.value = ''; applyFilter(); q.blur();
+      }
+    });
+
+    // Big-text toggle (legibility)
+    var saved = null;
+    try { saved = localStorage.getItem('qflix-faq-big'); } catch (e) {}
+    if (saved === '1') {
+      document.documentElement.classList.add('big');
+      bigBtn.classList.add('on');
+      bigBtn.setAttribute('aria-pressed', 'true');
+    }
+    bigBtn.addEventListener('click', function () {
+      var on = document.documentElement.classList.toggle('big');
+      bigBtn.classList.toggle('on', on);
+      bigBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      try { localStorage.setItem('qflix-faq-big', on ? '1' : '0'); } catch (e) {}
+    });
+
+    // TOC active-section highlight using IntersectionObserver
+    if ('IntersectionObserver' in window) {
+      var byId = {};
+      tocLinks.forEach(function (a) {
+        var id = (a.getAttribute('href') || '').slice(1);
+        if (id) byId[id] = a;
+      });
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) {
+          var a = byId[en.target.id];
+          if (!a) return;
+          if (en.isIntersecting) {
+            tocLinks.forEach(function (l) { l.classList.remove('active'); });
+            a.classList.add('active');
+          }
+        });
+      }, { rootMargin: '-30% 0px -60% 0px', threshold: 0 });
+      decks.forEach(function (d) { io.observe(d); });
+    }
+  })();
+</script>
+
+</body>
+</html>
