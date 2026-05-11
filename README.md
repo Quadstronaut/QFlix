@@ -62,9 +62,10 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 | 🟠 Indexers | **Prowlarr** | Single aggregator; *arr stack reads from here, not raw indexers |
 | 🟠 TV | **Sonarr** + **Sonarr2** (anime branch) | One per release-naming convention |
 | 🟠 Movies | **Radarr** + **Radarr2** (anime branch) | Same split |
+| 🟠 Subtitles | **Bazarr** + **Bazarr 2** (anime branch) | One per arr-pair — Bazarr is hard-capped at one Sonarr + one Radarr each, so the second anime instance is a bare-Python install pinned to Bazarr-1's version (`bazarr2-sync.timer`) |
 | 🟠 Retention | **Maintainerr** | 60-day "watched + nobody else cared" deletion engine |
 
-Surrounding cast (Bazarr, Bazarr 2, qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 4 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
+Surrounding cast (qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 4 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
 
 ---
 
