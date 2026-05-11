@@ -178,6 +178,53 @@ Test-Case 'Get-RemoteHeredoc templates the section cap' {
     Assert-True ($h -match "SECTION_CAP=$($Script:SectionByteCap)") 'cap value substituted'
 }
 
+# --- Task 7: JSON extractor + blob decoder ---
+Test-Case 'Extract-JsonArray parses bare empty array' {
+    $txt = Get-Content -Raw "$PSScriptRoot/fixtures/model-clean.txt"
+    $arr = Extract-JsonArray $txt
+    Assert-True ($arr -is [array]) 'parsed (is array)'
+    Assert-Equal 0 @($arr).Count 'empty array'
+}
+
+Test-Case 'Extract-JsonArray finds array inside prose with fences' {
+    $txt = Get-Content -Raw "$PSScriptRoot/fixtures/model-noisy.txt"
+    $arr = Extract-JsonArray $txt
+    Assert-True ($arr -is [array]) 'parsed (is array)'
+    Assert-Equal 1 @($arr).Count 'one finding'
+    Assert-Equal 'heartbeat:xdg-runtime-unset' (@($arr)[0].signature) 'signature extracted'
+}
+
+Test-Case 'Extract-JsonArray parses dirty single-line array' {
+    $txt = Get-Content -Raw "$PSScriptRoot/fixtures/model-dirty.txt"
+    $arr = Extract-JsonArray $txt
+    Assert-True ($arr -is [array]) 'parsed (is array)'
+    Assert-Equal 1 @($arr).Count 'one finding'
+    Assert-Equal 'buildarr' (@($arr)[0].app) 'app extracted'
+}
+
+Test-Case 'Extract-JsonArray returns null on garbage' {
+    $arr = Extract-JsonArray 'I am sorry, I cannot help with that.'
+    Assert-True ($null -eq $arr) 'no array returns null'
+}
+
+Test-Case 'Extract-JsonArray handles nested brackets and strings with brackets' {
+    $arr = Extract-JsonArray 'preamble [{"x":"a [b] c","y":[1,2,3]}] postamble'
+    Assert-True ($arr -is [array]) 'parsed (is array)'
+    Assert-Equal 1 @($arr).Count 'one element'
+}
+
+Test-Case 'ConvertFrom-FetchedBlob base64-decodes sources' {
+    $a = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes('hello world'))
+    $b = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("multi`nline"))
+    $json = @"
+{"fetched_at":"2026-05-11T00:00:00Z","host":"h","sources":{"arr_logs":"$a","journal_errors":"$b","cron_mail":"","maint_state":"","nginx_errors":"","plex_errors":"","kuma_red":""}}
+"@
+    $r = ConvertFrom-FetchedBlob -Json $json
+    Assert-Equal 'hello world' $r.sources.arr_logs 'arr_logs decoded'
+    Assert-Equal "multi`nline" $r.sources.journal_errors 'journal_errors decoded'
+    Assert-Equal '' $r.sources.cron_mail 'empty section stays empty'
+}
+
 Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
     $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
     try {

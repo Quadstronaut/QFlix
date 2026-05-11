@@ -1,0 +1,1 @@
+[{"time":"2026-05-11T04:30:11Z","app":"buildarr","file":"journal:buildarr.service","severity":"error","summary":"Pydantic ValidationError on remote-map preferred","excerpt":"buildarr.config.exceptions.ConfigTrashIDNotFoundError: ...","signature":"buildarr:pydantic-validation-error"}]
