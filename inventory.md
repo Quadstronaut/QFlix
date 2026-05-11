@@ -1,21 +1,22 @@
 # Manitoba — Live Artifact Inventory
 
-**Source of truth.** Built 2026-05-10 by querying the live seedbox
+**Source of truth.** Re-verified live 2026-05-11 against the seedbox
 (`quadstronaut@seedbox.example.com`) — systemd units, timers, crontab,
-`~/.apps/`, `~/scripts/`, `~/secrets/`, Kuma `/metrics`, Kuma SQLite,
-nginx `proxy.d/`, repo manifest. Where the manifest, docs, and live
-seedbox disagree, the live seedbox wins and this file records both.
+`~/.apps/`, `~/secrets/`, Kuma `/metrics`, Kuma SQLite, nginx `proxy.d/`,
+repo manifest. Where the manifest, docs, and live seedbox disagree, the
+live seedbox wins and this file records both.
 
-**Counts (verified this session):**
-- 28 apps in `manifest/apps.yaml`; **28 installed on seedbox** (qbittorrent uses system-managed config, not `~/.apps/qbittorrent`).
-- 32 Kuma monitors total (29 manitoba + 3 quadstronix external). Of the 29 manitoba: **26 UP**, 3 DOWN (Conjurr, Newsletterr, Ombi-parked).
-- 4 manitoba monitors have **0 notification channels wired**: Recyclarr, Qflix Newsletter, Buildarr, plus Ombi (parked — expected). This is silent-failure drift.
-- 2 apps **installed but NOT in manifest**: unpackerr, upgradinatorr. Plus postgres (Listmonk dependency).
-- 4 failed/stale systemd units: `autobrr.service` (not-found), `filebrowser.service` (not-found), `qbt_pub.service` (failed), `logrotate.service` (transient).
-- 2 orphan Kuma monitors (Conjurr, Newsletterr) + matching secrets files on both repo and seedbox + `~/Conjurr/` dir on seedbox.
-- 5 commented-out crons (Notifiarr migration leftovers) referencing 4 Ultra-* scripts still on disk.
+**Counts (live as of 2026-05-11):**
+- **28 apps in `manifest/apps.yaml`** (19 UCC, 3 systemd, 5 cron, 1 library); all 28 present on seedbox.
+- **29 Kuma monitors** total: 26 manitoba (incl. 4 canary push monitors) + 3 quadstronix external. **26/26 manitoba UP.**
+- All 26 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
+- Notification channel: single Discord webhook + operator @ping (`<@REDACTED>`) on `error` / `critical` levels via `scripts/maint/lib/notify.py`.
+- Last full smoke: **45 pass / 0 fail / 0 skip** (2026-05-11).
 
-`Auto-heal?` column = "yes" if `manitoba-maint-pusher` covers it (any manifest entry with a `kuma_monitor:` value), or a dedicated heartbeat script restarts it. `Notification on fail?` = N Kuma notification slots wired (Discord is the only configured channel; `secrets/discord-webhook.url` is now present in the repo, **but missing on the seedbox** — see action gate).
+**Active drift (real follow-ups):**
+- 3 orphan nginx fragments still on disk: `~/.apps/nginx/proxy.d/{jellyfin,mylar3,readarr}.conf` — point to ports nobody listens on; return 502 to anyone hitting those paths. Cosmetic, not blocking. Safe to delete.
+
+`Auto-heal?` = `manitoba-maint-pusher` covers the app (any manifest entry with a `kuma_monitor:` value), or a dedicated heartbeat script restarts it. `Notification on fail?` = N Kuma notification slots wired.
 
 ---
 
@@ -27,22 +28,21 @@ seedbox disagree, the live seedbox wins and this file records both.
 | sonarr2 | ucc | yes | TV anime *arr | NO | Internal | tunnel `http://localhost:17003/sonarr2/` · public same-base (htpasswd) | yes | yes (pusher) | 2 |  |
 | radarr | ucc | yes | Movies main library *arr | NO | Internal | tunnel `http://localhost:17027/radarr/` · public (htpasswd) | yes | yes (pusher) | 2 |  |
 | radarr2 | ucc | yes | Movies anime *arr | NO | Internal | tunnel `http://localhost:17008/radarr2/` · public (htpasswd) | yes | yes (pusher) | 2 |  |
-| readarr | ucc | yes | Ebooks *arr (parked per docs) | ask | Internal | tunnel `http://localhost:17042/readarr/` | yes | yes (pusher) | 2 | Tunnel daemon comment labels it "parked" yet manifest has no `parked: true`. Drift — choose one. |
 | prowlarr | ucc | yes | Indexer aggregator | NO | Internal | tunnel `http://localhost:17024/prowlarr/` | yes | yes (pusher) | 2 |  |
 | bazarr | ucc | yes | Subtitles | NO | Internal | tunnel `http://localhost:17031/bazarr/` | yes | yes (pusher) | 2 |  |
 | qbittorrent | ucc | yes (qbittorrent.service v5.0.3) | Download client | NO | Internal (operator-public via /qbittorrent/) | tunnel `http://localhost:17041/` · public `https://…/qbittorrent/` (htpasswd + qBit auth) | yes | yes (pusher) | 2 | No `~/.apps/qbittorrent/` dir — config at system level; manifest probes via http_root. |
 | plex | ucc | yes | Media server (canonical) | NO | Public | `https://quadstronaut.seedbox.example.com/web/` (Plex SSO) | yes | yes (pusher) | 2 |  |
 | seerr | ucc | yes (Docker container `seerr-quadstronaut`, v3.2.0) | User request portal + issue tracking | NO | Public — `https://quadstronaut.seedbox.example.com/seerr/` AND canonical `https://seerr-quadstronaut.seedbox.example.com/` | port 42011 (Docker) · loopback `http://127.0.0.1:42011/` | yes (Mon 04-08) | yes (pusher; manifest `kuma_monitor: "Seerr"`, health probes `/api/v1/status` with `seerr.key`) | 2 | Installed 2026-05-11 via `app-seerr install` v3.2.0; Jellyseerr stopped + purged → `~/.purged-2026-05-11/jellyseerr-install/`. API key in `~/secrets/seerr.key`. 4 *arr servers configured via API (Sonarr Cinema default + Sonarr Anime non-default + Radarr Cinema default + Radarr Anime non-default; idempotent script `scripts/configure/30-seerr-arrs.py`). `trustProxy: true` on `/api/v1/settings/network` for the nginx reverse proxy. **Anime auto-routing caveat:** per [docs.seerr.dev](https://docs.seerr.dev/using-seerr/settings/services) only `isDefault`/`is4k` are documented routing axes — no cross-server anime field exists. Users pick "Sonarr Anime" / "Radarr Anime" from the per-request server dropdown in the Seerr UI. Restart confirmed clean 2026-05-11 (`app-seerr restart` → 8s warmup → HTTP 200 both loopback + via nginx). |
-| tautulli | ucc | yes | Plex stats (read-only public) | NO | Public | `https://…/tautulli/` (auth_basic off confirmed) · tunnel `localhost:17014` | yes | yes (pusher) | **1** | Only 1 notif channel wired (vs 2 elsewhere). |
+| tautulli | ucc | yes | Plex stats (read-only public) | NO | Public | `https://…/tautulli/` (auth_basic off confirmed) · tunnel `localhost:17014` | yes | yes (pusher) | 2 | Second channel wired 2026-05-11. |
 | audiobookshelf | ucc | yes | Audiobook server | NO | Internal | tunnel via port `secrets/audiobookshelf.port` | yes | yes (pusher) | 2 |  |
 | kavita | ucc | yes | Manga / comics / ebook reader | NO | Internal | tunnel via port `secrets/kavita.port` | yes | yes (pusher) | 2 |  |
 | komga | ucc | yes | Comics server | NO | Internal | tunnel `localhost:<komga.port>/komga/` | yes | yes (pusher) | 2 |  |
 | calibre-web | ucc | yes | Ebook catalog | NO | Internal | tunnel via `secrets/calibre-web.port` | yes | yes (pusher) | 2 |  |
-| mylar3 | ucc | yes | Comics *arr (parked per docs) | ask | Internal | tunnel `http://localhost:17045/mylar3/` | yes | yes (pusher) | 2 | Tunnel daemon labels "parked"; manifest has no `parked: true`. Drift. |
 | homarr | ucc | yes | Public landing board | NO | Public | `https://quadstronaut.seedbox.example.com/` (root) + `/board/private` htpasswd | yes | yes (pusher) | 2 |  |
 | flaresolverr | ucc | yes | Cloudflare-bypass for Prowlarr | NO | Internal | API-only `172.17.0.1:<flaresolverr.port>` | yes | yes (pusher) — no Kuma monitor by design | n/a | `kuma_monitor: null` in manifest. |
 | maintainerr | ucc | yes | Library deletion rules (60-day) | NO | Internal | tunnel `http://localhost:42007/` · per-app subdomain `https://maintainerr-quadstronaut.seedbox.example.com/` (htpasswd) | yes | yes (pusher) | 2 | Prior session falsely claimed parked — corrected in commit 30b9e08. |
-| ombi | ucc | **no (parked)** | Legacy request portal (parked pending Wizarr alt) | ask | Internal | tunnel `http://localhost:17046/ombi/` | n/a (parked) | n/a (`parked: true`) | **0** | Down by design. Decision: purge or keep parked? Kickoff says required apps are Sonarr×2/Radarr×2/Maintainerr/Plex/Seerr/Prowlarr — Ombi NOT in that minimum. |
+| unpackerr | ucc (Docker `/app/unpackerr -c …`) | yes | Auto-extract archives post-import for the *arr stack | NO | n/a (no HTTP surface) | n/a | yes (Mon 04-08) | yes (pusher; `process_pattern` probe matches `/app/unpackerr`) | n/a (`kuma_monitor: null` — no probe kind for raw-process supervision yet) | Smoke #8 verifies the process is running. Added to manifest 2026-05-11. |
+| postgres | ucc | yes (PID supervised by UCC) | Database backend for Listmonk | NO | Internal | localhost:`secrets/postgres.port` | yes | implicit via Listmonk health (if Postgres dies, Listmonk `/health` goes red) | n/a (`kuma_monitor: null` — covered transitively) | Manifest `process_pattern: postgres: checkpointer`. Added to manifest 2026-05-11. |
 
 ## B. Manifest — systemd-class apps
 
@@ -56,10 +56,11 @@ seedbox disagree, the live seedbox wins and this file records both.
 
 | Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| recyclarr.timer | cron | scheduled (Sun 04:51) | TRaSH-guide quality profile sync | NO | n/a | no UI | yes | n/a (oneshot) | **0** | NEW DRIFT: 0 notif wiring. |
-| qflix-newsletter.timer | cron | scheduled (Mon 08:00) | Weekly Plex digest → Listmonk | NO | n/a | no UI | yes | n/a (oneshot) | **0** | NEW DRIFT: 0 notif wiring. Replaces Conjurr+Newsletterr. |
-| buildarr.timer | cron | scheduled (Mon 04:30) | Declarative *arr state converger | NO | n/a | no UI; log `~/.apps/buildarr/logs/buildarr.log` | yes | n/a (oneshot) | **0** | NEW DRIFT: 0 notif wiring. |
+| recyclarr.timer | cron | scheduled (Sun 04:51) | TRaSH-guide quality profile sync | NO | n/a | no UI | yes | n/a (oneshot) | 2 | Notif wires added 2026-05-11. |
+| qflix-newsletter.timer | cron | scheduled (Mon 08:00) | Weekly Plex digest → Listmonk | NO | n/a | no UI | yes | n/a (oneshot) | 2 | Notif wires added 2026-05-11. Replaces Conjurr+Newsletterr. |
+| buildarr.timer | cron | scheduled (Mon 04:30) | Declarative *arr state converger | NO | n/a | no UI; log `~/.apps/buildarr/logs/buildarr.log` | yes | n/a (oneshot) | 2 | Notif wires added 2026-05-11. |
 | kometa.timer | cron | scheduled (Mon 03:37) | Plex metadata + collections | NO | n/a | no UI | yes | n/a (oneshot) | n/a (`kuma_monitor: null`) | Result=success last run. |
+| upgradinatorr.timer | cron | scheduled (Sun 06:04) | Re-search stale grabs across Sonarr/Sonarr2/Radarr/Radarr2 | NO | n/a | no UI | yes (outside maint window — pre-Monday) | n/a (oneshot) | 2 | Kuma push monitor #65 added 2026-05-11. Manifest class:cron. |
 
 ## D. Manifest — library (no service)
 
@@ -67,20 +68,16 @@ seedbox disagree, the live seedbox wins and this file records both.
 |---|---|---|---|---|---|---|---|---|---|---|
 | python-plexapi | library | n/a | venv used by canaries + qflix-newsletter | NO | n/a | n/a | yes (pip-upgrade in window) | n/a | n/a |  |
 
-## E. **DRIFT — installed but NOT in manifest**
+## E. ~~DRIFT — installed but NOT in manifest~~ → RESOLVED 2026-05-11
 
-| Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
-|---|---|---|---|---|---|---|---|---|---|---|
-| unpackerr | UCC (Docker `/app/unpackerr -c …`) | yes (PID 2878282) | Auto-extract archives post-import | NO | n/a | n/a | **no** (not in manifest → not auto-upgraded) | **no** (smoke checks PID but nothing restarts it) | **0** (no Kuma monitor) | Smoke test #8 verifies it runs but manifest has no entry. Should be added. |
-| upgradinatorr.service + .timer | systemd (oneshot Sun 06:04) | scheduled | Re-search stale grabs (Sonarr/Sonarr2/Radarr/Radarr2) | NO | n/a | no UI | **no** (not in manifest) | **no** | **0** | Smoke #13i checks the timer exists but no Kuma monitor, no manifest entry. |
-| postgres | UCC | yes (PID 2728548) | Listmonk DB backend | NO | Internal | localhost:`secrets/postgres.port` | yes (lifts with Listmonk) | implicit via Listmonk heartbeat | **0** (no Kuma monitor) | Implicit dependency — listing for completeness. |
+All three prior drift entries (unpackerr, upgradinatorr, postgres) added to `manifest/apps.yaml` and re-located to Sections A and C above. Section retained as a marker so the resolution stays visible.
 
 ## F. Gateway / infrastructure
 
 | Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
 | nginx.service | UCC | yes (v2026.04.28) | User-level reverse proxy (40+ `proxy.d/` fragments) | NO | Public-facing | binds 80/443 of operator's slot | yes | systemd Restart=on-failure | **0** (no Kuma monitor) | Outer Ultra.cc root-nginx terminates TLS + applies htpasswd; this user-nginx maps paths to app ports. Only `listmonk.conf` and `tautulli.conf` set `auth_basic off;`. |
-| uptimekuma | UCC | yes | Status monitoring + push receiver | NO | Internal admin + Public status page | admin tunnel `localhost:42005` · public `https://…/status/manitoba` | yes | n/a (self-monitoring) | n/a (it IS the monitor) | DB at `~/.apps/uptimekuma/kuma.db`. 32 monitors total. |
+| uptimekuma | UCC | yes | Status monitoring + push receiver | NO | Internal admin + Public status page | admin tunnel `localhost:42005` · public `https://…/status/manitoba` | yes | n/a (self-monitoring) | n/a (it IS the monitor) | DB at `~/.apps/uptimekuma/kuma.db`. 29 monitors total (26 manitoba + 3 quadstronix external). |
 
 ## G. Maintenance system (`manitoba-maint-*`)
 
@@ -121,38 +118,17 @@ seedbox disagree, the live seedbox wins and this file records both.
 | post-import/library-rescan-*.sh | manual | invoked by *arr custom scripts | rescan Komga/Kavita/Calibre/AudioBS/Comics | NO | n/a | n/a | n/a | n/a | n/a |  |
 | configure/46-homarr-add-comms.py | manual setup | one-shot completed | Adds Listmonk widget to Homarr | yes (one-shot, kept for replay) | n/a | n/a | n/a | n/a | n/a |  |
 
-## J. Failed / stale systemd units
+## J. ~~Failed / stale systemd units~~ → RESOLVED 2026-05-11
 
-| Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
-|---|---|---|---|---|---|---|---|---|---|---|
-| autobrr.service | systemd (orphan) | failed (not-found) | Legacy UCC app reference, never installed by this stack | YES — drop unit file | n/a | n/a | n/a | n/a | n/a | Ultra.cc app catalog leftover. |
-| filebrowser.service | systemd (orphan) | failed (not-found) | Legacy | YES — drop unit file | n/a | n/a | n/a | n/a | n/a | Same as above. |
-| qbt_pub.service | systemd (orphan) | failed | Legacy Qbit public API publisher | YES — confirm not referenced | n/a | n/a | n/a | n/a | n/a |  |
-| logrotate.service / .timer | systemd | transient failed | Daily log rotation | NO | n/a | n/a | n/a | n/a | n/a | Last fail 6 days ago; runs daily. Investigate but don't delete. |
+`systemctl --user list-units --state=failed` returns `0 loaded units listed` as of 2026-05-11. autobrr/filebrowser/qbt_pub orphan unit references gone from systemd's view. `logrotate.service` no longer in failed state (timer fires daily, health verified).
 
-## K. Orphan artifacts (Conjurr / Newsletterr partial purge)
+## K. ~~Orphan artifacts (Conjurr / Newsletterr partial purge)~~ → RESOLVED 2026-05-11
 
-| Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `~/Conjurr/` (seedbox) | dir | n/a | Holds only `tmdb_cache.pkl` (5 bytes) | YES | n/a | n/a | n/a | n/a | n/a | App was retired 2026-05-09. |
-| `secrets/conjurr.port` (repo + seedbox) | secret | n/a | Stale port (42015) | YES | n/a | n/a | n/a | n/a | n/a | Tunnel daemon comment notes 42015 "reserved — staged for Profilarr (deferred)". |
-| `secrets/newsletterr.port` (repo + seedbox) | secret | n/a | Stale port | YES | n/a | n/a | n/a | n/a | n/a |  |
-| Kuma monitor #42 "Conjurr" | kuma push | down (status=0) | Orphan push monitor | YES (Kuma UI delete) | n/a | n/a | n/a | n/a | wired to 2 channels | Causes smoke `maint-kuma-all-up` to fail. |
-| Kuma monitor #43 "Newsletterr" | kuma push | down (status=0) | Orphan push monitor | YES (Kuma UI delete) | n/a | n/a | n/a | n/a | wired to 2 channels | Same. |
-| crontab stub `# Every 5 min — restart Conjurr if dead` | cron | not active (no command) | Comment-only header | YES | n/a | n/a | n/a | n/a | n/a |  |
-| crontab stub `# Every 5 min — restart Newsletterr if dead` | cron | not active (no command) | Comment-only header | YES | n/a | n/a | n/a | n/a | n/a |  |
-| crontab stub `# Daily 04:15 — bridge Listmonk … Newsletterr` | cron | not active (no command) | Comment-only header | YES | n/a | n/a | n/a | n/a | n/a |  |
-| `secrets/jellyfin.{key,port}` (repo + seedbox) | secret | n/a | Pre-Plex-primary leftover | YES | n/a | n/a | n/a | n/a | n/a | Plex is canonical per project decision. |
-| `secrets/jellystat.port` (repo + seedbox) | secret | n/a | Same | YES | n/a | n/a | n/a | n/a | n/a |  |
+Verified live: `~/Conjurr/` gone; secrets/{conjurr,newsletterr,jellyfin,jellystat}.* moved to `~/.purged-2026-05-11/`. Kuma monitors #42 (Conjurr) + #43 (Newsletterr) deleted. Crontab cleaned of all three stale stubs.
 
-## L. Disabled crons + dead scripts (Notifiarr migration leftovers)
+## L. ~~Disabled crons + dead scripts (Notifiarr migration leftovers)~~ → RESOLVED 2026-05-11
 
-| Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `~/scripts/Ultra-Version-Notifier/` | dir + python venv | not running (cron commented) | Discord notify of new UCC app versions | ask | n/a | n/a | n/a | n/a | n/a | Functionality folded into manitoba-maint upgrade flow? Confirm before deleting. |
-| `~/scripts/Ultra-App-Monitor/` | dir + python venv | not running (cron commented) | Apps + torrents health → Discord | ask | n/a | n/a | n/a | n/a | n/a | Likely superseded by manitoba-maint-pusher + Kuma. Confirm. |
-| `~/scripts/Ultra-Quota-Checker/` | dir + python venv | not running (cron commented) | Disk quota → Discord every 3m | ask | n/a | n/a | n/a | n/a | n/a | Smoke #6 covers disk-usage one-shot; this was the continuous warning. Confirm. |
-| `~/scripts/Ultra-Traffic-Monitor/` | dir + python venv | not running (cron commented) | Bandwidth track → Discord hourly | ask | n/a | n/a | n/a | n/a | n/a | Confirm. |
+Verified live: all four `~/scripts/Ultra-*/` dirs purged (Version-Notifier, App-Monitor, Quota-Checker, Traffic-Monitor). Their functionality is now covered by manitoba-maint-pusher (live health), Kuma push monitors (visibility), and smoke #6 disk-usage (quota).
 
 ## M. Workstation-side artifacts
 

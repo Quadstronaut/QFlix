@@ -195,6 +195,13 @@ flowchart LR
 
 Each canary asserts a whole pipeline, not just liveness. Mobile-UX renders the public Homarr board and checks HTML size + the `/` → board redirect. Levels `error` and `critical` add `<@REDACTED>` to the Discord payload so the operator gets a push notification, not just an embed.
 
+> [!NOTE]
+> **6 manifest apps have `kuma_monitor: null`** and don't push to Kuma — they're covered by alternate signals instead:
+> - `flaresolverr` (Prowlarr surfaces its failures), `tdarr-node` (Tdarr Server's `/status` shows registered nodes), `postgres` (Listmonk `/health` is its tripwire)
+> - `unpackerr`, `kometa`, `python-plexapi` — covered by `scripts/smoke-test.sh` rather than continuous monitoring (run the smoke after changes; no Discord ping if they fail mid-week)
+>
+> Tradeoff is deliberate: Kuma's HTTP-poll model doesn't fit raw processes / libraries / transitively-monitored deps. Closing the gap with `process_pattern` push monitors is queued for the next Tuesday-session.
+
 </details>
 
 <details><summary><b>4. Subscriber comms</b> — Monday-morning AI-curated digest</summary>
@@ -390,6 +397,10 @@ tests/                       # 202 pytest tests (unit/) — pure-Python, no SSH
 6. Releases the lock + posts "window closed" with summary.
 
 During the window, the pusher's auto-heal is paused — restarts during scheduled work would race the upgrade clicker.
+
+**Out-of-window timers** (by design):
+- `upgradinatorr.timer` fires Sun 06:04 — pre-window stale-grab re-search, so by Monday the *arr stack is already chasing fresh releases.
+- `qflix-newsletter.timer` fires Mon 08:00 — post-window so the digest reflects whatever the window just upgraded.
 
 </details>
 
