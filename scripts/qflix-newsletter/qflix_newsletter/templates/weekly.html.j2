@@ -9,6 +9,15 @@
   <div style="height:18px;background:repeating-linear-gradient(90deg,#0a0a0a 0,#0a0a0a 8px,#1a1a1a 8px,#1a1a1a 14px);border-top:1px solid #2a2a2a;border-bottom:1px solid #2a2a2a;line-height:0;font-size:0;">&nbsp;</div>
 </td></tr>
 {%- endmacro %}
+{% macro section_divider() -%}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:6px;">
+  <tr>
+    <td style="height:1px;background:#7dd3fc;opacity:.6;line-height:0;font-size:0;">&nbsp;</td>
+    <td width="20" align="center" style="color:#d4af37;font-size:11px;line-height:1;padding:0 6px;">&#9670;</td>
+    <td style="height:1px;background:#7dd3fc;opacity:.6;line-height:0;font-size:0;">&nbsp;</td>
+  </tr>
+</table>
+{%- endmacro %}
 </head>
 <body style="margin:0;padding:0;background:#0a1628;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#cbd5e1;">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0a1628;">
@@ -56,7 +65,8 @@
       {# New Movies #}
       {% if ctx.movies %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0 0 12px 0;color:#f8fafc;font-size:18px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">New movies</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">New movies</h3>
+{{ section_divider() }}
       </td></tr>
       <tr><td style="padding:0 16px 16px 16px;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
@@ -85,7 +95,8 @@
       {# New TV (grouped) #}
       {% if ctx.shows %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0 0 12px 0;color:#f8fafc;font-size:18px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">New TV</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">New TV</h3>
+{{ section_divider() }}
       </td></tr>
       {% for s in ctx.shows %}
       <tr><td style="padding:0 16px 8px 16px;">
@@ -109,7 +120,8 @@
       {# Anime Movies #}
       {% if ctx.anime_movies %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0 0 12px 0;color:#f8fafc;font-size:18px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">New anime movies</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">New anime movies</h3>
+{{ section_divider() }}
       </td></tr>
       <tr><td style="padding:0 16px 16px 16px;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
@@ -135,7 +147,8 @@
       {# Anime TV #}
       {% if ctx.anime_shows %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0 0 12px 0;color:#f8fafc;font-size:18px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">New anime TV</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">New anime TV</h3>
+{{ section_divider() }}
       </td></tr>
       {% for s in ctx.anime_shows %}
       <tr><td style="padding:0 16px 8px 16px;">
@@ -155,7 +168,8 @@
       {# Coming Soon #}
       {% if ctx.coming_soon %}
       <tr><td style="padding:16px 16px 8px 16px;">
-        <h3 style="margin:0 0 12px 0;color:#f8fafc;font-size:18px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">Coming soon</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">Coming soon</h3>
+{{ section_divider() }}
       </td></tr>
       <tr><td style="padding:0 16px 16px 16px;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
@@ -181,7 +195,8 @@
       {# AI Picks (BOTTOM by design — operator note: people don't love AI) #}
       {% if ctx.ai_picks %}
       <tr><td style="padding:24px 16px 8px 16px;">
-        <h3 style="margin:0 0 4px 0;color:#cbd5e1;font-size:14px;font-weight:600;border-bottom:1px solid rgba(125,211,252,.18);padding-bottom:6px;">A few things you might like</h3>
+        <h3 style="margin:0;color:#cbd5e1;font-size:14px;font-weight:600;">A few things you might like</h3>
+{{ section_divider() }}
         <div style="color:#7dd3fc;font-size:11px;opacity:.7;margin-top:4px;">Recommendations from your Plex history</div>
       </td></tr>
       <tr><td style="padding:8px 16px 16px 16px;">
