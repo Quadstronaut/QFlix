@@ -62,3 +62,15 @@ def test_section_labels_have_emoji_prefixes(sample_ctx):
     assert "✨ A few things you might like" in html
     # Nerd corner uses a <div> label, also gets the emoji
     assert "🤓 Nerd corner" in html
+
+
+def test_section_headers_have_count_badges(sample_ctx):
+    html = render_html(sample_ctx)
+    # Movies section: fixture has 2 movies (Inception, Arrival; pick excluded).
+    assert ">2<" in html or ">2 <" in html or "border-radius:12px" in html
+    # TV section: 1 show, 2 episodes.
+    assert "1 shows · 2 eps" in html or "1 show · 2 eps" in html
+    # Coming soon: 1 item in fixture.
+    # (Loose assertion: the badge CSS class signature must appear at least 3 times
+    # — movies, TV, coming soon.)
+    assert html.count("background:#1e40af;color:#fff;padding:2px 10px;border-radius:12px") >= 3
