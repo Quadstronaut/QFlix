@@ -95,11 +95,11 @@ All three prior drift entries (unpackerr, upgradinatorr, postgres) added to `man
 
 | Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| manitoba-maint-canary-movie.timer | systemd | scheduled (hourly) | Seerr → Radarr movie path canary | NO | n/a | n/a | n/a | n/a | **1** (Kuma) |  |
-| manitoba-maint-canary-anime.timer | systemd | scheduled (hourly) | Seerr → Sonarr2 anime path canary | NO | n/a | n/a | n/a | n/a | **1** |  |
+| manitoba-maint-canary-movie.timer | systemd | scheduled (hourly) | Seerr → Radarr movie path canary | NO | n/a | n/a | n/a | n/a | **1** (Kuma) | 2026-05-11 evening: rewritten to drive a real Seerr `POST /api/v1/request` and poll `media.externalServiceId` — forces traversal of the Seerr-in-container → Radarr-in-container netns hop. Stage labels on failure (`seerr-up-fail` / `radarr-up-fail` / `seed-pick-fail` / `seerr-push-fail` / `arr-not-populated` / `verify-fail` / `cleanup-fail`) reach Kuma `msg=`. |
+| manitoba-maint-canary-anime.timer | systemd | scheduled (hourly) | Seerr → Sonarr2 anime path canary | NO | n/a | n/a | n/a | n/a | **1** | Same rewrite as movie canary, `mediaType=tv` + `seasons:[1]`. Picks lowest-id Sonarr2 series as seed (tvdb→tmdb resolved via Seerr search if Sonarr2's record is missing tmdbId). |
 | manitoba-maint-canary-deletion.timer | systemd | scheduled (Mon 04:30) | Maintainerr 60-day deletion-rule audit | NO | n/a | n/a | n/a | n/a | **1** |  |
 | manitoba-maint-canary-mobile-ux.timer | systemd | scheduled (every 15m) | Homarr public board reachability | NO | n/a | n/a | n/a | n/a | **1** |  |
-| scripts/canaries/{movie,anime,deletion,mobile-ux}.sh | script | invoked by services above | (see services) | NO | n/a | n/a | n/a | n/a | (via Kuma push) |  |
+| scripts/canaries/{movie,anime,deletion,mobile-ux}.sh | script | invoked by services above | (see services) | NO | n/a | n/a | n/a | n/a | (via Kuma push) | README at `scripts/canaries/README.md` documents stage labels + exit-code contract for orchestrator (`manitoba-maint canary push <name>`). |
 
 ## I. Operator scripts (cron-driven)
 
@@ -196,3 +196,37 @@ Live scan turned up four real bugs the existing monitoring was hiding. All but t
 - ✓ **buildarr-sonarr 0.6.4 + buildarr-radarr 0.2.6 patched to manage Sonarr v4 + Radarr v6.** 7 surgical venv edits captured under `scripts/patches/` and re-applied idempotently by `scripts/configure/60-buildarr-patches.sh`: `buildarr/config/base.py` (missing field/value → fall back to pydantic default rather than raise), `buildarr_sonarr/config/import_lists.py` (languageProfileId guard + Trakt 4 required fields → Optional), `buildarr_sonarr/config/profiles/release.py` (preferred + IPWR remote-map optional — captured from prior session), `buildarr_sonarr/config/connect.py` (OnGrabField/OnImportField enums extended with v4 fields), `buildarr_radarr/config/settings/media_management.py` (ColonReplacement += smart), `buildarr_radarr/config/settings/notifications/discord.py` (OnGrabField + OnImportField + OnManualInteractionField extended with v6 Tags + custom-format values), `radarr/models/colon_replacement_format.py` (SMART — captured from prior session). Populated `~/.apps/buildarr/buildarr.yml` with all 4 instances (sonarr, sonarr2, radarr, radarr2) using API keys from `~/secrets/`. End-to-end run: `Result=success, ExecMainStatus=0`; each instance reports "Remote configuration is up to date" + "Remote configuration is clean". Manifest flipped from legacy `systemd_only`-against-`.timer` to `systemd_oneshot`-against-`.service` so real failures now reach Kuma/Discord. Kuma confirms `Buildarr msg=success`. **Retire path:** when upstream catches up, `pip install -U buildarr buildarr-sonarr buildarr-radarr` in the venv clears the patched files; re-running `60-buildarr-patches.sh` will report "hunks do not apply" — that's the signal to delete the 7 `.patch` files + the configure script.
 
 **Mail spool:** 14,359 lines / 583 messages built up pre-fix — 571 from `heartbeat-tdarr-node.sh` alone. Once the fix is verified through one full cron cycle, safe to truncate with `> /var/spool/mail/quadstronaut`.
+
+---
+
+## 2026-05-11 evening — Docker netns audit + canary rewrites
+
+Same-day follow-up to the two `127.0.0.1` → `172.17.0.1` incidents
+(Tautulli `pms_url` and Seerr→*arr push). Full sweep of every
+Dockerized UCC app's outbound config across all the apps under
+`~/.apps/`, cross-referenced against the actual cgroup membership of
+each process (since `docker ps` is socket-denied for the operator
+user, classification was done by `/proc/<pid>/cgroup`).
+
+**Audit result.** 18 apps verified — one real bug:
+
+- ✓ **Maintainerr `seerr_url` was `http://172.17.0.1:17013` (port dead).** Stale from the pre-2026-05-11 Jellyseerr setup; never updated when Seerr installed at port 42011. Pre-fix probe: `curl http://172.17.0.1:17013 → HTTP 000`. Post-fix probe: `curl http://172.17.0.1:42011/api/v1/status → HTTP 200`. SQLite updated (`UPDATE settings SET seerr_url='http://172.17.0.1:42011' WHERE id=1`) + container restarted (PID change confirmed). End-to-end seerr-call from Maintainerr deferred to the next 12:00 UTC CollectionWorker cycle — the Maintainerr container's internal nginx requires htpasswd we don't hold from the host. Repo: NEW idempotent script `scripts/configure/35-maintainerr-seerr-url.py` (sqlite UPDATE + `app-maintainerr restart`; re-runnable, prints `OK: ...already...` when state matches). See [[maintainerr-seerr-url-fix]].
+- ✓ **Seerr `settings.json` and `scripts/configure/30-seerr-arrs.py`** carried over from earlier today's prior session: 4 *arr `hostname` fields all `172.17.0.1` (was `127.0.0.1` at install). Verified live: `settings.json` shows Radarr Cinema 172.17.0.1:17027, Radarr Anime 172.17.0.1:17008, Sonarr Cinema 172.17.0.1:17026, Sonarr Anime 172.17.0.1:17003.
+
+**Everything else was already correct** — documented here so the
+next agent doesn't re-audit:
+
+- All 4 *arr download clients (Sonarr/Sonarr2/Radarr/Radarr2 → qBittorrent) route via the **public FQDN** `https://quadstronaut.seedbox.example.com:443/qbittorrent` (htpasswd + qBit auth). Architecturally fragile (depends on outer Ultra.cc nginx), but bypasses the netns issue entirely. Not changed.
+- All 4 *arr indexers (Prowlarr-fed) use `http://172.17.0.1:17024/prowlarr/<id>/`. Correct.
+- Prowlarr `/api/v1/applications` for all 4 downstream *arrs use `http://172.17.0.1:170XX/<urlbase>`. Correct.
+- Prowlarr's FlareSolverr indexer-proxy uses `http://172.17.0.1:17011/`. Correct.
+- Sonarr + Radarr Plex notification has `server: http://172.17.1.208:32400` (stale Plex container IP) **but** the active connection uses `host: 172.17.1.250` (current Plex bridge IP) — POST `/api/v3/notification/<id>/test` returns 200, current `~/.apps/sonarr/logs/sonarr.txt` has zero `172.17.1.208` errors. The `server` field is a UI label from the OAuth flow, not the runtime connect target. Cosmetic, left alone.
+- Maintainerr `tautulli_url = http://172.17.0.1:17014/tautulli` and `plex_hostname = 172.17.1.250 port 32400` are both reachable. The recurring `[WARN] [PlexApiService] Plex connection failed (manual mode active — skipping re-discovery)` log entry is the *plex.tv re-discovery* skip notice, not a runtime connect failure — Plex itself is fine at `172.17.1.250:32400` from inside Maintainerr's container.
+- Homarr `integration.url` entries all on `172.17.0.1` or public FQDN. Correct.
+- Bazarr (Docker) talks to Sonarr/Radarr via `quadstronaut.seedbox.example.com:443/<arrbase>` (public FQDN routing — same family as the *arr→qBit pattern).
+- Bazarr2 (host-native bare-Python at `~/.apps/bazarr2/venv/`) talks to Sonarr2/Radarr2 at `127.0.0.1:170XX` — works because every UCC app's listener is bound on `127.0.0.1` AND `169.150.251.170` AND `172.17.0.1` simultaneously. The `plex` block has `apikey: ''` so the listed `ip: 127.0.0.1` is dormant (integration disabled).
+- Kometa, Buildarr, Recyclarr, qflix-newsletter: all **host-native** (`%h/.apps/<app>/venv/bin/python ...` from systemd-user services); `127.0.0.1` references are correct.
+- Listmonk (systemd host), nginx (host), tdarr-node/-server (host), qbittorrent (host) — all `127.0.0.1` references are LISTEN-side or host-loopback-correct.
+- Postgres (Docker, runs as the `quadstronaut listmonk` connection from `172.17.0.1:7872` in `pg_stat_activity` — verified live); `pg_hba.conf 127.0.0.1/32` rule is for auth-from-host-loopback (Listmonk lives on host).
+
+**Canary rewrite (`scripts/canaries/{movie,anime}.sh`).** The prior probes ran on the host netns (`curl 127.0.0.1:17027/...`) and stayed green for ~9h on 2026-05-11 while every Seerr→Radarr request was failing with `ECONNREFUSED 127.0.0.1:17027` inside Seerr's container — the netns blind spot the new probes close. New design: pick the lowest-id movie/series already in the *arr as seed → `POST /api/v1/request` against Seerr → poll `media.externalServiceId` for up to 30s → verify the id matches the *arr's record → `DELETE /api/v1/request/{id}` cleanup. 409 (already-requested) is handled by recovering the existing request id and skipping the cleanup step; the *arr movie/series is never touched. Stage-labelled failure messages (`seerr-up-fail` / `radarr-up-fail` / `sonarr2-up-fail` / `seed-pick-fail` / `seerr-push-fail` / `arr-not-populated` / `verify-fail` / `cleanup-fail`) flow through `manitoba-maint canary push <name>` into Kuma's `msg=` field. Live first runs (movie + anime, both via the orchestrator) returned exit 0; Kuma heartbeats show `1|PASS: movie canary — seerr→radarr push verified (tmdb=504827 req=23 rrMid=261 created=1)` and `1|PASS: anime canary — seerr→sonarr2 push verified (tmdb=209867 tvdb=424536 req=24 s2Sid=1 created=1)` as the latest entries. Red-path proven by a direct Kuma push of `status=down msg=STAGE=seerr-up-fail msg=test-red-path-verification` — heartbeat row recorded `0|STAGE=seerr-up-fail msg=test-red-path-verification` before the next green push restored it.
