@@ -74,3 +74,15 @@ def test_section_headers_have_count_badges(sample_ctx):
     # (Loose assertion: the badge CSS class signature must appear at least 3 times
     # — movies, TV, coming soon.)
     assert html.count("background:#1e40af;color:#fff;padding:2px 10px;border-radius:12px") >= 3
+
+
+def test_movie_poster_cards_have_gold_border_and_shadow(sample_ctx):
+    html = render_html(sample_ctx)
+    # New border color (gold tint) and shadow appear on movie cards.
+    assert "border:1px solid rgba(212,175,55,.4)" in html
+    assert "box-shadow:0 6px 16px rgba(0,0,0,.6)" in html
+    # Old cyan card border on movie cards is gone (TV-row cards keep it,
+    # so we check the count of the OLD pattern dropped from baseline).
+    # Baseline count check: movies + anime_movies cards used the cyan border;
+    # those should now use the gold one. Loose assertion via gold count >= 2.
+    assert html.count("border:1px solid rgba(212,175,55,.4)") >= 2

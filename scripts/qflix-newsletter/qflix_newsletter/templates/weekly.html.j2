@@ -78,7 +78,7 @@
             {% for m in chunk %}
             <td width="33%" valign="top" style="padding:6px;{% if loop.index > 1 %}{% endif %}">
               {% if m %}
-              <div style="background:#0e1d33;border:1px solid rgba(125,211,252,.12);border-radius:6px;padding:8px;text-align:center;">
+              <div style="background:#0e1d33;border:1px solid rgba(212,175,55,.4);border-radius:6px;padding:8px;text-align:center;box-shadow:0 6px 16px rgba(0,0,0,.6);">
                 {% if m.thumb_url %}
                 <img src="{{ m.thumb_url }}" alt="" width="160" style="display:block;max-width:100%;height:auto;border-radius:4px;margin:0 auto 8px auto;">
                 {% endif %}
@@ -133,7 +133,7 @@
             {% for m in chunk %}
             <td width="33%" valign="top" style="padding:6px;">
               {% if m %}
-              <div style="background:#0e1d33;border:1px solid rgba(125,211,252,.12);border-radius:6px;padding:8px;text-align:center;">
+              <div style="background:#0e1d33;border:1px solid rgba(212,175,55,.4);border-radius:6px;padding:8px;text-align:center;box-shadow:0 6px 16px rgba(0,0,0,.6);">
                 {% if m.thumb_url %}<img src="{{ m.thumb_url }}" alt="" width="160" style="display:block;max-width:100%;height:auto;border-radius:4px;margin:0 auto 8px auto;">{% endif %}
                 <div style="color:#f8fafc;font-size:13px;font-weight:600;line-height:1.3;">{{ m.title }}</div>
                 {% if m.year %}<div style="color:#7dd3fc;font-size:11px;margin-top:2px;">{{ m.year }}</div>{% endif %}
