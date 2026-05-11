@@ -102,6 +102,32 @@ Test-Case 'Acquire-Lock returns a stream then blocks second acquire' {
     }
 }
 
+# --- Task 4: model discovery ---
+Test-Case 'Filter-OllamaListOutput filters by include + exclude regex' {
+    $mockOutput = @"
+NAME                       ID              SIZE      MODIFIED
+qwen3-coder:30b            06c1097efce0    18 GB     3 days ago
+qwen3-vl:8b                901cae732162    6.1 GB    3 days ago
+qwen3:8b                   500a1f067a9f    5.2 GB    3 days ago
+qwen2.5-coder:1.5b-base    02e0f2817a89    986 MB    3 days ago
+bge-m3:latest              790764642607    1.2 GB    3 days ago
+qwen2.5-coder:7b           dae161e27b0e    4.7 GB    2 weeks ago
+mistral:7b                 0000000000aa    4.0 GB    1 week ago
+"@
+    $models = Filter-OllamaListOutput -RawText $mockOutput
+    Assert-Equal @('qwen3-coder:30b','qwen3:8b','qwen2.5-coder:7b') $models 'expected 3 code-capable models'
+}
+
+Test-Case 'Filter-OllamaListOutput handles empty input' {
+    $models = Filter-OllamaListOutput -RawText ''
+    Assert-Equal 0 @($models).Count 'empty input yields empty array'
+}
+
+Test-Case 'Filter-OllamaListOutput skips header-only output' {
+    $models = Filter-OllamaListOutput -RawText "NAME    ID    SIZE    MODIFIED`n"
+    Assert-Equal 0 @($models).Count 'header-only input yields empty array'
+}
+
 Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
     $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
     try {
