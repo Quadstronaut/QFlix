@@ -1,40 +1,45 @@
 #!/usr/bin/env python3
-"""Phase 20.1 — One-shot Listmonk bootstrap from Ombi cohort.
+"""Listmonk first-run bootstrap — ensure the canonical Subscribers list exists.
 
-Idempotent. Re-running won't dupe lists or subscribers.
+Single-list model: every subscriber (Plex friends, Seerr users, manual adds)
+lands in ONE list. Source is recorded on each subscriber via attribs.source.
 
-Creates four lists (All Members, Ombi imports, Plex friends, Seerr requesters)
-and seeds 13 Ombi users into All Members + Ombi imports. Plex/Seerr
-reconcile is handled by the nightly cron in scripts/ops/listmonk-sync.py.
+This script is idempotent — safe to re-run. It:
+  1. Finds or creates the list named "Subscribers".
+  2. Writes its id to ~/secrets/listmonk.list_id (so qflix-newsletter +
+     listmonk-sync.py both target it without name lookup).
+
+Subscriber seeding lives in scripts/ops/listmonk-sync.py (cron 04:00 daily).
 """
 import base64
 import json
 import os
 import ssl
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-SECRETS_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "secrets"))
+HOME = os.path.expanduser("~")
+SECRETS = os.path.join(HOME, "secrets")
 
 
 def s(name: str) -> str:
-    with open(os.path.join(SECRETS_DIR, name), "r") as f:
+    with open(os.path.join(SECRETS, name), "r") as f:
         return f.read().strip()
 
 
-LM_HOST = "https://quadstronaut.seedbox.example.com/listmonk"
-# Listmonk v6 API endpoints require an api-type user + token. The legacy
-# admin_username/admin_password from config.toml authenticates a "config"
-# pseudo-user that has no list_role_id, so list operations are denied.
-# secrets/listmonk.api_user + listmonk.api_token are minted by the
-# installer and bound to the Manitoba List Access list-role (role id=9).
-API_USER = s("listmonk.api_user")
-API_TOKEN = s("listmonk.api_token")
-AUTH_HEADER = "Basic " + base64.b64encode(f"{API_USER}:{API_TOKEN}".encode()).decode()
+def _maybe(name, default):
+    try:
+        return s(name)
+    except FileNotFoundError:
+        return default
+
+
+LM_HOST = f"https://{_maybe('seedbox.host', 'quadstronaut.seedbox.example.com')}/listmonk"
+AUTH_HEADER = "Basic " + base64.b64encode(f"{s('listmonk.api_user')}:{s('listmonk.api_token')}".encode()).decode()
 SSL_CTX = ssl.create_default_context()
+
+LIST_NAME = "Subscribers"
 
 
 def lm_req(method: str, path: str, body=None):
@@ -47,107 +52,35 @@ def lm_req(method: str, path: str, body=None):
         return json.loads(raw) if raw else {}
 
 
-def get_or_create_list(name: str, tags: list[str]) -> int:
-    lists = lm_req("GET", "/api/lists?per_page=all")["data"]["results"]
-    for L in lists:
-        if L["name"] == name:
-            return int(L["id"])
-    body = {
-        "name": name,
-        "type": "private",
-        "optin": "single",
-        "tags": tags,
-        "description": f"Auto-created by Manitoba bootstrap: {name}",
-    }
-    return int(lm_req("POST", "/api/lists", body)["data"]["id"])
-
-
-def fetch_subscribers_by_email() -> dict:
-    """Walk all subscribers (subscribers:get_all perm) and build email->subscriber map.
-
-    Avoids the subscribers:sql_query path which HTTP Basic auth doesn't seem to
-    activate even though the Super Admin role includes that permission.
-    """
-    out = {}
-    page = 1
-    while True:
-        res = lm_req("GET", f"/api/subscribers?per_page=200&page={page}")["data"]
-        for sub in res.get("results", []):
-            out[sub["email"].lower()] = sub
-        if page * 200 >= int(res.get("total", 0)):
-            break
-        page += 1
-    return out
-
-
-def upsert_subscriber(existing_map: dict, email: str, name: str, list_ids: list[int], attribs: dict):
-    body = {
-        "email": email,
-        "name": name,
-        "status": "enabled",
-        "lists": list_ids,
-        "preconfirm_subscriptions": True,
-        "attribs": attribs,
-    }
-    existing = existing_map.get(email.lower())
-    if existing:
-        sid = int(existing["id"])
-        existing_lists = {int(L["id"]) for L in existing.get("lists") or []}
-        body["lists"] = sorted(existing_lists | set(list_ids))
-        return lm_req("PUT", f"/api/subscribers/{sid}", body), "updated"
-    return lm_req("POST", "/api/subscribers", body), "created"
-
-
-def fetch_ombi_users() -> list[tuple[str, str]]:
-    cmd = [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "quadstronaut@seedbox.example.com",
-        "sqlite3 -separator '|' ~/.apps/ombi/Ombi.db "
-        "\"SELECT UserName, Email FROM AspNetUsers "
-        "WHERE Email IS NOT NULL AND Email != '' AND UserName != 'Api'\"",
-    ]
-    out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
-    return [tuple(line.split("|", 1)) for line in out.splitlines() if "|" in line]
-
-
 def main() -> int:
-    print("-> creating/finding lists...")
-    main_list = get_or_create_list("All Members", ["all"])
-    ombi_list = get_or_create_list("Ombi imports (legacy)", ["ombi", "legacy"])
-    get_or_create_list("Plex friends", ["plex"])
-    get_or_create_list("Seerr requesters", ["seerr"])
-    get_or_create_list("Jellyfin users", ["jellyfin"])
-    print(f"  All Members id={main_list}, Ombi imports id={ombi_list}")
+    print(f"-> looking up list {LIST_NAME!r}...")
+    lists = lm_req("GET", "/api/lists?per_page=all")["data"]["results"]
+    target = next((L for L in lists if L["name"] == LIST_NAME), None)
+    if target is None:
+        body = {
+            "name": LIST_NAME,
+            "type": "private",
+            "optin": "single",
+            "tags": ["primary"],
+            "description": "Single canonical subscribers list. Source distinguished via subscriber attribs.source.",
+        }
+        target = lm_req("POST", "/api/lists", body)["data"]
+        print(f"   created list id={target['id']}")
+    else:
+        print(f"   found existing list id={target['id']} (subscriber_count={target.get('subscriber_count', '?')})")
 
-    print("-> snapshotting existing subscribers...")
-    existing_map = fetch_subscribers_by_email()
-    print(f"  {len(existing_map)} existing subscriber(s)")
+    list_id = int(target["id"])
+    secret_path = os.path.join(SECRETS, "listmonk.list_id")
+    existing = _maybe("listmonk.list_id", "")
+    if existing != str(list_id):
+        with open(secret_path, "w") as f:
+            f.write(str(list_id))
+        os.chmod(secret_path, 0o600)
+        print(f"   wrote {secret_path} = {list_id}")
+    else:
+        print(f"   {secret_path} already = {list_id}")
 
-    print("-> pulling Ombi users via SSH+sqlite3...")
-    users = fetch_ombi_users()
-    print(f"  {len(users)} users")
-
-    created = updated = 0
-    for username, email in users:
-        try:
-            _, action = upsert_subscriber(
-                existing_map,
-                email,
-                username,
-                [main_list, ombi_list],
-                attribs={"source": "ombi", "ombi_username": username},
-            )
-            if action == "created":
-                created += 1
-            else:
-                updated += 1
-        except urllib.error.HTTPError as e:
-            print(f"  ! {email}: HTTP {e.code} {e.reason}", file=sys.stderr)
-            print(f"    body: {e.read().decode()[:200]}", file=sys.stderr)
-            return 1
-    print(f"[OK] bootstrap: {created} created, {updated} updated, {len(users)} total")
+    print(f"[OK] Subscribers list ready (id={list_id}).")
     return 0
 
 
