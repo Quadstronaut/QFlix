@@ -270,6 +270,45 @@ Test-Case 'Get-Consensus sorts severity desc then time asc' {
     Assert-Equal 'w1' $groups[2].signature 'warning last'
 }
 
+# --- Task 9: Discord payload builders ---
+Test-Case 'New-DiscordErrorPayload mentions operator + builds embed fields' {
+    $groups = @(
+        [pscustomobject]@{ signature='buildarr:pydantic'; time='2026-05-11T04:30:11Z'; app='buildarr'; file='journal:buildarr.service'; severity='error'; summary='Pydantic err'; excerpt='trace...'; models_flagged=@('qwen3-coder:30b','qwen3:8b') }
+    )
+    $p = New-DiscordErrorPayload -Groups $groups -OperatorId '123' -ModelCount 3 -DurationSec 47
+    Assert-Equal '<@123>' $p.content 'operator mention'
+    Assert-Equal @('123') $p.allowed_mentions.users 'allowed_mentions users'
+    Assert-Equal 1 @($p.embeds).Count 'one embed'
+    Assert-Equal 15158332 $p.embeds[0].color 'red color'
+    Assert-True ($p.embeds[0].title -match 'QFlix REA') 'title shape'
+    Assert-Equal 1 @($p.embeds[0].fields).Count 'one field per group'
+    Assert-True ($p.embeds[0].fields[0].value -match 'qwen3-coder:30b') 'model name in field value'
+    Assert-True ($p.embeds[0].fields[0].value -match '2/3') 'consensus fraction'
+}
+
+Test-Case 'New-DiscordErrorPayload clamps long excerpt to 300 chars' {
+    $longExcerpt = 'x' * 500
+    $groups = @(
+        [pscustomobject]@{ signature='s'; time='t'; app='a'; file='f'; severity='error'; summary='s'; excerpt=$longExcerpt; models_flagged=@('m') }
+    )
+    $p = New-DiscordErrorPayload -Groups $groups -OperatorId '1' -ModelCount 1 -DurationSec 1
+    Assert-True ($p.embeds[0].fields[0].value.Length -le 1024) 'field value clamped to <=1024'
+}
+
+Test-Case 'New-DiscordHeartbeatPayload has no content mention' {
+    $p = New-DiscordHeartbeatPayload -ModelCount 3
+    Assert-Equal '' $p.content 'no mention'
+    Assert-Equal 3066993 $p.embeds[0].color 'green'
+    Assert-True ($p.embeds[0].title -match 'clean') 'title says clean'
+}
+
+Test-Case 'New-DiscordDeadmanPayload pings operator and uses orange' {
+    $p = New-DiscordDeadmanPayload -OperatorId '123'
+    Assert-Equal '<@123>' $p.content 'operator mention'
+    Assert-Equal 16753920 $p.embeds[0].color 'orange'
+    Assert-True ($p.embeds[0].title -match 'Ollama') 'mentions Ollama'
+}
+
 Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
     $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
     try {
