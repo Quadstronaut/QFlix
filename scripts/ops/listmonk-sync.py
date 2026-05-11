@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 20.2 — Nightly reconcile: Plex friends + Jellyseerr + Jellyfin -> Listmonk.
+"""Phase 20.2 — Nightly reconcile: Plex friends + Seerr -> Listmonk.
 
 Runs on the seedbox via cron. Idempotent: never removes subscribers (operators
 self-unsubscribe via Listmonk link). Adds new users to the appropriate source
@@ -114,9 +114,9 @@ def fetch_plex_friends():
     return out
 
 
-def fetch_jellyseerr_users():
-    key = s("jellyseerr.key")
-    port = s("jellyseerr.port")
+def fetch_seerr_users():
+    key = s("seerr.key")
+    port = s("seerr.port")
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/api/v1/user?take=1000",
         headers={"X-Api-Key": key, "Accept": "application/json"},
@@ -132,31 +132,10 @@ def fetch_jellyseerr_users():
     return out
 
 
-def fetch_jellyfin_users():
-    key = s("jellyfin.key")
-    port = s("jellyfin.port")
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/jellyfin/Users",
-        headers={"X-Emby-Token": key, "Accept": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=15) as r:
-        data = json.load(r)
-    out = []
-    for u in data:
-        cfg = u.get("Configuration") or {}
-        # Jellyfin doesn't store emails by default — skip if missing
-        email = (cfg.get("EmailAddress") or u.get("EmailAddress") or "").strip()
-        name = u.get("Name") or ""
-        if email:
-            out.append((email, name))
-    return out
-
-
 def main() -> int:
     main_id = get_list_id_by_name("All Members")
     plex_id = get_list_id_by_name("Plex friends")
-    jsr_id = get_list_id_by_name("Jellyseerr requesters")
-    jf_id = get_list_id_by_name("Jellyfin users")
+    seerr_id = get_list_id_by_name("Seerr requesters")
 
     existing = fetch_subscribers_by_email()
     print(f"snapshot: {len(existing)} existing subscribers", file=sys.stderr)
@@ -165,8 +144,7 @@ def main() -> int:
 
     sources = [
         ("plex", fetch_plex_friends, plex_id),
-        ("jellyseerr", fetch_jellyseerr_users, jsr_id),
-        ("jellyfin", fetch_jellyfin_users, jf_id),
+        ("seerr", fetch_seerr_users, seerr_id),
     ]
 
     for tag, fetcher, list_id in sources:

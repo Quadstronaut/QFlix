@@ -1,5 +1,5 @@
 [Unit]
-Description=Manitoba canary — anime pipeline (Jellyseerr → Sonarr2)
+Description=Manitoba canary — anime pipeline (Seerr → Sonarr2)
 After=network-online.target
 
 [Service]

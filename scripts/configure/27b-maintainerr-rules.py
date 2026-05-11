@@ -118,7 +118,7 @@ for lib in libs:
             "overlayTemplateId": None,
         },
         "listExclusions": False,
-        "forceSeerr": False,                  # mark as deleted in Jellyseerr → re-requestable
+        "forceSeerr": False,                  # mark as deleted in Seerr → re-requestable
         "rules": [RULE],
         "dataType": target["dataType"],
         "tautulliWatchedPercentOverride": None,

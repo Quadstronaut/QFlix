@@ -3,8 +3,8 @@
 
 Idempotent. Re-running won't dupe lists or subscribers.
 
-Creates four lists (All Members, Ombi imports, Plex friends, Jellyseerr requesters)
-and seeds 13 Ombi users into All Members + Ombi imports. Plex/Jellyseerr/Jellyfin
+Creates four lists (All Members, Ombi imports, Plex friends, Seerr requesters)
+and seeds 13 Ombi users into All Members + Ombi imports. Plex/Seerr
 reconcile is handled by the nightly cron in scripts/ops/listmonk-sync.py.
 """
 import base64
@@ -117,7 +117,7 @@ def main() -> int:
     main_list = get_or_create_list("All Members", ["all"])
     ombi_list = get_or_create_list("Ombi imports (legacy)", ["ombi", "legacy"])
     get_or_create_list("Plex friends", ["plex"])
-    get_or_create_list("Jellyseerr requesters", ["jellyseerr"])
+    get_or_create_list("Seerr requesters", ["seerr"])
     get_or_create_list("Jellyfin users", ["jellyfin"])
     print(f"  All Members id={main_list}, Ombi imports id={ombi_list}")
 

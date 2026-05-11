@@ -210,10 +210,10 @@ else
   record "maintainerr-plex-companion" skip "no maintainerr key/htpasswd"
 fi
 
-# E19. Jellyseerr /api/v1/settings/plex — Plex server configured
-echo "E19. Jellyseerr Plex settings"
-JS_KEY=$(secret_read jellyseerr.key 2>/dev/null || echo "")
-JS_PORT=$(secret_read jellyseerr.port 2>/dev/null || echo "")
+# E19. Seerr /api/v1/settings/plex — Plex server configured
+echo "E19. Seerr Plex settings"
+JS_KEY=$(secret_read seerr.key 2>/dev/null || echo "")
+JS_PORT=$(secret_read seerr.port 2>/dev/null || echo "")
 if [ -n "$JS_KEY" ] && [ -n "$JS_PORT" ]; then
   JS_PLEX=$(sshm "curl -sf -m 10 -H 'X-Api-Key: $JS_KEY' 'http://127.0.0.1:${JS_PORT}/api/v1/settings/plex' 2>/dev/null | python3 -c \"
 import sys, json
@@ -222,12 +222,12 @@ ip = d.get('ip','')
 print('configured' if ip else 'empty')
 \"" 2>/dev/null || echo "")
   if [ "$JS_PLEX" = "configured" ]; then
-    record "jellyseerr-plex-settings" pass "Plex server IP is set"
+    record "seerr-plex-settings" pass "Plex server IP is set"
   else
-    record "jellyseerr-plex-settings" fail "Plex server not configured (got '$JS_PLEX')"
+    record "seerr-plex-settings" fail "Plex server not configured (got '$JS_PLEX')"
   fi
 else
-  record "jellyseerr-plex-settings" skip "no jellyseerr key/port"
+  record "seerr-plex-settings" skip "no seerr key/port"
 fi
 
 # E20. Newsletterr — uses settings table (plex_url + plex_token columns), not plex_servers table

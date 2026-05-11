@@ -16,7 +16,9 @@ Each file holds one secret value, one per line. Scripts read these via path, nev
 | `radarr2.key` (TBD) | Radarr2 (anime movies) API key | After install |
 | `bazarr.key` (TBD) | Bazarr API key | Bazarr UI → System → Security |
 | `tautulli.key` (TBD) | Tautulli API key | Tautulli UI → Settings → Web Interface |
-| `jellyseerr.key` (TBD) | Jellyseerr API key | Jellyseerr UI → Settings → API |
+| `seerr.key` | Seerr API key | Seerr UI → Settings → General → API Key (URL-safe base64) |
+| `seerr.port` | Seerr loopback port (host) | Docker port mapping (42011 for `seerr-quadstronaut` container) |
+| `seerr.urlbase` | Seerr URL base (path prefix) | Seerr UI → Settings → Network → URL Base |
 | `maintainerr.key` (TBD) | Maintainerr API key | Maintainerr UI → Settings |
 | `plex.token` (TBD) | Plex authentication token | https://www.plex.tv/claim or extract from a Plex Web Tools session |
 | `jellyfin.key` (TBD) | Jellyfin API key | After install: Dashboard → API Keys |

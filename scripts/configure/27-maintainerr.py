@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 9.3: Configure Maintainerr — Plex, Jellyseerr, 4 *arrs.
+"""Phase 9.3: Configure Maintainerr — Plex, Seerr, 4 *arrs.
 
 Run on manitoba; reads MT_KEY, HTPW_USER, HTPW_PASS, MT_URL plus secret values from env.
 Maintainerr's API is gated by both htpasswd (Ultra.cc nginx) and X-Api-Key.
@@ -39,8 +39,8 @@ def req(path, method="GET", body=None, timeout=60):
     except (socket.timeout, urllib.error.URLError) as e:
         return 0, str(e)
 
-# 1. POST /api/settings with the full shape (Plex + Jellyseerr/seerr)
-print("=== 1. Main settings (Plex + Jellyseerr) ===")
+# 1. POST /api/settings with the full shape (Plex + Seerr)
+print("=== 1. Main settings (Plex + Seerr) ===")
 code, current = req("/api/settings")
 if code != 200:
     print(f"  ! Cannot GET /api/settings: HTTP {code} {current}")

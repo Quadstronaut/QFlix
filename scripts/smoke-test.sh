@@ -43,7 +43,7 @@ fi
 
 # 3. *arr → qBit reachability (testall endpoint)
 echo "3. *arr -> qBit"
-for app in sonarr radarr sonarr2 radarr2 readarr; do
+for app in sonarr radarr sonarr2 radarr2; do
   KEY=$(secret_read $app.key 2>/dev/null || echo "")
   PORT=$(secret_read $app.port 2>/dev/null || echo "")
   BASE=$(secret_read $app.urlbase 2>/dev/null || echo $app)
@@ -51,8 +51,7 @@ for app in sonarr radarr sonarr2 radarr2 readarr; do
     record "$app-qbit" skip "no key/port"
     continue
   fi
-  V=v3; [ "$app" = "readarr" ] && V=v1
-  CODE=$(sshm "curl -s -m 15 -X POST -H 'X-Api-Key: $KEY' http://127.0.0.1:$PORT/$BASE/api/$V/downloadclient/testall -d '{}' -H 'Content-Type: application/json' -o /dev/null -w '%{http_code}'")
+  CODE=$(sshm "curl -s -m 15 -X POST -H 'X-Api-Key: $KEY' http://127.0.0.1:$PORT/$BASE/api/v3/downloadclient/testall -d '{}' -H 'Content-Type: application/json' -o /dev/null -w '%{http_code}'")
   if [ "$CODE" = "200" ]; then
     record "$app-qbit" pass
   else

@@ -2,7 +2,7 @@
 # Phase 25 — Buildarr install (cron-class). Idempotent.
 #
 # Buildarr is a declarative-YAML state-converger for *arrs (Sonarr/Radarr/
-# Prowlarr/Jellyseerr). Pure Python; runs once via `buildarr run` and exits,
+# Prowlarr/Seerr). Pure Python; runs once via `buildarr run` and exits,
 # making it a perfect cron-class app — fired by a daily systemd timer at
 # 04:30 (post-maintenance window).
 #
