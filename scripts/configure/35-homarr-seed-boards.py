@@ -17,7 +17,7 @@ ADMIN_BOARD_NAME = "admin"
 PUBLIC_APPS = [
     ("Plex",            "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/plex.svg",            "https://seedbox-direct.example.com:17025"),
     ("Jellyfin",        "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/jellyfin.svg",        "https://quadstronaut.seedbox.example.com/jellyfin"),
-    ("Request (Seerr)", "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/jellyseerr.svg", "https://quadstronaut.seedbox.example.com/seerr"),
+    ("Seerr",           "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/seerr.svg",      "https://quadstronaut.seedbox.example.com/seerr/"),
     ("Komga (Comics)",  "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/komga.svg",           "https://quadstronaut.seedbox.example.com/komga"),
     ("Kavita (Manga)",  "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/kavita.svg",          "https://quadstronaut.seedbox.example.com/kavita"),
     ("Calibre-Web",     "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/calibre-web.svg",     "https://quadstronaut.seedbox.example.com/calibre-web/"),
