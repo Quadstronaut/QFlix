@@ -119,6 +119,48 @@ def monitor_status(
     return "unknown"
 
 
+def monitors_status(
+    names: list[str],
+    *,
+    timeout_s: float = 5.0,
+) -> dict[str, Literal["up", "down", "unknown"]]:
+    """Batched variant: one /metrics fetch, return {name: status} for every
+    requested name. Names not present in the Kuma response come back as
+    'unknown'. Same best-effort semantics as monitor_status — network /
+    auth / parse failures map every requested name to 'unknown'."""
+    if not names:
+        return {}
+
+    try:
+        api_key = _secret_read("uptimekuma.key")
+    except FileNotFoundError:
+        api_key = ""
+
+    host = _kuma_host()
+    url = host.rstrip("/") + "/metrics"
+
+    try:
+        resp = requests.get(url, auth=("", api_key), timeout=timeout_s)
+        resp.raise_for_status()
+        text = resp.text
+    except Exception:
+        return {n: "unknown" for n in names}
+
+    wanted = set(names)
+    result: dict[str, Literal["up", "down", "unknown"]] = {n: "unknown" for n in names}
+    for match in _METRICS_RE.finditer(text):
+        monitor_name = match.group(1)
+        if monitor_name not in wanted:
+            continue
+        value = int(match.group(2))
+        if value == 1:
+            result[monitor_name] = "up"
+        elif value == 0:
+            result[monitor_name] = "down"
+        # value 2 (pending) / 3 (maintenance) → leave as 'unknown'
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Audit — drift between manifest kuma_monitor names and live Kuma monitors
 # ---------------------------------------------------------------------------

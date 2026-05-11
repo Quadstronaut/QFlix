@@ -386,16 +386,22 @@ def test_run_calls_open_drain_smoke_close_notify_twice(tmp_path):
             notes=[],
         )
 
+    def _fake_wait_green(**_):
+        call_order.append("wait_green")
+        return True
+
     with patch("lib.window.notify.notify") as mock_notify, \
+         patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
          patch("lib.window.health.probe", return_value=ok_health):
         w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
         w.open = _fake_open
         w.drain_queue = _fake_drain
         w.smoke = _fake_smoke
+        w.wait_for_kuma_green = _fake_wait_green
         w.close = _fake_close
         w.run()
 
-    assert call_order == ["open", "drain_queue", "smoke", "close"]
+    assert call_order == ["open", "drain_queue", "smoke", "wait_green", "close"]
     assert mock_notify.call_count == 2
 
 
@@ -507,3 +513,231 @@ def test_watchdog_leaves_active_lock_alone(tmp_path):
     assert cleared is False
     assert (tmp_path / "lock").exists(), "active lock must not be removed"
     mock_notify.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 19. wait_for_kuma_green — converges immediately when all monitors up
+# ---------------------------------------------------------------------------
+
+def _green_monitor_manifest() -> _FakeManifest:
+    return _FakeManifest({
+        "sonarr": _make_app("sonarr", class_="ucc", kuma_monitor="Sonarr"),
+        "radarr": _make_app("radarr", class_="ucc", kuma_monitor="Radarr"),
+        "plex": _make_app("plex", class_="systemd", unit="plex.service",
+                          kuma_monitor="Plex"),
+    })
+
+
+def test_wait_for_kuma_green_returns_true_when_all_up(tmp_path):
+    manifest = _green_monitor_manifest()
+    all_up = {"Sonarr": "up", "Radarr": "up", "Plex": "up"}
+
+    with patch("lib.window.kuma.monitors_status", return_value=all_up):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.open()
+        sleep_calls: list = []
+        result = w.wait_for_kuma_green(sleep=sleep_calls.append, now=lambda: 0.0)
+        summary = w.close()
+
+    assert result is True
+    assert summary.kuma_converged is True
+    assert summary.kuma_still_down == []
+    assert sleep_calls == [], "must not sleep when monitors already green"
+
+
+def test_wait_for_kuma_green_returns_true_when_no_monitors(tmp_path):
+    """A manifest with zero kuma_monitor apps short-circuits to True without
+    touching Kuma — there's nothing to wait on."""
+    manifest = _FakeManifest({
+        "listmonk": _make_app("listmonk", class_="systemd", unit="listmonk.service"),
+    })
+
+    with patch("lib.window.kuma.monitors_status") as mock_status:
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.open()
+        result = w.wait_for_kuma_green(sleep=lambda _: None, now=lambda: 0.0)
+
+    assert result is True
+    mock_status.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 20. wait_for_kuma_green — polls until all green
+# ---------------------------------------------------------------------------
+
+def test_wait_for_kuma_green_polls_until_converged(tmp_path):
+    manifest = _green_monitor_manifest()
+    statuses = iter([
+        {"Sonarr": "up", "Radarr": "down", "Plex": "up"},   # poll 1
+        {"Sonarr": "up", "Radarr": "down", "Plex": "up"},   # poll 2
+        {"Sonarr": "up", "Radarr": "up",   "Plex": "up"},   # poll 3 — green
+    ])
+
+    fake_clock = [0.0]
+    def _now():
+        return fake_clock[0]
+    sleep_calls: list[int] = []
+    def _sleep(s):
+        sleep_calls.append(s)
+        fake_clock[0] += s
+
+    with patch("lib.window.kuma.monitors_status", side_effect=lambda names: next(statuses)):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.open()
+        result = w.wait_for_kuma_green(
+            max_wait_s=3600, poll_interval_s=60,
+            sleep=_sleep, now=_now,
+        )
+        summary = w.close()
+
+    assert result is True
+    assert summary.kuma_converged is True
+    assert summary.kuma_wait_s == 120, "two 60s sleeps before the green poll"
+    assert sleep_calls == [60, 60]
+
+
+# ---------------------------------------------------------------------------
+# 21. wait_for_kuma_green — times out when monitors stay down
+# ---------------------------------------------------------------------------
+
+def test_wait_for_kuma_green_times_out(tmp_path):
+    manifest = _green_monitor_manifest()
+    perma_down = {"Sonarr": "up", "Radarr": "down", "Plex": "down"}
+
+    fake_clock = [0.0]
+    def _now():
+        return fake_clock[0]
+    def _sleep(s):
+        fake_clock[0] += s
+
+    with patch("lib.window.kuma.monitors_status", return_value=perma_down):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.open()
+        result = w.wait_for_kuma_green(
+            max_wait_s=300, poll_interval_s=60,
+            sleep=_sleep, now=_now,
+        )
+        summary = w.close()
+
+    assert result is False
+    assert summary.kuma_converged is False
+    assert sorted(summary.kuma_still_down) == ["Plex", "Radarr"]
+    assert summary.kuma_wait_s >= 300
+
+
+def test_wait_for_kuma_green_treats_unknown_as_not_green(tmp_path):
+    """A monitor stuck at 'unknown' (pending / maintenance / network blip)
+    must NOT count as green — keep polling until it goes up or we time out."""
+    manifest = _green_monitor_manifest()
+    statuses = iter([
+        {"Sonarr": "up", "Radarr": "unknown", "Plex": "up"},
+        {"Sonarr": "up", "Radarr": "up",      "Plex": "up"},
+    ])
+
+    fake_clock = [0.0]
+    def _now():
+        return fake_clock[0]
+    def _sleep(s):
+        fake_clock[0] += s
+
+    with patch("lib.window.kuma.monitors_status", side_effect=lambda names: next(statuses)):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.open()
+        result = w.wait_for_kuma_green(
+            max_wait_s=3600, poll_interval_s=60,
+            sleep=_sleep, now=_now,
+        )
+
+    assert result is True
+
+
+# ---------------------------------------------------------------------------
+# 22. run() integration — pre/post notify + green-poll + close
+# ---------------------------------------------------------------------------
+
+def test_run_fires_pre_and_post_notifications_with_kuma_outcome(tmp_path):
+    manifest = _green_monitor_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+    all_up = {"Sonarr": "up", "Radarr": "up", "Plex": "up"}
+
+    # Two queue entries so the pre-maint ping reports queued=2
+    queue = tmp_path / "queue.jsonl"
+    queue.write_text(
+        json.dumps({"app": "sonarr", "target_version": "1.0.0"}) + "\n"
+        + json.dumps({"app": "radarr", "target_version": "1.0.0"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with patch("lib.window.notify.notify") as mock_notify, \
+         patch("lib.window.listmonk.fire_template_campaign", return_value=True) as mock_listmonk, \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.lifecycle.upgrade"), \
+         patch("lib.window.kuma.monitors_status", return_value=all_up):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        summary = w.run()
+
+    assert summary.kuma_converged is True
+    # exactly two Discord notifications: pre-maint and post-maint
+    assert mock_notify.call_count == 2
+    pre_msg = mock_notify.call_args_list[0].args[0]
+    post_msg = mock_notify.call_args_list[1].args[0]
+    assert "queued=2" in pre_msg
+    assert "opened" in pre_msg
+    assert "closed" in post_msg
+    assert "kuma green" in post_msg
+
+    # exactly two Listmonk campaigns: start (open) + complete (close)
+    assert mock_listmonk.call_count == 2
+    titles = [c.kwargs["template_title"] for c in mock_listmonk.call_args_list]
+    assert titles == ["Maintenance Window Start", "Maintenance Window Complete"]
+
+
+def test_run_escalates_notification_level_on_kuma_timeout(tmp_path):
+    """When wait_for_kuma_green times out, the post-maint ping must use
+    level='warning' so the operator actually notices."""
+    manifest = _green_monitor_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+    perma_down = {"Sonarr": "up", "Radarr": "down", "Plex": "down"}
+
+    fake_clock = [0.0]
+    def _now():
+        return fake_clock[0]
+    def _sleep(s):
+        fake_clock[0] += s
+
+    # Force a tiny timeout so the test runs fast
+    with patch("lib.window.notify.notify") as mock_notify, \
+         patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.kuma.monitors_status", return_value=perma_down), \
+         patch("lib.window._KUMA_GREEN_MAX_WAIT_S", 120), \
+         patch("lib.window._KUMA_GREEN_POLL_INTERVAL_S", 60), \
+         patch("lib.window.time.sleep", side_effect=_sleep), \
+         patch("lib.window.time.monotonic", side_effect=_now):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        summary = w.run()
+
+    assert summary.kuma_converged is False
+    post_call = mock_notify.call_args_list[1]
+    assert post_call.kwargs.get("level") == "warning"
+    assert "TIMEOUT" in post_call.args[0]
+    assert "Radarr" in post_call.args[0] or "Plex" in post_call.args[0]
+
+
+def test_run_dry_run_skips_kuma_poll_and_listmonk(tmp_path):
+    """dry-run mode must not call wait_for_kuma_green (it's a fast preview)
+    nor fire real Listmonk emails to subscribers."""
+    manifest = _green_monitor_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+
+    with patch("lib.window.notify.notify"), \
+         patch("lib.window.listmonk.fire_template_campaign") as mock_listmonk, \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.kuma.monitors_status") as mock_status:
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest, dry_run=True)
+        summary = w.run()
+
+    mock_status.assert_not_called()
+    mock_listmonk.assert_not_called()
+    assert summary.kuma_converged is True
+    assert any("dry-run" in n.lower() for n in summary.notes)
