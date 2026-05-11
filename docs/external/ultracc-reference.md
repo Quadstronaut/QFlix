@@ -119,6 +119,7 @@ Example: `https://quadstronaut.seedbox.example.com/sonarr/`
   - Base URL: `sonarr` or `radarr`
 - **Initialization**: ~5 minutes
 - **Media location**: `~/media`
+- **No `app-bazarr2` slot.** Ultra.cc provides `app-sonarr2` and `app-radarr2`, but not a second Bazarr. For anime *arr subtitle coverage, QFlix runs a parallel **bare-Python Bazarr 2** under `~/.apps/bazarr2/` (python3.11 venv, user systemd unit), version-pinned to bazarr-1 by `bazarr2-sync.timer`. See `scripts/install/06-bazarr2.sh` and `docs/anime-subs-deferred.md` (resolved).
 
 ### Plex Media Server
 - **Requirements**: Plex account (plex.tv), non-Essential plan
