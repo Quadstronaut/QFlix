@@ -12,10 +12,16 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
+import requests
+
 log = logging.getLogger(__name__)
+
+_MAGIC_PREFIX_BYTES = 12
+_DEFAULT_CHUNK_SIZE = 64 * 1024
 
 # Content-Type → file extension. File extensions match the nginx allowlist
 # in scripts/data/qflix-images.conf.
@@ -38,6 +44,80 @@ def _ext_for(content_type: Optional[str]) -> Optional[str]:
         return None
     primary = content_type.split(";", 1)[0].strip().lower()
     return _EXT_BY_TYPE.get(primary)
+
+
+def _fetch_and_write_one(
+    url: str,
+    cache_dir: Path,
+    sha: str,
+    *,
+    session: requests.Session,
+    timeout_s: float,
+    max_bytes: int,
+) -> tuple[str, Optional[Path]]:
+    """One source attempt. Returns ('ok'|'retry'|'fail', target_path_or_None).
+
+    'retry' = transient (5xx or ConnectionError) — caller may sleep + retry.
+    'fail'  = permanent (4xx, validation failure) — give up on this URL.
+    """
+    target_path: Optional[Path] = None
+    tmp_path: Optional[Path] = None
+    try:
+        with session.get(url, timeout=timeout_s, stream=True) as resp:
+            if 500 <= resp.status_code < 600:
+                return "retry", None
+            if resp.status_code != 200:
+                return "fail", None
+
+            content_type = resp.headers.get("Content-Type", "")
+            ext = _ext_for(content_type)
+            if ext is None:
+                return "fail", None
+
+            target_path = cache_dir / f"{sha}.{ext}"
+            tmp_path = target_path.with_suffix(target_path.suffix + ".tmp")
+
+            cl_raw = resp.headers.get("Content-Length")
+            if cl_raw is not None:
+                try:
+                    if int(cl_raw) > max_bytes:
+                        return "fail", None
+                except ValueError:
+                    pass
+
+            written = 0
+            magic_prefix = b""
+            magic_checked = False
+            with tmp_path.open("wb") as f:
+                for chunk in resp.iter_content(chunk_size=_DEFAULT_CHUNK_SIZE):
+                    if not chunk:
+                        continue
+                    written += len(chunk)
+                    if written > max_bytes:
+                        return "fail", None
+                    if not magic_checked:
+                        magic_prefix += chunk
+                        if len(magic_prefix) >= _MAGIC_PREFIX_BYTES:
+                            if not _validate_magic_bytes(magic_prefix, content_type):
+                                return "fail", None
+                            magic_checked = True
+                    f.write(chunk)
+                if not magic_checked:
+                    return "fail", None
+
+        os.replace(tmp_path, target_path)
+        return "ok", target_path
+    except requests.ConnectionError:
+        return "retry", None
+    except (requests.RequestException, OSError):
+        return "fail", None
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            if target_path is None or not target_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
 
 def _validate_magic_bytes(prefix: bytes, content_type: str) -> bool:

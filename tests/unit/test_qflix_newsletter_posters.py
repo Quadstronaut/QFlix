@@ -91,3 +91,44 @@ def test_validate_magic_bytes_mismatch_html_as_png():
 def test_validate_magic_bytes_too_short():
     short = b"\x89P"
     assert posters._validate_magic_bytes(short, "image/png") is False
+
+
+# ── _fetch_and_write_one ────────────────────────────────────────────────────
+
+def _ok_response(content_type: str, body: bytes, content_length: Optional[int] = None):
+    """Build a MagicMock that mimics a streamed requests response."""
+    resp = MagicMock()
+    resp.status_code = 200
+    headers = {"Content-Type": content_type}
+    if content_length is not None:
+        headers["Content-Length"] = str(content_length)
+    elif body is not None:
+        headers["Content-Length"] = str(len(body))
+    resp.headers = headers
+    resp.iter_content = MagicMock(return_value=iter([body]))
+    resp.raise_for_status = MagicMock()
+    resp.__enter__ = lambda self: self
+    resp.__exit__ = lambda self, *a: None
+    return resp
+
+
+def test_fetch_and_write_one_happy_path(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    jpeg_body = b"\xff\xd8\xff\xe0" + b"\x00" * 1000
+
+    session = MagicMock()
+    session.get.return_value = _ok_response("image/jpeg", jpeg_body)
+
+    sha = "abcdef0123456789"
+    outcome, path = posters._fetch_and_write_one(
+        "https://example/poster.jpg",
+        cache_dir, sha,
+        session=session, timeout_s=10.0, max_bytes=2 * 1024 * 1024,
+    )
+
+    assert outcome == "ok"
+    assert path == cache_dir / f"{sha}.jpg"
+    assert path.exists()
+    assert path.read_bytes() == jpeg_body
+    # No .tmp left behind
+    assert not (cache_dir / f"{sha}.jpg.tmp").exists()
