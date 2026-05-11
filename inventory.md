@@ -8,13 +8,12 @@ live seedbox wins and this file records both.
 
 **Counts (live as of 2026-05-11):**
 - **28 apps in `manifest/apps.yaml`** (19 UCC, 3 systemd, 5 cron, 1 library); all 28 present on seedbox.
-- **29 Kuma monitors** total: 26 manitoba (incl. 4 canary push monitors) + 3 quadstronix external. **26/26 manitoba UP.**
-- All 26 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
+- **35 Kuma monitors** total: 32 manitoba (incl. 4 canary push monitors + 6 added 2026-05-11 for FlareSolverr / Unpackerr / Postgres / Tdarr Node / Kometa / PlexAPI) + 3 quadstronix external. **32/32 manitoba UP.** Every app in the manifest now actively reports to Kuma.
+- All 32 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
 - Notification channel: single Discord webhook + operator @ping (`<@REDACTED>`) on `error` / `critical` levels via `scripts/maint/lib/notify.py`.
 - Last full smoke: **45 pass / 0 fail / 0 skip** (2026-05-11).
 
-**Active drift (real follow-ups):**
-- 3 orphan nginx fragments still on disk: `~/.apps/nginx/proxy.d/{jellyfin,mylar3,readarr}.conf` — point to ports nobody listens on; return 502 to anyone hitting those paths. Cosmetic, not blocking. Safe to delete.
+**Q2 coverage gap closed 2026-05-11** — the prior 6 apps that didn't push to Kuma (flaresolverr / unpackerr / postgres / tdarr-node / kometa / python-plexapi) now all have monitors. Required two `health.py` fixes: `os.path.expanduser` on the `venv_python` field (import_check), and a new optional `hostname` override on http_root/http_api (so FlareSolverr's Docker-bridge bind at `172.17.0.1:17011` is probable from host netns).
 
 `Auto-heal?` = `manitoba-maint-pusher` covers the app (any manifest entry with a `kuma_monitor:` value), or a dedicated heartbeat script restarts it. `Notification on fail?` = N Kuma notification slots wired.
 

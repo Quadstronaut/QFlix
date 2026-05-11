@@ -188,11 +188,14 @@ apps:
       expect_status: 200
 
   flaresolverr:
+    # Binds only on the Docker bridge gateway (172.17.0.1:17011), not host
+    # loopback — hostname override below routes the probe accordingly.
     class: ucc
     ucc_slug: flaresolverr
-    kuma_monitor: null
+    kuma_monitor: "FlareSolverr"
     health:
       kind: http_root
+      hostname: "172.17.0.1"
       port_secret: flaresolverr.port
       expect_status: 200
 
@@ -215,11 +218,11 @@ apps:
     # Runs as a Docker-wrapped UCC app (`/app/unpackerr -c /config/unpackerr.conf`).
     # No HTTP surface and no user systemd unit (UCC runs it under supervisord);
     # liveness is asserted by smoke-test.sh section 8 (`ps -ef | grep /app/unpackerr`).
-    # kuma_monitor stays null because the pusher has no probe kind that matches
-    # raw-process supervision — adding one is a future maintenance-system bump.
+    # process_pattern probe matches `/app/unpackerr` in `ps -ef`; the pusher
+    # pushes UP/DOWN to Kuma monitor "Unpackerr" every 60s.
     class: ucc
     ucc_slug: unpackerr
-    kuma_monitor: null
+    kuma_monitor: "Unpackerr"
     health:
       kind: process_pattern
       pattern: "/app/unpackerr"
@@ -227,14 +230,12 @@ apps:
   # --- systemd apps (managed by systemctl --user) ---
 
   postgres:
-    # Database backend for Listmonk (the only consumer in this stack).
-    # UCC runs Postgres under supervisord, not a user systemd unit, so we
-    # can't probe it via systemctl. Health is covered transitively: if
-    # Postgres dies, Listmonk's /health returns false and its monitor
-    # goes red — that's the operator-actionable signal.
+    # Database backend for Listmonk. UCC runs Postgres under supervisord;
+    # process_pattern matches the checkpointer subprocess (only present when
+    # Postgres is healthy and accepting writes).
     class: ucc
     ucc_slug: postgres
-    kuma_monitor: null
+    kuma_monitor: "Postgres"
     health:
       kind: process_pattern
       pattern: "postgres: checkpointer"
@@ -277,7 +278,7 @@ apps:
   tdarr-node:
     class: systemd
     unit: tdarr-node.service
-    kuma_monitor: null
+    kuma_monitor: "Tdarr Node"
     health:
       kind: systemd_only
       expect: active
@@ -340,7 +341,7 @@ apps:
   kometa:
     class: cron
     unit: kometa.timer
-    kuma_monitor: null
+    kuma_monitor: "Kometa"
     health:
       kind: systemd_only
       expect: active
@@ -355,7 +356,7 @@ apps:
   python-plexapi:
     class: library
     unit: null
-    kuma_monitor: null
+    kuma_monitor: "PlexAPI"
     health:
       kind: import_check
       venv_python: "~/.apps/python-plexapi/venv/bin/python"
