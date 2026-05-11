@@ -326,3 +326,113 @@ def test_retry_gives_up_after_one_attempt(tmp_path):
 
     assert outcome == "retry"  # bubble up final outcome
     assert session.get.call_count == 2  # original + 1 retry
+
+
+# ── mirror_posters ──────────────────────────────────────────────────────────
+
+from qflix_newsletter.sources import RecentItem
+
+
+def _item(title="Test Movie", thumb="https://image.tmdb.org/t/p/w342/abc.jpg",
+          tautulli="https://seedbox.example.com/tautulli/pms_image_proxy?img=x") -> RecentItem:
+    return RecentItem(
+        media_type="movie",
+        title=title,
+        year=2025,
+        summary="",
+        thumb_url=thumb,
+        tautulli_thumb_url=tautulli,
+        added_at=0,
+        rating=None,
+    )
+
+
+def test_mirror_posters_happy_path_rewrites_url(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 13
+
+    session = MagicMock()
+    session.get.return_value = _ok_response("image/jpeg", jpeg)
+
+    items = [_item(thumb="https://image.tmdb.org/t/p/w342/abc.jpg")]
+    expected_sha = posters._sha_for("https://image.tmdb.org/t/p/w342/abc.jpg")
+
+    out = posters.mirror_posters(
+        items,
+        cache_dir=cache_dir,
+        public_base="https://seedbox.example.com",
+        session=session,
+    )
+
+    assert out is items  # mutated in place + returned
+    assert items[0].thumb_url == f"https://seedbox.example.com/images/newsletter/{expected_sha}.jpg"
+    assert (cache_dir / f"{expected_sha}.jpg").exists()
+
+
+def test_mirror_posters_cache_hit_skips_network(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    url = "https://image.tmdb.org/t/p/w342/abc.jpg"
+    sha = posters._sha_for(url)
+    # Pre-seed the cache.
+    (cache_dir / f"{sha}.jpg").write_bytes(b"\xff\xd8\xff\x00")
+
+    session = MagicMock()
+    session.get.side_effect = AssertionError("network should not be touched on cache hit")
+
+    items = [_item(thumb=url)]
+    posters.mirror_posters(
+        items, cache_dir=cache_dir,
+        public_base="https://seedbox.example.com", session=session,
+    )
+
+    assert items[0].thumb_url == f"https://seedbox.example.com/images/newsletter/{sha}.jpg"
+
+
+def test_mirror_posters_skips_none_thumb(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    session = MagicMock()
+
+    items = [_item(thumb=None, tautulli=None)]
+    posters.mirror_posters(
+        items, cache_dir=cache_dir,
+        public_base="https://seedbox.example.com", session=session,
+    )
+
+    assert items[0].thumb_url is None
+    session.get.assert_not_called()
+
+
+def test_mirror_posters_creates_cache_dir_if_missing(tmp_path):
+    cache_dir = tmp_path / "does" / "not" / "exist"
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 13
+
+    session = MagicMock()
+    session.get.return_value = _ok_response("image/jpeg", jpeg)
+
+    items = [_item()]
+    posters.mirror_posters(
+        items, cache_dir=cache_dir,
+        public_base="https://seedbox.example.com", session=session,
+    )
+
+    assert cache_dir.is_dir()
+    assert items[0].thumb_url and "/images/newsletter/" in items[0].thumb_url
+
+
+def test_mirror_posters_strips_trailing_slash_in_public_base(tmp_path):
+    cache_dir = tmp_path / "cache"; cache_dir.mkdir()
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 13
+    session = MagicMock()
+    session.get.return_value = _ok_response("image/jpeg", jpeg)
+
+    items = [_item()]
+    posters.mirror_posters(
+        items, cache_dir=cache_dir,
+        public_base="https://seedbox.example.com/",  # trailing slash
+        session=session,
+    )
+
+    # No double-slash in the URL
+    assert items[0].thumb_url is not None
+    assert "example.com//" not in items[0].thumb_url
+    assert items[0].thumb_url.startswith("https://seedbox.example.com/images/newsletter/")
