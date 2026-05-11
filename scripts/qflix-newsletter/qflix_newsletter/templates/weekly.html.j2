@@ -65,7 +65,7 @@
       {# New Movies #}
       {% if ctx.movies %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">New movies</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🎬 New movies</h3>
 {{ section_divider() }}
       </td></tr>
       <tr><td style="padding:0 16px 16px 16px;">
@@ -95,7 +95,7 @@
       {# New TV (grouped) #}
       {% if ctx.shows %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">New TV</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">📺 New TV</h3>
 {{ section_divider() }}
       </td></tr>
       {% for s in ctx.shows %}
@@ -120,7 +120,7 @@
       {# Anime Movies #}
       {% if ctx.anime_movies %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">New anime movies</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🌸 New anime movies</h3>
 {{ section_divider() }}
       </td></tr>
       <tr><td style="padding:0 16px 16px 16px;">
@@ -147,7 +147,7 @@
       {# Anime TV #}
       {% if ctx.anime_shows %}
       <tr><td style="padding:8px 16px;">
-        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">New anime TV</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🍙 New anime TV</h3>
 {{ section_divider() }}
       </td></tr>
       {% for s in ctx.anime_shows %}
@@ -168,7 +168,7 @@
       {# Coming Soon #}
       {% if ctx.coming_soon %}
       <tr><td style="padding:16px 16px 8px 16px;">
-        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">Coming soon</h3>
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🗓 Coming soon</h3>
 {{ section_divider() }}
       </td></tr>
       <tr><td style="padding:0 16px 16px 16px;">
@@ -195,7 +195,7 @@
       {# AI Picks (BOTTOM by design — operator note: people don't love AI) #}
       {% if ctx.ai_picks %}
       <tr><td style="padding:24px 16px 8px 16px;">
-        <h3 style="margin:0;color:#cbd5e1;font-size:14px;font-weight:600;">A few things you might like</h3>
+        <h3 style="margin:0;color:#cbd5e1;font-size:14px;font-weight:600;">✨ A few things you might like</h3>
 {{ section_divider() }}
         <div style="color:#7dd3fc;font-size:11px;opacity:.7;margin-top:4px;">Recommendations from your Plex history</div>
       </td></tr>
@@ -221,7 +221,7 @@
       <tr><td style="padding:16px 16px 16px 16px;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#05101f;border:1px solid rgba(125,211,252,.10);border-radius:6px;">
           <tr><td style="padding:12px 14px;">
-            <div style="color:#7dd3fc;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;font-weight:700;">Nerd corner</div>
+            <div style="color:#7dd3fc;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;font-weight:700;">🤓 Nerd corner</div>
             <div style="color:#cbd5e1;font-size:12px;margin-top:6px;">
               <span style="color:#f8fafc;font-weight:600;">{{ ctx.nerd_corner.total_items }}</span> items in library
               {% for s in ctx.nerd_corner.sections %}
