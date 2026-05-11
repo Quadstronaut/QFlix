@@ -156,6 +156,79 @@ def _try_one_source_with_retry(
     return outcome, path
 
 
+from typing import Sequence
+from .sources import RecentItem
+
+_KNOWN_EXTS = ("jpg", "png", "webp", "gif")
+_NEWSLETTER_URL_PATH = "/images/newsletter/"
+
+
+def _cache_lookup(cache_dir: Path, sha: str) -> Optional[Path]:
+    """Return an already-cached file for this sha, if one exists."""
+    for ext in _KNOWN_EXTS:
+        p = cache_dir / f"{sha}.{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def _public_url(public_base: str, sha: str, ext: str) -> str:
+    return f"{public_base.rstrip('/')}{_NEWSLETTER_URL_PATH}{sha}.{ext}"
+
+
+def mirror_posters(
+    items: Sequence[RecentItem],
+    *,
+    cache_dir: Path,
+    public_base: str,
+    session: Optional[requests.Session] = None,
+    timeout_s: float = 10.0,
+    max_bytes: int = 2 * 1024 * 1024,
+) -> Sequence[RecentItem]:
+    """Mirror each item's poster to cache_dir and rewrite item.thumb_url.
+
+    Failures cascade to thumb_url=None (template hides the <img>).
+    Returns the (mutated) items for chainability.
+
+    Tautulli fallback is added in Task 8.
+    """
+    if session is None:
+        session = requests.Session()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    counts = {"tmdb_hit": 0, "tautulli_fallback": 0, "dead": 0, "cached": 0}
+
+    for item in items:
+        if item.thumb_url is None:
+            continue
+
+        sha = _sha_for(item.thumb_url)
+        cached = _cache_lookup(cache_dir, sha)
+        if cached is not None:
+            item.thumb_url = _public_url(public_base, sha, cached.suffix.lstrip("."))
+            counts["cached"] += 1
+            continue
+
+        outcome, path = _try_one_source_with_retry(
+            item.thumb_url, cache_dir, sha,
+            session=session, timeout_s=timeout_s, max_bytes=max_bytes,
+        )
+        if outcome == "ok" and path is not None:
+            counts["tmdb_hit"] += 1
+            item.thumb_url = _public_url(public_base, sha, path.suffix.lstrip("."))
+            continue
+
+        # Task 8 inserts the Tautulli fallback before this point.
+        item.thumb_url = None
+        counts["dead"] += 1
+
+    log.info(
+        "mirror_posters: tmdb_hit=%d tautulli_fallback=%d dead=%d cached=%d",
+        counts["tmdb_hit"], counts["tautulli_fallback"], counts["dead"], counts["cached"],
+    )
+    return items
+
+
 def _validate_magic_bytes(prefix: bytes, content_type: str) -> bool:
     """Match first 12 bytes of response body against claimed Content-Type.
 
