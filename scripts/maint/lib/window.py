@@ -16,12 +16,13 @@ import json
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-from lib import health, lifecycle, notify
+from lib import health, kuma, lifecycle, listmonk, notify
 from lib.lifecycle import LifecycleError
 from lib.manifest import Manifest
 
@@ -29,6 +30,12 @@ logger = logging.getLogger(__name__)
 
 _STALE_LOCK_HOURS = 4
 _LOG_DATE_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+# Kuma green-poll defaults — hold the lock after smoke until every manifest
+# monitor goes green (or the cap is reached). 60 min cap matches the operator's
+# tolerance for service-settling; 60 s cadence is gentle on Kuma.
+_KUMA_GREEN_MAX_WAIT_S = 3600
+_KUMA_GREEN_POLL_INTERVAL_S = 60
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +57,10 @@ class WindowSummary:
     queue_deferred_active_cron: int
     smoke_results: dict  # app_name -> bool
     notes: list          # free-text notes
+    # Kuma green-poll outcome (populated when wait_for_kuma_green ran)
+    kuma_converged: bool = False
+    kuma_wait_s: int = 0
+    kuma_still_down: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +157,10 @@ class WindowOrchestrator:
         self._queue_deferred_active_cron = 0
         self._smoke_results: dict[str, bool] = {}
         self._notes: list[str] = []
+        self._kuma_converged: bool = False
+        self._kuma_wait_s: int = 0
+        self._kuma_still_down: list[str] = []
+        self._queue_depth_at_open: int = 0
 
     # ------------------------------------------------------------------ paths
 
@@ -288,6 +303,78 @@ class WindowOrchestrator:
             result = health.probe(app)
             self._smoke_results[app.name] = result.ok
 
+    # ------------------------------------------------------------------ wait_for_kuma_green
+
+    def wait_for_kuma_green(
+        self,
+        *,
+        max_wait_s: Optional[int] = None,
+        poll_interval_s: Optional[int] = None,
+        sleep=None,
+        now=None,
+    ) -> bool:
+        """Hold the window open until every manifest monitor reports 'up' in
+        Kuma, or `max_wait_s` elapses. Returns True if all monitors converged
+        green within the cap; False if the cap was reached.
+
+        External monitors and apps with no kuma_monitor are skipped.
+        Monitors stuck at 'unknown' (network blip, pending, maintenance) are
+        treated as not-yet-green and keep us polling.
+
+        Resolves the module-level cap / cadence at call time (so tests can
+        patch them). sleep/now injectable for deterministic tests.
+        """
+        if max_wait_s is None:
+            max_wait_s = _KUMA_GREEN_MAX_WAIT_S
+        if poll_interval_s is None:
+            poll_interval_s = _KUMA_GREEN_POLL_INTERVAL_S
+        if sleep is None:
+            sleep = time.sleep
+        if now is None:
+            now = time.monotonic
+        monitor_names = sorted({
+            app.kuma_monitor for app in self._manifest.apps()
+            if app.kuma_monitor
+        })
+        if not monitor_names:
+            self._kuma_converged = True
+            self._kuma_wait_s = 0
+            self._kuma_still_down = []
+            return True
+
+        start = now()
+        deadline = start + max_wait_s
+        last_down: list[str] = list(monitor_names)
+
+        while True:
+            statuses = kuma.monitors_status(monitor_names)
+            not_green = sorted(n for n, s in statuses.items() if s != "up")
+            last_down = not_green
+
+            if not not_green:
+                self._kuma_converged = True
+                self._kuma_wait_s = int(now() - start)
+                self._kuma_still_down = []
+                self._notes.append(
+                    f"kuma green after {self._kuma_wait_s}s "
+                    f"({len(monitor_names)} monitors)"
+                )
+                return True
+
+            current = now()
+            if current >= deadline:
+                self._kuma_converged = False
+                self._kuma_wait_s = int(current - start)
+                self._kuma_still_down = not_green
+                self._notes.append(
+                    f"kuma green-poll timed out after {self._kuma_wait_s}s; "
+                    f"still down: {', '.join(not_green)}"
+                )
+                return False
+
+            sleep_for = min(poll_interval_s, max(1, int(deadline - current)))
+            sleep(sleep_for)
+
     # ------------------------------------------------------------------ close
 
     def close(self) -> WindowSummary:
@@ -310,6 +397,9 @@ class WindowOrchestrator:
             queue_deferred_active_cron=self._queue_deferred_active_cron,
             smoke_results=dict(self._smoke_results),
             notes=list(self._notes),
+            kuma_converged=self._kuma_converged,
+            kuma_wait_s=self._kuma_wait_s,
+            kuma_still_down=list(self._kuma_still_down),
         )
 
         log_path = self._window_log_path()
@@ -317,6 +407,11 @@ class WindowOrchestrator:
 
         smoke_pass = sum(1 for v in self._smoke_results.values() if v)
         smoke_total = len(self._smoke_results)
+        kuma_seg = (
+            f"kuma_green={self._kuma_wait_s}s"
+            if self._kuma_converged
+            else f"kuma_timeout still_down={len(self._kuma_still_down)}"
+        )
         summary_line = (
             f"{closed_at} window closed: "
             f"processed={self._queue_processed} "
@@ -324,7 +419,8 @@ class WindowOrchestrator:
             f"dropped_unknown={self._queue_dropped_unknown} "
             f"dropped_max_block={self._queue_dropped_max_block} "
             f"deferred_cron={self._queue_deferred_active_cron} "
-            f"smoke={smoke_pass}/{smoke_total}\n"
+            f"smoke={smoke_pass}/{smoke_total} "
+            f"{kuma_seg}\n"
         )
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(summary_line)
@@ -334,26 +430,82 @@ class WindowOrchestrator:
     # ------------------------------------------------------------------ run
 
     def run(self, *, force: bool = False) -> WindowSummary:
-        """Full window cycle: open → drain_queue → smoke → close + notify at open/close.
+        """Full window cycle: open → pre-maint notify → drain_queue → smoke →
+        wait_for_kuma_green → close → post-maint notify.
 
         force is forwarded to open() — overrides an existing live lock.
         """
         self.open(force=force)
-        notify.notify("🔧 maintenance window opened")
+
+        # Snapshot queue depth before we drain so the pre-maint ping can
+        # tell the operator what's about to be processed.
+        try:
+            self._queue_depth_at_open = sum(
+                1 for ln in self._queue_path.read_text(encoding="utf-8").splitlines()
+                if ln.strip()
+            )
+        except FileNotFoundError:
+            self._queue_depth_at_open = 0
+
+        monitor_count = sum(1 for a in self._manifest.apps() if a.kuma_monitor)
+        notify.notify(
+            "🔧 maintenance window opened — "
+            f"queued={self._queue_depth_at_open}, "
+            f"monitors={monitor_count}, "
+            f"green-poll cap={_KUMA_GREEN_MAX_WAIT_S // 60}m"
+        )
+
+        # Email the subscriber list — they expect a heads-up before things
+        # may briefly hiccup. Fire-and-forget: listmonk failures don't block
+        # the window (they log to notify-fail.log).
+        if not self._dry_run:
+            listmonk.fire_template_campaign(
+                template_title="Maintenance Window Start",
+                subject="QFlix maintenance window starting",
+            )
 
         self.drain_queue()
         self.smoke()
+
+        # Hold the lock until Kuma confirms every manifest monitor is up,
+        # or the cap fires. During this wait the webhook server queues
+        # down events (see lib/kuma.do_POST) so we don't fight ourselves.
+        if not self._dry_run:
+            self.wait_for_kuma_green()
+        else:
+            self._kuma_converged = True
+            self._notes.append("dry-run: kuma green-poll skipped")
 
         summary = self.close()
 
         smoke_pass = sum(1 for v in summary.smoke_results.values() if v)
         smoke_total = len(summary.smoke_results)
+        if summary.kuma_converged:
+            tail = f"kuma green in {summary.kuma_wait_s // 60}m{summary.kuma_wait_s % 60}s"
+            level = "info"
+            icon = "✅"
+        else:
+            still = ", ".join(summary.kuma_still_down[:6])
+            if len(summary.kuma_still_down) > 6:
+                still += f", +{len(summary.kuma_still_down) - 6} more"
+            tail = f"kuma TIMEOUT after {summary.kuma_wait_s // 60}m, still down: {still}"
+            level = "warning"
+            icon = "⚠"
         notify.notify(
-            f"✅ window closed: "
+            f"{icon} window closed: "
             f"{summary.queue_processed}↑ {summary.queue_succeeded}✓ "
             f"{summary.queue_dropped_unknown + summary.queue_dropped_max_block}⊘ "
-            f"smoke={smoke_pass}/{smoke_total}"
+            f"smoke={smoke_pass}/{smoke_total} · {tail}",
+            level=level,
         )
+
+        # Subscriber-list email — services are settled, give the all-clear.
+        if not self._dry_run:
+            listmonk.fire_template_campaign(
+                template_title="Maintenance Window Complete",
+                subject="QFlix maintenance window complete",
+            )
+
         return summary
 
     # ------------------------------------------------------------------ status

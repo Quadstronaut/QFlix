@@ -21,6 +21,8 @@ log_info "Phase 240: maintenance system install"
 secret_exists uptimekuma.key   || die "missing secrets/uptimekuma.key (capture from Kuma UI per spec §8.3)"
 secret_exists uptimekuma.port  || die "missing secrets/uptimekuma.port (Kuma's listen port)"
 secret_exists notifiarr.key    || die "missing secrets/notifiarr.key"
+secret_exists discord-webhook.url || die "missing secrets/discord-webhook.url — pre/post-maint Discord pings depend on it"
+secret_exists discord-operator.id || die "missing secrets/discord-operator.id — error/critical pings depend on it"
 log_info "pre-flight: all required secrets present"
 
 # ── Step 2: claim webhook port ──────────────────────────────────────────────
@@ -87,6 +89,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/lifecycle.py \
     scripts/maint/lib/recovery.py \
     scripts/maint/lib/kuma.py \
+    scripts/maint/lib/listmonk.py \
     scripts/maint/lib/window.py \
     scripts/maint/lib/cli.py \
     scripts/maint/lib/pusher.py \
@@ -165,15 +168,16 @@ if secret_exists uptimekuma.host; then
 fi
 
 # Probe-needed secrets — every *.port, *.key, *.urlbase, and *.host that
-# lib/health.py reads to build URLs and auth headers. Deployed via tar
-# pipe so we don't make 70+ scp round-trips. Files were captured via
-# bootstrap-discover.sh from this same seedbox, so this is restoring
-# them to where the maint code expects them.
-log_info "deploying probe secrets (*.port, *.key, *.urlbase, *.host) to ~/secrets/"
+# lib/health.py reads to build URLs and auth headers, plus *.url and *.id
+# so discord-webhook.url + discord-operator.id reach the seedbox (without
+# them, lib/notify.py silently logs to notify-fail.log and the operator
+# never sees pre/post-maint pings). Deployed via tar pipe so we don't make
+# 70+ scp round-trips.
+log_info "deploying probe + notify secrets (*.port, *.key, *.urlbase, *.host, *.url, *.id) to ~/secrets/"
 ( cd "$REPO_ROOT/secrets" && tar -cf - \
     --exclude="*.json" \
-    $(ls *.port *.key *.urlbase *.host 2>/dev/null) \
-) | sshm 'tar -xf - -C ~/secrets/ && chmod 600 ~/secrets/*.port ~/secrets/*.key ~/secrets/*.urlbase ~/secrets/*.host 2>/dev/null; echo "secrets sync ok"'
+    $(ls *.port *.key *.urlbase *.host *.url *.id 2>/dev/null) \
+) | sshm 'tar -xf - -C ~/secrets/ && chmod 600 ~/secrets/*.port ~/secrets/*.key ~/secrets/*.urlbase ~/secrets/*.host ~/secrets/*.url ~/secrets/*.id 2>/dev/null; echo "secrets sync ok"'
 
 # ── Step 6: symlink ~/bin/manitoba-maint ────────────────────────────────────
 sshm 'ln -sf ~/scripts/maint/manitoba-maint ~/bin/manitoba-maint'
