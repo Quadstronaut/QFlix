@@ -1091,7 +1091,7 @@ listmonk 42014 | uptime-kuma 42005 | tdarr 42018   | maintainerr 42007</code></p
           Discord only sends mobile push when the message <code>content</code> field contains a real <code>&lt;@user_id&gt;</code> mention. Embeds alone are silent.
         </p>
         <p>
-          QFlix's <code>scripts/maint/lib/notify.py</code> appends <code>&lt;@REDACTED&gt;</code> (operator user-id, read from <code>secrets/discord-operator.id</code>) to the content field on levels <code>error</code> and <code>critical</code>, plus <code>allowed_mentions: { users: [&lt;id&gt;] }</code> to bypass the no-mentions guard on the webhook. Levels <code>info</code> / <code>warn</code> stay silent.
+          QFlix's <code>scripts/maint/lib/notify.py</code> reads the operator user-id from <code>secrets/discord-operator.id</code> and appends it as a <code>&lt;@id&gt;</code> mention in the content field on levels <code>error</code> and <code>critical</code>, plus <code>allowed_mentions: { users: [&lt;id&gt;] }</code> to bypass the no-mentions guard on the webhook. Levels <code>info</code> / <code>warn</code> stay silent.
         </p>
       </article>
 
