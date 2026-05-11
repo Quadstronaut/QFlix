@@ -665,7 +665,16 @@
             <tr><td>Audiobooks</td><td>Audiobookshelf (subdomain URL)</td><td>iOS / Android apps work great</td></tr>
           </tbody>
         </table>
-        <div class="callout warn"><strong>Limited library.</strong> The text-side libraries are pruned of anything &gt; 365 days unread to keep disk under control. Re-request anything that's vanished.</div>
+        <div class="callout warn"><strong>Limited library.</strong> The text-side libraries are pruned of anything &gt; 365 days unread to keep disk under control. See the next question for how to add titles.</div>
+      </article>
+
+      <article class="card user" id="q-books-request" data-tags="request books comics audiobooks upload readarr lazylibrarian no-request-mechanism">
+        <h3>How do I request a book / comic / audiobook? <a class="qhash" href="#q-books-request">#</a></h3>
+        <div class="callout warn"><strong>No request flow yet.</strong> Unlike movies / TV / anime, there is currently <em>no</em> Seerr-style request mechanism for the text-side libraries. The operator is actively investigating one (Readarr / LazyLibrarian / a Seerr fork) but nothing is wired up today.</div>
+        <p>
+          In the meantime: <strong>you're welcome to upload your own.</strong> If you have an EPUB, CBZ, or audiobook you'd like on the shelf, send it to the operator (or drop it into the upload share if you've been given one) and it'll be filed into Calibre-Web / Komga / Kavita / Audiobookshelf for everyone to enjoy.
+        </p>
+        <div class="callout tip"><strong>The 365-day autoprune still applies.</strong> Anything uploaded that nobody opens for a year will be swept by <code>prune-text-libraries.sh</code> just like everything else &mdash; same rule, no exceptions. If you want a title kept around regardless, ask the operator to pin it.</div>
       </article>
 
       <article class="card user" id="q-abs-app" data-tags="audiobookshelf mobile app android ios">
@@ -722,7 +731,10 @@
       <article class="card user" id="q-text-prune" data-tags="ebook audiobook comic deleted text-libraries prune">
         <h3>An ebook / audiobook I had is gone <a class="qhash" href="#q-text-prune">#</a></h3>
         <p>
-          A separate nightly job (<code>prune-text-libraries.sh</code>) trims anything in the ebook / audiobook / comic / manga shelves that hasn't been touched in 365 days, then triggers a rescan. Re-request the title and it'll come back.
+          A separate nightly job (<code>prune-text-libraries.sh</code>) trims anything in the ebook / audiobook / comic / manga shelves that hasn't been touched in 365 days, then triggers a rescan.
+        </p>
+        <p>
+          There's no request mechanism for these libraries yet (see <a href="#q-books-request">the books-request question</a>) &mdash; to get a pruned title back, upload a copy and the operator will re-file it.
         </p>
       </article>
     </section>
