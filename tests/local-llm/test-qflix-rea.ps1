@@ -128,6 +128,33 @@ Test-Case 'Filter-OllamaListOutput skips header-only output' {
     Assert-Equal 0 @($models).Count 'header-only input yields empty array'
 }
 
+# --- Task 5: tunnel + ollama gates ---
+Test-Case 'Wait-ForTunnel returns false fast when port not listening' {
+    $start = Get-Date
+    $result = Wait-ForTunnel -Port 1 -MaxSec 3 -PollSec 1
+    $elapsed = ((Get-Date) - $start).TotalSeconds
+    Assert-False $result 'returned false'
+    Assert-True ($elapsed -lt 5) 'gave up within timeout'
+}
+
+Test-Case 'Wait-ForTunnel returns true when port opens during wait' {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+    $port = $listener.LocalEndpoint.Port
+    try {
+        $result = Wait-ForTunnel -Port $port -MaxSec 5 -PollSec 1
+        Assert-True $result 'returned true'
+    } finally { $listener.Stop() }
+}
+
+Test-Case 'Test-OllamaHealth returns false when unreachable' {
+    $prev = $Script:OllamaBase
+    $Script:OllamaBase = 'http://127.0.0.1:1'
+    try {
+        Assert-False (Test-OllamaHealth) 'unreachable returns false'
+    } finally { $Script:OllamaBase = $prev }
+}
+
 Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
     $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
     try {
