@@ -85,6 +85,46 @@ Test-Case 'Write-State then Read-State roundtrips' {
     }
 }
 
+# --- Task 3: lock + audit log ---
+Test-Case 'Acquire-Lock returns a stream then blocks second acquire' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        $a = Acquire-Lock
+        Assert-True ($a -ne $null) 'first acquire returns stream'
+        $b = Acquire-Lock
+        Assert-True ($b -eq $null) 'second acquire returns null'
+        $a.Dispose()
+        $c = Acquire-Lock
+        Assert-True ($c -ne $null) 'third acquire after first dispose succeeds'
+        $c.Dispose()
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        Write-AuditLog 'first line'
+        Write-AuditLog 'second line'
+        $logPath = Join-Path (Get-StateDir) 'audit.log'
+        $lines = @(Get-Content -LiteralPath $logPath)
+        Assert-Equal 2 $lines.Count 'two lines persisted'
+        Assert-True ($lines[0] -match 'first line') 'first line present'
+
+        # Force rotation: write a big chunk then a final line
+        $big = 'x' * (11MB)
+        Set-Content -LiteralPath $logPath -Value $big -Encoding UTF8 -NoNewline
+        Write-AuditLog 'after rotation'
+        Assert-True (Test-Path "$logPath.1") 'rotated file exists'
+        $newLines = @(Get-Content -LiteralPath $logPath)
+        Assert-Equal 1 $newLines.Count 'new log has only post-rotation line'
+        Assert-True ($newLines[0] -match 'after rotation') 'post-rotation content correct'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
 # Summary
 Write-Host "`n========================================" -F White
 Write-Host "  $Script:Pass passed, $Script:Fail failed" -F $(if($Script:Fail){'Red'}else{'Green'})
