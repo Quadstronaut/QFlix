@@ -99,24 +99,34 @@ function Invoke-SSH {
     param([string]$remoteCmd, [int]$timeoutSec = 90)
     $sshHost = Read-Secret "seedbox.ssh-host"
     if (-not $sshHost) { throw "secrets/seedbox.ssh-host missing" }
-    $outFile = Join-Path $env:TEMP "qflix-ssh.out"
-    $errFile = Join-Path $env:TEMP "qflix-ssh.err"
-    $proc = Start-Process -FilePath "ssh" `
-        -ArgumentList @("-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                        "quadstronaut@$sshHost", $remoteCmd) `
-        -PassThru -RedirectStandardOutput $outFile `
-        -RedirectStandardError  $errFile -WindowStyle Hidden -NoNewWindow
+    # Use ProcessStartInfo directly. Start-Process -PassThru can return a
+    # Process object whose ExitCode property isn't populated after a timed
+    # WaitForExit on PS 5.1 — the cleaner .NET wrapper avoids that gotcha.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "ssh"
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    # .NET Framework 4.x (PS 5.1) only has `.Arguments` (single string), not
+    # `.ArgumentList`. Wrap $remoteCmd in double quotes so the seedbox shell
+    # receives it as one argument; remote command must not contain embedded
+    # double-quotes (single-quotes are fine).
+    $psi.Arguments = "-o BatchMode=yes -o ConnectTimeout=10 quadstronaut@$sshHost `"$remoteCmd`""
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    # Read fully BEFORE WaitForExit to avoid buffer deadlocks on large output.
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
     if (-not $proc.WaitForExit($timeoutSec * 1000)) {
-        $proc.Kill()
+        try { $proc.Kill() } catch {}
         throw "SSH timeout after $timeoutSec s"
     }
-    $stdout = ""; $stderr = ""
-    if (Test-Path $outFile) { $stdout = Get-Content $outFile -Raw -ErrorAction SilentlyContinue }
-    if (Test-Path $errFile) { $stderr = Get-Content $errFile -Raw -ErrorAction SilentlyContinue }
+    # Now finalize ExitCode by calling WaitForExit() with no args.
+    $proc.WaitForExit()
     return [PSCustomObject]@{
         ExitCode = $proc.ExitCode
-        Stdout   = $stdout
-        Stderr   = $stderr
+        Stdout   = $stdoutTask.Result
+        Stderr   = $stderrTask.Result
     }
 }
 
