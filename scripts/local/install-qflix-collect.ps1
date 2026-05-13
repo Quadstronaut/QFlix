@@ -40,9 +40,12 @@ function Register-Task {
     # -StartWhenAvailable catches up if PC was off at trigger time.
     $now = Get-Date
     $nextHour = $now.Date.AddHours($now.Hour + 1)
+    # Task Scheduler rejects [TimeSpan]::MaxValue for RepetitionDuration; use
+    # a 25-year horizon and rely on -StartWhenAvailable + operator reinstall
+    # to cover beyond it (well past any reasonable cadence).
     $trigger = New-ScheduledTaskTrigger -Once -At $nextHour `
         -RepetitionInterval (New-TimeSpan -Hours 1) `
-        -RepetitionDuration ([TimeSpan]::MaxValue)
+        -RepetitionDuration (New-TimeSpan -Days 9125)
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries -StartWhenAvailable `
         -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
