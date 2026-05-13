@@ -7,32 +7,29 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 
 # shellcheck disable=SC1091
-source "$REPO/scripts/lib/secrets.sh"
-# shellcheck disable=SC1091
-source "$REPO/scripts/lib/ssh.sh"
+source "$REPO/scripts/lib/ssh.sh"   # provides $SSHM_HOST + sshm/scpm_to helpers
 
-REMOTE="$(seedbox_ssh)"  # quadstronaut@seedbox.example.com
+echo "-> tar+ssh scripts/mcp/ to ${SSHM_HOST}:~/scripts/mcp/"
+# Workstation Git Bash doesn't ship rsync; tar-over-ssh is built-in equivalent
+# for fresh deploys (no --delete; that's fine since this is additive).
+sshm "mkdir -p ~/scripts/mcp"
+( cd "$REPO/scripts/mcp" && tar --exclude='__pycache__' --exclude='*.pyc' -cf - . ) \
+  | sshm "tar -C scripts/mcp -xf -"
 
-echo "→ rsync scripts/mcp/ to ${REMOTE}:~/scripts/mcp/"
-rsync -avz --delete \
-  --exclude '__pycache__' --exclude '*.pyc' \
-  "$REPO/scripts/mcp/" "${REMOTE}:scripts/mcp/"
+echo "-> ensure ~/scripts/mcp/events/ exists on seedbox"
+sshm "mkdir -p ~/scripts/mcp/events"
 
-echo "→ ensure ~/scripts/mcp/events/ exists on seedbox"
-ssh "$REMOTE" "mkdir -p ~/scripts/mcp/events"
+echo "-> install systemd-user units"
+sshm "mkdir -p ~/.config/systemd/user/"
+scpm_to "$REPO/scripts/mcp/systemd/qflix-missing-search.service" \
+        ".config/systemd/user/qflix-missing-search.service"
+scpm_to "$REPO/scripts/mcp/systemd/qflix-missing-search.timer" \
+        ".config/systemd/user/qflix-missing-search.timer"
 
-echo "→ install systemd-user units"
-ssh "$REMOTE" "mkdir -p ~/.config/systemd/user/"
-scp "$REPO/scripts/mcp/systemd/qflix-missing-search.service" \
-    "${REMOTE}:.config/systemd/user/qflix-missing-search.service"
-scp "$REPO/scripts/mcp/systemd/qflix-missing-search.timer" \
-    "${REMOTE}:.config/systemd/user/qflix-missing-search.timer"
+echo "-> enable + start timer"
+sshm "systemctl --user daemon-reload && systemctl --user enable --now qflix-missing-search.timer"
 
-echo "→ enable + start timer"
-ssh "$REMOTE" "systemctl --user daemon-reload && \
-               systemctl --user enable --now qflix-missing-search.timer"
-
-echo "→ verify"
-ssh "$REMOTE" "systemctl --user list-timers qflix-missing-search.timer --all --no-pager"
+echo "-> verify"
+sshm "systemctl --user list-timers qflix-missing-search.timer --all --no-pager"
 
 echo "OK: scripts/mcp/ deployed; qflix-missing-search.timer enabled."

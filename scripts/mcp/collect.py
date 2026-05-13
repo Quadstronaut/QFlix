@@ -183,16 +183,21 @@ def _collect_qbit() -> dict:
     return {"torrents": norm, "totals": totals}
 
 
-def _collect_arr(slug: str, version: str) -> tuple[str, dict]:
+def _collect_arr(slug: str, version: str) -> dict:
+    """Collect one *arr's queue + missing-count + system status.
+
+    Returns just the per-arr dict (slug is known to the caller via
+    the ThreadPoolExecutor futures map; no need to round-trip it).
+    """
     c = ArrClient(slug, version)
     code_q, queue = c.get("/queue", query="pageSize=500&includeUnknownSeriesItems=true")
     code_m, miss = c.get("/wanted/missing", query="pageSize=1")
     code_s, status = c.get("/system/status")
     if code_q != 200 or code_s != 200:
-        return slug, {"error": "auth_failed", "queue": [], "missing_count": 0}
+        return {"error": "auth_failed", "queue": [], "missing_count": 0}
     records = (queue.get("records") if isinstance(queue, dict) else queue) or []
     miss_total = (miss.get("totalRecords", 0) if isinstance(miss, dict) else 0)
-    return slug, {
+    return {
         "queue": records,
         "missing_count": miss_total,
         "system_status": status if isinstance(status, dict) else {},
