@@ -44,8 +44,15 @@ def push_up(monitor_name: str, *, msg: str = "OK",
     token = tokens.get(monitor_name)
     if not token:
         return False
-    host = _read(secrets / "uptimekuma.host") or "kuma.seedbox.example.com"
-    url = f"https://{host}/api/push/{token}?" + urllib.parse.urlencode({
+    # Push via SSH-tunneled Kuma admin port (default 42005); fall back to
+    # public HTTPS only if `uptimekuma.host` is explicitly set.
+    host = _read(secrets / "uptimekuma.host")
+    port = _read(secrets / "uptimekuma.port") or "42005"
+    if host:
+        base = f"https://{host}"
+    else:
+        base = f"http://127.0.0.1:{port}"
+    url = f"{base}/api/push/{token}?" + urllib.parse.urlencode({
         "status": "up", "msg": msg, "ping": ping_ms,
     })
     try:
