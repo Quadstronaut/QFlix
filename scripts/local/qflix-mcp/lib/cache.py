@@ -25,6 +25,12 @@ def atomic_write_json(path: Path, obj: Any) -> None:
         raise
 
 
+def _read_json(path: Path) -> Any:
+    """Read JSON tolerating UTF-8 BOM (PowerShell Out-File on PS 5.1 writes one
+    by default even with -Encoding utf8)."""
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
 class Cache:
     def __init__(self, root: Path):
         self.root = Path(root)
@@ -58,7 +64,7 @@ class Cache:
         files = self._all_snapshot_files(hours=2)
         if not files:
             return None
-        return json.loads(files[-1].read_text())
+        return _read_json(files[-1])
 
     def previous_snapshots(self, n: int) -> list[dict]:
         """Returns the n snapshots immediately *before* the latest, newest first."""
@@ -67,11 +73,11 @@ class Cache:
             return []
         # Drop latest, return up to n preceding, newest-first
         prev = list(reversed(files[:-1]))[:n]
-        return [json.loads(f.read_text()) for f in prev]
+        return [_read_json(f) for f in prev]
 
     def snapshots_in_range(self, hours: int) -> list[dict]:
         files = self._all_snapshot_files(hours=hours)
-        return [json.loads(f.read_text()) for f in files]
+        return [_read_json(f) for f in files]
 
     def history_for_hash(self, hash_: str, *, hours: int = 24) -> list[dict]:
         out = []
@@ -101,7 +107,7 @@ class Cache:
         if not p.exists():
             return {"hashes": {}, "updated_at": None}
         try:
-            return json.loads(p.read_text())
+            return _read_json(p)
         except json.JSONDecodeError:
             return {"hashes": {}, "updated_at": None}
 
