@@ -1,0 +1,11 @@
+[Unit]
+Description=QFlix daily MissingSearch sweep across all *arrs
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/scripts/mcp/missing.py --cron
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
