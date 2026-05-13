@@ -49,9 +49,17 @@ function Push-Kuma {
     $tokens = $tokenJson | ConvertFrom-Json
     $token = $tokens.$monitor
     if (-not $token) { return $false }
+    # Push goes via the SSH tunnel at 127.0.0.1:42005 (Kuma admin port). Public
+    # HTTPS is for the status page; the push endpoint is on the tunnel.
     $kumaHost = Read-Secret "uptimekuma.host"
-    if (-not $kumaHost) { $kumaHost = "kuma.seedbox.example.com" }
-    $url = "https://$kumaHost/api/push/$token?status=up&msg=" + [uri]::EscapeDataString($msg) + "&ping=0"
+    $kumaPort = Read-Secret "uptimekuma.port"
+    if (-not $kumaPort) { $kumaPort = "42005" }
+    if ($kumaHost) {
+        $url = "https://$kumaHost/api/push/$token"
+    } else {
+        $url = "http://127.0.0.1:$kumaPort/api/push/$token"
+    }
+    $url = $url + "?status=up&msg=" + [uri]::EscapeDataString($msg) + "&ping=0"
     try { Invoke-RestMethod -Uri $url -TimeoutSec 10 | Out-Null; return $true } catch { return $false }
 }
 
