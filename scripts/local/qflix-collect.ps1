@@ -193,7 +193,7 @@ function Update-StaleState {
         | Sort-Object FullName | Select-Object -Last 3
     if ($allFiles.Count -lt 3) {
         $out = @{ hashes = $hashes; updated_at = ([DateTime]::UtcNow.ToString("o")) }
-        ($out | ConvertTo-Json -Depth 6) | Out-File -FilePath $stateFile -Encoding utf8
+        ($out | ConvertTo-Json -Depth 6) | ForEach-Object { [System.IO.File]::WriteAllText($stateFile, $_) }
         return @()
     }
     $snaps = $allFiles | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json }
@@ -273,7 +273,7 @@ function Update-StaleState {
     }
 
     $out = @{ hashes = $hashes; updated_at = ([DateTime]::UtcNow.ToString("o")) }
-    ($out | ConvertTo-Json -Depth 6) | Out-File -FilePath $stateFile -Encoding utf8
+    ($out | ConvertTo-Json -Depth 6) | ForEach-Object { [System.IO.File]::WriteAllText($stateFile, $_) }
     return $candidates
 }
 
@@ -361,7 +361,7 @@ try {
         torrent_count = $tcount
         candidates = $candidates.Count
         actions = $acted.Count
-    } | ConvertTo-Json | Out-File -FilePath (Join-Path $DataRoot "last-collect.json") -Encoding utf8
+    } | ConvertTo-Json | ForEach-Object { [System.IO.File]::WriteAllText((Join-Path $DataRoot "last-collect.json"), $_) }
 } catch {
     $exitCode = 1
     $err = "$_"
@@ -370,7 +370,7 @@ try {
         ts = ($started.ToString("o"))
         exit_code = 1
         error = $err
-    } | ConvertTo-Json | Out-File -FilePath (Join-Path $DataRoot "last-collect.json") -Encoding utf8
+    } | ConvertTo-Json | ForEach-Object { [System.IO.File]::WriteAllText((Join-Path $DataRoot "last-collect.json"), $_) }
 } finally {
     Release-Lock
     Stop-Transcript | Out-Null
