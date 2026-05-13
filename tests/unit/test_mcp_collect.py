@@ -88,3 +88,65 @@ def test_zombie_detection():
     zombies = collect.find_zombies(qbit_hashes, arr_queues)
     assert zombies == [{"slug": "sonarr", "queue_id": 1, "hash": "ZOMBIE_HASH",
                         "title": "X"}]
+
+
+def test_find_stuck_imports():
+    """Rule 4: queue items in importPending/Blocked/Failed are surfaced
+    in health for visibility (no autonomous action)."""
+    arr_queues = {
+        "sonarr": [
+            {"id": 1, "title": "X", "downloadId": "h1",
+             "trackedDownloadState": "downloading", "statusMessages": []},
+            {"id": 2, "title": "Y", "downloadId": "h2",
+             "trackedDownloadState": "importPending",
+             "statusMessages": [{"title": "msg"}]},
+            {"id": 3, "title": "Z", "downloadId": "h3",
+             "trackedDownloadState": "importBlocked", "statusMessages": []},
+        ],
+    }
+    stuck = collect.find_stuck_imports(arr_queues)
+    titles = {s["title"] for s in stuck}
+    assert titles == {"Y", "Z"}  # X is fine
+
+
+def test_compute_bad_grab_signals_suspicious_size():
+    t = collect.normalize_qbit_torrent({
+        "hash": "h", "name": "n", "added_on": 0, "size": 50_000_000,
+        "downloaded": 50_000_000, "progress": 1.0, "dlspeed": 0, "upspeed": 0,
+        "state": "uploading", "category": "radarr", "tags": "",
+        "ratio": 0.5, "eta": 0, "num_seeds": 1, "num_leechs": 0,
+        "last_activity": 0,
+    })
+    t["arr"] = {"cf_score": 0}
+    sig = collect.compute_bad_grab_signals(t)
+    assert sig["suspicious_size"] is True
+    assert sig["negative_cf"] is False
+    assert sig["any"] is True
+
+
+def test_compute_bad_grab_signals_negative_cf():
+    t = collect.normalize_qbit_torrent({
+        "hash": "h", "name": "n", "added_on": 0, "size": 2_000_000_000,
+        "downloaded": 2_000_000_000, "progress": 1.0, "dlspeed": 0, "upspeed": 0,
+        "state": "uploading", "category": "radarr", "tags": "",
+        "ratio": 0.5, "eta": 0, "num_seeds": 1, "num_leechs": 0,
+        "last_activity": 0,
+    })
+    t["arr"] = {"cf_score": -50}
+    sig = collect.compute_bad_grab_signals(t)
+    assert sig["suspicious_size"] is False
+    assert sig["negative_cf"] is True
+    assert sig["any"] is True
+
+
+def test_compute_bad_grab_signals_clean():
+    t = collect.normalize_qbit_torrent({
+        "hash": "h", "name": "n", "added_on": 0, "size": 2_000_000_000,
+        "downloaded": 2_000_000_000, "progress": 1.0, "dlspeed": 0, "upspeed": 0,
+        "state": "uploading", "category": "radarr", "tags": "",
+        "ratio": 0.5, "eta": 0, "num_seeds": 1, "num_leechs": 0,
+        "last_activity": 0,
+    })
+    t["arr"] = {"cf_score": 100}
+    sig = collect.compute_bad_grab_signals(t)
+    assert sig["any"] is False

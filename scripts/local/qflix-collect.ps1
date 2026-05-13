@@ -229,6 +229,31 @@ function Update-StaleState {
             $candidates += $h
         }
     }
+
+    # Rule 3 (bad grab): completed torrents flagged with bad_grab_signals.any
+    # don't need a 3-hour wait — the file is already done. Add them as
+    # immediate candidates from the latest snapshot.
+    $latestSnap = $snaps[-1]
+    foreach ($t in $latestSnap.qbit.torrents) {
+        $bg = $t.bad_grab_signals
+        if (-not ($bg -and $bg.any)) { continue }
+        $h = $t.hash
+        if ($hashes.ContainsKey($h) -and $hashes[$h].acted_on_at) { continue }
+        $existed = $hashes.ContainsKey($h)
+        if (-not $existed) {
+            $rule = if ($bg.suspicious_size) { "bad-grab-size" } else { "bad-grab-cf" }
+            $hashes[$h] = @{
+                first_zero_movement_at = ([DateTime]::UtcNow.ToString("o"))
+                consecutive_zero_hours = 0
+                last_progress          = $t.progress
+                rule_matched           = $rule
+                candidate_for_unstick  = $true
+                acted_on_at            = $null
+            }
+            $candidates += $h
+        }
+    }
+
     $out = @{ hashes = $hashes; updated_at = ([DateTime]::UtcNow.ToString("o")) }
     ($out | ConvertTo-Json -Depth 6) | Out-File -FilePath $stateFile -Encoding utf8
     return $candidates

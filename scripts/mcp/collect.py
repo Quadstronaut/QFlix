@@ -117,6 +117,56 @@ def find_zombies(qbit_hashes: set, arr_queues: dict) -> list:
     return out
 
 
+_STUCK_IMPORT_STATES = {"importPending", "importBlocked", "importFailed"}
+
+
+def find_stuck_imports(arr_queues: dict) -> list:
+    """*arr queue items in importPending/Blocked/Failed (rule 4).
+
+    Visibility-only: the collector reports these but never auto-acts on them
+    — `arr-housekeeping.py --unstick` hourly cron handles the actual action
+    based on its own 6-hour aging logic. Surfacing here lets the MCP read
+    tools show them and lets operators see them in snapshot health.
+    """
+    out = []
+    for slug, items in arr_queues.items():
+        for q in items:
+            ts = q.get("trackedDownloadState")
+            if ts in _STUCK_IMPORT_STATES:
+                out.append({
+                    "slug": slug,
+                    "queue_id": q.get("id"),
+                    "hash": q.get("downloadId"),
+                    "title": q.get("title", "?"),
+                    "tracked_state": ts,
+                    "status_messages": q.get("statusMessages") or [],
+                })
+    return out
+
+
+def compute_bad_grab_signals(t: dict) -> dict:
+    """Rule 3: bad-grab signals for one enriched torrent.
+
+    Returns {"suspicious_size": bool, "negative_cf": bool, "any": bool}.
+
+    These are 'bad grab' indicators on completed (or near-completed) torrents:
+    the *arr accepted a release that turned out to be a sample/scam (rule
+    3a: suspicious size) or that the project's Custom Format rules now score
+    negative (rule 3b: negative_cf). Surfaced per-torrent so the PS1
+    workstation collector can flag rule-3 hits as immediate-action
+    candidates (no 3-hour wait needed — the file is already done).
+    """
+    suspicious = is_suspicious_size(t)
+    arr = t.get("arr") or {}
+    cf_score = arr.get("cf_score") if isinstance(arr, dict) else 0
+    negative_cf = isinstance(cf_score, (int, float)) and cf_score < 0
+    return {
+        "suspicious_size": bool(suspicious),
+        "negative_cf": bool(negative_cf),
+        "any": bool(suspicious or negative_cf),
+    }
+
+
 # --- Live-system collection (mocked out in tests) ---------------------------
 
 def _collect_qbit() -> dict:
@@ -268,6 +318,11 @@ def run(include: set, recent_hours: int) -> dict:
     qbit_hashes = {t["hash"].lower() for t in qbit["torrents"]}
     qbit["torrents"] = _enrich(qbit["torrents"], arr_queues, seerr_idx)
 
+    # Rule 3 (bad grab) signals — per-torrent annotation. Computed AFTER
+    # enrichment so cf_score from the *arr is available.
+    for t in qbit["torrents"]:
+        t["bad_grab_signals"] = compute_bad_grab_signals(t)
+
     out["qbit"] = qbit
     out["arrs"] = arrs
 
@@ -279,6 +334,7 @@ def run(include: set, recent_hours: int) -> dict:
     out["health"] = {
         "kuma_red": _kuma_red_list(),
         "zombies": find_zombies(qbit_hashes, arr_queues),
+        "stuck_imports": find_stuck_imports(arr_queues),  # rule 4 — visibility only
     }
     return out
 
