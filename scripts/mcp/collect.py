@@ -271,13 +271,21 @@ def _enrich(qbit_torrents: list, arr_queues: dict, seerr_idx: dict) -> list:
 
 
 def _collect_plex(recent_hours: int) -> dict:
-    """Delegates to ./plex.py via subprocess (needs python-plexapi venv)."""
+    """Delegates to ./plex.py via subprocess (needs python-plexapi venv).
+
+    plexapi isn't on the seedbox's system python3 — it lives in a dedicated
+    venv at ~/.apps/python-plexapi/venv/. Try the venv first; fall back to
+    system python3 only if the venv doesn't exist (lets the script still
+    work in test environments).
+    """
     plex_script = HERE / "plex.py"
     if not plex_script.exists():
         return {"error": "plex_script_missing", "libraries": []}
+    venv_py = Path.home() / ".apps" / "python-plexapi" / "venv" / "bin" / "python"
+    py = str(venv_py) if venv_py.exists() else "python3"
     try:
         proc = subprocess.run(
-            ["python3", str(plex_script), "--emit-json",
+            [py, str(plex_script), "--emit-json",
              "--recent-hours", str(recent_hours)],
             capture_output=True, text=True, timeout=60,
         )
