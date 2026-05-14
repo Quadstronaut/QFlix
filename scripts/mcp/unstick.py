@@ -61,80 +61,115 @@ def _append_event(line: dict) -> None:
         f.write(json.dumps(line, default=str) + "\n")
 
 
-def _lookup_queue_by_hash(c: ArrClient, target_hash: str) -> Optional[dict]:
-    code, payload = c.get("/queue", query="pageSize=500&includeUnknownSeriesItems=true")
-    if code != 200 or not isinstance(payload, dict):
-        return None
-    for q in payload.get("records") or []:
-        if (q.get("downloadId") or "").lower() == target_hash.lower():
-            return q
+def _preflight(slug: str, *, state_file: Optional[Path],
+               max_actions_per_day: int) -> Optional[dict]:
+    """Returns a refusal dict if any guard trips, else None."""
+    if slug not in ARR_VERSIONS:
+        return {"status": "refused-unknown-slug", "slug": slug}
+    if is_arr_red(slug, state_file=state_file):
+        return {"status": "refused-arr-red", "slug": slug}
+    used = _count_today()
+    if used >= max_actions_per_day:
+        return {"status": "refused-cap-hit", "count": used,
+                "cap": max_actions_per_day}
     return None
+
+
+def _resolve_queue_item(c: ArrClient, *, hash_: Optional[str],
+                        queue_id: Optional[int]) -> dict:
+    """Find the queue item by hash or id. Returns one of:
+      {"status": "found", "queue_id": N, "title": "...", "hash": "..."}
+      {"status": "already-removed"}
+      {"status": "queue-fetch-failed", "code": N}
+    """
+    code, payload = c.get("/queue", timeout=15)
+    if code != 200 or not isinstance(payload, dict):
+        return {"status": "queue-fetch-failed", "code": code}
+    records = payload.get("records") or []
+    if hash_:
+        target = hash_.lower()
+        for q in records:
+            if (q.get("downloadId") or "").lower() == target:
+                return {"status": "found",
+                        "queue_id": q.get("id"),
+                        "title": q.get("title", "?"),
+                        "hash": q.get("downloadId")}
+        return {"status": "already-removed"}
+    if queue_id is not None:
+        for q in records:
+            if q.get("id") == queue_id:
+                return {"status": "found",
+                        "queue_id": queue_id,
+                        "title": q.get("title", "?"),
+                        "hash": q.get("downloadId")}
+        return {"status": "already-removed"}
+    return {"status": "queue-fetch-failed", "code": 0}
+
+
+def _execute_delete(c: ArrClient, *, queue_id: int, dry_run: bool) -> dict:
+    """Single point of the destructive DELETE. Returns the action outcome."""
+    if dry_run:
+        return {"status": "dry-run"}
+    code, _ = c.delete(f"/queue/{queue_id}",
+                       query="removeFromClient=true&blocklist=true",
+                       timeout=30)
+    if code in (200, 204):
+        return {"status": "deleted+blocklisted"}
+    if code == 404:
+        return {"status": "already-removed"}
+    return {"status": "delete-failed", "code": code}
+
+
+def _record_event(*, slug: str, queue_id: Optional[int], hash_: Optional[str],
+                  title: str, reason: str, result_status: str) -> None:
+    _append_event({
+        "ts": dt.datetime.utcnow().isoformat() + "Z",
+        "action": "unstick",
+        "slug": slug,
+        "queue_id": queue_id,
+        "hash": hash_,
+        "title": title,
+        "reason": reason,
+        "result": result_status,
+        "post_action": ("sonarr-research-queued"
+                         if result_status == "deleted+blocklisted" else None),
+    })
 
 
 def run(*, slug: str, queue_id: Optional[int] = None,
         hash_: Optional[str] = None, reason: str = "",
         dry_run: bool = False, max_actions_per_day: int = 10,
         state_file: Optional[Path] = None) -> dict:
-    if slug not in ARR_VERSIONS:
-        return {"status": "refused-unknown-slug", "slug": slug}
-    if is_arr_red(slug, state_file=state_file):
-        return {"status": "refused-arr-red", "slug": slug}
-    if _count_today() >= max_actions_per_day:
-        return {"status": "refused-cap-hit", "count": _count_today(),
-                "cap": max_actions_per_day}
+    refusal = _preflight(slug, state_file=state_file,
+                          max_actions_per_day=max_actions_per_day)
+    if refusal is not None:
+        _record_event(slug=slug, queue_id=queue_id, hash_=hash_,
+                       title="?", reason=reason,
+                       result_status=refusal["status"])
+        return refusal
 
-    c = ArrClient(slug, ARR_VERSIONS[slug])
+    c = ArrClient(slug, ARR_VERSIONS[slug], timeout=15)
+    resolved = _resolve_queue_item(c, hash_=hash_, queue_id=queue_id)
+    if resolved["status"] != "found":
+        _record_event(slug=slug, queue_id=queue_id, hash_=hash_,
+                       title="?", reason=reason,
+                       result_status=resolved["status"])
+        return resolved
 
-    # Resolve queue_id from hash if needed
-    title = "?"
-    actual_qid = queue_id
-    if hash_ and not queue_id:
-        item = _lookup_queue_by_hash(c, hash_)
-        if item is None:
-            return {"status": "already-removed", "slug": slug, "hash": hash_}
-        actual_qid = item.get("id")
-        title = item.get("title", "?")
-    elif queue_id:
-        # Verify the queue_id still exists
-        code, payload = c.get("/queue", query="pageSize=500")
-        if code == 200 and isinstance(payload, dict):
-            found = next((q for q in payload.get("records", [])
-                          if q.get("id") == queue_id), None)
-            if found is None:
-                return {"status": "already-removed", "slug": slug,
-                        "queue_id": queue_id}
-            title = found.get("title", "?")
-            hash_ = found.get("downloadId", hash_)
-        else:
-            return {"status": "queue-fetch-failed", "code": code}
+    actual_qid = resolved["queue_id"]
+    title = resolved["title"]
+    hash_ = resolved.get("hash") or hash_
 
-    pre = {"queue_id": actual_qid, "title": title, "hash": hash_}
-
-    if dry_run:
-        result = {"status": "dry-run", "pre": pre}
-    else:
-        code, _ = c.delete(f"/queue/{actual_qid}",
-                           query="removeFromClient=true&blocklist=true")
-        if code in (200, 204):
-            result = {"status": "deleted+blocklisted", "pre": pre}
-        elif code == 404:
-            result = {"status": "already-removed", "pre": pre}
-        else:
-            result = {"status": "delete-failed", "pre": pre, "code": code}
-
-    _append_event({
-        "ts": dt.datetime.utcnow().isoformat() + "Z",
-        "action": "unstick",
-        "slug": slug,
-        "queue_id": actual_qid,
-        "hash": hash_,
-        "title": title,
-        "reason": reason,
-        "result": result["status"],
-        "post_action": ("sonarr-research-queued" if result["status"]
-                        == "deleted+blocklisted" else None),
-    })
-    return result
+    action = _execute_delete(c, queue_id=actual_qid, dry_run=dry_run)
+    final_status = action["status"]
+    _record_event(slug=slug, queue_id=actual_qid, hash_=hash_,
+                   title=title, reason=reason,
+                   result_status=final_status)
+    out = {"status": final_status,
+           "pre": {"queue_id": actual_qid, "title": title, "hash": hash_}}
+    if "code" in action:
+        out["code"] = action["code"]
+    return out
 
 
 def main() -> int:
