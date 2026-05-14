@@ -20,9 +20,10 @@ for APP in conjurr newsletterr; do
         systemctl --user daemon-reload"
 
   # Remove the install tree. Playwright's browser cache lives at
-  # ~/.cache/ms-playwright/ and is shared across apps — handled separately
-  # below so we don't accidentally drop Firefox (which cp_upgrade_clicker
-  # uses for the Mon-04:30 maintenance window).
+  # ~/.cache/ms-playwright/ and was shared across apps — handled separately
+  # below. (Historically this preserved Firefox for cp_upgrade_clicker; that
+  # clicker was retired 2026-05-13 in favour of app-upgrade-all.sh which has
+  # no browser dependency, so the whole cache can now be dropped.)
   sshm "rm -rf ~/.apps/${APP}"
 
   # Drop heartbeat cron line + the heartbeat script itself
@@ -42,10 +43,11 @@ sshm "(crontab -l 2>/dev/null | grep -v 'listmonk-to-newsletterr-sync') | cronta
       rm -f ~/scripts/ops/listmonk-to-newsletterr-sync.py"
 
 # Drop Newsletterr's orphaned Playwright Chromium browser caches.
-# Newsletterr was the only Chromium consumer; cp_upgrade_clicker uses Firefox
-# (Chromium SIGTRAPs under Ultra.cc's seccomp filter — see
-# project_cp-ultra-cc-automation memory). Frees ~620 MB.
-sshm 'rm -rf ~/.cache/ms-playwright/chromium-* ~/.cache/ms-playwright/chromium_headless_shell-*'
+# Newsletterr was the only Chromium consumer. Firefox was kept alive for
+# cp_upgrade_clicker until 2026-05-13, when it was replaced by the
+# browser-free app-upgrade-all.sh — so the whole Playwright cache is
+# now safe to remove. Frees ~620 MB (Chromium) + ~140 MB (Firefox).
+sshm 'rm -rf ~/.cache/ms-playwright'
 
 log_info "Phase 24b complete — Conjurr + Newsletterr removed"
 log_info "Re-run scripts/maint/bootstrap-kuma-monitors.py to drop the orphaned Kuma monitors"

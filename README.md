@@ -380,7 +380,7 @@ scripts/
   qflix-newsletter/          # Mon-08:00 weekly digest Python package
   maint/                     # the maintenance daemon
     manitoba-maint           # CLI entrypoint
-    cp_upgrade_clicker.py    # Playwright/Firefox Upgrade & Repair sweep
+    app-upgrade-all.sh       # weekly `app-<name> upgrade` sweep
     arr-housekeeping.py      # daily Find-Missing + hourly stuck-queue unstick
     lib/                     # manifest · health · lifecycle · recovery
                              # kuma · pusher · window · notify · state · cli · qbit
@@ -398,7 +398,7 @@ QFlix runs unattended most of the week. The things worth knowing if you're readi
 
 <a id="notification-channel"></a>
 
-- **Maintenance window — Mon 04:00–08:00 UTC.** The only time the stack is allowed to break itself. Recyclarr syncs TRaSH-Guides, Kometa rebuilds collections, Buildarr reconciles *arr config, and the Playwright upgrader clicks *Upgrade & Repair* on cp.ultra.cc per app. Auto-heal is paused for the duration so restarts don't race the upgrades. → [FAQ §8](https://quadstronaut.seedbox.example.com/faq/#sec-window)
+- **Maintenance window — Mon 11:00–15:00 UTC.** The only time the stack is allowed to break itself. Recyclarr syncs TRaSH-Guides, Kometa rebuilds collections, Buildarr reconciles *arr config, and `app-upgrade-all.sh` runs `app-<name> upgrade` for every UCC-managed app sequentially (replaces the prior Playwright clicker on cp.ultra.cc as of 2026-05-13). Auto-heal is paused for the duration so restarts don't race the upgrades. → [FAQ §8](https://quadstronaut.seedbox.example.com/faq/#sec-window)
 - **Self-heal loop.** Outside the window, a pusher probes every app every 60 s and pushes status to Uptime Kuma. After 3 consecutive failures it tries up to 3 restarts (10 s · 30 s · 60 s back-off) before paging on Discord. Most outages resolve inside 2 minutes without the operator touching anything. → [FAQ §10](https://quadstronaut.seedbox.example.com/faq/#sec-monitoring)
 - **One alert channel.** A single Discord webhook with an operator `@ping` on `error` / `critical` levels (Notifiarr was retired 2026-05-10). → [FAQ §15](https://quadstronaut.seedbox.example.com/faq/#sec-discord)
 - **Smoke test.** `scripts/smoke-test.sh` runs ~45 assertions across Prowlarr, *arr↔qBit, hardlinks, app liveness, and the maintenance system. Run after every tracked change. → [FAQ — what does 45/45 cover](https://quadstronaut.seedbox.example.com/faq/#q-smoke-buckets)
