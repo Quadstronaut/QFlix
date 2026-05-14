@@ -358,6 +358,14 @@ scripts/
   bootstrap-discover.sh      # fresh-seedbox discovery
   manitoba-tunnel.ps1        # workstation SSH tunnel daemon (gitignored — hardcodes FQDN)
   local-llm/                 # workstation local-LLM helpers (qflix-rea.ps1 — gitignored)
+  local/                     # workstation daemons + MCP server
+    qflix-collect.ps1        # hourly seedbox snapshot → B:\QFlix\data\
+    install-qflix-collect.ps1
+    install-qflix-vlogs.ps1  # VictoriaLogs binary + Scheduled Tasks
+    qflix-vlogs-ship.ps1     # every-5-min SSH pull → POST to local VictoriaLogs
+    qflix-mcp/               # stdio MCP server (qflix_query_logs + 12 more tools)
+  mcp/                       # seedbox-side helpers invoked over SSH
+    collect.py · logs.py · unstick.py · missing.py · plex.py
   smoke-test.sh              # production smoke (~45 checks across the whole stack)
   smoke-test-plex.sh         # Plex-ecosystem-only smoke
   canaries/                  # 4 end-to-end pipeline checks (bash)
@@ -386,7 +394,7 @@ tests/                       # 236 pytest tests (unit/) — pure-Python, no SSH
 
 ## How it's run
 
-QFlix runs unattended most of the week. Four things are worth knowing if you're reading the code or wondering how the lights stay on:
+QFlix runs unattended most of the week. The things worth knowing if you're reading the code or wondering how the lights stay on:
 
 <a id="notification-channel"></a>
 
@@ -395,6 +403,7 @@ QFlix runs unattended most of the week. Four things are worth knowing if you're 
 - **One alert channel.** A single Discord webhook with an operator `@ping` on `error` / `critical` levels (Notifiarr was retired 2026-05-10). → [FAQ §15](https://quadstronaut.seedbox.example.com/faq/#sec-discord)
 - **Smoke test.** `scripts/smoke-test.sh` runs ~45 assertions across Prowlarr, *arr↔qBit, hardlinks, app liveness, and the maintenance system. Run after every tracked change. → [FAQ — what does 45/45 cover](https://quadstronaut.seedbox.example.com/faq/#q-smoke-buckets)
 - **QFlix Random Error Audit (REA).** Workstation-side second-opinion audit (`scripts/local-llm/qflix-rea.ps1` — gitignored; Task Scheduler at `\Archangel\QFlix-LLM\QFlix Random Error Audit`, AtLogOn trigger). On every Windows logon, after the SSH tunnel is up, it pulls 7 seedbox log surfaces (*arr logs, systemd journal errors, cron mail spool, maint pipeline, nginx errors, Plex errors, Kuma red-state) in **one SSH call**, then hands the consolidated blob to every code-capable Ollama model installed locally (auto-discovered via regex — `qwen3-coder:30b`, `qwen2.5-coder:7b`, `qwen3:8b` today). Models run sequentially; verdicts collapse by signature into one Discord message with the operator @ping if anything looks wrong, or a daily "✓ clean" heartbeat if nothing does. If Ollama itself is unreachable, a separate dead-man Discord alert fires (24h dedupe). Spec: [`docs/superpowers/specs/2026-05-11-qflix-rea-design.md`](docs/superpowers/specs/2026-05-11-qflix-rea-design.md). Install: `scripts/local-llm/qflix-rea.ps1 -Install`. Not wired into Kuma — purely local set of eyes.
+- **Log aggregation — workstation-local VictoriaLogs.** Single Windows binary at `B:\Tools\victorialogs\` writing to `B:\QFlix\logs\` (90 d retention, <512 MB RAM, zero load on the shared seedbox). Two Scheduled Tasks under `\Archangel\QFlix-Logging\`: the server (AtLogOn) and a shipper (every 5 min) that SSH-pulls every known app's logs from `~/scripts/mcp/logs.py --emit-json --app all --since 6m` and POSTs JSON lines to `http://127.0.0.1:9428/insert/jsonline` with stream fields `(host, app)`. The MCP server (`scripts/local/qflix-mcp/qflix_mcp.py`) exposes two reads: `qflix_get_logs` (live SSH pull, opportunistically write-throughs to the index so on-demand audits enrich future searches) and `qflix_query_logs` (LogsQL against the persistent index, no SSH hop — e.g. `level:Error AND app:radarr`). UI at `http://127.0.0.1:9428/select/vmui/`. Install: `scripts/local/install-qflix-vlogs.ps1 -Install`. Not wired into Kuma — workstation-local infrastructure, not a seedbox app.
 
 ### What's reachable without the SSH tunnel
 
