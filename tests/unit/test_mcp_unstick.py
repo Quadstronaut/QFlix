@@ -231,3 +231,23 @@ def test_diagnose_returns_phase_timings(mock_open, tmp_path, monkeypatch):
     assert isinstance(out["phases"]["state_read_ms"], (int, float))
     # No event written (diagnose is pure-read)
     assert not list(events.glob("*.jsonl"))
+
+
+@patch("lib.arr_client.urllib.request.urlopen")
+def test_resolve_queue_item_follows_pagination(mock_open, tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    # First page lacks the target; second page contains it.
+    mock_open.side_effect = [
+        _resp({"records": [{"id": 1, "downloadId": "OTHER", "title": "X"}],
+                "page": 1, "pageSize": 1, "totalRecords": 2}),
+        _resp({"records": [{"id": 2, "downloadId": "TARGET", "title": "Y"}],
+                "page": 2, "pageSize": 1, "totalRecords": 2}),
+    ]
+    from lib.arr_client import ArrClient
+    c = ArrClient("sonarr", "v3", secrets_dir=secrets)
+    out = unstick._resolve_queue_item(c, hash_="target", queue_id=None)
+    assert out["status"] == "found"
+    assert out["queue_id"] == 2
