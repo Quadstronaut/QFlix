@@ -188,3 +188,59 @@ def test_list_log_apps_ssh_timeout(mock_ssh):
     out = qflix_mcp.qflix_list_log_apps()
     assert out["status"] == "ssh-timeout"
     assert out["timeout_s"] == 30
+
+
+@patch("qflix_mcp.ssh_call")
+def test_diagnose_unstick_returns_timings(mock_ssh):
+    fake = MagicMock()
+    fake.returncode = 0
+    fake.stdout = json.dumps({
+        "status": "diagnose", "slug": "radarr", "hash": "abc",
+        "phases": {"state_read_ms": 0.5, "queue_lookup_paged_ms": 47000.0,
+                    "queue_lookup_default_ms": 800.0, "hash_match_ms": 850.0},
+        "queue_size_paged": 50, "queue_size_default": 50,
+    })
+    fake.stderr = ""
+    mock_ssh.return_value = fake
+    out = qflix_mcp.qflix_diagnose_unstick(slug="radarr", hash_="abc")
+    assert out["status"] == "diagnose"
+    assert out["phases"]["queue_lookup_paged_ms"] == 47000.0
+    cmd = mock_ssh.call_args[0][0]
+    assert "--diagnose" in cmd and "--slug radarr" in cmd and "--hash abc" in cmd
+    # 180s timeout passed
+    assert mock_ssh.call_args[1]["timeout"] == 180
+
+
+@patch("qflix_mcp.ssh_call")
+def test_unstick_torrent_returns_ssh_timeout_struct(mock_ssh):
+    fake = MagicMock()
+    fake.returncode = 124
+    fake.stdout = ""
+    fake.stderr = "ssh-timeout after 120s"
+    mock_ssh.return_value = fake
+    out = qflix_mcp.qflix_unstick_torrent(slug="radarr", hash_="abc")
+    assert out["status"] == "ssh-timeout"
+    assert out["timeout_s"] == 120
+
+
+@patch("qflix_mcp.ssh_call")
+def test_unstick_torrent_accepts_custom_timeout(mock_ssh):
+    fake = MagicMock()
+    fake.returncode = 0
+    fake.stdout = '{"status": "deleted+blocklisted"}'
+    fake.stderr = ""
+    mock_ssh.return_value = fake
+    qflix_mcp.qflix_unstick_torrent(slug="radarr", hash_="abc", timeout=200)
+    assert mock_ssh.call_args[1]["timeout"] == 200
+
+
+@patch("qflix_mcp.ssh_call")
+def test_refresh_collect_returns_ssh_timeout_struct(mock_ssh):
+    fake = MagicMock()
+    fake.returncode = 124
+    fake.stdout = ""
+    fake.stderr = "ssh-timeout after 90s"
+    mock_ssh.return_value = fake
+    out = qflix_mcp.qflix_refresh_collect()
+    assert out["status"] == "ssh-timeout"
+    assert out["timeout_s"] == 90
