@@ -165,3 +165,44 @@ def test_execute_delete_dry_run(tmp_path, monkeypatch):
     c = ArrClient("sonarr", "v3", secrets_dir=secrets)
     out = unstick._execute_delete(c, queue_id=99, dry_run=True)
     assert out["status"] == "dry-run"
+
+
+def test_refused_arr_red_writes_event(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    state.write_text(json.dumps({"monitors": {"Sonarr": {"status": "down"}}}))
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    unstick.run(slug="sonarr", queue_id=42, reason="t", state_file=state)
+    log_files = list(events.glob("*.jsonl"))
+    assert len(log_files) == 1
+    line = json.loads(log_files[0].read_text().strip())
+    assert line["result"] == "refused-arr-red"
+    assert line["slug"] == "sonarr"
+
+
+def test_refused_cap_hit_writes_event(tmp_path, monkeypatch):
+    import datetime as dt_
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    today = events / f"{dt_.date.today().isoformat()}.jsonl"
+    today.write_text("\n".join('{"action":"unstick"}' for _ in range(10)) + "\n")
+    unstick.run(slug="sonarr", queue_id=42, reason="t",
+                max_actions_per_day=10, state_file=state)
+    line = json.loads(today.read_text().splitlines()[-1])
+    assert line["result"] == "refused-cap-hit"
+
+
+@patch("lib.arr_client.urllib.request.urlopen")
+def test_already_removed_writes_event(mock_open, tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    mock_open.return_value = _resp({"records": []})
+    unstick.run(slug="sonarr", hash_="dead", reason="t", state_file=state)
+    log_files = list(events.glob("*.jsonl"))
+    line = json.loads(log_files[0].read_text().strip())
+    assert line["result"] == "already-removed"
