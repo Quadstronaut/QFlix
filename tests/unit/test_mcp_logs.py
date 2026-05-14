@@ -1,5 +1,7 @@
 """Tests for scripts/mcp/logs.py — log routing logic."""
 from __future__ import annotations
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -39,10 +41,6 @@ def test_parse_line_unknown_format():
     parsed = logs.parse_line("garbage", source="x")
     assert parsed["level"] == "unknown"
     assert parsed["message"] == "garbage"
-
-
-import json
-import subprocess
 
 
 LOGS_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "mcp" / "logs.py"
