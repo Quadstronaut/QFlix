@@ -40,7 +40,7 @@ $RepoRoot    = (Resolve-Path "$PSScriptRoot\..\..").Path
 $ShipPS1     = Join-Path $RepoRoot "scripts\local\qflix-vlogs-ship.ps1"
 
 function Get-VLogsExe {
-    $cand = Get-ChildItem $ToolsRoot -Filter 'victoria-logs-prod*.exe' -ErrorAction SilentlyContinue |
+    $cand = Get-ChildItem $ToolsRoot -Filter 'victoria-logs-*prod*.exe' -ErrorAction SilentlyContinue |
             Select-Object -First 1
     if ($cand) { return $cand.FullName }
     return $null
@@ -61,7 +61,7 @@ function Install-Binary {
     Expand-Archive -Path $zip -DestinationPath $ToolsRoot -Force
     Remove-Item $zip
     $exe = Get-VLogsExe
-    if (-not $exe) { throw "Extraction completed but no victoria-logs-prod*.exe found in $ToolsRoot" }
+    if (-not $exe) { throw "Extraction completed but no victoria-logs-*prod*.exe found in $ToolsRoot" }
     Write-Host "Installed binary: $exe"
 }
 
