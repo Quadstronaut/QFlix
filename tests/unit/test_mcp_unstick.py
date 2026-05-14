@@ -88,3 +88,80 @@ def test_idempotent_on_already_removed(mock_open, tmp_path, monkeypatch):
     res = unstick.run(slug="sonarr", queue_id=42, reason="t", dry_run=False,
                       state_file=state)
     assert res["status"] == "already-removed"
+
+
+def test_preflight_passes_when_clean(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    refusal = unstick._preflight("sonarr", state_file=state, max_actions_per_day=10)
+    assert refusal is None
+
+
+def test_preflight_returns_unknown_slug():
+    refusal = unstick._preflight("garbage", state_file=None, max_actions_per_day=10)
+    assert refusal["status"] == "refused-unknown-slug"
+
+
+def test_preflight_returns_red(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    state.write_text(json.dumps({"monitors": {"Sonarr": {"status": "down"}}}))
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    refusal = unstick._preflight("sonarr", state_file=state, max_actions_per_day=10)
+    assert refusal["status"] == "refused-arr-red"
+
+
+@patch("lib.arr_client.urllib.request.urlopen")
+def test_resolve_queue_item_by_hash_found(mock_open, tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    mock_open.return_value = _resp({"records": [
+        {"id": 99, "downloadId": "ABC", "title": "Some Show"},
+    ]})
+    from lib.arr_client import ArrClient
+    c = ArrClient("sonarr", "v3", secrets_dir=secrets)
+    out = unstick._resolve_queue_item(c, hash_="abc", queue_id=None)
+    assert out["status"] == "found"
+    assert out["queue_id"] == 99 and out["title"] == "Some Show"
+
+
+@patch("lib.arr_client.urllib.request.urlopen")
+def test_resolve_queue_item_already_removed(mock_open, tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    mock_open.return_value = _resp({"records": []})
+    from lib.arr_client import ArrClient
+    c = ArrClient("sonarr", "v3", secrets_dir=secrets)
+    out = unstick._resolve_queue_item(c, hash_="missing", queue_id=None)
+    assert out["status"] == "already-removed"
+
+
+@patch("lib.arr_client.urllib.request.urlopen")
+def test_execute_delete_success(mock_open, tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    mock_open.return_value = _resp("", status=200)
+    from lib.arr_client import ArrClient
+    c = ArrClient("sonarr", "v3", secrets_dir=secrets)
+    out = unstick._execute_delete(c, queue_id=99, dry_run=False)
+    assert out["status"] == "deleted+blocklisted"
+
+
+def test_execute_delete_dry_run(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    from lib.arr_client import ArrClient
+    c = ArrClient("sonarr", "v3", secrets_dir=secrets)
+    out = unstick._execute_delete(c, queue_id=99, dry_run=True)
+    assert out["status"] == "dry-run"
