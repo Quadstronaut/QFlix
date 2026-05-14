@@ -7,6 +7,7 @@ import datetime as dt
 import json
 from pathlib import Path
 import sys
+from unittest.mock import patch, MagicMock
 
 HERE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(HERE / "scripts" / "local" / "qflix-mcp"))
@@ -115,3 +116,28 @@ def test_arr_queue(tmp_path, monkeypatch):
     out = qflix_mcp.qflix_arr_queue("sonarr")
     assert out["queue"][0]["id"] == 1
     assert out["missing_count"] == 5
+
+
+@patch("qflix_mcp.ssh_call")
+def test_list_log_apps_returns_routes(mock_ssh):
+    fake = MagicMock()
+    fake.returncode = 0
+    fake.stdout = '{"file_apps": ["sonarr", "radarr"], "systemd_apps": ["listmonk"]}'
+    fake.stderr = ""
+    mock_ssh.return_value = fake
+    out = qflix_mcp.qflix_list_log_apps()
+    assert out == {"file_apps": ["sonarr", "radarr"], "systemd_apps": ["listmonk"]}
+    cmd = mock_ssh.call_args[0][0]
+    assert "logs.py" in cmd and "--list-apps" in cmd
+
+
+@patch("qflix_mcp.ssh_call")
+def test_list_log_apps_ssh_timeout(mock_ssh):
+    fake = MagicMock()
+    fake.returncode = 124
+    fake.stdout = ""
+    fake.stderr = "ssh-timeout after 30s"
+    mock_ssh.return_value = fake
+    out = qflix_mcp.qflix_list_log_apps()
+    assert out["status"] == "ssh-timeout"
+    assert out["timeout_s"] == 30
