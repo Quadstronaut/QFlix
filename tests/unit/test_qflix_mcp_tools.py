@@ -75,9 +75,8 @@ def test_list_stale_returns_candidates(tmp_path, monkeypatch):
     assert "abc" in {h["hash"] for h in out}
 
 
-@patch("qflix_mcp._ship_to_vlogs")
 @patch("qflix_mcp.ssh_call")
-def test_get_logs_returns_parsed_lines(mock_ssh, _mock_ship):
+def test_get_logs_returns_parsed_lines(mock_ssh):
     fake = MagicMock()
     fake.returncode = 0
     fake.stdout = json.dumps({
@@ -100,9 +99,8 @@ def test_get_logs_returns_parsed_lines(mock_ssh, _mock_ship):
     assert "--since 6h" in cmd and "--tail 50" in cmd
 
 
-@patch("qflix_mcp._ship_to_vlogs")
 @patch("qflix_mcp.ssh_call")
-def test_get_logs_applies_grep_client_side(mock_ssh, _mock_ship):
+def test_get_logs_applies_grep_client_side(mock_ssh):
     fake = MagicMock()
     fake.returncode = 0
     fake.stdout = json.dumps({
@@ -121,9 +119,8 @@ def test_get_logs_applies_grep_client_side(mock_ssh, _mock_ship):
     assert out["lines"][0]["message"] == "boom"
 
 
-@patch("qflix_mcp._ship_to_vlogs")
 @patch("qflix_mcp.ssh_call")
-def test_get_logs_handles_unsupported_app(mock_ssh, _mock_ship):
+def test_get_logs_handles_unsupported_app(mock_ssh):
     fake = MagicMock()
     fake.returncode = 0
     fake.stdout = json.dumps({"app": "bogus", "error": "unsupported", "lines": []})
@@ -250,118 +247,65 @@ def test_refresh_collect_returns_ssh_timeout_struct(mock_ssh):
 
 
 # ===== VictoriaLogs integration =========================================
+# vlogs now lives on the seedbox; MCP reaches it via SSH-exec'd curl.
 
-@patch("qflix_mcp.urllib.request.urlopen")
 @patch("qflix_mcp.ssh_call")
-def test_get_logs_write_throughs_to_vlogs(mock_ssh, mock_urlopen):
+def test_query_logs_returns_parsed_entries(mock_ssh):
     fake = MagicMock()
     fake.returncode = 0
-    fake.stdout = json.dumps({
-        "app": "sonarr",
-        "source": "sonarr.txt",
-        "lines": [
-            {"ts": "2026-05-13T10:00:00Z", "level": "Info",
-             "message": "hello", "source_file": "sonarr.txt"},
-            {"ts": "2026-05-13T10:01:00Z", "level": "Error",
-             "message": "boom", "source_file": "sonarr.txt"},
-        ],
-    })
-    fake.stderr = ""
-    mock_ssh.return_value = fake
-    mock_urlopen.return_value.__enter__ = lambda self: self
-    mock_urlopen.return_value.__exit__ = lambda *a: None
-    mock_urlopen.return_value.read.return_value = b""
-
-    qflix_mcp.qflix_get_logs(app="sonarr", since="6h")
-
-    # Exactly one POST attempted to the VictoriaLogs insert endpoint
-    assert mock_urlopen.call_count == 1
-    req = mock_urlopen.call_args[0][0]
-    assert req.method == "POST"
-    assert "/insert/jsonline" in req.full_url
-    body = req.data.decode("utf-8")
-    # One JSON object per ingested line
-    bodies = [json.loads(b) for b in body.splitlines() if b.strip()]
-    assert len(bodies) == 2
-    assert bodies[0]["_msg"] == "hello"
-    assert bodies[0]["app"] == "sonarr"
-    assert bodies[0]["host"] == "seedbox"
-
-
-@patch("qflix_mcp.urllib.request.urlopen")
-@patch("qflix_mcp.ssh_call")
-def test_get_logs_writethrough_silent_on_vlogs_down(mock_ssh, mock_urlopen):
-    fake = MagicMock()
-    fake.returncode = 0
-    fake.stdout = json.dumps({
-        "app": "sonarr", "source": "x",
-        "lines": [{"ts": "t", "level": "Info", "message": "hello",
-                   "source_file": "x"}],
-    })
-    fake.stderr = ""
-    mock_ssh.return_value = fake
-    import urllib.error
-    mock_urlopen.side_effect = urllib.error.URLError("connection refused")
-
-    # Must not raise — write-through is best-effort
-    out = qflix_mcp.qflix_get_logs(app="sonarr")
-    assert out["app"] == "sonarr"
-    assert len(out["lines"]) == 1
-
-
-@patch("qflix_mcp.urllib.request.urlopen")
-@patch("qflix_mcp.ssh_call")
-def test_get_logs_writethrough_indexes_full_set_not_grep_subset(mock_ssh, mock_urlopen):
-    fake = MagicMock()
-    fake.returncode = 0
-    fake.stdout = json.dumps({
-        "app": "sonarr", "source": "x",
-        "lines": [
-            {"ts": "t", "level": "Info", "message": "hello world",
-             "source_file": "x"},
-            {"ts": "t", "level": "Error", "message": "boom",
-             "source_file": "x"},
-        ],
-    })
-    fake.stderr = ""
-    mock_ssh.return_value = fake
-    mock_urlopen.return_value.__enter__ = lambda self: self
-    mock_urlopen.return_value.__exit__ = lambda *a: None
-    mock_urlopen.return_value.read.return_value = b""
-
-    out = qflix_mcp.qflix_get_logs(app="sonarr", grep="boom")
-    # Caller sees only filtered subset
-    assert len(out["lines"]) == 1
-    # But the index POST included BOTH lines (full visibility for future queries)
-    body = mock_urlopen.call_args[0][0].data.decode("utf-8")
-    bodies = [json.loads(b) for b in body.splitlines() if b.strip()]
-    assert len(bodies) == 2
-
-
-@patch("qflix_mcp.urllib.request.urlopen")
-def test_query_logs_returns_parsed_entries(mock_urlopen):
-    payload = (
+    fake.stdout = (
         '{"_time":"2026-05-13T10:00:00Z","_msg":"hello","app":"sonarr"}\n'
         '{"_time":"2026-05-13T10:01:00Z","_msg":"boom","app":"sonarr"}\n'
     )
-    mock_urlopen.return_value.__enter__ = lambda self: self
-    mock_urlopen.return_value.__exit__ = lambda *a: None
-    mock_urlopen.return_value.read.return_value = payload.encode("utf-8")
+    fake.stderr = ""
+    mock_ssh.return_value = fake
 
     out = qflix_mcp.qflix_query_logs(query="app:sonarr", start="1h", limit=50)
     assert out["count"] == 2
     assert out["entries"][1]["_msg"] == "boom"
-    url = mock_urlopen.call_args[0][0]
-    assert "/select/logsql/query" in url
-    assert "query=app%3Asonarr" in url
-    assert "start=1h" in url
-    assert "limit=50" in url
+    # ssh_call was invoked with a curl command that targets the LogsQL endpoint
+    # and reads the port from the seedbox-side secrets file.
+    cmd = mock_ssh.call_args[0][0]
+    assert "/select/logsql/query" in cmd
+    assert "~/secrets/vlogs.port" in cmd
+    assert "query=app:sonarr" in cmd
+    assert "start=1h" in cmd
+    assert "limit=50" in cmd
 
 
-@patch("qflix_mcp.urllib.request.urlopen")
-def test_query_logs_handles_vlogs_unreachable(mock_urlopen):
-    import urllib.error
-    mock_urlopen.side_effect = urllib.error.URLError("connection refused")
+@patch("qflix_mcp.ssh_call")
+def test_query_logs_handles_vlogs_unreachable(mock_ssh):
+    # curl exits 7 on connection refused — surface as vlogs-unreachable.
+    fake = MagicMock()
+    fake.returncode = 7
+    fake.stdout = ""
+    fake.stderr = "curl: (7) Failed to connect to 127.0.0.1 port"
+    mock_ssh.return_value = fake
     out = qflix_mcp.qflix_query_logs(query="*")
     assert out["status"] == "vlogs-unreachable"
-    assert "connection refused" in out["error"]
+    assert "Failed to connect" in out["error"]
+
+
+@patch("qflix_mcp.ssh_call")
+def test_query_logs_handles_missing_port_secret(mock_ssh):
+    # Remote stub exits 3 when ~/secrets/vlogs.port is missing.
+    fake = MagicMock()
+    fake.returncode = 3
+    fake.stdout = ""
+    fake.stderr = "vlogs-port-missing"
+    mock_ssh.return_value = fake
+    out = qflix_mcp.qflix_query_logs(query="*")
+    assert out["status"] == "vlogs-unreachable"
+    assert "vlogs.port" in out["error"]
+
+
+@patch("qflix_mcp.ssh_call")
+def test_query_logs_handles_ssh_timeout(mock_ssh):
+    fake = MagicMock()
+    fake.returncode = 124
+    fake.stdout = ""
+    fake.stderr = "ssh-timeout after 15s"
+    mock_ssh.return_value = fake
+    out = qflix_mcp.qflix_query_logs(query="*")
+    assert out["status"] == "ssh-timeout"
+    assert out["timeout_s"] == 15

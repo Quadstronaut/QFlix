@@ -409,6 +409,31 @@ apps:
       kind: systemd_oneshot
       unit: qflix-missing-search.service
 
+  victorialogs:
+    # Log aggregator. Single static Rust binary, ~200MB RAM, on-disk index
+    # at ~/.apps/vlogs/data with 90d retention. Bound loopback-only on the
+    # port stored in secrets/vlogs.port. Migrated from workstation to seedbox
+    # 2026-05-14 because workstation-resident ingest violated the autonomy
+    # mandate (logs went un-captured whenever the PC was off).
+    class: systemd
+    unit: victorialogs.service
+    kuma_monitor: "VictoriaLogs"
+    health:
+      kind: http_root
+      port_secret: vlogs.port
+      path_override: "/health"
+      expect_status: 200
+
+  qflix-vlogs-ingest:
+    # Timer-driven oneshot that pulls all managed app logs into vlogs every
+    # 5 min. Imports scripts/mcp/logs.py in-process and POSTs JSON-line
+    # batches to local 127.0.0.1:<vlogs.port>/insert/jsonline.
+    class: cron
+    unit: qflix-vlogs-ingest.service
+    kuma_monitor: "Qflix VLogs Ingest"
+    health:
+      kind: systemd_oneshot
+
 
 canaries:
   movie:
@@ -426,4 +451,10 @@ canaries:
   mobile-ux:
     kuma_monitor: "Canary Mobile-UX"
     script: "scripts/canaries/mobile-ux.sh"
+    schedule: "every-15min"
+  vlogs-stall:
+    # Detect VictoriaLogs server down or zero-ingest-in-15-min (timer broken).
+    # Mirror of qbit-stall pattern — exits 0 on flowing, exits 1 on stall.
+    kuma_monitor: "Canary VLogs Stall"
+    script: "scripts/canaries/vlogs-stall.sh"
     schedule: "every-15min"
