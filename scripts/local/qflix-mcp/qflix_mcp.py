@@ -25,6 +25,14 @@ from lib.ssh import ssh_call  # noqa: E402
 DATA_ROOT = Path(os.environ.get("QFLIX_DATA_ROOT", r"B:\QFlix\data"))
 
 
+def _parse_ssh_timeout(stderr: str, default: int) -> dict:
+    """Extract the timeout integer from 'ssh-timeout after Ns' stderr."""
+    import re
+    m = re.search(r"ssh-timeout after (\d+)s", stderr or "")
+    return {"status": "ssh-timeout",
+            "timeout_s": int(m.group(1)) if m else default}
+
+
 def _cache() -> Cache:
     return Cache(DATA_ROOT)
 
@@ -152,6 +160,26 @@ def qflix_arr_queue(slug: str) -> dict:
     return (snap.get("arrs", {}).get(slug) or {"queue": [], "missing_count": 0})
 
 
+def qflix_list_log_apps() -> dict:
+    """Returns: known log slugs from the host's logs.py routing tables.
+
+    Use when: you want to know which `app` values qflix_get_logs accepts.
+    Returns {"file_apps": [...], "systemd_apps": [...]} or
+    {"status": "ssh-timeout", "timeout_s": N} on SSH timeout.
+    """
+    proc = ssh_call("python3 ~/scripts/mcp/logs.py --emit-json --list-apps",
+                    timeout=30)
+    if proc.returncode == 124:
+        return _parse_ssh_timeout(proc.stderr, default=30)
+    if proc.returncode != 0:
+        return {"status": "ssh-failed", "code": proc.returncode,
+                "stderr": proc.stderr[:300]}
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {"status": "bad-json", "stdout": proc.stdout[:300]}
+
+
 # ===== WRITE TOOLS (proxy SSH to seedbox) ================================
 
 def qflix_unstick_torrent(slug: str, queue_id: Optional[int] = None,
@@ -235,6 +263,7 @@ def _build_server():
     server.tool()(qflix_plex_libraries)
     server.tool()(qflix_recent_events)
     server.tool()(qflix_arr_queue)
+    server.tool()(qflix_list_log_apps)
     # Write tools
     server.tool()(qflix_unstick_torrent)
     server.tool()(qflix_trigger_missing_search)
