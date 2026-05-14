@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — vlogs ingest stall (15min)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push vlogs-stall
+StandardOutput=journal
+StandardError=journal
