@@ -1,11 +1,14 @@
 [Unit]
-Description=Manitoba maintenance — weekly cp.ultra.cc upgrade sweep
-# Fires Monday 04:30 — 30 min after manitoba-maint-window opens at 04:00.
-# Window holds the lock so any auto-recovery is queued, then drained at
+Description=Manitoba maintenance — weekly UCC upgrade sweep
+# Fires Mon 11:30 UTC — 30 min after manitoba-maint-window opens at 11:00 UTC.
+# The window holds the lock so any auto-recovery is queued, then drained at
 # window close.
+# Bare "04:30:00" (without UTC) would be interpreted as seedbox local time
+# (currently Europe/Amsterdam) and fire well outside the window — explicit
+# UTC anchor is required.
 
 [Timer]
-OnCalendar=Mon *-*-* 04:30:00
+OnCalendar=Mon *-*-* 11:30:00 UTC
 Persistent=true
 
 [Install]

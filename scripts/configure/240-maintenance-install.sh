@@ -109,7 +109,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-mobile-ux.timer \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.service \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.timer \
-    scripts/maint/cp_upgrade_clicker.py \
+    scripts/maint/app-upgrade-all.sh \
     scripts/ops/heartbeat-maint-webhook.sh \
     scripts/lib/ssh.sh \
     scripts/canaries/anime.sh \
@@ -128,8 +128,10 @@ mkdir -p "$STG"
 # (The tar above already extracted into the staging dir.)
 cp -f "$STG"/scripts/maint/manitoba-maint        ~/scripts/maint/manitoba-maint
 chmod +x ~/scripts/maint/manitoba-maint
-cp -f "$STG"/scripts/maint/cp_upgrade_clicker.py ~/scripts/maint/cp_upgrade_clicker.py
-chmod +x ~/scripts/maint/cp_upgrade_clicker.py
+cp -f "$STG"/scripts/maint/app-upgrade-all.sh ~/scripts/maint/app-upgrade-all.sh
+chmod +x ~/scripts/maint/app-upgrade-all.sh
+# Remove the retired Playwright clicker if a prior install put it in place.
+rm -f ~/scripts/maint/cp_upgrade_clicker.py
 cp -rf  "$STG"/scripts/maint/lib                  ~/scripts/maint/
 cp -rf  "$STG"/scripts/maint/systemd              ~/scripts/maint/
 cp -f   "$STG"/scripts/ops/heartbeat-maint-webhook.sh ~/scripts/ops/
@@ -216,9 +218,11 @@ systemctl --user enable --now manitoba-maint-canary-movie.timer
 systemctl --user enable --now manitoba-maint-canary-anime.timer
 systemctl --user enable --now manitoba-maint-canary-deletion.timer
 systemctl --user enable --now manitoba-maint-canary-mobile-ux.timer
-# cp.ultra.cc Upgrade & Repair sweep — Mon 04:30. Don't fire immediately;
-# we explicitly want it to wait for the maintenance window.
-systemctl --user enable manitoba-maint-cp-upgrade.timer
+# UCC `app-<name> upgrade` sweep — Mon 11:30 UTC (30 min into the window).
+# --now activates the timer itself (schedules its next OnCalendar fire); it
+# does NOT trigger an immediate service run. Without --now the timer stays
+# inactive until reboot — which is what bit us on 2026-05-11.
+systemctl --user enable --now manitoba-maint-cp-upgrade.timer
 # Restart long-running services so they pick up code/manifest changes
 # (enable --now doesn't restart an already-running unit). Window timers
 # don't need a restart — next fire uses the latest code.
