@@ -79,6 +79,7 @@ INSTALL
 
 # ── Step 3: deploy unit files + ingester + canary ──────────────────────────
 log_info "deploying systemd units, ingester, and canary to seedbox"
+sshm 'mkdir -p ~/.opt/_maint_stage'
 ( cd "$REPO_ROOT" && tar -cf - \
     scripts/maint/systemd/victorialogs.service \
     scripts/maint/systemd/qflix-vlogs-ingest.service \
@@ -87,7 +88,7 @@ log_info "deploying systemd units, ingester, and canary to seedbox"
     scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.timer \
     scripts/maint/qflix-vlogs-ingest.py \
     scripts/canaries/vlogs-stall.sh \
-) | sshm 'tar -xf - -C ~/.opt/_maint_stage 2>/dev/null || (mkdir -p ~/.opt/_maint_stage && tar -xf - -C ~/.opt/_maint_stage)'
+) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
 
 sshm bash -s <<'STAGE'
 set -euo pipefail
