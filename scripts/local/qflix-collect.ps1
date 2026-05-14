@@ -272,6 +272,31 @@ function Update-StaleState {
         }
     }
 
+    # Rule 5 (meta-stuck): metaDL torrents whose metadata never resolved.
+    # Triggers when state=='metaDL' AND size_bytes==0 AND added_on >= 24h ago.
+    # Uses elapsed wall time rather than N-consecutive-samples since the
+    # "never got metadata" signature is stable across snapshots.
+    $nowEpoch = [int][DateTime]::UtcNow.Subtract([DateTime]::new(1970,1,1)).TotalSeconds
+    foreach ($t in $latestSnap.qbit.torrents) {
+        if ($t.state -ne 'metaDL') { continue }
+        if ($t.size_bytes -ne 0) { continue }
+        if (-not $t.added_on) { continue }
+        $ageSeconds = $nowEpoch - [int]$t.added_on
+        if ($ageSeconds -lt 86400) { continue }
+        $h = $t.hash
+        if ($hashes.ContainsKey($h) -and $hashes[$h].acted_on_at) { continue }
+        if ($hashes.ContainsKey($h)) { continue }
+        $hashes[$h] = @{
+            first_zero_movement_at = ([DateTime]::UtcNow.ToString("o"))
+            consecutive_zero_hours = [int]($ageSeconds / 3600)
+            last_progress          = $t.progress
+            rule_matched           = 'meta-stuck'
+            candidate_for_unstick  = $true
+            acted_on_at            = $null
+        }
+        $candidates += $h
+    }
+
     $out = @{ hashes = $hashes; updated_at = ([DateTime]::UtcNow.ToString("o")) }
     ($out | ConvertTo-Json -Depth 6) | ForEach-Object { [System.IO.File]::WriteAllText($stateFile, $_) }
     return $candidates
