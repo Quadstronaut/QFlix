@@ -122,10 +122,24 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--emit-json", action="store_true")
     g.add_argument("--cron", action="store_true")
-    ap.add_argument("--app", required=True, help="slug or 'all'")
+    ap.add_argument("--list-apps", action="store_true",
+                    help="print routing tables and exit")
+    ap.add_argument("--app", help="slug or 'all'")
     ap.add_argument("--since", default="24h")
     ap.add_argument("--tail", type=int, default=5000)
     args = ap.parse_args()
+
+    if args.list_apps:
+        out = {
+            "file_apps": sorted(_FILE_LOGS.keys()),
+            "systemd_apps": sorted(_SYSTEMD_LOGS.keys()),
+        }
+        if args.emit_json:
+            json.dump(out, sys.stdout, default=str)
+            sys.stdout.write("\n")
+        return 0
+    if not args.app:
+        ap.error("--app required (unless --list-apps)")
 
     if args.app == "all":
         apps = list(_FILE_LOGS) + list(_SYSTEMD_LOGS)
