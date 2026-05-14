@@ -77,33 +77,35 @@ def _preflight(slug: str, *, state_file: Optional[Path],
 
 def _resolve_queue_item(c: ArrClient, *, hash_: Optional[str],
                         queue_id: Optional[int]) -> dict:
-    """Find the queue item by hash or id. Returns one of:
-      {"status": "found", "queue_id": N, "title": "...", "hash": "..."}
-      {"status": "already-removed"}
-      {"status": "queue-fetch-failed", "code": N}
-    """
-    code, payload = c.get("/queue", timeout=15)
-    if code != 200 or not isinstance(payload, dict):
-        return {"status": "queue-fetch-failed", "code": code}
-    records = payload.get("records") or []
-    if hash_:
-        target = hash_.lower()
+    """Find the queue item by hash or id. Walks paginated /queue results."""
+    target_hash = hash_.lower() if hash_ else None
+    page = 1
+    seen = 0
+    while True:
+        query = f"page={page}" if page > 1 else ""
+        code, payload = c.get("/queue", query=query, timeout=15)
+        if code != 200 or not isinstance(payload, dict):
+            return {"status": "queue-fetch-failed", "code": code}
+        records = payload.get("records") or []
         for q in records:
-            if (q.get("downloadId") or "").lower() == target:
-                return {"status": "found",
-                        "queue_id": q.get("id"),
-                        "title": q.get("title", "?"),
-                        "hash": q.get("downloadId")}
-        return {"status": "already-removed"}
-    if queue_id is not None:
-        for q in records:
-            if q.get("id") == queue_id:
+            if target_hash is not None:
+                if (q.get("downloadId") or "").lower() == target_hash:
+                    return {"status": "found",
+                            "queue_id": q.get("id"),
+                            "title": q.get("title", "?"),
+                            "hash": q.get("downloadId")}
+            elif queue_id is not None and q.get("id") == queue_id:
                 return {"status": "found",
                         "queue_id": queue_id,
                         "title": q.get("title", "?"),
                         "hash": q.get("downloadId")}
-        return {"status": "already-removed"}
-    return {"status": "queue-fetch-failed", "code": 0}
+        seen += len(records)
+        total = payload.get("totalRecords", seen)
+        if seen >= total or not records:
+            return {"status": "already-removed"}
+        page += 1
+        if page > 50:  # hard safety cap
+            return {"status": "already-removed"}
 
 
 def _execute_delete(c: ArrClient, *, queue_id: int, dry_run: bool) -> dict:
