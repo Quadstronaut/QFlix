@@ -39,3 +39,25 @@ def test_parse_line_unknown_format():
     parsed = logs.parse_line("garbage", source="x")
     assert parsed["level"] == "unknown"
     assert parsed["message"] == "garbage"
+
+
+import json
+import subprocess
+
+
+LOGS_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "mcp" / "logs.py"
+
+
+def test_list_apps_returns_route_tables():
+    proc = subprocess.run(
+        ["python3", str(LOGS_SCRIPT), "--emit-json", "--list-apps"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0
+    data = json.loads(proc.stdout)
+    assert "file_apps" in data and "systemd_apps" in data
+    assert "sonarr" in data["file_apps"]
+    assert "radarr" in data["file_apps"]
+    assert "listmonk" in data["systemd_apps"]
+    assert data["file_apps"] == sorted(data["file_apps"])
+    assert data["systemd_apps"] == sorted(data["systemd_apps"])
