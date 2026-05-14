@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """qflix_mcp.py — MCP stdio server for QFlix farm inspection.
 
-Read tools operate on B:\\QFlix\\data\\ (zero seedbox traffic).
+Read tools operate on B:\\QFlix\\data\\ (zero seedbox traffic) where possible.
+qflix_get_logs proxies SSH and opportunistically write-throughs to VictoriaLogs
+so on-demand pulls also enrich the persistent index.
 Write tools proxy SSH to seedbox ~/scripts/mcp/.
-
-11 tools: 8 read + 3 write.
 """
 from __future__ import annotations
 
 import json
 import os
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +26,55 @@ from lib.cache import Cache  # noqa: E402
 from lib.ssh import ssh_call  # noqa: E402
 
 DATA_ROOT = Path(os.environ.get("QFLIX_DATA_ROOT", r"B:\QFlix\data"))
+VLOGS_URL = os.environ.get("QFLIX_VLOGS_URL", "http://127.0.0.1:9428")
+VLOGS_TIMEOUT_S = float(os.environ.get("QFLIX_VLOGS_TIMEOUT_S", "3"))
+
+
+def _ship_to_vlogs(app: str, result: dict) -> None:
+    """Opportunistic write-through. Silent on every error path —
+    log capture is best-effort enrichment, never block the read.
+
+    Per QFlix autonomy mandate: every log line pulled by hand should
+    also reach the persistent index so future questions answer locally
+    without another SSH hop.
+    """
+    if not isinstance(result, dict):
+        return
+    lines = result.get("lines") or []
+    if not lines:
+        return
+    payload_lines = []
+    for ln in lines:
+        msg = ln.get("message")
+        if not msg:
+            continue
+        payload_lines.append(json.dumps({
+            "_msg":        msg,
+            "_time":       ln.get("ts") or "",
+            "level":       ln.get("level") or "unknown",
+            "app":         app,
+            "source_file": ln.get("source_file") or "",
+            "host":        "seedbox",
+        }))
+    if not payload_lines:
+        return
+    body = ("\n".join(payload_lines)).encode("utf-8")
+    qs = urllib.parse.urlencode({
+        "_stream_fields": "host,app",
+        "_time_field":    "_time",
+        "_msg_field":     "_msg",
+    })
+    url = f"{VLOGS_URL}/insert/jsonline?{qs}"
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/stream+json"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=VLOGS_TIMEOUT_S).read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        # VictoriaLogs may be down, not yet started, or unreachable.
+        # Read path stays successful — the periodic shipper covers gaps.
+        return
 
 
 def _parse_ssh_timeout(stderr: str, default: int) -> dict:
@@ -131,6 +183,9 @@ def qflix_get_logs(app: str, since: str = "24h", tail: int = 500,
         result = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return {"status": "bad-json", "stdout": proc.stdout[:300]}
+    # Write-through to VictoriaLogs BEFORE grep so the index sees everything,
+    # not only the filtered subset the caller asked about.
+    _ship_to_vlogs(app, result)
     if grep and isinstance(result, dict) and "lines" in result:
         gl = grep.lower()
         result["lines"] = [
@@ -138,6 +193,49 @@ def qflix_get_logs(app: str, since: str = "24h", tail: int = 500,
             if gl in (ln.get("message") or "").lower()
         ]
     return result
+
+
+def qflix_query_logs(query: str, start: str = "1h",
+                     limit: int = 200) -> dict:
+    """Returns: matching log entries from the workstation-local VictoriaLogs index.
+
+    Use when: investigating across multiple apps or hours where qflix_get_logs
+    (one-shot SSH pull) is too narrow. Unlike qflix_get_logs, this hits a
+    persisted index — useful for "what was sonarr doing 3 hours ago" or
+    "show every error across the *arr stack in the last day". No SSH hop.
+
+    `query` is LogsQL. Examples:
+      - "level:ERROR"
+      - "app:radarr AND _msg:timeout"
+      - "_stream:{app=qbittorrent}"
+    `start` is a duration string ("1h", "24h", "7d") — passed through to
+    VictoriaLogs' `start` parameter, which accepts relative offsets.
+
+    Returns {"entries": [...], "count": N, "query": ...} on success or
+    {"status": "vlogs-unreachable", "error": ...} when the local server is down.
+    """
+    params = urllib.parse.urlencode({
+        "query": query,
+        "start": start,
+        "limit": int(limit),
+    })
+    url = f"{VLOGS_URL}/select/logsql/query?{params}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            raw = r.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return {"status": "vlogs-unreachable", "error": str(e),
+                "query": query}
+    entries = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return {"entries": entries, "count": len(entries), "query": query}
 
 
 def qflix_plex_libraries() -> dict:
@@ -298,6 +396,7 @@ def _build_server():
     server.tool()(qflix_torrent_history)
     server.tool()(qflix_list_stale)
     server.tool()(qflix_get_logs)
+    server.tool()(qflix_query_logs)
     server.tool()(qflix_plex_libraries)
     server.tool()(qflix_recent_events)
     server.tool()(qflix_arr_queue)
