@@ -401,6 +401,14 @@ apps:
       kind: pip_install
       venv_python: "~/.apps/python-plexapi/venv/bin/python"
       package: "plexapi"
+  qflix-missing-search:
+    class: cron
+    unit: qflix-missing-search.service
+    kuma_monitor: "Qflix Missing Search"
+    health:
+      kind: systemd_oneshot
+      unit: qflix-missing-search.service
+
 
 canaries:
   movie:
