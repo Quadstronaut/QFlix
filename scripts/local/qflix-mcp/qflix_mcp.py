@@ -110,24 +110,34 @@ def qflix_list_stale() -> list:
     return out
 
 
-def qflix_get_logs(app: str, date: Optional[str] = None,
-                   grep: Optional[str] = None, max_lines: int = 500) -> list:
-    """Returns: structured log lines for one app on one date.
+def qflix_get_logs(app: str, since: str = "24h", tail: int = 500,
+                   grep: Optional[str] = None) -> dict:
+    """Returns: structured log lines for one app via the host's logs.py.
 
-    Use when: investigating recent app behavior. Default = today (UTC).
-    `grep` filters lines containing the substring (case-insensitive).
+    Use when: investigating recent app behavior.
+    `since` accepts journalctl-style durations ("6h", "30m", "2d").
+    `grep` filters lines whose `message` contains the substring (case-insensitive).
+    Use qflix_list_log_apps() to discover valid `app` slugs.
     """
-    import datetime as dt
-    if date is None:
-        date = dt.date.today().isoformat()
-    log_file = DATA_ROOT / "logs" / date / f"{app}.log"
-    if not log_file.exists():
-        return []
-    lines = log_file.read_text(encoding="utf-8", errors="ignore").splitlines()
-    if grep:
+    cmd = (f"python3 ~/scripts/mcp/logs.py --emit-json "
+           f"--app {app} --since {since} --tail {int(tail)}")
+    proc = ssh_call(cmd, timeout=60)
+    if proc.returncode == 124:
+        return _parse_ssh_timeout(proc.stderr, default=60)
+    if proc.returncode != 0:
+        return {"status": "ssh-failed", "code": proc.returncode,
+                "stderr": proc.stderr[:300]}
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {"status": "bad-json", "stdout": proc.stdout[:300]}
+    if grep and isinstance(result, dict) and "lines" in result:
         gl = grep.lower()
-        lines = [ln for ln in lines if gl in ln.lower()]
-    return lines[-max_lines:]
+        result["lines"] = [
+            ln for ln in result["lines"]
+            if gl in (ln.get("message") or "").lower()
+        ]
+    return result
 
 
 def qflix_plex_libraries() -> dict:

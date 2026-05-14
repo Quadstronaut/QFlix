@@ -75,13 +75,60 @@ def test_list_stale_returns_candidates(tmp_path, monkeypatch):
     assert "abc" in {h["hash"] for h in out}
 
 
-def test_get_logs_returns_lines(tmp_path, monkeypatch):
-    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
-    logs = tmp_path / "logs" / "2026-05-12"
-    logs.mkdir(parents=True)
-    (logs / "sonarr.log").write_text("line1\nline2\nline3\n")
-    out = qflix_mcp.qflix_get_logs(app="sonarr", date="2026-05-12", grep=None, max_lines=10)
-    assert len(out) == 3
+@patch("qflix_mcp.ssh_call")
+def test_get_logs_returns_parsed_lines(mock_ssh):
+    fake = MagicMock()
+    fake.returncode = 0
+    fake.stdout = json.dumps({
+        "app": "sonarr",
+        "source": "/home/q/.apps/sonarr/logs/sonarr.txt",
+        "lines": [
+            {"ts": "2026-05-13T10:00:00Z", "level": "Info",
+             "message": "hello", "source_file": "sonarr.txt"},
+            {"ts": "2026-05-13T10:01:00Z", "level": "Error",
+             "message": "boom", "source_file": "sonarr.txt"},
+        ],
+    })
+    fake.stderr = ""
+    mock_ssh.return_value = fake
+    out = qflix_mcp.qflix_get_logs(app="sonarr", since="6h", tail=50)
+    assert out["app"] == "sonarr"
+    assert len(out["lines"]) == 2
+    cmd = mock_ssh.call_args[0][0]
+    assert "logs.py" in cmd and "--app sonarr" in cmd
+    assert "--since 6h" in cmd and "--tail 50" in cmd
+
+
+@patch("qflix_mcp.ssh_call")
+def test_get_logs_applies_grep_client_side(mock_ssh):
+    fake = MagicMock()
+    fake.returncode = 0
+    fake.stdout = json.dumps({
+        "app": "sonarr", "source": "x",
+        "lines": [
+            {"ts": "t", "level": "Info", "message": "hello world",
+             "source_file": "x"},
+            {"ts": "t", "level": "Error", "message": "boom",
+             "source_file": "x"},
+        ],
+    })
+    fake.stderr = ""
+    mock_ssh.return_value = fake
+    out = qflix_mcp.qflix_get_logs(app="sonarr", grep="boom")
+    assert len(out["lines"]) == 1
+    assert out["lines"][0]["message"] == "boom"
+
+
+@patch("qflix_mcp.ssh_call")
+def test_get_logs_handles_unsupported_app(mock_ssh):
+    fake = MagicMock()
+    fake.returncode = 0
+    fake.stdout = json.dumps({"app": "bogus", "error": "unsupported", "lines": []})
+    fake.stderr = ""
+    mock_ssh.return_value = fake
+    out = qflix_mcp.qflix_get_logs(app="bogus")
+    assert out.get("error") == "unsupported"
+    assert out["lines"] == []
 
 
 def test_plex_libraries(tmp_path, monkeypatch):
