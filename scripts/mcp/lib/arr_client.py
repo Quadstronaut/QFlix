@@ -21,7 +21,9 @@ def _read(p: Path) -> str:
 
 
 class ArrClient:
-    def __init__(self, slug: str, version: str, *, secrets_dir: Optional[Path] = None):
+    def __init__(self, slug: str, version: str, *,
+                 secrets_dir: Optional[Path] = None,
+                 timeout: Optional[int] = None):
         self.slug = slug
         self.version = version
         self.secrets = secrets_dir or Path(
@@ -30,6 +32,7 @@ class ArrClient:
         self.api_key = _read(self.secrets / f"{slug}.key")
         self.port = _read(self.secrets / f"{slug}.port")
         self.urlbase = _read(self.secrets / f"{slug}.urlbase") or slug
+        self._default_timeout = timeout
 
     def _url(self, path: str, query: str = "") -> str:
         qs = f"?{query}" if query else ""
@@ -56,12 +59,18 @@ class ArrClient:
         except json.JSONDecodeError:
             return code, raw
 
-    def get(self, path: str, *, query: str = "", timeout: int = 20):
-        return self._req("GET", path, query=query, timeout=timeout)
+    def get(self, path: str, *, query: str = "", timeout: Optional[int] = None):
+        return self._req("GET", path, query=query,
+                          timeout=timeout if timeout is not None
+                          else (self._default_timeout if self._default_timeout is not None else 20))
 
     def post(self, path: str, *, body: Optional[dict] = None,
-             query: str = "", timeout: int = 30):
-        return self._req("POST", path, body=body, query=query, timeout=timeout)
+             query: str = "", timeout: Optional[int] = None):
+        return self._req("POST", path, body=body, query=query,
+                          timeout=timeout if timeout is not None
+                          else (self._default_timeout if self._default_timeout is not None else 30))
 
-    def delete(self, path: str, *, query: str = "", timeout: int = 30):
-        return self._req("DELETE", path, query=query, timeout=timeout)
+    def delete(self, path: str, *, query: str = "", timeout: Optional[int] = None):
+        return self._req("DELETE", path, query=query,
+                          timeout=timeout if timeout is not None
+                          else (self._default_timeout if self._default_timeout is not None else 30))
