@@ -195,7 +195,8 @@ def qflix_list_log_apps() -> dict:
 def qflix_unstick_torrent(slug: str, queue_id: Optional[int] = None,
                           hash_: Optional[str] = None,
                           reason: str = "manual-via-mcp",
-                          dry_run: bool = False) -> dict:
+                          dry_run: bool = False,
+                          timeout: int = 120) -> dict:
     """Manually unstick one *arr queue item (DELETE+blocklist+research).
 
     Use when: a specific torrent is wedged and you want to act now without
@@ -209,7 +210,30 @@ def qflix_unstick_torrent(slug: str, queue_id: Optional[int] = None,
     if dry_run:
         args.append("--dry-run")
     cmd = "python3 ~/scripts/mcp/unstick.py --emit-json " + " ".join(args)
-    proc = ssh_call(cmd, timeout=60)
+    proc = ssh_call(cmd, timeout=timeout)
+    if proc.returncode == 124:
+        return _parse_ssh_timeout(proc.stderr, default=timeout)
+    if proc.returncode != 0:
+        return {"status": "ssh-failed", "code": proc.returncode,
+                "stderr": proc.stderr[:300]}
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {"status": "bad-json", "stdout": proc.stdout[:300]}
+
+
+def qflix_diagnose_unstick(slug: str, hash_: str) -> dict:
+    """Time each phase of unstick.py's pre-flight path. No DELETE.
+
+    Use when: unstick is hanging and you want to know which step is slow.
+    Returns {status: "diagnose", phases: {state_read_ms, queue_lookup_paged_ms,
+    queue_lookup_default_ms, hash_match_ms}, queue_size_*}.
+    """
+    cmd = (f"python3 ~/scripts/mcp/unstick.py --emit-json --diagnose "
+           f"--slug {slug} --hash {hash_}")
+    proc = ssh_call(cmd, timeout=180)
+    if proc.returncode == 124:
+        return _parse_ssh_timeout(proc.stderr, default=180)
     if proc.returncode != 0:
         return {"status": "ssh-failed", "code": proc.returncode,
                 "stderr": proc.stderr[:300]}
@@ -228,6 +252,8 @@ def qflix_trigger_missing_search(slug: Optional[str] = None) -> dict:
     args = "" if slug is None else f"--slug {slug}"
     proc = ssh_call(f"python3 ~/scripts/mcp/missing.py --emit-json {args}",
                     timeout=120)
+    if proc.returncode == 124:
+        return _parse_ssh_timeout(proc.stderr, default=120)
     if proc.returncode != 0:
         return {"status": "ssh-failed", "code": proc.returncode,
                 "stderr": proc.stderr[:300]}
@@ -245,6 +271,8 @@ def qflix_refresh_collect() -> dict:
     """
     import datetime as dt
     proc = ssh_call("python3 ~/scripts/mcp/collect.py --emit-json", timeout=90)
+    if proc.returncode == 124:
+        return _parse_ssh_timeout(proc.stderr, default=90)
     if proc.returncode != 0:
         return {"status": "ssh-failed", "code": proc.returncode,
                 "stderr": proc.stderr[:300]}
@@ -276,6 +304,7 @@ def _build_server():
     server.tool()(qflix_list_log_apps)
     # Write tools
     server.tool()(qflix_unstick_torrent)
+    server.tool()(qflix_diagnose_unstick)
     server.tool()(qflix_trigger_missing_search)
     server.tool()(qflix_refresh_collect)
     return server
