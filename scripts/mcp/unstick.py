@@ -172,6 +172,50 @@ def run(*, slug: str, queue_id: Optional[int] = None,
     return out
 
 
+def diagnose(*, slug: str, hash_: str,
+             state_file: Optional[Path] = None) -> dict:
+    """Time each phase of unstick.py's pre-flight path. No DELETE, no event."""
+    import time
+    phases: dict = {}
+
+    t0 = time.perf_counter()
+    is_arr_red(slug, state_file=state_file)
+    phases["state_read_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+
+    if slug not in ARR_VERSIONS:
+        return {"status": "diagnose", "slug": slug, "hash": hash_,
+                "phases": phases, "error": "unknown-slug"}
+
+    c = ArrClient(slug, ARR_VERSIONS[slug], timeout=30)
+
+    t0 = time.perf_counter()
+    code_p, payload_p = c.get("/queue",
+                               query="pageSize=500&includeUnknownSeriesItems=true",
+                               timeout=30)
+    phases["queue_lookup_paged_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    queue_size_paged = len((payload_p or {}).get("records") or []) if isinstance(payload_p, dict) else 0
+
+    t0 = time.perf_counter()
+    code_d, payload_d = c.get("/queue", timeout=30)
+    phases["queue_lookup_default_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    queue_size_default = len((payload_d or {}).get("records") or []) if isinstance(payload_d, dict) else 0
+
+    t0 = time.perf_counter()
+    resolved = _resolve_queue_item(c, hash_=hash_, queue_id=None)
+    phases["hash_match_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+
+    return {
+        "status": "diagnose",
+        "slug": slug, "hash": hash_,
+        "phases": phases,
+        "queue_size_paged": queue_size_paged,
+        "queue_size_default": queue_size_default,
+        "resolved_status": resolved.get("status"),
+        "queue_lookup_paged_http_code": code_p,
+        "queue_lookup_default_http_code": code_d,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     g = ap.add_mutually_exclusive_group(required=True)
@@ -182,13 +226,20 @@ def main() -> int:
     ap.add_argument("--hash")
     ap.add_argument("--reason", default="")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--diagnose", action="store_true",
+                    help="time pre-flight phases without DELETE")
     ap.add_argument("--max-actions-per-day", type=int, default=10)
     args = ap.parse_args()
-    if not args.queue_id and not args.hash:
-        ap.error("--queue-id or --hash required")
-    res = run(slug=args.slug, queue_id=args.queue_id, hash_=args.hash,
-              reason=args.reason, dry_run=args.dry_run,
-              max_actions_per_day=args.max_actions_per_day)
+    if args.diagnose:
+        if not args.hash:
+            ap.error("--hash required with --diagnose")
+        res = diagnose(slug=args.slug, hash_=args.hash)
+    else:
+        if not args.queue_id and not args.hash:
+            ap.error("--queue-id or --hash required")
+        res = run(slug=args.slug, queue_id=args.queue_id, hash_=args.hash,
+                  reason=args.reason, dry_run=args.dry_run,
+                  max_actions_per_day=args.max_actions_per_day)
     if args.emit_json:
         json.dump(res, sys.stdout, default=str)
         sys.stdout.write("\n")

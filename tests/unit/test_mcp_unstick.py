@@ -206,3 +206,28 @@ def test_already_removed_writes_event(mock_open, tmp_path, monkeypatch):
     log_files = list(events.glob("*.jsonl"))
     line = json.loads(log_files[0].read_text().strip())
     assert line["result"] == "already-removed"
+
+
+@patch("lib.arr_client.urllib.request.urlopen")
+def test_diagnose_returns_phase_timings(mock_open, tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    # The diagnose path makes 3 GET calls: legacy-shape (paged), default,
+    # and one inside _resolve_queue_item. Mock returns the same payload
+    # for all three; the test only cares about structure and timing keys.
+    mock_open.side_effect = [
+        _resp({"records": [{"id": 9, "downloadId": "ABC", "title": "T"}]}),
+        _resp({"records": [{"id": 9, "downloadId": "ABC", "title": "T"}]}),
+        _resp({"records": [{"id": 9, "downloadId": "ABC", "title": "T"}]}),
+    ]
+    out = unstick.diagnose(slug="sonarr", hash_="abc", state_file=state)
+    assert out["status"] == "diagnose"
+    assert out["slug"] == "sonarr"
+    assert "state_read_ms" in out["phases"]
+    assert "queue_lookup_paged_ms" in out["phases"]
+    assert "queue_lookup_default_ms" in out["phases"]
+    assert isinstance(out["phases"]["state_read_ms"], (int, float))
+    # No event written (diagnose is pure-read)
+    assert not list(events.glob("*.jsonl"))
