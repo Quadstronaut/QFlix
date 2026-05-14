@@ -84,3 +84,14 @@ def test_arr_client_default_timeout_unchanged(mock_open, tmp_path):
     c.get("/queue")
     _, kwargs = mock_open.call_args
     assert kwargs.get("timeout") == 20
+
+
+@patch("lib.arr_client.urllib.request.urlopen")
+def test_arr_client_instance_default_used_when_no_explicit_arg(mock_open, tmp_path):
+    resp = _resp({})
+    mock_open.return_value = resp
+    c = ArrClient("sonarr", "v3",
+                   secrets_dir=_setup_secrets(tmp_path), timeout=15)
+    c.get("/queue")
+    _, kwargs = mock_open.call_args
+    assert kwargs.get("timeout") == 15
