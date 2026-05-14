@@ -786,20 +786,20 @@ maintainerr 42007</code></pre>
 
     <section class="deck" id="sec-window">
       <h2><span class="num">8</span>Maintenance window</h2>
-      <p class="deck-sub">Mondays, 04:00&ndash;08:00 UTC. The only time the stack is allowed to break itself.</p>
+      <p class="deck-sub">Mondays, 11:00&ndash;15:00 UTC (04:00&ndash;08:00 America/Phoenix). The only time the stack is allowed to break itself.</p>
 
-      <article class="card tut" id="q-window-what-happens" data-tags="maintenance window monday upgrade recyclarr kometa buildarr cp.ultra.cc">
+      <article class="card tut" id="q-window-what-happens" data-tags="maintenance window monday upgrade recyclarr kometa buildarr ucc app-upgrade">
         <h3>What happens during the window? <a class="qhash" href="#q-window-what-happens">#</a></h3>
         <ol>
           <li>Posts &ldquo;window open&rdquo; to Discord.</li>
-          <li>Grabs <code>~/.opt/maint/window.lock</code> (a watchdog at 17:00 clears any stale lock).</li>
+          <li>Grabs <code>~/.opt/maint/window.lock</code> (a watchdog at 17:00 CEST clears any stale lock).</li>
           <li>Runs Recyclarr (TRaSH-Guide sync), Kometa (collections / posters), Buildarr (declarative *arr config).</li>
-          <li>Runs <code>manitoba-maint upgrade</code> per manifest &mdash; Playwright clicks <em>Upgrade &amp; Repair</em> on cp.ultra.cc for UCC apps, in-place tarball/zip swap for systemd apps.</li>
+          <li>At 11:30 UTC, <code>app-upgrade-all.sh</code> runs <code>app-&lt;name&gt; upgrade</code> sequentially for every installed UCC app (replaces the previous Playwright clicker as of 2026-05-13). In-place tarball/zip swap for non-UCC systemd apps.</li>
           <li>Restores prior service state from the discovery snapshot.</li>
           <li>Releases the lock + posts &ldquo;window closed&rdquo; with a summary.</li>
         </ol>
         <p>
-          Pusher auto-heal is <strong>paused</strong> for the window so restarts don't race the upgrade clicker.
+          Pusher auto-heal is <strong>paused</strong> for the window so restarts don't race the upgrade sweep.
         </p>
       </article>
 
@@ -820,7 +820,7 @@ maintainerr 42007</code></pre>
           <li>Wait until 17:00 &mdash; the watchdog will clear it.</li>
           <li>Manually: <code>rm ~/.opt/maint/window.lock</code> and post to Discord that you did it.</li>
         </ul>
-        <p>Don't kill <code>manitoba-maint-window.service</code> mid-run unless you're sure the Playwright upgrade-clicker isn't actively driving cp.ultra.cc &mdash; half-clicked upgrades are recoverable but annoying.</p>
+        <p>Don't kill <code>manitoba-maint-window.service</code> mid-run unless you're sure <code>app-upgrade-all.sh</code> isn't actively mid-upgrade &mdash; UCC's docker-based upgrades are safe to interrupt but mid-flight installers are annoying to clean up.</p>
       </article>
     </section>
 
@@ -1265,10 +1265,10 @@ maintainerr 42007</code></pre>
         </p>
       </article>
 
-      <article class="card tut" id="q-tech-automation" data-tags="playwright firefox cron systemd timers automation cp.ultra.cc mermaid bash shell">
-        <h3>The automation glue &mdash; Playwright, systemd timers, mermaid, bash <a class="qhash" href="#q-tech-automation">#</a></h3>
+      <article class="card tut" id="q-tech-automation" data-tags="cron systemd timers automation app-cli mermaid bash shell">
+        <h3>The automation glue &mdash; UCC <code>app-*</code> CLI, systemd timers, mermaid, bash <a class="qhash" href="#q-tech-automation">#</a></h3>
         <p>
-          <strong>Playwright</strong> (Microsoft) drives a real Firefox to click <em>Upgrade &amp; Repair</em> on cp.ultra.cc once a week &mdash; the only operation in QFlix that genuinely requires a browser, because Ultra.cc's control panel has no API. Runs headless under <code>cp_upgrade_clicker.py</code>.
+          <strong>UCC app-* CLI.</strong> Every UCC-managed app exposes an <code>app-&lt;name&gt;</code> command with an <code>upgrade</code> subcommand. The weekly sweep (<code>scripts/maint/app-upgrade-all.sh</code>) walks <code>~/.apps/*/</code>, calls <code>app-&lt;name&gt; upgrade</code> sequentially, and falls through a default skip list (postgres, mariadb, nginx, openvpn, tailscale, wireguard). Replaced the earlier Playwright-on-cp.ultra.cc clicker on 2026-05-13 &mdash; the CLI path is faster, has no browser dependency, and removes the AngularJS selector fragility.
         </p>
         <p>
           <strong>systemd user timers</strong> (not cron) for everything window-related, because timers handle missed runs gracefully across reboots. <strong>cron</strong> still runs a few simple hourly/nightly heartbeats. <strong>mermaid.js</strong> renders the diagrams in the README without any build step. <strong>bash</strong> for ~70% of the install / configure / smoke scripts &mdash; install scripts in <code>scripts/configure/</code> are numbered for execution order.
