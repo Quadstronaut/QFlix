@@ -49,4 +49,10 @@ def ssh_call(remote_cmd: str, *, secrets_dir: Optional[Path] = None,
         f"{user}@{host}",
         remote_cmd,
     ]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=124,
+            stdout="", stderr=f"ssh-timeout after {timeout}s",
+        )
