@@ -23,6 +23,7 @@ import argparse
 import base64
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -122,35 +123,20 @@ def _notify(msg: str, level: str = "info") -> None:
 # ----- mode: --missing ----------------------------------------------------
 
 def cmd_missing(dry_run: bool) -> int:
-    """POST /command with the *arr's MissingSearch command name on each app."""
-    print(f"--- find-missing sweep ({'DRY-RUN' if dry_run else 'LIVE'}) ---")
-    summary = []
-    for slug, ver, cmd in ARRS:
-        key = _arr_key(slug)
-        if not key:
-            print(f"  ! {slug}: no api key")
-            continue
-        url = _arr_url(slug, ver, "command")
-        if dry_run:
-            print(f"  [dry-run] would POST {cmd} -> {url}")
-            summary.append(f"{slug}: dry-run")
-            continue
-        code, body = _req("POST", url, key, {"name": cmd})
-        if code in (200, 201):
-            try:
-                cid = json.loads(body).get("id")
-            except Exception:
-                cid = "?"
-            print(f"  ✓ {slug}: queued {cmd} (commandId={cid})")
-            summary.append(f"{slug}: {cmd} ok")
-        else:
-            print(f"  ! {slug}: {cmd} HTTP {code}: {body[:150]}")
-            summary.append(f"{slug}: HTTP {code}")
-    _notify(
-        "find-missing sweep complete:\n" + "\n".join(summary),
-        level="info" if all("ok" in s or "dry-run" in s for s in summary) else "warning",
+    """Delegates to scripts/mcp/missing.py to keep one source of truth."""
+    if dry_run:
+        print("--- find-missing sweep (DRY-RUN, delegated to mcp/missing.py) ---")
+        return 0
+    here = Path(__file__).resolve().parent
+    mcp = here.parent / "mcp" / "missing.py"
+    proc = subprocess.run(
+        ["python3", str(mcp), "--emit-json"],
+        capture_output=True, text=True, timeout=120,
     )
-    return 0
+    print(proc.stdout)
+    if proc.returncode != 0:
+        print(proc.stderr, file=sys.stderr)
+    return proc.returncode
 
 
 # ----- mode: --unstick ----------------------------------------------------
