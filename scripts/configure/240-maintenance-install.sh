@@ -107,6 +107,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-deletion.timer \
     scripts/maint/systemd/manitoba-maint-canary-mobile-ux.service \
     scripts/maint/systemd/manitoba-maint-canary-mobile-ux.timer \
+    scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.service \
+    scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.timer \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.service \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.timer \
     scripts/maint/app-upgrade-all.sh \
@@ -203,6 +205,8 @@ for unit in \
     manitoba-maint-canary-deletion.timer \
     manitoba-maint-canary-mobile-ux.service \
     manitoba-maint-canary-mobile-ux.timer \
+    manitoba-maint-canary-vlogs-stall.service \
+    manitoba-maint-canary-vlogs-stall.timer \
     manitoba-maint-cp-upgrade.service \
     manitoba-maint-cp-upgrade.timer; do
   cp -f ~/scripts/maint/systemd/$unit ~/.config/systemd/user/$unit
@@ -218,6 +222,10 @@ systemctl --user enable --now manitoba-maint-canary-movie.timer
 systemctl --user enable --now manitoba-maint-canary-anime.timer
 systemctl --user enable --now manitoba-maint-canary-deletion.timer
 systemctl --user enable --now manitoba-maint-canary-mobile-ux.timer
+# vlogs-stall canary: requires victorialogs.service (deployed by 80-vlogs-install.sh).
+# enable --now is safe even if vlogs isn't running yet — the canary script will
+# exit with vlogs-down/no-ingest and push the right status to Kuma.
+systemctl --user enable --now manitoba-maint-canary-vlogs-stall.timer
 # UCC `app-<name> upgrade` sweep — Mon 11:30 UTC (30 min into the window).
 # --now activates the timer itself (schedules its next OnCalendar fire); it
 # does NOT trigger an immediate service run. Without --now the timer stays

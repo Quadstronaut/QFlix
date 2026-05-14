@@ -1,0 +1,16 @@
+[Unit]
+Description=VictoriaLogs — single-binary log aggregator (QFlix observability)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HOME=%h
+ExecStart=/bin/sh -c 'exec %h/.apps/vlogs/bin/victoria-logs-prod -storageDataPath=%h/.apps/vlogs/data -httpListenAddr=127.0.0.1:$(cat %h/secrets/vlogs.port) -retentionPeriod=90d -loggerOutput=stderr'
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

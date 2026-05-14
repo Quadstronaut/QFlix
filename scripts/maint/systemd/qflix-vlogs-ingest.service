@@ -1,0 +1,10 @@
+[Unit]
+Description=QFlix vlogs ingest — tail managed app logs into VictoriaLogs
+After=network-online.target victorialogs.service
+Requires=victorialogs.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/scripts/maint/qflix-vlogs-ingest.py --window 6m --tail 5000
+StandardOutput=journal
+StandardError=journal
