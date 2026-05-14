@@ -55,3 +55,32 @@ def test_delete_with_query(mock_open, tmp_path):
     sent = mock_open.call_args[0][0]
     assert sent.full_url.endswith("/sonarr/api/v3/queue/42?removeFromClient=true&blocklist=true")
     assert sent.method == "DELETE"
+
+
+def _setup_secrets(tmp_path: Path) -> Path:
+    s = tmp_path / "secrets"
+    s.mkdir()
+    (s / "sonarr.key").write_text("K")
+    (s / "sonarr.port").write_text("17026")
+    (s / "sonarr.urlbase").write_text("sonarr")
+    return s
+
+
+@patch("urllib.request.urlopen")
+def test_arr_client_passes_explicit_timeout(mock_open, tmp_path):
+    resp = _resp({"records": []})
+    mock_open.return_value = resp
+    c = ArrClient("sonarr", "v3", secrets_dir=_setup_secrets(tmp_path), timeout=7)
+    c.get("/queue")
+    _, kwargs = mock_open.call_args
+    assert kwargs.get("timeout") == 7
+
+
+@patch("urllib.request.urlopen")
+def test_arr_client_default_timeout_unchanged(mock_open, tmp_path):
+    resp = _resp({})
+    mock_open.return_value = resp
+    c = ArrClient("sonarr", "v3", secrets_dir=_setup_secrets(tmp_path))
+    c.get("/queue")
+    _, kwargs = mock_open.call_args
+    assert kwargs.get("timeout") == 20
