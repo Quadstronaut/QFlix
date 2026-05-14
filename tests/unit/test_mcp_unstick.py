@@ -25,7 +25,7 @@ def _setup(tmp_path: Path):
     (s / "sonarr.port").write_text("17026")
     (s / "sonarr.urlbase").write_text("sonarr")
     state = tmp_path / "state.json"
-    state.write_text(json.dumps({"monitors": {"Sonarr": {"status": "up"}}}))
+    state.write_text(json.dumps({"apps": {"sonarr": {"final_health": "ok", "kuma_status": "up"}}}))
     events = tmp_path / "events"; events.mkdir()
     return s, state, events
 
@@ -54,7 +54,7 @@ def test_unstick_happy_path(mock_open, tmp_path, monkeypatch):
 
 def test_refuse_when_arr_red(tmp_path, monkeypatch):
     secrets, state, events = _setup(tmp_path)
-    state.write_text(json.dumps({"monitors": {"Sonarr": {"status": "down"}}}))
+    state.write_text(json.dumps({"apps": {"sonarr": {"final_health": "down", "kuma_status": "n/a"}}}))
     monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
     monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
     import importlib; importlib.reload(unstick)
@@ -106,7 +106,7 @@ def test_preflight_returns_unknown_slug():
 
 def test_preflight_returns_red(tmp_path, monkeypatch):
     secrets, state, events = _setup(tmp_path)
-    state.write_text(json.dumps({"monitors": {"Sonarr": {"status": "down"}}}))
+    state.write_text(json.dumps({"apps": {"sonarr": {"final_health": "down", "kuma_status": "n/a"}}}))
     monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
     monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
     import importlib; importlib.reload(unstick)
@@ -169,7 +169,7 @@ def test_execute_delete_dry_run(tmp_path, monkeypatch):
 
 def test_refused_arr_red_writes_event(tmp_path, monkeypatch):
     secrets, state, events = _setup(tmp_path)
-    state.write_text(json.dumps({"monitors": {"Sonarr": {"status": "down"}}}))
+    state.write_text(json.dumps({"apps": {"sonarr": {"final_health": "down", "kuma_status": "n/a"}}}))
     monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
     monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
     import importlib; importlib.reload(unstick)
