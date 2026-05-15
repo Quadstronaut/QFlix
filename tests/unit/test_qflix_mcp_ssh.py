@@ -31,6 +31,21 @@ def test_ssh_call_builds_cmd(mock_run, tmp_path):
 
 
 @patch("subprocess.run")
+def test_ssh_call_uses_devnull_stdin(mock_run, tmp_path):
+    """Child ssh must not inherit MCP server's JSON-RPC stdin pipe."""
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "seedbox.ssh-host").write_text("h")
+    fake = MagicMock()
+    fake.returncode = 0
+    fake.stdout = ""
+    fake.stderr = ""
+    mock_run.return_value = fake
+    ssh_call("true", secrets_dir=secrets)
+    assert mock_run.call_args.kwargs["stdin"] == subprocess.DEVNULL
+
+
+@patch("subprocess.run")
 def test_ssh_call_propagates_nonzero(mock_run, tmp_path):
     secrets = tmp_path / "secrets"
     secrets.mkdir()

@@ -50,7 +50,8 @@ def ssh_call(remote_cmd: str, *, secrets_dir: Optional[Path] = None,
         remote_cmd,
     ]
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(
             args=cmd, returncode=124,
