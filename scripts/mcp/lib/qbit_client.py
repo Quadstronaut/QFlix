@@ -67,3 +67,25 @@ class QbitClient:
                 return json.loads(resp.read().decode() or "[]")
         except (urllib.error.URLError, json.JSONDecodeError):
             return []
+
+    def delete_torrent(self, hash_: str, *, delete_files: bool = True) -> bool:
+        """Remove a torrent from qBit. Used by unstick.py as the fallback when
+        an *arr has already cleaned the queue entry but qBit still holds the
+        stuck download. Returns True on 200, False otherwise."""
+        if not self._sid or not hash_:
+            return False
+        data = urllib.parse.urlencode({
+            "hashes": hash_.lower(),
+            "deleteFiles": "true" if delete_files else "false",
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.host}/api/v2/torrents/delete",
+            data=data,
+            headers={"Cookie": f"SID={self._sid}",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return 200 <= resp.status < 300
+        except urllib.error.URLError:
+            return False

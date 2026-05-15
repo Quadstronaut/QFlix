@@ -34,6 +34,7 @@ sys.path.insert(0, str(HERE.parent / "maint"))
 
 from lib.arr_client import ArrClient  # noqa: E402
 from lib.maint_state import is_arr_red       # noqa: E402
+from lib.qbit_client import QbitClient       # noqa: E402
 
 EVENTS_DIR = Path(os.environ.get(
     "QFLIX_MCP_EVENTS", str(Path.home() / "scripts" / "mcp" / "events")
@@ -122,6 +123,54 @@ def _execute_delete(c: ArrClient, *, queue_id: int, dry_run: bool) -> dict:
     return {"status": "delete-failed", "code": code}
 
 
+def _auto_detect_slug(hash_: Optional[str]) -> Optional[str]:
+    """Look up the qBit torrent for `hash_` and return its category as the
+    candidate *arr slug. Used when callers don't pass --slug (autonomous
+    qflix-collect path). Returns None if qBit doesn't have the hash or the
+    category isn't a known *arr."""
+    if not hash_:
+        return None
+    c = QbitClient()
+    if not c.login():
+        return None
+    target = hash_.lower()
+    hit = next((t for t in c.list_torrents()
+                if (t.get("hash") or "").lower() == target), None)
+    if not hit:
+        return None
+    cat = (hit.get("category") or "").strip().lower()
+    return cat if cat in ARR_VERSIONS else None
+
+
+def _try_qbit_orphan_cleanup(hash_: Optional[str], *, dry_run: bool) -> dict:
+    """Fallback for the case where the *arr's queue no longer holds the hash
+    (already-removed from *arr) but qBit still does. Without this, the
+    candidate fires hourly forever — *arr has nothing to delete, so qBit's
+    orphan torrent stays put. Returns one of:
+      - qbit-orphan-removed       qBit had it, we deleted it
+      - already-fully-removed     neither *arr nor qBit had it
+      - qbit-login-failed         qBit auth refused (creds wrong / qBit down)
+      - qbit-delete-failed        qBit auth ok but DELETE returned non-2xx
+      - no-hash-for-qbit-lookup   caller invoked us without a hash to match
+    """
+    if not hash_:
+        return {"status": "no-hash-for-qbit-lookup"}
+    c = QbitClient()
+    if not c.login():
+        return {"status": "qbit-login-failed"}
+    target = hash_.lower()
+    hit = next((t for t in c.list_torrents()
+                if (t.get("hash") or "").lower() == target), None)
+    if not hit:
+        return {"status": "already-fully-removed"}
+    if dry_run:
+        return {"status": "dry-run-qbit-orphan",
+                "qbit_title": hit.get("name", "?")[:80]}
+    ok = c.delete_torrent(target, delete_files=True)
+    return {"status": "qbit-orphan-removed" if ok else "qbit-delete-failed",
+            "qbit_title": hit.get("name", "?")[:80]}
+
+
 def _record_event(*, slug: str, queue_id: Optional[int], hash_: Optional[str],
                   title: str, reason: str, result_status: str) -> None:
     _append_event({
@@ -138,10 +187,22 @@ def _record_event(*, slug: str, queue_id: Optional[int], hash_: Optional[str],
     })
 
 
-def run(*, slug: str, queue_id: Optional[int] = None,
+def run(*, slug: Optional[str] = None, queue_id: Optional[int] = None,
         hash_: Optional[str] = None, reason: str = "",
         dry_run: bool = False, max_actions_per_day: int = 10,
         state_file: Optional[Path] = None) -> dict:
+    # If caller didn't tell us which *arr to consult, use qBit's category tag
+    # on the torrent. The autonomous qflix-collect path uses this hatch.
+    if slug is None:
+        slug = _auto_detect_slug(hash_)
+        if slug is None:
+            # No slug, no qBit hit either → orphan in neither plane.
+            fallback = _try_qbit_orphan_cleanup(hash_, dry_run=dry_run)
+            _record_event(slug="<auto>", queue_id=queue_id, hash_=hash_,
+                           title=fallback.get("qbit_title", "?"), reason=reason,
+                           result_status=fallback["status"])
+            return fallback
+
     refusal = _preflight(slug, state_file=state_file,
                           max_actions_per_day=max_actions_per_day)
     if refusal is not None:
@@ -152,6 +213,17 @@ def run(*, slug: str, queue_id: Optional[int] = None,
 
     c = ArrClient(slug, ARR_VERSIONS[slug], timeout=15)
     resolved = _resolve_queue_item(c, hash_=hash_, queue_id=queue_id)
+
+    if resolved["status"] == "already-removed":
+        # *arr has nothing to delete. If qBit still has the hash, it's an
+        # orphan we have to clean up directly — otherwise the candidate will
+        # fire every hour with no effect.
+        fallback = _try_qbit_orphan_cleanup(hash_, dry_run=dry_run)
+        _record_event(slug=slug, queue_id=queue_id, hash_=hash_,
+                       title=fallback.get("qbit_title", "?"), reason=reason,
+                       result_status=fallback["status"])
+        return fallback
+
     if resolved["status"] != "found":
         _record_event(slug=slug, queue_id=queue_id, hash_=hash_,
                        title="?", reason=reason,
@@ -164,6 +236,16 @@ def run(*, slug: str, queue_id: Optional[int] = None,
 
     action = _execute_delete(c, queue_id=actual_qid, dry_run=dry_run)
     final_status = action["status"]
+
+    if final_status == "already-removed":
+        # Race: queue_item disappeared between lookup and DELETE. Try the qBit
+        # fallback path so we don't leave a candidate stuck in limbo.
+        fallback = _try_qbit_orphan_cleanup(hash_, dry_run=dry_run)
+        _record_event(slug=slug, queue_id=actual_qid, hash_=hash_,
+                       title=title, reason=reason,
+                       result_status=fallback["status"])
+        return fallback
+
     _record_event(slug=slug, queue_id=actual_qid, hash_=hash_,
                    title=title, reason=reason,
                    result_status=final_status)
@@ -223,7 +305,9 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--emit-json", action="store_true")
     g.add_argument("--cron", action="store_true")
-    ap.add_argument("--slug", required=True)
+    ap.add_argument("--slug",
+                    help="*arr to consult. If omitted, auto-detected from "
+                         "qBit's category field for the given hash.")
     ap.add_argument("--queue-id", type=int)
     ap.add_argument("--hash")
     ap.add_argument("--reason", default="")
@@ -235,6 +319,8 @@ def main() -> int:
     if args.diagnose:
         if not args.hash:
             ap.error("--hash required with --diagnose")
+        if not args.slug:
+            ap.error("--slug required with --diagnose")
         res = diagnose(slug=args.slug, hash_=args.hash)
     else:
         if not args.queue_id and not args.hash:
