@@ -313,6 +313,13 @@ function Act-On-Candidates {
     param([string[]]$candidates)
     $acted = @()
     $count = Count-TodaysActions
+    # Statuses that mean "we either resolved or proved nothing's left to do"
+    # — stamp acted_on_at so the candidate stops firing every hour.
+    $terminalStatuses = @(
+        'deleted+blocklisted',
+        'qbit-orphan-removed',
+        'already-fully-removed'
+    )
     foreach ($h in $candidates) {
         if ($count -ge $MaxActionsPerDay) { break }
         $r = Invoke-SSH "python3 ~/scripts/mcp/unstick.py --emit-json --hash $h --reason '3h-zero-movement'" 60
@@ -329,10 +336,28 @@ function Act-On-Candidates {
             hash = $h; result = $result.status; via = "qflix-collect.ps1"
         } | ConvertTo-Json -Compress
         Add-Content -Path (Join-Path $eventDir "$today.jsonl") -Value $line -Encoding utf8
+        if ($terminalStatuses -contains $result.status) {
+            Stamp-ActedOn $h
+        }
         $acted += $h
         $count++
     }
     return $acted
+}
+
+function Stamp-ActedOn {
+    param([string]$hash)
+    $stateFile = Join-Path $DataRoot "stale-state.json"
+    if (-not (Test-Path $stateFile)) { return }
+    try {
+        $loaded = Get-Content $stateFile -Raw | ConvertFrom-Json
+    } catch { return }
+    if (-not $loaded.hashes.PSObject.Properties[$hash]) { return }
+    $loaded.hashes.$hash | Add-Member -Force -NotePropertyName 'acted_on_at' `
+        -NotePropertyValue ([DateTime]::UtcNow.ToString("o"))
+    ($loaded | ConvertTo-Json -Depth 6) | ForEach-Object {
+        [System.IO.File]::WriteAllText($stateFile, $_)
+    }
 }
 
 function Prune-Retention {

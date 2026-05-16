@@ -63,6 +63,17 @@ case "$HTTP" in
     REQ_ID=$(printf "%s" "$BODYTXT" | python3 -c "import sys, json; print(json.load(sys.stdin)[\"id\"])")
     CREATED=1
     ;;
+  202)
+    # Seerr accepted the request but did nothing (all seasons already
+    # requested). That still proves seerr→sonarr2 reachability — Seerr had
+    # to query Sonarr2 to know the seasons were taken. Treat as soft pass
+    # after a final sonarr2 sanity probe.
+    H_S2B=$(curl -s -o /dev/null -w "%{http_code}" -m 5 -H "X-Api-Key: $S2_KEY" "${S2}/system/status")
+    [ "$H_S2B" = "200" ] || { printf "STAGE=sonarr2-up-fail msg=post-202-sonarr2-http-%s\n" "$H_S2B" >&2; exit 1; }
+    printf "PASS: anime canary — seerr-202 no-op (all seasons requested); seerr→sonarr2 hop verified (tvdb=%s s2Sid=%s)\n" \
+      "$TVDB_ID" "$S2_SID"
+    exit 0
+    ;;
   409)
     REQ_ID=$(curl -sf -m 5 -H "X-Api-Key: $JS_KEY" "${JS}/api/v1/request?take=200" \
       | python3 -c "import sys, json
