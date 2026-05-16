@@ -458,3 +458,11 @@ canaries:
     kuma_monitor: "Canary VLogs Stall"
     script: "scripts/canaries/vlogs-stall.sh"
     schedule: "every-15min"
+  kometa-libraries:
+    # Config-drift detector: every kometa-configured library must exist on
+    # the live Plex server. Catches the May-2026 incident class where Plex
+    # libraries were renamed (Pirate Movies → QFlix - Movies) and kometa
+    # silently failed every run until next operator review.
+    kuma_monitor: "Canary Kometa Libraries"
+    script: "scripts/canaries/kometa-libraries.sh"
+    schedule: "hourly"
