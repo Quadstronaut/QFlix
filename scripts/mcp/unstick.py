@@ -44,6 +44,16 @@ ARR_VERSIONS = {
     "sonarr": "v3", "sonarr2": "v3", "radarr": "v3", "radarr2": "v3",
 }
 
+# Results that actually consumed an *arr/qBit action slot. The daily cap
+# counts only these — refusals (cap-hit, arr-red, unknown-slug) are still
+# appended to the events file for audit but must not gate the next attempt,
+# or a single orphan that fires hourly self-traps the counter the moment
+# the real cap is hit (each refusal append re-counts and re-refuses).
+_EFFECTIVE_STATUSES = frozenset({
+    "deleted+blocklisted",
+    "qbit-orphan-removed",
+})
+
 
 def _today_events_path() -> Path:
     return EVENTS_DIR / f"{dt.date.today().isoformat()}.jsonl"
@@ -53,7 +63,18 @@ def _count_today() -> int:
     p = _today_events_path()
     if not p.exists():
         return 0
-    return sum(1 for _ in p.read_text().splitlines() if _.strip())
+    count = 0
+    for raw in p.read_text().splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("result") in _EFFECTIVE_STATUSES:
+            count += 1
+    return count
 
 
 def _append_event(line: dict) -> None:

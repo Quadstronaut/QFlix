@@ -190,7 +190,13 @@ def _journalctl(unit: str, since: str, n: int) -> list[str]:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
         return []
-    return proc.stdout.splitlines() if proc.returncode == 0 else []
+    if proc.returncode != 0:
+        return []
+    # journalctl prints "-- No entries --" when the window is empty. That
+    # placeholder line has no semantic value and otherwise lands in vlogs
+    # as level=unknown noise.
+    return [ln for ln in proc.stdout.splitlines()
+            if ln.strip() != "-- No entries --"]
 
 
 def collect_for(app: str, *, since: str, tail: int) -> dict:

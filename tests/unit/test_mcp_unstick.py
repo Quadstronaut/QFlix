@@ -71,7 +71,12 @@ def test_refuse_when_daily_cap_hit(mock_open, tmp_path, monkeypatch):
     monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
     import importlib; importlib.reload(unstick)
     today = events / f"{dt.date.today().isoformat()}.jsonl"
-    today.write_text("\n".join('{"action":"unstick"}' for _ in range(10)) + "\n")
+    # Only entries with an effective result (deleted+blocklisted /
+    # qbit-orphan-removed) count toward the cap — refusals do not, otherwise
+    # the cap self-traps.
+    today.write_text("\n".join(
+        '{"action":"unstick","result":"deleted+blocklisted"}' for _ in range(10)
+    ) + "\n")
     res = unstick.run(slug="sonarr", queue_id=42, reason="t", dry_run=False,
                       max_actions_per_day=10, state_file=state)
     assert res["status"] == "refused-cap-hit"
@@ -83,11 +88,14 @@ def test_idempotent_on_already_removed(mock_open, tmp_path, monkeypatch):
     monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
     monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
     import importlib; importlib.reload(unstick)
-    # Queue lookup returns empty, DELETE never happens
+    # Queue lookup returns empty → already-removed → falls through to qBit
+    # orphan cleanup. With no hash to look up, that short-circuits to
+    # no-hash-for-qbit-lookup. Either way no DELETE is issued — that's
+    # what "idempotent" means here.
     mock_open.return_value = _resp({"records": []})
     res = unstick.run(slug="sonarr", queue_id=42, reason="t", dry_run=False,
                       state_file=state)
-    assert res["status"] == "already-removed"
+    assert res["status"] == "no-hash-for-qbit-lookup"
 
 
 def test_preflight_passes_when_clean(tmp_path, monkeypatch):
@@ -188,11 +196,70 @@ def test_refused_cap_hit_writes_event(tmp_path, monkeypatch):
     monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
     import importlib; importlib.reload(unstick)
     today = events / f"{dt_.date.today().isoformat()}.jsonl"
-    today.write_text("\n".join('{"action":"unstick"}' for _ in range(10)) + "\n")
+    today.write_text("\n".join(
+        '{"action":"unstick","result":"deleted+blocklisted"}' for _ in range(10)
+    ) + "\n")
     unstick.run(slug="sonarr", queue_id=42, reason="t",
                 max_actions_per_day=10, state_file=state)
     line = json.loads(today.read_text().splitlines()[-1])
     assert line["result"] == "refused-cap-hit"
+
+
+def test_count_today_ignores_refusals(tmp_path, monkeypatch):
+    """Refusals are recorded for audit but don't gate the next attempt.
+
+    Confirmed empirically: ~/scripts/mcp/events/2026-05-15.jsonl grew to
+    32 lines under a cap of 10 because each refused-cap-hit retry was
+    appended, then re-counted, then refused again — self-trapping the
+    counter for the rest of the day.
+    """
+    import datetime as dt_
+    _, _, events = _setup(tmp_path)
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    today = events / f"{dt_.date.today().isoformat()}.jsonl"
+    today.write_text("\n".join([
+        '{"result":"refused-cap-hit"}',
+        '{"result":"refused-arr-red"}',
+        '{"result":"refused-unknown-slug"}',
+        '{"result":"already-removed"}',
+        '{"result":"already-fully-removed"}',
+        '{"result":"qbit-login-failed"}',
+        '{"result":"qbit-delete-failed"}',
+        '{"result":"delete-failed"}',
+    ]) + "\n")
+    assert unstick._count_today() == 0
+
+
+def test_count_today_counts_effective_only(tmp_path, monkeypatch):
+    import datetime as dt_
+    _, _, events = _setup(tmp_path)
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    today = events / f"{dt_.date.today().isoformat()}.jsonl"
+    today.write_text("\n".join([
+        '{"result":"deleted+blocklisted"}',
+        '{"result":"refused-cap-hit"}',
+        '{"result":"qbit-orphan-removed"}',
+        '{"result":"refused-cap-hit"}',
+        '{"result":"deleted+blocklisted"}',
+    ]) + "\n")
+    assert unstick._count_today() == 3
+
+
+def test_count_today_skips_malformed_lines(tmp_path, monkeypatch):
+    import datetime as dt_
+    _, _, events = _setup(tmp_path)
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    today = events / f"{dt_.date.today().isoformat()}.jsonl"
+    today.write_text(
+        "not even json\n"
+        "\n"
+        '{"result":"deleted+blocklisted"}\n'
+        '{"result":"refused-cap-hit"}\n'
+    )
+    assert unstick._count_today() == 1
 
 
 @patch("lib.arr_client.urllib.request.urlopen")
@@ -202,10 +269,12 @@ def test_already_removed_writes_event(mock_open, tmp_path, monkeypatch):
     monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
     import importlib; importlib.reload(unstick)
     mock_open.return_value = _resp({"records": []})
+    # *arr says already-removed → qBit fallback runs; with no real qBit in
+    # the test env, login fails. The event must still be recorded.
     unstick.run(slug="sonarr", hash_="dead", reason="t", state_file=state)
     log_files = list(events.glob("*.jsonl"))
     line = json.loads(log_files[0].read_text().strip())
-    assert line["result"] == "already-removed"
+    assert line["result"] == "qbit-login-failed"
 
 
 @patch("lib.arr_client.urllib.request.urlopen")
