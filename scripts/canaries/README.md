@@ -22,13 +22,15 @@ request id and skips the cleanup step.
 
 ## Files
 
-- `movie.sh`           — Seerr → Radarr push test (creates+deletes a request, verifies externalServiceId)
-- `anime.sh`           — Seerr → Sonarr2 push test (same pattern, tv mediaType, seasons:[1])
-- `deletion.sh`        — verify the 4 Maintainerr 60-day rules exist and are active
-- `mobile-ux.sh`       — render-time check on the Homarr public board
-- `vlogs-stall.sh`     — VictoriaLogs reachable + non-zero ingest in last 15 min
-- `qbit-stall.sh`      — qBittorrent has had a state change in the last N hours
-- `kometa-libraries.sh` — every kometa-configured Plex library still exists in Plex (config-drift guard)
+- `movie.sh`              — Seerr → Radarr push test (creates+deletes a request, verifies externalServiceId)
+- `anime.sh`              — Seerr → Sonarr2 push test (same pattern, tv mediaType, seasons:[1])
+- `deletion.sh`           — verify the 4 Maintainerr 60-day rules exist under canonical QFlix names and are active
+- `mobile-ux.sh`          — render-time check on the Homarr public board
+- `vlogs-stall.sh`        — VictoriaLogs reachable + non-zero ingest in last 15 min
+- `qbit-stall.sh`         — qBittorrent has had a state change in the last N hours
+- `kometa-libraries.sh`   — every kometa-configured Plex library still exists in Plex (semantic config-drift guard)
+- `kometa-deploy-drift.sh` — deployed kometa config.yml `libraries:` set matches what scripts/configure/55-kometa-install.sh would render (textual drift guard)
+- `stale-log-watchdog.sh` — timer-driven app logs (kometa daily, recyclarr weekly, buildarr daily) are still being written on schedule
 
 ## Stage labels (failure messages on stderr → Kuma `msg=`)
 
@@ -38,9 +40,12 @@ request id and skips the cleanup step.
 - `arr-not-populated` — externalServiceId stayed null after 30s of polling
 - `verify-fail` — externalServiceId did not match the *arr's id for the seed
 - `cleanup-fail` — DELETE request returned non-2xx (warned to stderr, probe still passes)
-- `kometa-config-missing` / `kometa-config-parse-fail` — kometa-libraries: can't read/parse config.yml
+- `kometa-config-missing` / `kometa-config-parse-fail` — kometa-libraries / kometa-deploy-drift: can't read/parse config.yml
 - `plex-up-fail` / `plex-libraries-fetch-fail` — kometa-libraries: Plex API unreachable or no library list
-- `library-drift` — kometa-libraries: at least one kometa-configured library doesn't exist in Plex (Plex rename happened, kometa not updated)
+- `library-drift` — kometa-libraries: at least one kometa-configured library doesn't exist in Plex
+- `install-script-parse-fail` — kometa-deploy-drift: can't read the install script's library list
+- `deploy-drift` — kometa-deploy-drift: deployed config's library set differs from what scripts/configure/55-kometa-install.sh would render
+- `log-stale` / `log-missing-<app>` — stale-log-watchdog: a timer-driven app's log file mtime exceeds its expected cadence, or the log is missing entirely
 
 ## Exit codes
 

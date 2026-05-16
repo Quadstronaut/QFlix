@@ -52,15 +52,28 @@ if ! curl -sf -m 8 -H "Accept: application/json" \
   exit 1
 fi
 
-# Hand kometa config + Plex sections JSON to python via two argv paths.
-# Stdlib only; the seedbox python3 has no yaml package, so we lex the
-# libraries: block by hand. The heredoc and stdin would collide if we
-# piped JSON in — passing both inputs as files avoids that.
-DRIFT=$(python3 - "$KOMETA_CFG" "$SECTIONS_FILE" <<"PYEOF"
+# Pick the most robust YAML parser available. Prefer the kometa venv
+# (ruamel.yaml is guaranteed to handle anything kometa itself accepts);
+# fall back to system python3 if pyyaml is installed; fall back to a
+# hand-rolled lexer otherwise. NB: apostrophes anywhere inside this
+# sshm SINGLE-quoted block would terminate the outer string prematurely.
+KOMETA_VENV_PY=$HOME/.apps/kometa/venv/bin/python
+if [ -x "$KOMETA_VENV_PY" ] && "$KOMETA_VENV_PY" -c "import ruamel.yaml" >/dev/null 2>&1; then
+  PARSER_PY="$KOMETA_VENV_PY"
+  PARSER_KIND="ruamel"
+elif python3 -c "import yaml" >/dev/null 2>&1; then
+  PARSER_PY="python3"
+  PARSER_KIND="pyyaml"
+else
+  PARSER_PY="python3"
+  PARSER_KIND="lex"
+fi
+
+DRIFT=$("$PARSER_PY" - "$KOMETA_CFG" "$SECTIONS_FILE" "$PARSER_KIND" <<"PYEOF"
 import json
 import sys
 
-cfg_path, sections_path = sys.argv[1], sys.argv[2]
+cfg_path, sections_path, parser_kind = sys.argv[1], sys.argv[2], sys.argv[3]
 
 try:
     with open(sections_path, encoding="utf-8") as fh:
@@ -77,31 +90,78 @@ if not plex_titles:
           file=sys.stderr)
     sys.exit(2)
 
-# 2. Kometa side — lex the libraries: block, collect 2-space-indented keys
-# until we exit the block (top-level key or EOF). Simple, no yaml dep.
-kometa_libs = []
-in_libs = False
-with open(cfg_path, encoding="utf-8") as fh:
-    for raw in fh:
-        line = raw.rstrip("\n")
-        if line.startswith("#") or not line.strip():
-            continue
-        if line == "libraries:":
-            in_libs = True
-            continue
-        if not in_libs:
-            continue
-        # Exited libraries: a non-indented, non-comment line (next top-level key)
-        if line and not line.startswith(" "):
-            break
-        # A 2-space-indented "Name:" is a library key.
-        if line.startswith("  ") and not line.startswith("   "):
-            inner = line[2:]
-            if inner.endswith(":") and not inner.lstrip().startswith("-"):
-                kometa_libs.append(inner[:-1].strip())
+
+def _libs_via_ruamel(path: str):
+    from ruamel.yaml import YAML  # type: ignore
+    y = YAML(typ="safe")
+    with open(path, encoding="utf-8") as fh:
+        doc = y.load(fh)
+    libs = (doc or {}).get("libraries") or {}
+    return list(libs.keys()) if isinstance(libs, dict) else []
+
+
+def _libs_via_pyyaml(path: str):
+    import yaml  # type: ignore
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+    libs = (doc or {}).get("libraries") or {}
+    return list(libs.keys()) if isinstance(libs, dict) else []
+
+
+def _libs_via_lex(path: str):
+    # Fallback when no YAML library is present. Reads the libraries:
+    # block expecting kometa canonical 2-space indent. Handles common
+    # edge cases: trailing space on `libraries:`, indented comments,
+    # blank lines, simple quoted keys. (Docstring intentionally avoided
+    # because the whole script is wrapped in single-quoted sshm.)
+    libs = []
+    in_libs = False
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.rstrip("\n")
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            # Detect entry into the libraries: block, tolerating trailing
+            # whitespace, comments, or `libraries: ` (any value form is
+            # kometa-invalid but we should still handle it gracefully).
+            if not in_libs:
+                bare = line.split("#", 1)[0].rstrip()
+                if bare == "libraries:":
+                    in_libs = True
+                continue
+            # A top-level (non-indented) key ends the libraries: block.
+            if line and not line[0].isspace():
+                break
+            # 2-space-indented entry: library key.
+            if line.startswith("  ") and not line.startswith("   "):
+                inner = line[2:].split("#", 1)[0].rstrip()
+                if inner.endswith(":") and not inner.lstrip().startswith("-"):
+                    name = inner[:-1].strip()
+                    # Strip surrounding quotes if present. Use chr() so
+                    # no literal apostrophe appears in this source — the
+                    # outer sshm wrapper is single-quoted bash.
+                    if len(name) >= 2 and name[0] == name[-1] and name[0] in (chr(34), chr(39)):
+                        name = name[1:-1]
+                    if name:
+                        libs.append(name)
+    return libs
+
+
+try:
+    if parser_kind == "ruamel":
+        kometa_libs = _libs_via_ruamel(cfg_path)
+    elif parser_kind == "pyyaml":
+        kometa_libs = _libs_via_pyyaml(cfg_path)
+    else:
+        kometa_libs = _libs_via_lex(cfg_path)
+except Exception as exc:
+    print(f"STAGE=kometa-config-parse-fail msg=parse-error-{type(exc).__name__}-{exc}",
+          file=sys.stderr)
+    sys.exit(2)
 
 if not kometa_libs:
-    print("STAGE=kometa-config-parse-fail msg=no-libraries-keys-found",
+    print(f"STAGE=kometa-config-parse-fail msg=no-libraries-keys-found-parser-{parser_kind}",
           file=sys.stderr)
     sys.exit(2)
 
