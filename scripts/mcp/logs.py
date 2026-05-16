@@ -27,8 +27,7 @@ HOME = Path.home()
 
 # slug → routing plan
 # Paths verified against seedbox (manitoba) state — keep in sync when apps move
-# or rotate. qbittorrent + homarr have no file logs in this layout and are
-# intentionally absent.
+# or rotate. homarr has no file log in this layout and is intentionally absent.
 _FILE_LOGS = {
     "sonarr":          str(HOME / ".apps/sonarr/logs/sonarr.txt"),
     "sonarr2":         str(HOME / ".apps/sonarr2/logs/sonarr.txt"),
@@ -43,6 +42,10 @@ _FILE_LOGS = {
     "buildarr":        str(HOME / ".apps/buildarr/logs/buildarr.log"),
     "recyclarr":       str(HOME / ".apps/recyclarr/logs/recyclarr.log"),
     "nginx":           str(HOME / ".apps/nginx/logs/error.log"),
+    # qbittorrent's user systemd unit pipes stdout to a file (not the journal),
+    # so journalctl --user -u qbittorrent.service is empty. The real engine log
+    # lives at the path below and is rotated by qbit itself.
+    "qbittorrent":     str(HOME / ".local/share/qBittorrent/logs/qbittorrent.log"),
 }
 
 # Apps with date-rotated logs (no stable filename): resolve at scan time to the
@@ -55,7 +58,6 @@ _SYSTEMD_LOGS = {
     "listmonk":      "listmonk.service",
     "tdarr-server":  "tdarr-server.service",
     "tdarr-node":    "tdarr-node.service",
-    "qbittorrent":   "qbittorrent.service",
     "maint-pusher":  "manitoba-maint-pusher.service",
     "maint-webhook": "manitoba-maint-webhook.service",
     "maint-window":  "manitoba-maint-window.service",
@@ -93,6 +95,12 @@ _TS_PATTERNS = [
     ),
     # Bracket-no-ts form (recyclarr): [INF] anime: All quality profiles ...
     re.compile(r"^\[(?P<lvl>[A-Z]{2,8})\]\s*(?P<msg>.*)$"),
+    # qBittorrent paren-letter form: (I) 2026-05-16T07:00:16 - WebAPI login...
+    # Letter codes: I=Info, W=Warning, C=Critical, N=Notification.
+    re.compile(
+        r"^\((?P<lvl>[IWCN])\)\s+(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
+        r"\s+-\s+(?P<msg>.*)$"
+    ),
     # Fallback ts-only forms (kept for journalctl short-iso lines that the
     # bracket variants above already handle):
     re.compile(
@@ -110,6 +118,8 @@ _LEVEL_NORMALIZE = {
     "ERROR": "ERROR", "ERR": "ERROR",
     "DEBUG": "DEBUG", "DBG": "DEBUG", "TRACE": "TRACE", "TRC": "TRACE",
     "FATAL": "FATAL", "CRITICAL": "FATAL", "CRIT": "FATAL",
+    # Single-letter qBittorrent codes — mapped to closest canonical level.
+    "I": "INFO", "N": "INFO", "W": "WARN", "C": "FATAL",
 }
 
 
@@ -257,6 +267,18 @@ _SELF_TEST_CASES = [
     ("recyclarr-warn",
      "[WRN] partial sync skipped",
      "WARN"),
+    ("qbit-info",
+     "(I) 2026-05-16T07:00:16 - WebAPI login success. IP: ::ffff:127.0.0.1",
+     "INFO"),
+    ("qbit-notification",
+     "(N) 2026-05-16T07:00:16 - Torrent removed. Torrent: \"Foo\"",
+     "INFO"),
+    ("qbit-warning",
+     "(W) 2026-05-16T07:00:16 - Tracker error: bad gateway",
+     "WARN"),
+    ("qbit-critical",
+     "(C) 2026-05-16T07:00:16 - Disk write failed",
+     "FATAL"),
     ("journalctl-iso",
      "2026-05-15T10:11:12+0000 some-host process: Started",
      "unknown"),
