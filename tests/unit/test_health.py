@@ -774,3 +774,65 @@ def test_timeout_s_parameter_overrides_default(tmp_path, monkeypatch):
 
     kwargs = mock_get.call_args[1]
     assert kwargs["timeout"] == 30.0
+
+
+# ---------------------------------------------------------------------------
+# auth_secret missing — must fail loudly, not silently issue an unauthed request
+# ---------------------------------------------------------------------------
+
+def test_http_api_missing_auth_secret_fails_loudly(tmp_path, monkeypatch):
+    """Previously, a missing X-Api-Key secret fell through to `pass` and the
+    probe issued an unauthed request. If the target happens to return 200
+    without auth, Kuma shows green while auth is broken — exact class of
+    bug as the Tautulli pms_url Docker-netns regression.
+    """
+    secrets_dir = tmp_path / "secrets"
+    _write_secret(secrets_dir, "myapp.port", "17001")
+    _write_secret(secrets_dir, "myapp.urlbase", "app")
+    # NOTE: deliberately NOT writing myapp.key
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(secrets_dir))
+
+    app = _make_app("http_api")
+
+    # If the fail-loud guard works, requests.get must never be called.
+    with patch("requests.get") as mock_get:
+        result = probe(app)
+    assert result.ok is False
+    assert "myapp.key" in result.reason or "auth secret missing" in result.reason
+    mock_get.assert_not_called()
+
+
+def test_http_api_missing_basic_auth_secret_fails_loudly(tmp_path, monkeypatch):
+    secrets_dir = tmp_path / "secrets"
+    _write_secret(secrets_dir, "myapp.key", "KEY")
+    _write_secret(secrets_dir, "myapp.port", "17001")
+    _write_secret(secrets_dir, "myapp.urlbase", "app")
+    # NOTE: htpasswd.password not written
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(secrets_dir))
+
+    app = _make_app("http_api")
+    app.health.raw["basic_auth_user"] = "quadstronaut"
+    app.health.raw["basic_auth_secret"] = "htpasswd.password"
+
+    with patch("requests.get") as mock_get:
+        result = probe(app)
+    assert result.ok is False
+    assert "htpasswd.password" in result.reason
+    mock_get.assert_not_called()
+
+
+def test_http_root_missing_basic_auth_secret_fails_loudly(tmp_path, monkeypatch):
+    secrets_dir = tmp_path / "secrets"
+    _write_secret(secrets_dir, "myapp.port", "17001")
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(secrets_dir))
+
+    app = _make_app("http_root", auth_header=None, auth_secret=None,
+                    urlbase_secret=None)
+    app.health.raw["basic_auth_user"] = "quadstronaut"
+    app.health.raw["basic_auth_secret"] = "htpasswd.password"
+
+    with patch("requests.get") as mock_get:
+        result = probe(app)
+    assert result.ok is False
+    assert "htpasswd.password" in result.reason
+    mock_get.assert_not_called()

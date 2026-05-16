@@ -9,7 +9,8 @@ source "$ROOT/scripts/lib/ssh.sh"
 
 RES=$(sshm '
 HTPW=$(cat ~/secrets/htpasswd.password)
-PUBLIC_HOST=$(cat ~/secrets/seedbox.host 2>/dev/null || echo "quadstronaut.seedbox.example.com")
+PUBLIC_HOST=$(cat ~/secrets/seedbox.host 2>/dev/null) || { echo "FAIL: ~/secrets/seedbox.host missing" >&2; exit 1; }
+[ -n "$PUBLIC_HOST" ] || { echo "FAIL: ~/secrets/seedbox.host empty" >&2; exit 1; }
 # Per-app subdomain prefix is "<app>-<userpart>" where userpart = first dot-segment
 USERPART=${PUBLIC_HOST%%.*}
 DOMAIN=${PUBLIC_HOST#*.}

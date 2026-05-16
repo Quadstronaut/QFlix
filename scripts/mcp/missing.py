@@ -66,8 +66,14 @@ def main() -> int:
                 pass
 
     if args.emit_json:
+        # With --emit-json, the caller (MCP server) needs the structured
+        # per_arr dict to surface individual failures. Returning exit 1
+        # caused MCP to discard the body as ssh-failed, masking which arr
+        # actually broke. Always return 0 in JSON mode — the JSON body
+        # carries the failure detail.
         json.dump(res, sys.stdout, default=str)
         sys.stdout.write("\n")
+        return 0
     return 0 if all(r["status"] == "queued" for r in res["per_arr"].values()) else 1
 
 

@@ -10,8 +10,6 @@ set -euo pipefail
 mkdir -p \
   ~/downloads/qbittorrent/radarr-anime \
   ~/downloads/qbittorrent/sonarr-anime \
-  ~/downloads/qbittorrent/readarr \
-  ~/downloads/qbittorrent/mylar \
   ~/media/Anime \
   ~/media/'Anime Movies' \
   ~/media/Books \

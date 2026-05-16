@@ -10,13 +10,13 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-45%2F45_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-28_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-32%2F32_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-33_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-34%2F34_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
 
-<sub>install scripts · single-source manifest · Python maintenance daemon · Playwright cp.ultra.cc upgrade clicker · Kuma-integrated auto-recovery · end-to-end canaries · weekly AI-curated newsletter</sub>
+<sub>install scripts · single-source manifest · Python maintenance daemon · app-upgrade-all weekly sweep · Kuma-integrated auto-recovery · end-to-end canaries · weekly AI-curated newsletter</sub>
 
 </div>
 
@@ -39,11 +39,11 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 
 | Surface | Count | State |
 |---|---:|---|
-| Apps in manifest (`manifest/apps.yaml`) | **28** | live on `quadstronaut.seedbox.example.com` |
-| End-to-end canaries (`scripts/canaries/`) | **4** | hourly · hourly · every-15min · daily-0430 |
-| Kuma push monitors (manitoba-owned) | **32** | 32/32 UP after the 2026-05-11 coverage sweep (every manifest app reports) |
-| Cron + systemd timers | **14** | window-aware (Mon 04–08 UTC drain) |
-| pytest suite (`tests/unit/`) | **236** | pure-Python, no SSH (231 pass · 5 skip) |
+| Apps in manifest (`manifest/apps.yaml`) | **33** | 19 UCC · 5 systemd · 8 cron · 1 library |
+| End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **9** | qbit-stall · vlogs-stall · movie · anime · mobile-ux · deletion · plus 3 helpers |
+| Kuma push monitors (manitoba-owned) | **34** | 34/34 UP — every manifest app + the workstation collector reports continuously |
+| Cron + systemd timers | **14+** | window-aware (Mon 04–08 UTC drain) |
+| pytest suite (`tests/unit/`) | **440+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
 
 > [!NOTE]
@@ -95,7 +95,7 @@ flowchart LR
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 26 push monitors)]:::kuma
+  kuma[(Uptime Kuma<br/>isolated netns · 34 push monitors)]:::kuma
   discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex
@@ -186,10 +186,12 @@ flowchart LR
   recovery -->|lifecycle.start ≤3 attempts| status
   recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>26 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>34 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
   C3[Canary deletion · daily 04:30]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K
+  C5[Canary qbit-stall · every 15min]:::probe -->|push| K
+  C6[Canary vlogs-stall · every 15min]:::probe -->|push| K
   push1 --> K
   K -->|status page| public[/HTTPS /status/manitoba/]
 ```
@@ -426,6 +428,27 @@ Every *arr admin UI, Kuma admin, Listmonk admin, and qBittorrent live behind a w
 - **What's installed where on the seedbox?** → [`inventory.md`](inventory.md) — the live source of truth, kept in sync with the manifest.
 - **What apps exist?** → [`manifest/apps.yaml`](manifest/apps.yaml) — the single source of truth for health probes, monitors, recovery, and the upgrader.
 - **Public status page** → [Uptime Kuma](https://uptimekuma-quadstronaut.seedbox.example.com/status/public) — every monitor, no login.
+
+## Local development
+
+QFlix is a one-operator project, but the test suite is set up so a
+contributor can run it from a fresh clone:
+
+```bash
+git clone https://github.com/Quadstronaut/QFlix.git && cd QFlix
+bash tests/run.sh        # creates tests/.venv, installs pytest/pyyaml/requests/jinja2,
+                         # runs tests/unit/ — pure-Python, no SSH needed.
+```
+
+Live integration (smoke tests, canaries, anything under `scripts/install/`
+and `scripts/configure/`) requires a populated `secrets/` directory —
+see [`docs/secrets-convention.md`](docs/secrets-convention.md) for the
+canonical file list. `scripts/bootstrap-discover.sh` SSHes into a live
+seedbox and populates the local `secrets/` from existing app configs.
+
+The MCP server (`scripts/local/qflix-mcp/`) is a separate workstation-side
+piece — register it with Claude Code via
+`scripts/local/qflix-mcp/install.ps1`. Build context: `docs/superpowers/specs/2026-05-12-qflix-mcp-design.md`.
 
 <div align="center">
 <sub><br><img src="Q.png" width="48" alt=""><br><b>QFlix</b> · single operator · single manifest · single window<br><sub><code>quadstronaut.seedbox.example.com</code></sub></sub>

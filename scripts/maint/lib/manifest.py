@@ -164,8 +164,26 @@ def _parse_upgrade(raw_upgrade: dict) -> UpgradeConfig:
     )
 
 
-def _parse_health(raw_health: dict) -> HealthConfig:
-    return HealthConfig(kind=raw_health.get("kind", ""), raw=raw_health)
+# Mirror of health._PROBES keys, duplicated here to avoid a circular import
+# at module load. Update both lists when adding a new probe kind.
+VALID_HEALTH_KINDS: frozenset[str] = frozenset({
+    "http_api", "http_root", "systemd_only", "systemd_oneshot",
+    "port_listen", "import_check", "process_pattern",
+})
+
+
+def _parse_health(raw_health: dict, *, app_name: str = "<unknown>") -> HealthConfig:
+    kind = raw_health.get("kind", "")
+    # Empty string used to be tolerated for apps that omitted health entirely
+    # (library class). Keep that allowance; only validate when a kind is set,
+    # so a typo like 'http-api' (vs 'http_api') fails at load time instead of
+    # raising a KeyError every push cycle from inside the pusher loop.
+    if kind and kind not in VALID_HEALTH_KINDS:
+        raise ManifestError(
+            f"App '{app_name}' has unknown health.kind '{kind}'; "
+            f"must be one of {sorted(VALID_HEALTH_KINDS)}"
+        )
+    return HealthConfig(kind=kind, raw=raw_health)
 
 
 def load(path: str | Path) -> Manifest:
@@ -219,7 +237,7 @@ def load(path: str | Path) -> Manifest:
             seen_monitors[kuma_monitor] = app_name
 
         raw_health = app_data.get("health", {}) or {}
-        health = _parse_health(raw_health)
+        health = _parse_health(raw_health, app_name=app_name)
 
         raw_upgrade = app_data.get("upgrade")
         upgrade = _parse_upgrade(raw_upgrade) if raw_upgrade else None

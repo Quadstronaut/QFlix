@@ -316,7 +316,17 @@ def run(include: set, recent_hours: int) -> dict:
         if "arrs" in include:
             for slug, ver in ARRS:
                 futs[slug] = ex.submit(_collect_arr, slug, ver)
-        results = {k: f.result() for k, f in futs.items()}
+        # Wrap each future result so a single _collect_arr exception (e.g.
+        # connection reset mid-collect) doesn't drop the entire snapshot.
+        # Surface as a structured error dict matching the in-band failure
+        # shape — the consumer can inspect arrs[slug].get('error').
+        results = {}
+        for k, f in futs.items():
+            try:
+                results[k] = f.result()
+            except Exception as exc:
+                results[k] = {"error": f"collect_failed: {exc}",
+                              "queue": [], "missing_count": 0}
 
     qbit = results.get("qbit", {"torrents": [], "totals": {}})
     arrs = {slug: results.get(slug, {}) for slug, _ in ARRS}

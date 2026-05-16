@@ -112,19 +112,8 @@ def _post_discord(webhook_url: str, message: str, level: str) -> tuple[bool, str
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _secrets_dir() -> Path:
-    env = os.environ.get("MANITOBA_SECRETS_DIR")
-    if env:
-        return Path(env)
-    # Repo-style layout (file at <repo>/scripts/maint/lib/notify.py): secrets
-    # is two more levels up. On the seedbox, only scripts/maint is synced —
-    # not the whole repo — so the repo-relative path resolves to /home which
-    # has no secrets/. Fall back to ~/secrets in that case.
-    repo_root_guess = Path(__file__).parent.parent.parent.parent
-    repo_secrets = repo_root_guess / "secrets"
-    if repo_secrets.is_dir():
-        return repo_secrets
-    return Path.home() / "secrets"
+from lib.secrets import secrets_dir as _secrets_dir  # noqa: F401
+from lib.secrets import read_secret as _secret_read  # noqa: F401
 
 
 def _state_dir() -> Path:
@@ -134,12 +123,10 @@ def _state_dir() -> Path:
     return Path.home() / ".opt" / "maint"
 
 
-def _secret_read(name: str) -> str:
-    path = _secrets_dir() / name
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Secret not found: {path}")
+# Cap notify-fail.log at this many lines. Without a cap, an extended
+# Discord outage during a mass-failure event could grow the file
+# unboundedly with no operator-visible alert. 5000 lines ~= 1 MB.
+_NOTIFY_FAIL_LOG_MAX_LINES = 5000
 
 
 def _append_fail_log(level: str, message: str, error: str) -> None:
@@ -151,6 +138,18 @@ def _append_fail_log(level: str, message: str, error: str) -> None:
     try:
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(line)
+        # Cheap rotation: every ~256 appends, check size and rewind to
+        # the last N lines if over cap. Reading + rewriting on every
+        # append would be expensive; the imprecise cap is fine — the
+        # goal is "doesn't grow without bound", not byte-precision.
+        if (hash(now) & 0xFF) == 0:
+            try:
+                lines = log_path.read_text(encoding="utf-8").splitlines(keepends=True)
+                if len(lines) > _NOTIFY_FAIL_LOG_MAX_LINES:
+                    trimmed = lines[-_NOTIFY_FAIL_LOG_MAX_LINES:]
+                    log_path.write_text("".join(trimmed), encoding="utf-8")
+            except Exception:
+                pass  # rotation is best-effort, don't fail the notify
     except Exception as exc:
         print(f"WARNING: could not write notify-fail.log: {exc}", file=sys.stderr)
 

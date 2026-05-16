@@ -61,6 +61,16 @@ def create_and_send_campaign(
         auth=auth,
         timeout=DEFAULT_TIMEOUT_S,
     )
+    # Log the response body before re-raising — a 4xx (duplicate campaign name,
+    # bad list id) or 5xx used to vanish into the bare HTTPError with no clue
+    # what Listmonk actually complained about. The systemd journal entry is
+    # the operator's only signal when this happens during the Monday 08:00
+    # run, so make it speak.
+    if r.status_code >= 400:
+        logger.error(
+            "listmonk POST /api/campaigns failed: HTTP %d — body=%s",
+            r.status_code, (r.text or "")[:500],
+        )
     r.raise_for_status()
     body = r.json().get("data") or {}
     campaign_id = int(body.get("id") or 0)
@@ -73,6 +83,12 @@ def create_and_send_campaign(
         auth=auth,
         timeout=DEFAULT_TIMEOUT_S,
     )
+    if status_resp.status_code >= 400:
+        logger.error(
+            "listmonk PUT /api/campaigns/%d/status failed: HTTP %d — body=%s",
+            campaign_id, status_resp.status_code,
+            (status_resp.text or "")[:500],
+        )
     status_resp.raise_for_status()
 
     archive_url = (

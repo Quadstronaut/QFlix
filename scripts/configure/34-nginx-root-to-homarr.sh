@@ -9,7 +9,11 @@ source "$HERE/lib/log.sh"
 
 CONF="\$HOME/.apps/nginx/sites-available/default"
 MARKER="# manitoba-homarr-root-redirect"
-TARGET_HOST="homarr-upstream-quadstronaut.seedbox.example.com"
+# Build "homarr-upstream-<host>" from the operator's real public FQDN; die
+# hard rather than baking the sanitized placeholder into a live nginx config.
+PUBLIC_HOST="$(tr -d '[:space:]' < "$(dirname "$HERE")/secrets/seedbox.host" 2>/dev/null)"
+[ -n "$PUBLIC_HOST" ] || { echo "FATAL: secrets/seedbox.host missing" >&2; exit 1; }
+TARGET_HOST="homarr-upstream-${PUBLIC_HOST}"
 TARGET_PATH="/boards/public"
 
 read -r -d '' SCRIPT <<EOF || true
@@ -60,8 +64,8 @@ sshm "$SCRIPT"
 log_info "verifying:"
 sleep 2
 HTPW="$(cat "$(dirname "$HERE")/secrets/htpasswd.password")"
-RC=$(curl -sko /dev/null -m 10 -u "quadstronaut:$HTPW" -w "%{http_code}" "https://quadstronaut.seedbox.example.com/")
-LOC=$(curl -sko /dev/null -m 10 -u "quadstronaut:$HTPW" -D - "https://quadstronaut.seedbox.example.com/" | grep -i '^location' | tr -d '\r')
+RC=$(curl -sko /dev/null -m 10 -u "quadstronaut:$HTPW" -w "%{http_code}" "https://${PUBLIC_HOST}/")
+LOC=$(curl -sko /dev/null -m 10 -u "quadstronaut:$HTPW" -D - "https://${PUBLIC_HOST}/" | grep -i '^location' | tr -d '\r')
 log_info "/ -> HTTP $RC, $LOC"
 if [ "$RC" = "302" ] && printf '%s' "$LOC" | grep -q homarr; then
   log_info "redirect confirmed"

@@ -482,10 +482,12 @@ class TestWebhookServer:
             "msg": "down",
         }).encode()
 
-        # Patch semaphore to size 1
-        import lib.kuma as kuma_module
-        original_sem = kuma_module._RECOVERY_SEMAPHORE
-        kuma_module._RECOVERY_SEMAPHORE = threading.BoundedSemaphore(1)
+        # Patch the recovery semaphore to size 1. After unification, the
+        # webhook funnels through recovery.trigger_async, which owns the
+        # single _RECOVERY_SEMAPHORE shared by webhook + pusher entry points.
+        from lib import recovery as recovery_module
+        original_sem = recovery_module._RECOVERY_SEMAPHORE
+        recovery_module._RECOVERY_SEMAPHORE = threading.BoundedSemaphore(1)
 
         try:
             t1 = threading.Thread(
@@ -513,7 +515,7 @@ class TestWebhookServer:
             block.set()
             t1.join(timeout=5)
         finally:
-            kuma_module._RECOVERY_SEMAPHORE = original_sem
+            recovery_module._RECOVERY_SEMAPHORE = original_sem
 
         time.sleep(0.1)
         from lib import state as state_mod

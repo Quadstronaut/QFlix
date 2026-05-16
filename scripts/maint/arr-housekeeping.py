@@ -15,7 +15,7 @@ State for stuck-tracking is keyed by qBit downloadId (hash) so it's stable
 across queue-id renumberings. Stored at ~/.opt/maint/stuck-queue-state.json.
 
 Reads creds from ~/secrets/{arr}.key + ~/secrets/{arr}.urlbase + the shared
-htpasswd password. Posts a Notifiarr summary at end of each run.
+htpasswd password. Posts a Discord summary via lib.notify on completion.
 """
 from __future__ import annotations
 
@@ -31,7 +31,22 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-HOST = os.environ.get("ARR_HOST", "https://quadstronaut.seedbox.example.com")
+# Public host comes from secrets/seedbox.host (gitignored) — die loudly
+# rather than silently hitting the sanitized placeholder if it's missing.
+# Override via ARR_HOST env for tests.
+def _resolve_host() -> str:
+    env = os.environ.get("ARR_HOST")
+    if env:
+        return env
+    try:
+        fqdn = Path(os.environ.get("MANITOBA_SECRETS",
+                                   str(Path.home() / "secrets"))).joinpath(
+            "seedbox.host").read_text(encoding="utf-8").strip()
+        return f"https://{fqdn}" if fqdn else ""
+    except FileNotFoundError:
+        return ""
+
+HOST = _resolve_host()
 SECRETS_DIR = Path(os.environ.get("MANITOBA_SECRETS", str(Path.home() / "secrets")))
 STATE_DIR = Path(os.environ.get("MANITOBA_STATE_DIR", str(Path.home() / ".opt" / "maint")))
 STUCK_STATE_FILE = STATE_DIR / "stuck-queue-state.json"
@@ -40,12 +55,14 @@ STUCK_HOURS = float(os.environ.get("ARR_STUCK_HOURS", "6"))
 STUCK_STATES = {"importPending", "importBlocked", "importFailed"}
 
 # (slug, api version, missing-search command name)
+# Readarr removed 2026-05-16 — app purged 2026-05-11; secret_read on its
+# .key file dies, hidden by _read()'s try/except (returns "") so the loop
+# silently skipped Readarr anyway. Drop the entry for honesty.
 ARRS = [
     ("sonarr",   "v3", "MissingEpisodeSearch"),
     ("sonarr2",  "v3", "MissingEpisodeSearch"),
     ("radarr",   "v3", "MissingMoviesSearch"),
     ("radarr2",  "v3", "MissingMoviesSearch"),
-    ("readarr",  "v1", "MissingBookSearch"),
 ]
 
 
@@ -56,11 +73,22 @@ def _read(path: Path) -> str:
         return ""
 
 
-HTPW = _read(SECRETS_DIR / "htpasswd.password")
+# Read lazily inside _basic() rather than at import time so the absence of
+# secrets/htpasswd.password is reported by the first request (with a clear
+# 401), not silently propagated as an empty Basic header that every *arr
+# then 401s on while the script reports the requests as "skip".
+def _htpw() -> str:
+    pw = _read(SECRETS_DIR / "htpasswd.password")
+    if not pw:
+        raise RuntimeError(
+            "secrets/htpasswd.password missing or empty — refusing to "
+            "issue unauthenticated *arr requests"
+        )
+    return pw
 
 
 def _basic() -> str:
-    return "Basic " + base64.b64encode(f"quadstronaut:{HTPW}".encode()).decode()
+    return "Basic " + base64.b64encode(f"quadstronaut:{_htpw()}".encode()).decode()
 
 
 def _hdr(api_key: str, *, json_body: bool = False) -> dict:
@@ -95,27 +123,16 @@ def _arr_key(slug: str) -> str:
 
 
 def _notify(msg: str, level: str = "info") -> None:
-    """Best-effort Notifiarr POST; never raise."""
+    """Discord notification via lib.notify (Notifiarr was retired 2026-05-10).
+    Best-effort; never raise. Adds the operator @ping for warning/error levels."""
     try:
-        nf_key = _read(SECRETS_DIR / "notifiarr.key")
-        if not nf_key:
-            return
-        body = {
-            "notification": {"name": "arr-housekeeping", "event": "sweep"},
-            "discord": {
-                "color": "ff8800" if level == "warning" else "00cc66",
-                "text": {"description": msg[:1900]},
-            },
-        }
-        urllib.request.urlopen(
-            urllib.request.Request(
-                f"https://notifiarr.com/api/v1/notification/passthrough/{nf_key}",
-                data=json.dumps(body).encode(),
-                method="POST",
-                headers={"Content-Type": "application/json"},
-            ),
-            timeout=10,
-        )
+        # Resolve the import path so this works both from a repo checkout
+        # (scripts/maint/lib) and a seedbox deploy (~/scripts/maint/lib).
+        here = Path(__file__).resolve().parent
+        if str(here) not in sys.path:
+            sys.path.insert(0, str(here))
+        from lib.notify import notify  # type: ignore
+        notify(msg, level)
     except Exception as exc:
         print(f"notify failed (non-fatal): {exc}", file=sys.stderr)
 
@@ -129,6 +146,14 @@ def cmd_missing(dry_run: bool) -> int:
         return 0
     here = Path(__file__).resolve().parent
     mcp = here.parent / "mcp" / "missing.py"
+    # Validate the helper exists before subprocess — the prior FileNotFoundError
+    # surfaced only as a non-zero returncode in the systemd journal, with no
+    # signal that the path layout was the cause.
+    if not mcp.is_file():
+        print(f"FATAL: missing helper not found at {mcp} — "
+              f"layout drift between scripts/maint and scripts/mcp",
+              file=sys.stderr)
+        return 2
     proc = subprocess.run(
         ["python3", str(mcp), "--emit-json"],
         capture_output=True, text=True, timeout=120,

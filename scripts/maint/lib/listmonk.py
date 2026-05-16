@@ -35,15 +35,7 @@ import requests
 _DEFAULT_TIMEOUT_S = 10
 
 
-def _secrets_dir() -> Path:
-    env = os.environ.get("MANITOBA_SECRETS_DIR")
-    if env:
-        return Path(env)
-    repo_root_guess = Path(__file__).parent.parent.parent.parent
-    repo_secrets = repo_root_guess / "secrets"
-    if repo_secrets.is_dir():
-        return repo_secrets
-    return Path.home() / "secrets"
+from lib.secrets import secrets_dir as _secrets_dir  # noqa: F401
 
 
 def _state_dir() -> Path:
@@ -54,9 +46,10 @@ def _state_dir() -> Path:
 
 
 def _secret_read(name: str) -> Optional[str]:
-    path = _secrets_dir() / name
+    """listmonk module-specific: missing secret returns None, not raise.
+    The HTTP layer treats None as 'feature disabled'."""
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return (_secrets_dir() / name).read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         return None
 

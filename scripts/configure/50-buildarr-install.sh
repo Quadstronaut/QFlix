@@ -116,8 +116,12 @@ WantedBy=timers.target
 UNIT
 
 systemctl --user daemon-reload
-systemctl --user enable buildarr.timer
-systemctl --user start buildarr.timer
+# enable+start as a single call ensures the timer is armed AND fires at its
+# next scheduled tick — separating them is the exact pattern that caused
+# the 2026-05-11 silent buildarr inactivity (enable was idempotent, start
+# was no-op since the timer was already loaded but the service file changed
+# only on disk). --now is idempotent and safe to re-apply.
+systemctl --user enable --now buildarr.timer
 systemctl --user list-timers --user buildarr.timer --no-pager 2>/dev/null | head -5
 UNITSCRIPT
 

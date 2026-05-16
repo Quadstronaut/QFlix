@@ -245,6 +245,23 @@ else
   record "upgradinatorr-timer" fail "timer not scheduled"
 fi
 
+# 13m. VictoriaLogs ingest timer scheduled + last run success
+# Closes the audit gap: a vlogs-ingest regression (e.g., logs.py import
+# crashing silently) would only surface via the 15-min stall canary
+# otherwise. This catches it on every smoke run.
+echo "13m. VictoriaLogs ingest timer"
+VI_TIMER=$(sshm "systemctl --user list-timers qflix-vlogs-ingest.timer --no-pager 2>/dev/null | grep -c qflix-vlogs-ingest" 2>/dev/null)
+if [ "${VI_TIMER:-0}" -ge 1 ]; then
+  record "vlogs-ingest-timer" pass "scheduled (every 5min)"
+else
+  record "vlogs-ingest-timer" fail "qflix-vlogs-ingest.timer not scheduled"
+fi
+VI_RESULT=$(sshm "systemctl --user show qflix-vlogs-ingest.service -p Result --value 2>/dev/null" 2>/dev/null)
+case "$VI_RESULT" in
+  success|"") record "vlogs-ingest-last-run" pass "result=${VI_RESULT:-pending}" ;;
+  *) record "vlogs-ingest-last-run" fail "result=$VI_RESULT" ;;
+esac
+
 # 13l. Tdarr server reachable on loopback + node registered
 # Tdarr is loopback-only by design (see scripts/configure/50-tdarr-install.sh);
 # public nginx proxy is intentionally disabled, so probe 127.0.0.1 directly.

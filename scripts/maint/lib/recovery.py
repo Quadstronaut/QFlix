@@ -57,6 +57,31 @@ _RECOVERY_SEMAPHORE = threading.BoundedSemaphore(5)
 _in_flight: set[str] = set()
 _in_flight_mutex = threading.Lock()
 
+# Apps whose 3-attempt loop has exhausted. trigger_async returns
+# "permanently_failed" for these until the caller (pusher) signals recovery
+# via clear_permanent_failure() — typically when the next probe succeeds.
+# Without this, the pusher would re-fire trigger_async every 60s forever
+# for any app that can't be auto-healed, eventually exhausting the semaphore.
+_permanently_failed: set[str] = set()
+_permanently_failed_mutex = threading.Lock()
+
+
+def clear_permanent_failure(app_name: str) -> None:
+    """Remove `app_name` from the permanent-failure set so the pusher can
+    retry recovery on the next outage. Called by pusher on probe success."""
+    with _permanently_failed_mutex:
+        _permanently_failed.discard(app_name)
+
+
+def is_permanently_failed(app_name: str) -> bool:
+    with _permanently_failed_mutex:
+        return app_name in _permanently_failed
+
+
+def _mark_permanently_failed(app_name: str) -> None:
+    with _permanently_failed_mutex:
+        _permanently_failed.add(app_name)
+
 
 def _is_recoverable(app: App) -> bool:
     """Library apps have no service. Cron apps with a `unit:` field can be
@@ -74,11 +99,13 @@ def trigger_async(app: App, *, manifest: Optional[Manifest] = None) -> str:
     """Fire-and-forget recovery for `app` if not already running.
 
     Returns one of:
-      - "started"           — recovery thread spawned
-      - "already_running"   — recovery for this app is in flight
-      - "cap_exceeded"      — global semaphore full; skipped
-      - "not_recoverable"   — class can't be auto-recovered (library/cron)
-      - "parked"            — manifest marks app as intentionally stopped
+      - "started"             — recovery thread spawned
+      - "already_running"     — recovery for this app is in flight
+      - "cap_exceeded"        — global semaphore full; skipped
+      - "not_recoverable"     — class can't be auto-recovered (library/cron)
+      - "parked"              — manifest marks app as intentionally stopped
+      - "permanently_failed"  — prior 3-attempt loop exhausted; caller must
+        clear_permanent_failure() once the probe self-recovers
 
     Never blocks. Safe to call on every push cycle.
     """
@@ -86,6 +113,8 @@ def trigger_async(app: App, *, manifest: Optional[Manifest] = None) -> str:
         return "parked"
     if not _is_recoverable(app):
         return "not_recoverable"
+    if is_permanently_failed(app.name):
+        return "permanently_failed"
 
     with _in_flight_mutex:
         if app.name in _in_flight:
@@ -96,7 +125,16 @@ def trigger_async(app: App, *, manifest: Optional[Manifest] = None) -> str:
 
     def _worker():
         try:
-            run(app.name, manifest=manifest)
+            result = run(app.name, manifest=manifest)
+            # If the 3-attempt loop exhausted without recovery, stop the
+            # pusher from re-firing every 60s. The mark is cleared by the
+            # pusher on the next successful probe via clear_permanent_failure.
+            # Defensive: tests may mock run() to return None — treat that as
+            # "no permanent failure" rather than crashing the worker thread.
+            if isinstance(result, dict) and result.get("event") in (
+                "failed", "auto_downgrade_failed"
+            ):
+                _mark_permanently_failed(app.name)
         except Exception as exc:
             sys.stderr.write(f"recovery thread crashed for {app.name}: {exc}\n")
         finally:

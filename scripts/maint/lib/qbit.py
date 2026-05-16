@@ -68,10 +68,11 @@ class RotateResult:
 def _secrets_dir(override: Optional[Path]) -> Path:
     if override:
         return override
-    env = os.environ.get("MANITOBA_SECRETS")
-    if env:
-        return Path(env).expanduser()
-    return Path.home() / "secrets"
+    # Delegate to lib.secrets for consistent resolution. Historically this
+    # module used MANITOBA_SECRETS (no _DIR suffix) — lib.secrets accepts
+    # both env var names for back-compat with any in-flight overrides.
+    from lib.secrets import secrets_dir as _shared
+    return _shared()
 
 
 def _read(path: Path) -> str:

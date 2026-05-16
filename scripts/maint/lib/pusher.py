@@ -141,16 +141,30 @@ def push_once(
                     log.info("auto-heal %s: probe RECOVERED after %d strike(s)",
                              app.name, _consecutive_failures[app.name])
                 _consecutive_failures.pop(app.name, None)
+            # Always-on safety: clear any prior permanent-failure mark so the
+            # next outage gets a fresh 3-attempt loop.
+            recovery_mod.clear_permanent_failure(app.name)
         else:
             n = _consecutive_failures.get(app.name, 0) + 1
             _consecutive_failures[app.name] = n
+            # Annotate the Kuma msg with strike state so the operator can
+            # triage from the dashboard without ssh'ing in.
+            if n >= _STRIKE_THRESHOLD:
+                if recovery_mod.is_permanently_failed(app.name):
+                    params["msg"] = f"{result.reason} [perma-failed: operator needed]"
+                else:
+                    params["msg"] = f"{result.reason} [strike {n}/{_STRIKE_THRESHOLD}: recovery]"
+            else:
+                params["msg"] = f"{result.reason} [strike {n}/{_STRIKE_THRESHOLD}]"
             if n < _STRIKE_THRESHOLD:
                 log.info("auto-heal %s: strike %d/%d (probe reason: %s)",
                          app.name, n, _STRIKE_THRESHOLD, result.reason)
             else:
                 # On the threshold-th strike (and every cycle after, while
                 # still down): trigger_async — recovery's per-app lock
-                # dedupes so only one recovery actually runs per outage.
+                # dedupes so only one recovery actually runs per outage,
+                # AND _permanently_failed prevents thread storms after the
+                # 3-attempt loop exhausts.
                 decision = recovery_mod.trigger_async(app, manifest=manifest)
                 log.info("auto-heal %s: strike %d/%d -> recovery=%s (reason: %s)",
                          app.name, n, _STRIKE_THRESHOLD, decision, result.reason)
@@ -200,6 +214,15 @@ def serve(
         # signal.signal() only works on the main thread; skip when called from tests
         pass
 
+    # Self-heartbeat: push status=up to a dedicated "Manitoba Pusher" Kuma
+    # monitor each cycle. Without this, a pusher crashloop manifests as
+    # *every* app monitor going stale at once with no signal that the
+    # pusher itself is the cause. Gated on token presence so the code
+    # path is a no-op until the operator wires the monitor (one-shot
+    # `bootstrap-kuma-monitors.py` re-run). Token key is the canonical
+    # "manitoba-pusher" string so it can't collide with an app name.
+    _SELF_TOKEN_KEY = "manitoba-pusher"
+
     try:
         while not _stop:
             log.info("pusher: starting push cycle")
@@ -208,6 +231,20 @@ def serve(
             log.info(
                 "pusher: cycle complete — %d/%d ok", ok_count, len(results)
             )
+            # Self-heartbeat after the cycle so it's a meaningful signal:
+            # if we got here, the cycle didn't crash.
+            self_token = tokens.get(_SELF_TOKEN_KEY)
+            if self_token:
+                try:
+                    requests.get(
+                        f"{kuma_url}/api/push/{self_token}",
+                        params={"status": "up",
+                                "msg": f"cycle ok={ok_count}/{len(results)}"},
+                        timeout=5,
+                    )
+                except Exception as exc:
+                    # Don't let a Kuma blip kill the pusher loop.
+                    log.warning("pusher self-heartbeat failed: %s", exc)
             if run_once:
                 return
             deadline = time.monotonic() + interval_s

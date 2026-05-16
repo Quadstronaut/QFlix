@@ -185,13 +185,31 @@ def _parse_date(s: str) -> _dt.date:
 
 
 def fetch_all_calendars(cfg: Config, days: int) -> list[CalendarItem]:
+    """Pull /calendar?days=N from each configured *arr. A single arr
+    failure (e.g. Sonarr2 in a bad state during the Monday maintenance
+    window) used to raise out and drop the entire coming-soon section
+    plus everything downstream. Now each fetch is wrapped so one bad arr
+    degrades that section by 25%, not the whole email."""
+    import logging
+    log = logging.getLogger(__name__)
     items: list[CalendarItem] = []
-    items.extend(fetch_calendar(cfg.sonarr, days))
-    if cfg.sonarr_anime is not None:
-        items.extend(fetch_calendar(cfg.sonarr_anime, days))
-    items.extend(fetch_calendar(cfg.radarr, days))
-    if cfg.radarr_anime is not None:
-        items.extend(fetch_calendar(cfg.radarr_anime, days))
+    attempts: list[tuple[str, Optional[ArrEndpoint]]] = [
+        ("sonarr",       cfg.sonarr),
+        ("sonarr_anime", cfg.sonarr_anime),
+        ("radarr",       cfg.radarr),
+        ("radarr_anime", cfg.radarr_anime),
+    ]
+    for label, arr in attempts:
+        if arr is None:
+            continue
+        try:
+            items.extend(fetch_calendar(arr, days))
+        except (requests.RequestException, ValueError, RuntimeError) as exc:
+            log.warning(
+                "fetch_all_calendars: %s calendar fetch failed (%s) — "
+                "section degraded but other arrs continue",
+                label, exc,
+            )
     items.sort(key=lambda c: c.air_date)
     return items
 
@@ -225,6 +243,16 @@ def tmdb_search(read_token: str, kind: str, query: str, year: Optional[int] = No
         params["first_air_date_year"] = year
     try:
         r = requests.get(url, headers=headers, params=params, timeout=DEFAULT_TIMEOUT_S)
+        if r.status_code == 429:
+            # TMDB rate limit — surface to the operator log so a posterless
+            # render isn't silently attributed to "TMDB just doesn't have it".
+            import logging
+            retry_after = r.headers.get("Retry-After", "?")
+            logging.getLogger(__name__).warning(
+                "tmdb_search: 429 rate-limited (Retry-After=%s) — falling back"
+                " to TMDB-less render for this item", retry_after,
+            )
+            return {}
         if r.status_code != 200:
             return {}
         results = (r.json() or {}).get("results") or []

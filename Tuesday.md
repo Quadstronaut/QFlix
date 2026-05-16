@@ -1,6 +1,22 @@
 # Tuesday session — extend Monday 04:00 maintenance to systemd-installed apps
 
-**Status:** design doc. Plan to execute on a Tuesday night before the next Monday window.
+> **Status (2026-05-16): SUPERSEDED.** The cp.ultra.cc Playwright clicker
+> was replaced by `scripts/maint/app-upgrade-all.sh` (2026-05-13), which
+> runs `app-<name> upgrade` for every UCC-managed app sequentially during
+> the Monday window. The systemd/cron/library-class apps documented below
+> (conjurr, newsletterr — now purged; kometa, listmonk, recyclarr,
+> tdarr-server, python-plexapi) all upgrade via their own existing paths
+> (cron timers, dedicated installers, or pip). The "extend window to
+> systemd apps" plan never landed in this form — the audit cycle proved
+> the per-class upgrade paths were already sufficient.
+>
+> The original design is kept below as historical reference. Do **not**
+> implement from this document — see the live state in `manifest/apps.yaml`
+> + `scripts/maint/app-upgrade-all.sh`.
+
+---
+
+**Status (original):** design doc. Plan to execute on a Tuesday night before the next Monday window.
 
 **Goal:** make the 04:00–08:00 Monday window upgrade *every* manitoba-managed app, not just the 12 UCC apps the cp.ultra.cc clicker handles. "Production-grade automated maintenance" = nothing manual.
 

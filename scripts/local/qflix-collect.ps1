@@ -170,6 +170,19 @@ function Collect-Logs {
     return $true
 }
 
+function Write-StaleStateAtomic {
+    # Atomic write to stale-state.json so a crash mid-write doesn't leave a
+    # truncated/half-written JSON that the next run silently loses + that
+    # also mid-stomps any concurrent Stamp-ActedOn from the same PS run
+    # (`Update-StaleState` + `Stamp-ActedOn` both hit the same file).
+    param([string]$Path, $Object)
+    $tmp = "$Path.$([guid]::NewGuid().Guid).tmp"
+    $json = $Object | ConvertTo-Json -Depth 6
+    [System.IO.File]::WriteAllText($tmp, $json)
+    # Move-Item with -Force is atomic on NTFS for same-volume rename.
+    Move-Item -Force -Path $tmp -Destination $Path
+}
+
 function Update-StaleState {
     # State is kept as a plain hashtable (mutable) for PS 5.1 compatibility,
     # since `ConvertFrom-Json -AsHashtable` is PS 7+. We hand-convert on load.
@@ -193,7 +206,7 @@ function Update-StaleState {
         | Sort-Object FullName | Select-Object -Last 3
     if ($allFiles.Count -lt 3) {
         $out = @{ hashes = $hashes; updated_at = ([DateTime]::UtcNow.ToString("o")) }
-        ($out | ConvertTo-Json -Depth 6) | ForEach-Object { [System.IO.File]::WriteAllText($stateFile, $_) }
+        Write-StaleStateAtomic -Path $stateFile -Object $out
         return @()
     }
     $snaps = $allFiles | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json }
@@ -223,6 +236,11 @@ function Update-StaleState {
         }
         $latest = $samples[-1]
         if ($latest.progress -ge 1.0) { continue }
+        # Defensive guard: a paused-by-operator torrent (pausedDL / pausedUP)
+        # legitimately has zero progress across snapshots. The state-match
+        # below already excludes these, but the guard makes intent explicit
+        # so a future state-string addition can't silently widen the gate.
+        if ($latest.state -like '*paused*') { continue }
         $rule = $null
         if ($latest.state -eq "stalledDL") { $rule = "stalledDL" }
         elseif ($latest.state -eq "downloading" -and $latest.dlspeed -lt 10000) { $rule = "dead-slow" }
@@ -238,7 +256,12 @@ function Update-StaleState {
                 acted_on_at            = $null
             }
         } else {
-            $hashes[$h].consecutive_zero_hours = 3
+            # Increment from stored value so the audit log accurately
+            # reflects elapsed-hours-stalled instead of being pinned at 3.
+            # A torrent zero-movement for 24h should show 24, not 3.
+            $prev = [int]($hashes[$h].consecutive_zero_hours)
+            if ($prev -lt 3) { $prev = 3 }
+            $hashes[$h].consecutive_zero_hours = $prev + 1
             $hashes[$h].rule_matched = $rule
             $hashes[$h].candidate_for_unstick = $true
             $hashes[$h].last_progress = $latest.progress
@@ -298,7 +321,7 @@ function Update-StaleState {
     }
 
     $out = @{ hashes = $hashes; updated_at = ([DateTime]::UtcNow.ToString("o")) }
-    ($out | ConvertTo-Json -Depth 6) | ForEach-Object { [System.IO.File]::WriteAllText($stateFile, $_) }
+    Write-StaleStateAtomic -Path $stateFile -Object $out
     return $candidates
 }
 
@@ -368,9 +391,7 @@ function Stamp-ActedOn {
     if (-not $loaded.hashes.PSObject.Properties[$hash]) { return }
     $loaded.hashes.$hash | Add-Member -Force -NotePropertyName 'acted_on_at' `
         -NotePropertyValue ([DateTime]::UtcNow.ToString("o"))
-    ($loaded | ConvertTo-Json -Depth 6) | ForEach-Object {
-        [System.IO.File]::WriteAllText($stateFile, $_)
-    }
+    Write-StaleStateAtomic -Path $stateFile -Object $loaded
 }
 
 function Prune-Retention {

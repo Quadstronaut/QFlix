@@ -240,3 +240,37 @@ def test_enrich_with_tmdb_passthrough_without_token(tmp_path):
     )
     out = sources.enrich_with_tmdb(cfg, [item])
     assert out[0].thumb_url == item.thumb_url
+
+
+# ---------------------------------------------------------------------------
+# Resilience: per-arr fetch failure must not kill the whole section
+# ---------------------------------------------------------------------------
+
+def test_fetch_all_calendars_survives_per_arr_failure(tmp_path):
+    """A single arr fetch raising (e.g. Sonarr2 in a bad state during the
+    Monday maintenance window) used to propagate out of run() and drop the
+    entire Coming Soon section — and everything downstream in the email."""
+    import requests as _req
+    cfg = _config_stub(tmp_path)
+    # Add an anime arr so we have ≥2 calls; first one will raise.
+    cfg.sonarr_anime = ArrEndpoint("http://127.0.0.1:42013/sonarr2", "s2-key")
+
+    call_log = []
+    def _flaky_fetch(arr, days, now=None):
+        call_log.append(arr.base_url)
+        if "42013" in arr.base_url:
+            raise _req.ConnectionError("simulated sonarr2 down")
+        # Healthy arrs return one item.
+        return [sources.CalendarItem(
+            media_type="tv" if "sonarr" in arr.base_url else "movie",
+            title=f"From {arr.base_url}",
+            air_date=_dt.date.today(),
+        )]
+
+    with patch.object(sources, "fetch_calendar", side_effect=_flaky_fetch):
+        items = sources.fetch_all_calendars(cfg, days=14)
+
+    # Three healthy arrs (sonarr, radarr — radarr_anime is None), one failed.
+    # Output should still contain items from the survivors, not raise.
+    assert len(items) == 2
+    assert len(call_log) == 3  # one per non-None arr

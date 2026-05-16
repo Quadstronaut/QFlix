@@ -41,9 +41,31 @@ def _cache() -> Cache:
 
 # ===== READ TOOLS (cache-only) ===========================================
 
+def _snapshot_age_minutes(captured_at: Optional[str]) -> Optional[int]:
+    """Returns minutes elapsed since the snapshot was written. None if the
+    timestamp is missing or unparseable."""
+    if not captured_at:
+        return None
+    import datetime as _dt
+    try:
+        ts = _dt.datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    now = _dt.datetime.now(_dt.timezone.utc)
+    return int((now - ts).total_seconds() // 60)
+
+
+# After this many minutes with no new snapshot, every read tool annotates
+# its response with stale_warning=True. Threshold matches the workstation
+# Kuma dead-man (90 min after hourly collector misses).
+_STALE_SNAPSHOT_MINUTES = 90
+
+
 def qflix_status() -> dict:
     """Returns: latest snapshot timestamp, torrent count, Kuma red monitors,
-    last-collect file age, recent action count.
+    last-collect file age, recent action count. Includes snapshot age and a
+    `stale_warning` flag so callers can detect a suspended/offline collector
+    without manually parsing captured_at.
 
     Use when: you want a one-shot health summary of the farm.
     """
@@ -51,7 +73,8 @@ def qflix_status() -> dict:
     snap = c.latest_snapshot()
     if snap is None:
         return {"latest_snapshot": None, "torrent_count": 0, "kuma_red": [],
-                "recent_actions_24h": 0}
+                "recent_actions_24h": 0, "stale_warning": True,
+                "stale_reason": "no snapshot has ever been written"}
     last_collect_file = DATA_ROOT / "last-collect.json"
     last_collect = None
     if last_collect_file.exists():
@@ -60,26 +83,63 @@ def qflix_status() -> dict:
         except json.JSONDecodeError:
             pass
     events = c.recent_events(n=200)
-    return {
-        "latest_snapshot": snap.get("captured_at"),
+    captured_at = snap.get("captured_at")
+    age = _snapshot_age_minutes(captured_at)
+    stale = age is not None and age > _STALE_SNAPSHOT_MINUTES
+    out = {
+        "latest_snapshot": captured_at,
+        "snapshot_age_minutes": age,
+        "stale_warning": stale,
         "torrent_count": len((snap.get("qbit", {}).get("torrents") or [])),
         "kuma_red": (snap.get("health", {}).get("kuma_red") or []),
         "zombies": (snap.get("health", {}).get("zombies") or []),
         "last_collect": last_collect,
         "recent_actions_24h": len(events),
+        # Caller-discoverability — these are the only slugs qflix_arr_queue +
+        # qflix_unstick_torrent accept. Avoids the "guess the slug" pattern.
+        "valid_arr_slugs": ["sonarr", "sonarr2", "radarr", "radarr2"],
     }
+    if last_collect and last_collect.get("exit_code") not in (None, 0):
+        out["last_collect_warning"] = (
+            f"last collect exited {last_collect.get('exit_code')} — torrent "
+            f"list and stale state may be from a partial collect"
+        )
+    return out
 
 
-def qflix_list_torrents() -> list:
-    """Returns: full torrent list with enriched fields (qBit + *arr + Seerr).
+def qflix_list_torrents(state: Optional[str] = None,
+                        category: Optional[str] = None,
+                        stale_only: bool = False) -> list:
+    """Returns: torrent list with enriched fields (qBit + *arr + Seerr).
 
     Use when: you need to inspect specific torrents (DL speed, progress,
-    requester, *arr queue state).
+    requester, *arr queue state). On large farms (>50 torrents) the
+    unfiltered return floods context — prefer `stale_only=True` for
+    debugging stuck downloads, or `state=` / `category=` filters.
+
+    Parameters:
+      state:      filter by qBit state ('stalledDL', 'downloading',
+                  'pausedDL', 'queuedDL', 'metaDL', 'uploading', ...)
+      category:   filter by qBit category ('tv-sonarr', 'radarr', ...)
+      stale_only: when True, only include torrents currently flagged as
+                  candidate_for_unstick by the collector heuristic.
     """
     snap = _cache().latest_snapshot()
     if snap is None:
         return []
-    return list(snap.get("qbit", {}).get("torrents") or [])
+    torrents = list(snap.get("qbit", {}).get("torrents") or [])
+
+    if state:
+        torrents = [t for t in torrents if (t.get("state") or "") == state]
+    if category:
+        torrents = [t for t in torrents
+                    if (t.get("category") or "") == category]
+    if stale_only:
+        stale = _cache().load_stale_state().get("hashes") or {}
+        candidates = {h for h, v in stale.items() if v.get("candidate_for_unstick")}
+        torrents = [t for t in torrents
+                    if (t.get("hash") or "").lower() in candidates]
+    return torrents
 
 
 def qflix_torrent_history(hash_: str, hours: int = 24) -> list:
@@ -121,8 +181,12 @@ def qflix_get_logs(app: str, since: str = "24h", tail: int = 500,
     `grep` filters lines whose `message` contains the substring (case-insensitive).
     Use qflix_list_log_apps() to discover valid `app` slugs.
     """
+    # shlex.quote every caller-supplied value so a hostile string (e.g.
+    # `radarr; rm -rf ~`) can't break out of the SSH command line. tail is
+    # cast to int upstream so it can't carry shell metacharacters.
     cmd = (f"python3 ~/scripts/mcp/logs.py --emit-json "
-           f"--app {app} --since {since} --tail {int(tail)}")
+           f"--app {shlex.quote(app)} --since {shlex.quote(since)} "
+           f"--tail {int(tail)}")
     proc = ssh_call(cmd, timeout=60)
     if proc.returncode == 124:
         return _parse_ssh_timeout(proc.stderr, default=60)
@@ -263,11 +327,13 @@ def qflix_unstick_torrent(slug: str, queue_id: Optional[int] = None,
     Use when: a specific torrent is wedged and you want to act now without
     waiting for the 3-hour rule.
     """
-    args = [f"--slug {slug}", f'--reason "{reason}"']
+    # shlex.quote every caller-supplied string so embedded shell metacharacters
+    # (quotes, semicolons, backticks) can't break out of the SSH command line.
+    args = [f"--slug {shlex.quote(slug)}", f"--reason {shlex.quote(reason)}"]
     if queue_id is not None:
         args.append(f"--queue-id {int(queue_id)}")
     if hash_ is not None:
-        args.append(f'--hash {hash_}')
+        args.append(f"--hash {shlex.quote(hash_)}")
     if dry_run:
         args.append("--dry-run")
     cmd = "python3 ~/scripts/mcp/unstick.py --emit-json " + " ".join(args)
@@ -291,7 +357,7 @@ def qflix_diagnose_unstick(slug: str, hash_: str) -> dict:
     queue_lookup_default_ms, hash_match_ms}, queue_size_*}.
     """
     cmd = (f"python3 ~/scripts/mcp/unstick.py --emit-json --diagnose "
-           f"--slug {slug} --hash {hash_}")
+           f"--slug {shlex.quote(slug)} --hash {shlex.quote(hash_)}")
     proc = ssh_call(cmd, timeout=180)
     if proc.returncode == 124:
         return _parse_ssh_timeout(proc.stderr, default=180)
@@ -310,7 +376,7 @@ def qflix_trigger_missing_search(slug: Optional[str] = None) -> dict:
     Use when: you suspect a recent indexer change unlocked grabs.
     The daily 07:00 UTC timer also calls this; manual invocation is harmless.
     """
-    args = "" if slug is None else f"--slug {slug}"
+    args = "" if slug is None else f"--slug {shlex.quote(slug)}"
     proc = ssh_call(f"python3 ~/scripts/mcp/missing.py --emit-json {args}",
                     timeout=120)
     if proc.returncode == 124:

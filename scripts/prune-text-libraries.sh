@@ -28,9 +28,14 @@ post_notifiarr() {
   [ -f "$NOTIFIARR_KEY_FILE" ] || return 0
   local key
   key=$(tr -d '[:space:]' < "$NOTIFIARR_KEY_FILE")
-  curl -sf --max-time 10 -X POST -H "X-API-Key: $key" -H "Content-Type: application/json" \
-    "https://notifiarr.com/api/v1/notification/passthrough/$key" \
-    -d "$body" >/dev/null || true
+  # Log delivery failures to syslog instead of swallowing them. Without this,
+  # a Notifiarr outage on the day a prune happens silently drops the daily
+  # digest with no operator signal.
+  if ! curl -sf --max-time 10 -X POST -H "X-API-Key: $key" -H "Content-Type: application/json" \
+       "https://notifiarr.com/api/v1/notification/passthrough/$key" \
+       -d "$body" >/dev/null 2>&1; then
+    logger -t prune-text-libraries "Notifiarr POST failed (curl non-zero exit)"
+  fi
 }
 
 deletions=()
