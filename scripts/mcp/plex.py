@@ -63,16 +63,19 @@ def collect(include: set, recent_hours: int, recent_max: int) -> dict:
                 if getattr(r, "addedAt", None) and r.addedAt >= cutoff
             )
             unanalyzed = 0
-            try:
-                # bounded sample to avoid scanning huge libraries
-                sample = s.search(sort="addedAt:desc", limit=200)
-                unanalyzed = sum(
-                    1 for it in sample
-                    if not getattr(it, "media", None)
-                    or not getattr(it.media[0], "videoCodec", None)
-                )
-            except Exception:
-                unanalyzed = 0
+            # Show-type libraries iterate Show wrappers, not video files —
+            # `.media` is always empty on a Show, so this check would 100%
+            # false-positive every show. Movies only.
+            if s.type == "movie":
+                try:
+                    sample = s.search(sort="addedAt:desc", limit=200)
+                    unanalyzed = sum(
+                        1 for it in sample
+                        if not getattr(it, "media", None)
+                        or not getattr(it.media[0], "videoCodec", None)
+                    )
+                except Exception:
+                    unanalyzed = 0
             libs.append({
                 "key": s.key,
                 "title": s.title,
