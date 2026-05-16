@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — qBittorrent libtorrent engine wedge detector
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push qbit-stall
+StandardOutput=journal
+StandardError=journal
