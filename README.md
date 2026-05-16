@@ -9,9 +9,9 @@
 _One operator. One manifest. One maintenance window. Everything else is wires._
 
 <p>
-  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-45%2F45_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-49%2F49_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-33_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-34%2F34_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-43%2F43_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -41,7 +41,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 |---|---:|---|
 | Apps in manifest (`manifest/apps.yaml`) | **33** | 19 UCC · 5 systemd · 8 cron · 1 library |
 | End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **9** | qbit-stall · vlogs-stall · movie · anime · mobile-ux · deletion · plus 3 helpers |
-| Kuma push monitors (manitoba-owned) | **34** | 34/34 UP — every manifest app + the workstation collector reports continuously |
+| Kuma push monitors (manitoba-owned) | **43** | 43/43 UP — every manifest app + all 9 canaries + the daemon's self-heartbeat report continuously |
 | Cron + systemd timers | **14+** | window-aware (Mon 04–08 UTC drain) |
 | pytest suite (`tests/unit/`) | **440+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -366,9 +366,9 @@ scripts/
     qflix-mcp/               # stdio MCP server (qflix_query_logs + 12 more tools)
   mcp/                       # seedbox-side helpers invoked over SSH
     collect.py · logs.py · unstick.py · missing.py · plex.py
-  smoke-test.sh              # production smoke (~45 checks across the whole stack)
+  smoke-test.sh              # production smoke (~49 checks across the whole stack)
   smoke-test-plex.sh         # Plex-ecosystem-only smoke
-  canaries/                  # 4 end-to-end pipeline checks (bash)
+  canaries/                  # 9 end-to-end pipeline checks (bash)
   configure/                 # phased install/configure scripts (numbered)
   install/                   # lower-level installer libs
   lib/                       # shared bash helpers
@@ -401,7 +401,7 @@ QFlix runs unattended most of the week. The things worth knowing if you're readi
 - **Maintenance window — Mon 11:00–15:00 UTC.** The only time the stack is allowed to break itself. Recyclarr syncs TRaSH-Guides, Kometa rebuilds collections, Buildarr reconciles *arr config, and `app-upgrade-all.sh` runs `app-<name> upgrade` for every UCC-managed app sequentially (replaces the prior Playwright clicker on cp.ultra.cc as of 2026-05-13). Auto-heal is paused for the duration so restarts don't race the upgrades. → [FAQ §8](https://quadstronaut.seedbox.example.com/faq/#sec-window)
 - **Self-heal loop.** Outside the window, a pusher probes every app every 60 s and pushes status to Uptime Kuma. After 3 consecutive failures it tries up to 3 restarts (10 s · 30 s · 60 s back-off) before paging on Discord. Most outages resolve inside 2 minutes without the operator touching anything. → [FAQ §10](https://quadstronaut.seedbox.example.com/faq/#sec-monitoring)
 - **One alert channel.** A single Discord webhook with an operator `@ping` on `error` / `critical` levels (Notifiarr was retired 2026-05-10). → [FAQ §15](https://quadstronaut.seedbox.example.com/faq/#sec-discord)
-- **Smoke test.** `scripts/smoke-test.sh` runs ~45 assertions across Prowlarr, *arr↔qBit, hardlinks, app liveness, and the maintenance system. Run after every tracked change. → [FAQ — what does 45/45 cover](https://quadstronaut.seedbox.example.com/faq/#q-smoke-buckets)
+- **Smoke test.** `scripts/smoke-test.sh` runs ~49 assertions across Prowlarr, *arr↔qBit, hardlinks, app liveness, and the maintenance system. Run after every tracked change. → [FAQ — what does smoke cover](https://quadstronaut.seedbox.example.com/faq/#q-smoke-buckets)
 - **QFlix Random Error Audit (REA).** Workstation-side second-opinion audit (`scripts/local-llm/qflix-rea.ps1` — gitignored; Task Scheduler at `\Archangel\QFlix-LLM\QFlix Random Error Audit`, AtLogOn trigger). On every Windows logon, after the SSH tunnel is up, it pulls 7 seedbox log surfaces (*arr logs, systemd journal errors, cron mail spool, maint pipeline, nginx errors, Plex errors, Kuma red-state) in **one SSH call**, then hands the consolidated blob to every code-capable Ollama model installed locally (auto-discovered via regex — `qwen3-coder:30b`, `qwen2.5-coder:7b`, `qwen3:8b` today). Models run sequentially; verdicts collapse by signature into one Discord message with the operator @ping if anything looks wrong, or a daily "✓ clean" heartbeat if nothing does. If Ollama itself is unreachable, a separate dead-man Discord alert fires (24h dedupe). Spec: [`docs/superpowers/specs/2026-05-11-qflix-rea-design.md`](docs/superpowers/specs/2026-05-11-qflix-rea-design.md). Install: `scripts/local-llm/qflix-rea.ps1 -Install`. Not wired into Kuma — purely local set of eyes.
 - **Log aggregation — VictoriaLogs on the seedbox.** Single Linux binary at `~/.apps/vlogs/bin/victoria-logs-prod`, storing 90 d of every managed app's logs at `~/.apps/vlogs/data/` (<512 MB RAM, indexed). Three user-systemd units: `victorialogs.service` (long-running server, bound loopback-only on `secrets/vlogs.port`), `qflix-vlogs-ingest.timer` (every 5 min, imports `scripts/mcp/logs.py` in-process and POSTs JSON-lines to `127.0.0.1:<vlogs.port>/insert/jsonline`), and `manitoba-maint-canary-vlogs-stall.timer` (every 15 min, detects server down or zero-ingest stalls). The MCP server (`scripts/local/qflix-mcp/qflix_mcp.py`) exposes two reads: `qflix_get_logs` (live SSH pull, narrow window) and `qflix_query_logs` (LogsQL against the persistent index via SSH-exec'd curl — e.g. `level:Error AND app:radarr`). Install: `scripts/configure/80-vlogs-install.sh`. Kuma monitors: `VictoriaLogs`, `Qflix VLogs Ingest`, `Canary VLogs Stall`. UI from workstation: `ssh -L $PORT:127.0.0.1:$PORT $SEEDBOX -N`, then `http://127.0.0.1:$PORT/select/vmui/`. Moved off the workstation 2026-05-14 to satisfy the autonomy mandate (workstation off ≠ logs lost).
 
