@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — kometa libraries config-drift (Plex rename detector)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push kometa-libraries
+StandardOutput=journal
+StandardError=journal

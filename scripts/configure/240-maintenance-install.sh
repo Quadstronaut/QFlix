@@ -109,6 +109,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-mobile-ux.timer \
     scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.service \
     scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.timer \
+    scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.service \
+    scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.timer \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.service \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.timer \
     scripts/maint/app-upgrade-all.sh \
@@ -116,6 +118,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/lib/ssh.sh \
     scripts/canaries/anime.sh \
     scripts/canaries/deletion.sh \
+    scripts/canaries/kometa-libraries.sh \
     scripts/canaries/mobile-ux.sh \
     scripts/canaries/movie.sh \
     manifest/apps.yaml \
@@ -207,6 +210,8 @@ for unit in \
     manitoba-maint-canary-mobile-ux.timer \
     manitoba-maint-canary-vlogs-stall.service \
     manitoba-maint-canary-vlogs-stall.timer \
+    manitoba-maint-canary-kometa-libraries.service \
+    manitoba-maint-canary-kometa-libraries.timer \
     manitoba-maint-cp-upgrade.service \
     manitoba-maint-cp-upgrade.timer; do
   cp -f ~/scripts/maint/systemd/$unit ~/.config/systemd/user/$unit
@@ -226,6 +231,9 @@ systemctl --user enable --now manitoba-maint-canary-mobile-ux.timer
 # enable --now is safe even if vlogs isn't running yet — the canary script will
 # exit with vlogs-down/no-ingest and push the right status to Kuma.
 systemctl --user enable --now manitoba-maint-canary-vlogs-stall.timer
+# kometa-libraries canary: config-drift detector (Plex rename guard).
+# Idempotent — exits up on match, down on drift; no destructive ops.
+systemctl --user enable --now manitoba-maint-canary-kometa-libraries.timer
 # UCC `app-<name> upgrade` sweep — Mon 11:30 UTC (30 min into the window).
 # --now activates the timer itself (schedules its next OnCalendar fire); it
 # does NOT trigger an immediate service run. Without --now the timer stays
@@ -345,7 +353,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime deletion mobile-ux; do
+for canary in movie anime deletion mobile-ux kometa-libraries; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
