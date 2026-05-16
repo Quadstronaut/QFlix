@@ -27,6 +27,14 @@ EDGEbookmarks.html
 scripts/qflix-newsletter/**/__pycache__/
 scripts/qflix-newsletter/**/*.pyc
 
+# Python bytecode anywhere in the tree (mcp libs, local helpers, etc.)
+**/__pycache__/
+*.pyc
+
+# Operator scratch dir — local WIP notes, ad-hoc probes, recovery files.
+# Persists across sessions intentionally; never committed.
+.scratch/
+
 # Workstation tunnel daemon hardcodes the real seedbox FQDN — treat as secret.
 scripts/manitoba-tunnel.ps1
 
