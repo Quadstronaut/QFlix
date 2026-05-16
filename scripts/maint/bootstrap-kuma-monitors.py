@@ -42,9 +42,8 @@ def _read_secret(name: str) -> str:
 # Apps whose manifest health uses `port_source` (env_file/json_file) but
 # which we have a static fallback secret for. The static port matches the
 # port_source target at install time — fine for monitor URLs.
+# (Conjurr + Newsletterr removed 2026-05-15 — both apps purged 2026-05-11.)
 PORT_SOURCE_FALLBACK = {
-    "conjurr": "conjurr.port",
-    "newsletterr": "newsletterr.port",
     "tdarr-server": "tdarr.server_port",
 }
 
@@ -268,6 +267,21 @@ def main() -> int:
     print("\n--- step 0: ensure auto-heal webhook notification + attach to all monitors ---")
     _ensure_autoheal_webhook(api)
 
+    print("\n--- step 0b: ensure pusher self-heartbeat PUSH monitor exists ---")
+    # "Manitoba Pusher" is the dead-man for the pusher itself. Without
+    # this monitor, a pusher crashloop looks like every app went down at
+    # once. Gives the operator a single unambiguous signal.
+    pusher_monitor = "Manitoba Pusher"
+    existing_now = {m["name"]: m for m in api.get_monitors()}
+    if pusher_monitor not in existing_now:
+        try:
+            _add_push_monitor(api, pusher_monitor)
+            print(f"  [add]{pusher_monitor:25s} PUSH (heartbeat-only)")
+        except Exception as exc:
+            print(f"  [FAIL]{pusher_monitor:25s} {exc}")
+    else:
+        print(f"  [skip]{pusher_monitor:25s} (already exists)")
+
     print("\n--- step 1: drop any existing HTTP monitors I created previously ---")
     deleted = _delete_all_http_monitors(api)
     print(f"deleted {deleted} stale HTTP monitor(s)")
@@ -344,6 +358,15 @@ def main() -> int:
             tokens[key] = m["pushToken"]
         else:
             missing.append((key, canary.kuma_monitor))
+
+    # Pusher self-heartbeat token — keyed "manitoba-pusher" so the
+    # pusher loop can find it. The pusher pushes status=up here each
+    # cycle; Kuma flips it down if no push arrives within 90s.
+    pusher_m = fresh.get(pusher_monitor)
+    if pusher_m and pusher_m.get("pushToken"):
+        tokens["manitoba-pusher"] = pusher_m["pushToken"]
+    else:
+        missing.append(("manitoba-pusher", pusher_monitor))
 
     if missing:
         print(f"\n[warn] {len(missing)} monitor(s) lack a pushToken in get_monitors():")

@@ -264,16 +264,7 @@ def _cmd_window_watchdog(args: argparse.Namespace) -> int:
     return 0
 
 
-def _secret_read(name: str) -> str:
-    """Read a secret file from secrets/. Consistent with notify.py / kuma.py client."""
-    secrets_env = os.environ.get("MANITOBA_SECRETS_DIR")
-    if secrets_env:
-        from pathlib import Path as _Path
-        return (_Path(secrets_env) / name).read_text(encoding="utf-8").strip()
-    from pathlib import Path as _Path
-    lib_dir = _Path(__file__).resolve().parent
-    secrets_dir = lib_dir.parent.parent.parent / "secrets"
-    return (secrets_dir / name).read_text(encoding="utf-8").strip()
+from lib.secrets import read_secret as _secret_read  # noqa: E402, F401
 
 
 def _cmd_webhook(args: argparse.Namespace) -> int:

@@ -38,6 +38,18 @@ def test_missing_required_field():
         load(fixture("missing-class.yaml"))
 
 
+def test_invalid_health_kind_raises_at_load_time():
+    """A typo like 'http-api' (hyphen) vs 'http_api' must fail manifest load,
+    not silently pass through and raise inside the pusher loop on every push
+    cycle — that hides the bug because the pusher's exception is swallowed
+    and the affected app's monitor never updates."""
+    with pytest.raises(ManifestError) as exc_info:
+        load(fixture("bad-health-kind.yaml"))
+    msg = str(exc_info.value).lower()
+    assert "http-api" in msg or "unknown health.kind" in msg
+    assert "sonarr" in msg
+
+
 def test_max_version_ceiling():
     m = load(fixture("max-version.yaml"))
     app = m.app("tdarr-server")

@@ -47,20 +47,11 @@ class HealthResult:
 
 
 # ---------------------------------------------------------------------------
-# Secrets resolution
+# Secrets resolution (delegates to lib.secrets — single source of truth)
 # ---------------------------------------------------------------------------
 
-def _secrets_dir() -> Path:
-    env = os.environ.get("MANITOBA_SECRETS_DIR")
-    if env:
-        return Path(env)
-    repo_root = Path(__file__).parent.parent.parent.parent
-    return repo_root / "secrets"
-
-
-def _secret_read(name: str) -> str:
-    path = _secrets_dir() / name
-    return path.read_text(encoding="utf-8").strip()
+from lib.secrets import secrets_dir as _secrets_dir  # noqa: E402, F401
+from lib.secrets import read_secret as _secret_read  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -149,13 +140,23 @@ def _probe_http_api(app: App, timeout_s: float) -> HealthResult:
     auth_header = raw.get("auth_header")
     auth_secret = raw.get("auth_secret")
     if auth_header and auth_secret:
+        # A missing auth secret used to fall through to an unauthed request.
+        # If the target API returns 200 without auth (uncommon but exists),
+        # the probe shows green while auth is silently broken — the same
+        # class of failure as the Tautulli pms_url Docker-netns regression
+        # that hid for a month. Fail loudly so Kuma turns red immediately.
         try:
             headers[auth_header] = _secret_read(auth_secret)
         except FileNotFoundError:
-            pass
+            return HealthResult(
+                ok=False, latency_ms=None,
+                reason=f"auth secret missing: {auth_secret}",
+            )
 
     # Optional HTTP Basic auth (e.g. Maintainerr enforces htpasswd Basic
-    # alongside its own X-Api-Key on every endpoint).
+    # alongside its own X-Api-Key on every endpoint). Same fail-loud
+    # policy: a missing basic auth secret should not result in an unauthed
+    # probe that the upstream silently 401s on.
     basic_auth = None
     basic_user = raw.get("basic_auth_user")
     basic_secret = raw.get("basic_auth_secret")
@@ -163,7 +164,10 @@ def _probe_http_api(app: App, timeout_s: float) -> HealthResult:
         try:
             basic_auth = (basic_user, _secret_read(basic_secret))
         except FileNotFoundError:
-            basic_auth = None
+            return HealthResult(
+                ok=False, latency_ms=None,
+                reason=f"basic-auth secret missing: {basic_secret}",
+            )
 
     expect_status = raw.get("expect_status", 200)
 
@@ -199,7 +203,8 @@ def _probe_http_root(app: App, timeout_s: float) -> HealthResult:
     url = f"http://{host}:{port}{path}"
     expect_status = raw.get("expect_status")
 
-    # Same optional Basic auth as http_api.
+    # Same optional Basic auth as http_api — fail loudly on missing secret
+    # rather than silently issuing an unauthed request.
     basic_auth = None
     basic_user = raw.get("basic_auth_user")
     basic_secret = raw.get("basic_auth_secret")
@@ -207,7 +212,10 @@ def _probe_http_root(app: App, timeout_s: float) -> HealthResult:
         try:
             basic_auth = (basic_user, _secret_read(basic_secret))
         except FileNotFoundError:
-            basic_auth = None
+            return HealthResult(
+                ok=False, latency_ms=None,
+                reason=f"basic-auth secret missing: {basic_secret}",
+            )
 
     t0 = time.monotonic()
     try:

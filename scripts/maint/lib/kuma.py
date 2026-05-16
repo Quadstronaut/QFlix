@@ -42,20 +42,11 @@ _METRICS_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# Secrets resolution — consistent with notify.py pattern
+# Secrets resolution (delegates to lib.secrets — single source of truth)
 # ---------------------------------------------------------------------------
 
-def _secrets_dir() -> Path:
-    env = os.environ.get("MANITOBA_SECRETS_DIR")
-    if env:
-        return Path(env)
-    repo_root = Path(__file__).parent.parent.parent.parent
-    return repo_root / "secrets"
-
-
-def _secret_read(name: str) -> str:
-    path = _secrets_dir() / name
-    return path.read_text(encoding="utf-8").strip()
+from lib.secrets import secrets_dir as _secrets_dir  # noqa: E402, F401
+from lib.secrets import read_secret as _secret_read  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +219,11 @@ def audit_monitors(manifest, *, kuma_url: str | None = None,
 # Webhook server — Phase 8
 # ---------------------------------------------------------------------------
 
-_RECOVERY_SEMAPHORE = threading.BoundedSemaphore(5)
+# Recovery from webhook events goes through recovery.trigger_async, which
+# owns the semaphore + _in_flight dedup. Two separate entry points (webhook
+# + pusher) with two separate semaphores would allow concurrent recovery
+# threads for the same app — see commit history for the race that motivated
+# this unification.
 
 _LOG = logging.getLogger(__name__)
 
@@ -346,24 +341,35 @@ class KumaWebhookHandler(http.server.BaseHTTPRequestHandler):
                 )
                 return
 
-            # No lock — attempt recovery in daemon thread
-            if not _RECOVERY_SEMAPHORE.acquire(blocking=False):
+            # No lock — delegate to recovery.trigger_async so both entry
+            # points (pusher + webhook) share the single _in_flight set +
+            # _RECOVERY_SEMAPHORE. trigger_async never blocks; dedup runs
+            # the same way regardless of which path fired first.
+            try:
+                app = manifest.app(app_name)
+            except KeyError:
+                state.record(state_path, app_name,
+                             event="dropped_unknown_app_in_webhook")
+                return
+
+            decision = recovery.trigger_async(app, manifest=manifest)
+            if decision == "started":
+                state.record(state_path, app_name, event="webhook_triggered_recovery")
+            elif decision == "already_running":
+                # The pusher (or a prior webhook) already fired — no-op.
+                pass
+            elif decision == "cap_exceeded":
                 sys.stderr.write(
                     f"[{_utc_now_iso()}] in-flight recovery cap exceeded for '{app_name}'\n"
                 )
                 state.record(state_path, app_name, event="dropped_cap_exceeded")
-                return
-
-            captured_manifest = manifest
-
-            def _worker():
-                try:
-                    recovery.run(app_name, manifest=captured_manifest)
-                finally:
-                    _RECOVERY_SEMAPHORE.release()
-
-            t = threading.Thread(target=_worker, daemon=True)
-            t.start()
+            elif decision == "permanently_failed":
+                sys.stderr.write(
+                    f"[{_utc_now_iso()}] webhook: '{app_name}' permanently failed — operator needed\n"
+                )
+                state.record(state_path, app_name, event="webhook_skip_perma_failed")
+            else:
+                state.record(state_path, app_name, event=f"webhook_skip_{decision}")
 
     def _handle_canary_event(
         self,

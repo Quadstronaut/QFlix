@@ -84,14 +84,14 @@ else:
 done
 
 if [ -n "$STALE" ]; then
-  # All-stale = ingest fully broken; partial = noise. Only fail on all-stale.
+  # Per-app routing breaks (e.g. sonarr logs stop ingesting but radarr is
+  # fine) used to exit 0 with only a warn-stale annotation — fail-silent
+  # for the operator. The 30-min window is conservative enough that even
+  # a slow-logging app (kometa, recyclarr) will have logged something;
+  # any stale app is a real signal.
   STALE_COUNT=$(printf "%s" "$STALE" | wc -w)
-  if [ "$STALE_COUNT" -ge 4 ]; then
-    printf "STAGE=vlogs-stale-app msg=all-arr-stale-30m%s\n" "$STALE" >&2
-    exit 1
-  fi
-  printf "vlogs-flowing total_15m=%s warn-stale=%s\n" "$N" "$STALE"
-  exit 0
+  printf "STAGE=vlogs-stale-app msg=apps-stale-30m-%s%s\n" "$STALE_COUNT" "$STALE" >&2
+  exit 1
 fi
 
 printf "vlogs-flowing total_15m=%s all-arr-fresh=true\n" "$N"

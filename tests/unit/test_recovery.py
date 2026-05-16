@@ -517,3 +517,79 @@ class TestIsRecoverable:
     def test_library_is_not_recoverable(self):
         app = _make_app("python-plexapi", class_="library")
         assert recovery_mod._is_recoverable(app) is False
+
+
+# ---------------------------------------------------------------------------
+# Permanent-failure mark — prevent thread storm after 3-attempt exhaustion
+# ---------------------------------------------------------------------------
+
+class TestPermanentFailureMark:
+    """Once the 3-attempt loop has exhausted, the pusher would otherwise
+    re-fire trigger_async every 60s for the duration of the outage. The
+    permanent-failure mark gates that until the next successful probe.
+    Cleared by lib.pusher on probe success via clear_permanent_failure."""
+
+    def setup_method(self):
+        # Ensure clean state — other tests may have left marks behind.
+        recovery_mod._permanently_failed.clear()
+        recovery_mod._in_flight.clear()
+
+    def test_trigger_returns_permanently_failed_when_marked(self):
+        app = _make_app("sonarr")
+        recovery_mod._mark_permanently_failed(app.name)
+        assert recovery_mod.trigger_async(app) == "permanently_failed"
+
+    def test_clear_permanent_failure_allows_new_recovery_attempt(self):
+        app = _make_app("sonarr")
+        recovery_mod._mark_permanently_failed(app.name)
+        assert recovery_mod.is_permanently_failed(app.name) is True
+
+        recovery_mod.clear_permanent_failure(app.name)
+        assert recovery_mod.is_permanently_failed(app.name) is False
+        # Now trigger_async should not short-circuit on permanent_failed.
+        # (We don't actually spawn the worker here — but the gate is open.)
+        # Stub out the spawn path with a manifest stub that fails fast.
+
+    def test_failed_event_marks_app_permanently_failed(self, monkeypatch):
+        # When run() returns event=failed (3 attempts exhausted), the
+        # _worker callback flips _permanently_failed for that app.
+        app = _make_app("sonarr")
+        manifest = _FakeManifest({"sonarr": app})
+
+        # Mock run() to simulate exhaustion.
+        def fake_run(app_name, *, manifest=None):
+            return {
+                "app": app_name, "event": "failed", "attempts": 3,
+                "final_health": "down", "kuma_status": "n/a",
+            }
+        monkeypatch.setattr(recovery_mod, "run", fake_run)
+
+        decision = recovery_mod.trigger_async(app, manifest=manifest)
+        assert decision == "started"
+
+        # Wait briefly for the worker to finish.
+        for _ in range(20):
+            if recovery_mod.is_permanently_failed(app.name):
+                break
+            time.sleep(0.05)
+        assert recovery_mod.is_permanently_failed(app.name) is True
+
+    def test_recovered_event_does_not_mark_permanently_failed(self, monkeypatch):
+        app = _make_app("sonarr")
+        manifest = _FakeManifest({"sonarr": app})
+
+        def fake_run(app_name, *, manifest=None):
+            return {
+                "app": app_name, "event": "recovered", "attempts": 1,
+                "final_health": "ok", "kuma_status": "up",
+            }
+        monkeypatch.setattr(recovery_mod, "run", fake_run)
+
+        decision = recovery_mod.trigger_async(app, manifest=manifest)
+        assert decision == "started"
+
+        for _ in range(20):
+            time.sleep(0.05)
+            if app.name not in recovery_mod._in_flight:
+                break
+        assert recovery_mod.is_permanently_failed(app.name) is False

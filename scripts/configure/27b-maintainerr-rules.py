@@ -2,8 +2,9 @@
 """Create Maintainerr 60-day deletion rules for Plex libraries.
 
 Spec §7.1/§7.2: 60 days from add, 14-day warning, daily run, delete via *arr.
-Plex has only Movies + TV Shows libraries (Anime is Jellyfin-only and unreachable
-by this Maintainerr deployment).
+After the 2026-05-11 Plex/Jellyfin merge, every library (Movies / TV / Anime /
+Anime Movies) lives in Plex; this script applies the canonical 60-day rule to
+each, routing Anime libraries to the Sonarr2/Radarr2 anime branch.
 """
 import json, os, ssl, urllib.request, urllib.error
 from pathlib import Path

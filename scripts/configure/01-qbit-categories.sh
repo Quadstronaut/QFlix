@@ -30,8 +30,8 @@ echo "Auth OK at $QBIT_URL"
 declare -A cats=(
   [radarr-anime]='/home/quadstronaut/downloads/qbittorrent/radarr-anime'
   [sonarr-anime]='/home/quadstronaut/downloads/qbittorrent/sonarr-anime'
-  [readarr]='/home/quadstronaut/downloads/qbittorrent/readarr'
-  [mylar]='/home/quadstronaut/downloads/qbittorrent/mylar'
+  # readarr / mylar categories removed 2026-05-15 — both apps purged
+  # 2026-05-11. Re-add when/if those apps are reinstalled.
 )
 
 for cat in "${!cats[@]}"; do

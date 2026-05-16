@@ -46,10 +46,6 @@ protocols = "torrent"
 timeout = "10s"
 delete_orig = false
 
-[[readarr]]
-url = "http://172.17.0.1:{{READARR_PORT}}/{{READARR_BASE}}"
-api_key = "{{READARR_KEY}}"
-paths = ["/home/quadstronaut/downloads/qbittorrent/readarr"]
-protocols = "torrent"
-timeout = "10s"
-delete_orig = false
+# Readarr block removed 2026-05-15: Readarr purged 2026-05-11. Re-adding
+# requires the secrets/readarr.{port,urlbase,key} files (also purged) and
+# the radarr-stack rules to forward back to Readarr's queue.

@@ -16,8 +16,16 @@ source "$HERE/../lib/secrets.sh"
 
 LM_VER="6.1.0"
 LM_URL="https://github.com/knadh/listmonk/releases/download/v${LM_VER}/listmonk_${LM_VER}_linux_amd64.tar.gz"
-PUBLIC_HOST="quadstronaut.seedbox.example.com"
+# Hard requirement — the sanitized placeholder must NEVER reach a live curl,
+# nginx config, or Listmonk root_url. secret_read dies if absent.
+PUBLIC_HOST="$(secret_read seedbox.host)"
 ROOT_URL="https://${PUBLIC_HOST}/listmonk"
+# from_email + hello_hostname are operator-specific; gate behind dedicated
+# secrets rather than baking in a placeholder that would silently break
+# deliverability if the operator forgot to override it.
+FROM_EMAIL="$(secret_read listmonk.from_email)"
+SMTP_USER="$(secret_read listmonk.smtp_user)"
+SMTP_HELLO_HOST="${PUBLIC_HOST}"
 
 # ── Step 1: claim port ──────────────────────────────────────────────────────
 if ! secret_exists listmonk.port; then
@@ -42,10 +50,15 @@ PG_PASS=$(sshm 'base64 -d ~/.apps/postgres/.encoded.dat | head -c 24')
 [ -n "$PG_PASS" ] || die "could not decode postgres password"
 
 # ── Step 4: create DB if absent ─────────────────────────────────────────────
-sshm "PGPASSWORD='${PG_PASS}' psql -h 127.0.0.1 -p 42009 -U quadstronaut -d postgres -tc \
-  \"SELECT 1 FROM pg_database WHERE datname = 'listmonk'\" | grep -q 1 \
-  || PGPASSWORD='${PG_PASS}' psql -h 127.0.0.1 -p 42009 -U quadstronaut -d postgres \
-       -c 'CREATE DATABASE listmonk OWNER quadstronaut'"
+# PGPASSWORD passed via stdin-fed env, never on the command line — argv is
+# visible to every user via `ps -ef` on the seedbox.
+sshm "PG_PASS=$(printf %q "$PG_PASS") bash -s" <<'EOF'
+export PGPASSWORD="$PG_PASS"
+psql -h 127.0.0.1 -p 42009 -U quadstronaut -d postgres -tc \
+  "SELECT 1 FROM pg_database WHERE datname = 'listmonk'" | grep -q 1 \
+  || psql -h 127.0.0.1 -p 42009 -U quadstronaut -d postgres \
+       -c 'CREATE DATABASE listmonk OWNER quadstronaut'
+EOF
 log_info "listmonk DB ready"
 
 # ── Step 5: download binary (skip if already at correct version) ────────────
@@ -130,7 +143,7 @@ log_info "listmonk.service active"
 # ── Step 9: heartbeat cron ──────────────────────────────────────────────────
 sshm 'mkdir -p ~/scripts/ops'
 scpm_to "$HERE/../ops/heartbeat-listmonk.sh" '~/scripts/ops/heartbeat-listmonk.sh'
-sshm 'chmod +x ~/scripts/ops/heartbeat-listmonk.sh && (crontab -l 2>/dev/null | grep -v heartbeat-listmonk; echo "*/5 * * * * /home/quadstronaut/scripts/ops/heartbeat-listmonk.sh") | crontab -'
+sshm 'chmod +x ~/scripts/ops/heartbeat-listmonk.sh && (crontab -l 2>/dev/null | grep -v heartbeat-listmonk; echo "*/5 * * * * $HOME/scripts/ops/heartbeat-listmonk.sh") | crontab -'
 log_info "heartbeat cron installed"
 
 # ── Step 10: nginx /listmonk/ fragment ──────────────────────────────────────
@@ -189,22 +202,22 @@ curl -sfk -m 10 -u "${ADMIN_USER}:${ADMIN_PASS}" \
      "https://${PUBLIC_HOST}/listmonk/api/settings" -o "$TMP_SETTINGS"
 [ -s "$TMP_SETTINGS" ] || die "could not GET listmonk settings"
 
-python3 - "$TMP_SETTINGS" "$ROOT_URL" "$SMTP_PASS" <<'PY' > "$TMP_SETTINGS.new"
+python3 - "$TMP_SETTINGS" "$ROOT_URL" "$SMTP_PASS" "$FROM_EMAIL" "$SMTP_USER" "$SMTP_HELLO_HOST" <<'PY' > "$TMP_SETTINGS.new"
 import json, sys
-path, root_url, smtp_pass = sys.argv[1], sys.argv[2], sys.argv[3]
+path, root_url, smtp_pass, from_email, smtp_user, smtp_hello = sys.argv[1:7]
 data = json.load(open(path))["data"]
 data["app.root_url"] = root_url
-data["app.from_email"] = "Manitoba Media <operator@example.com>"
+data["app.from_email"] = from_email
 data["smtp"] = [{
     "uuid": "00000000-0000-0000-0000-000000000001",
     "enabled": True,
     "host": "smtp.gmail.com",
     "port": 587,
     "auth_protocol": "login",
-    "username": "operator@example.com",
+    "username": smtp_user,
     "password": smtp_pass,
     "email_headers": [],
-    "hello_hostname": "seedbox.example.com",
+    "hello_hostname": smtp_hello,
     "max_conns": 10,
     "max_msg_retries": 2,
     "idle_timeout": "15s",
@@ -244,8 +257,11 @@ if ! secret_exists listmonk.api_token; then
   log_info "provisioning Listmonk API user..."
 
   # Step 13a: create the parent list-role + per-list children + bind to web user (id=1)
+  # PGPASSWORD piped via stdin to avoid argv exposure (visible in `ps -ef`).
   PG_PASS_LM="$PG_PASS"
-  sshm "PGPASSWORD='${PG_PASS_LM}' psql -h 127.0.0.1 -p 42009 -U quadstronaut -d listmonk" <<'PSQLSCRIPT'
+  sshm "PG_PASS=$(printf %q "$PG_PASS_LM") bash -s" <<'PSQLSCRIPT'
+export PGPASSWORD="$PG_PASS"
+psql -h 127.0.0.1 -p 42009 -U quadstronaut -d listmonk <<'SQL'
 DO $$
 DECLARE
   list_role_id INT;
@@ -271,17 +287,35 @@ BEGIN
   UPDATE users SET list_role_id = list_role_id WHERE username = 'quadstronaut' AND list_role_id IS NULL;
 END $$;
 SELECT 'list_role_id=' || list_role_id FROM roles WHERE type='list' AND name='Manitoba List Access';
+SQL
 PSQLSCRIPT
 
-  # Step 13b: temporarily restore config.toml admin creds so we can call /api/users
-  sshm "bash -s" <<EOF
-sed -i '/^address /a admin_username = "${ADMIN_USER}"\\nadmin_password = "${ADMIN_PASS}"' ~/.apps/listmonk/etc/config.toml
+  # Step 13b: temporarily restore config.toml admin creds so we can call /api/users.
+  # Idempotent: dedup any prior admin lines, then append the canonical block.
+  # Atomic write via mv-into-place; never leaves a half-edited config visible to the running daemon.
+  sshm "ADMIN_USER=$(printf %q "$ADMIN_USER") ADMIN_PASS=$(printf %q "$ADMIN_PASS") bash -s" <<'EOF'
+set -euo pipefail
+CFG=~/.apps/listmonk/etc/config.toml
+TMP="${CFG}.bootstrap.$$"
+grep -vE '^(admin_username|admin_password)\s*=' "$CFG" > "$TMP"
+{
+  echo "admin_username = \"${ADMIN_USER}\""
+  echo "admin_password = \"${ADMIN_PASS}\""
+} >> "$TMP"
+chmod 600 "$TMP"
+mv "$TMP" "$CFG"
 systemctl --user restart listmonk.service
 EOF
   sleep 4
 
   # Step 13c: create the api-type user; Listmonk returns the token in the response
-  LIST_ROLE_ID=$(sshm "PGPASSWORD='${PG_PASS_LM}' psql -h 127.0.0.1 -p 42009 -U quadstronaut -d listmonk -tA -c \"SELECT id FROM roles WHERE type='list' AND name='Manitoba List Access'\"")
+  # PGPASSWORD via stdin/env, not argv.
+  LIST_ROLE_ID=$(sshm "PG_PASS=$(printf %q "$PG_PASS_LM") bash -s" <<'EOF'
+export PGPASSWORD="$PG_PASS"
+psql -h 127.0.0.1 -p 42009 -U quadstronaut -d listmonk -tA -c \
+  "SELECT id FROM roles WHERE type='list' AND name='Manitoba List Access'"
+EOF
+)
   [ -n "$LIST_ROLE_ID" ] || die "could not find list role id"
 
   CREATE_OUT=$(curl -sfk -m 15 -u "${ADMIN_USER}:${ADMIN_PASS}" -X POST \

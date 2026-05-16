@@ -230,28 +230,10 @@ else
   record "seerr-plex-settings" skip "no seerr key/port"
 fi
 
-# E20. Newsletterr — uses settings table (plex_url + plex_token columns), not plex_servers table
-echo "E20. Newsletterr plex config"
-NL_PX=$(sshm "sqlite3 ~/.apps/newsletterr/repo/database/data.db \"
-SELECT CASE WHEN plex_url IS NOT NULL AND plex_url != '' THEN 'configured' ELSE 'empty' END
-FROM settings LIMIT 1
-\" 2>/dev/null || echo 'db-error'" 2>/dev/null || echo "db-error")
-if [ "$NL_PX" = "configured" ]; then
-  record "newsletterr-plex-config" pass "plex_url configured in settings"
-else
-  record "newsletterr-plex-config" fail "plex_url empty in settings table — operator must configure Plex in Newsletterr UI"
-fi
-
-# E21. Conjurr — accesses Plex indirectly via Tautulli (no direct PLEX_TOKEN).
-# Verify TAUTULLI_URL is set (proves Plex-path works).
-echo "E21. Conjurr Tautulli->Plex path"
-CJ_HAS=$(sshm "grep -c '^TAUTULLI_URL=' ~/.apps/conjurr/repo/env/.env 2>/dev/null" 2>/dev/null || echo "0")
-CJ_HAS="${CJ_HAS//[^0-9]/}"
-if [ "${CJ_HAS:-0}" -ge 1 ]; then
-  record "conjurr-plex-path" pass "TAUTULLI_URL set (Conjurr reaches Plex via Tautulli)"
-else
-  record "conjurr-plex-path" fail "TAUTULLI_URL missing from ~/.apps/conjurr/repo/env/.env"
-fi
+# E20 (Newsletterr) + E21 (Conjurr) removed 2026-05-15 — both apps were
+# purged 2026-05-11 and these checks always reported fail, eroding trust
+# in the smoke output. Their replacement (qflix-newsletter Python package)
+# is exercised by qflix-newsletter --dry-run elsewhere in smoke-test.sh.
 
 # E22. Kometa config.yml has plex: token:
 echo "E22. Kometa plex config"

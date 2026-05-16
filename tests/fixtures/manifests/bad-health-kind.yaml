@@ -1,0 +1,15 @@
+defaults:
+  health_timeout_s: 5
+
+# Regression fixture: 'http-api' (hyphen) is a typo for 'http_api'.
+# Before manifest-load validation, this got past _parse_health and only
+# raised at runtime inside the pusher loop, silently skipping recovery
+# for the bad app for the life of the process.
+apps:
+  sonarr:
+    class: ucc
+    ucc_slug: sonarr
+    kuma_monitor: "Sonarr"
+    health:
+      kind: http-api
+      port_secret: sonarr.port

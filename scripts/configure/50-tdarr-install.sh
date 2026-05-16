@@ -23,14 +23,19 @@ source "$HERE/../lib/secrets.sh"
 # against an older glibc. We bypass Tdarr_Updater entirely and download the
 # Server.zip + Node.zip artifacts directly.
 TDARR_VER="2.17.01"
-PUBLIC_HOST="quadstronaut.seedbox.example.com"
+# Hard requirement — placeholder must never reach a live curl/nginx.
+PUBLIC_HOST="$(secret_read seedbox.host)"
 
 # ── Step 1: claim port (Tdarr 2.17 serves Web UI + API + Node-protocol on
 #    a single serverPort. webUIPort is NOT bound, but the server's
 #    internal redirect builder defaults to :8265 unless we set it — so
 #    pin it to the same value as serverPort below). ──────────────────────
 if ! secret_exists tdarr.server_port; then
-  USED=$(printf '%s\n' "$(secret_read listmonk.port 2>/dev/null)" "$(secret_read conjurr.port 2>/dev/null)" "$(secret_read newsletterr.port 2>/dev/null)" | sort -u)
+  # Cross-check against every existing secrets/*.port to avoid double-claim.
+  # The earlier conjurr/newsletterr-specific dedup was wrong (those secrets
+  # were purged 2026-05-11; secret_read on a missing file dies, so the
+  # 2>/dev/null hid the error and the dedup silently degraded).
+  USED=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../secrets" && cat *.port 2>/dev/null | sort -u)
   PORT=$(sshm "app-ports free 2>/dev/null | grep -E '^[0-9]+\$'" | grep -vxF "$USED" | head -1)
   [ -n "$PORT" ] || die "no free port for tdarr"
   secret_write tdarr.server_port "$PORT"

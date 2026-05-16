@@ -15,8 +15,9 @@ discover_port_via_nginx() {
   sshm "grep -hoE 'proxy_pass[[:space:]]+http://127\\.0\\.0\\.1:[0-9]+' ~/.apps/nginx/proxy.d/$app.conf 2>/dev/null | head -1 | grep -oE '[0-9]+$'" || true
 }
 
-# Sonarr / Radarr / Prowlarr / Readarr / Sonarr2 / Radarr2 — config.xml gives ApiKey + UrlBase, nginx gives port
-for app in sonarr radarr prowlarr readarr sonarr2 radarr2; do
+# Sonarr / Radarr / Prowlarr / Sonarr2 / Radarr2 — config.xml gives ApiKey + UrlBase, nginx gives port
+# (Readarr removed 2026-05-15 — purged 2026-05-11.)
+for app in sonarr radarr prowlarr sonarr2 radarr2; do
   cfg="$(sshm "cat ~/.apps/$app/config.xml 2>/dev/null" || true)"
   if [ -z "$cfg" ]; then
     log_warn "$app: no config.xml (not installed)"
@@ -66,9 +67,8 @@ tautulli_key="$(sshm 'awk -F"=" "/^api_key/{gsub(/[[:space:]]/,\"\",\$2); print 
 tautulli_port="$(discover_port_via_nginx tautulli)"
 [ -n "$tautulli_port" ] && secret_write "tautulli.port" "$tautulli_port"
 
-# Ombi (will be stopped, but capture port for any pre-stop checks)
-ombi_port="$(discover_port_via_nginx ombi)"
-[ -n "$ombi_port" ] && secret_write "ombi.port" "$ombi_port"
+# Ombi capture removed 2026-05-15 (purged 2026-05-11). Seerr is the
+# canonical requester now — captured below.
 
 # Seerr / Maintainerr / etc — may not be installed; capture port if nginx has it
 for app in seerr maintainerr flaresolverr unpackerr uptimekuma komga kavita calibre-web audiobookshelf homarr-upstream homarr; do
@@ -97,16 +97,16 @@ log_info "Seerr key: capture manually from UI (Settings > General > API Key) int
 # Live-API check: confirm captured ports actually respond to API calls (loopback)
 log_info ""
 log_info "Live-API verification (only for apps with both port + key):"
-for app in sonarr radarr prowlarr readarr sonarr2 radarr2 bazarr bazarr2; do
+for app in sonarr radarr prowlarr sonarr2 radarr2 bazarr bazarr2; do
   if secret_exists "$app.port" && secret_exists "$app.key"; then
     port="$(secret_read $app.port)"
     key="$(secret_read $app.key)"
     base="$(secret_read $app.urlbase 2>/dev/null || echo $app)"
-    # API versions: bazarr/bazarr2=plain, prowlarr/readarr=v1, sonarr/radarr=v3
+    # API versions: bazarr/bazarr2=plain, prowlarr=v1, sonarr/radarr=v3
     if [ "$app" = "bazarr" ] || [ "$app" = "bazarr2" ]; then
       url="http://127.0.0.1:$port/$base/api/system/status"
       hdr="X-API-KEY"
-    elif [ "$app" = "prowlarr" ] || [ "$app" = "readarr" ]; then
+    elif [ "$app" = "prowlarr" ]; then
       url="http://127.0.0.1:$port/$base/api/v1/system/status"
       hdr="X-Api-Key"
     else

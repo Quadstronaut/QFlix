@@ -5,6 +5,10 @@ Runs server-side. Idempotent: if a board with the same name already has items,
 this script skips re-seeding it.
 
 Layout: 10-column grid; tiles are 2 wide x 2 tall; 5 tiles per row.
+
+Tile URLs are built from ~/secrets/seedbox.host so re-running on a fresh box
+doesn't seed dead tiles. Dies hard if the secret is missing rather than
+silently writing the placeholder into the Homarr DB.
 """
 import json, os, secrets, sqlite3, sys
 
@@ -13,36 +17,60 @@ DB = os.path.expanduser("~/.apps/homarr-upstream/data/db/db.sqlite")
 PUBLIC_BOARD_NAME = "public"
 ADMIN_BOARD_NAME = "admin"
 
-# Public-facing services. (icon URLs use the dashboard-icons CDN.)
+
+def _read_secret(name: str) -> str:
+    """Read ~/secrets/<name>, stripped. Hard-die if missing — better to abort
+    the install than seed broken tiles into the public board."""
+    path = os.path.expanduser(f"~/secrets/{name}")
+    if not os.path.isfile(path):
+        sys.exit(
+            f"FATAL: ~/secrets/{name} not set; refusing to seed Homarr with "
+            f"placeholder URLs. Create the file with the operator's real "
+            f"public FQDN (e.g. `quadstronaut.<seedbox-fqdn>`)."
+        )
+    with open(path) as f:
+        return f.read().strip()
+
+
+PUBLIC_HOST = _read_secret("seedbox.host")
+# Optional: a direct-access Plex hostname (Ultra.cc shared seedboxes route a
+# dedicated direct-IP endpoint). Fall back to standard /web/ on the public
+# host if the operator hasn't configured one.
+try:
+    PLEX_DIRECT = _read_secret("plex.direct_host")
+except SystemExit:
+    PLEX_DIRECT = f"{PUBLIC_HOST}/web/"
+
+ICON = "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg"
+
+# Public-facing services. Jellyfin / Jellystat / Readarr / Mylar3 / autobrr
+# were purged 2026-05-11 and are intentionally absent.
 PUBLIC_APPS = [
-    ("Plex",            "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/plex.svg",            "https://seedbox-direct.example.com:17025"),
-    ("Jellyfin",        "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/jellyfin.svg",        "https://quadstronaut.seedbox.example.com/jellyfin"),
-    ("Seerr",           "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/seerr.svg",      "https://quadstronaut.seedbox.example.com/seerr/"),
-    ("Komga (Comics)",  "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/komga.svg",           "https://quadstronaut.seedbox.example.com/komga"),
-    ("Kavita (Manga)",  "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/kavita.svg",          "https://quadstronaut.seedbox.example.com/kavita"),
-    ("Calibre-Web",     "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/calibre-web.svg",     "https://quadstronaut.seedbox.example.com/calibre-web/"),
-    ("Audiobookshelf",  "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/audiobookshelf.svg",  "https://audiobookshelf-quadstronaut.seedbox.example.com/"),
-    ("Tautulli (Stats)","https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/tautulli.svg",        "https://quadstronaut.seedbox.example.com/tautulli"),
+    ("Plex",             f"{ICON}/plex.svg",            f"https://{PLEX_DIRECT}"),
+    ("Seerr",            f"{ICON}/seerr.svg",           f"https://{PUBLIC_HOST}/seerr/"),
+    ("Komga (Comics)",   f"{ICON}/komga.svg",           f"https://{PUBLIC_HOST}/komga"),
+    ("Kavita (Manga)",   f"{ICON}/kavita.svg",          f"https://{PUBLIC_HOST}/kavita"),
+    ("Calibre-Web",      f"{ICON}/calibre-web.svg",     f"https://{PUBLIC_HOST}/calibre-web/"),
+    ("Audiobookshelf",   f"{ICON}/audiobookshelf.svg",  f"https://audiobookshelf-{PUBLIC_HOST}/"),
+    ("Tautulli (Stats)", f"{ICON}/tautulli.svg",        f"https://{PUBLIC_HOST}/tautulli"),
+    ("FAQ",              f"{ICON}/homeassistant.svg",   f"https://{PUBLIC_HOST}/faq/"),
 ]
 
 # Admin-board adds (operator-only). Public apps appear on admin board too.
+# Removed: Readarr, Mylar3, autobrr, Jellystat (all purged 2026-05-11).
 ADMIN_EXTRA_APPS = [
-    ("Sonarr",          "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/sonarr.svg",          "https://quadstronaut.seedbox.example.com/sonarr/"),
-    ("Sonarr2 (Anime)", "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/sonarr.svg",          "https://quadstronaut.seedbox.example.com/sonarr2/"),
-    ("Radarr",          "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/radarr.svg",          "https://quadstronaut.seedbox.example.com/radarr"),
-    ("Radarr2 (AnimeMov)","https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/radarr.svg",        "https://quadstronaut.seedbox.example.com/radarr2"),
-    ("Readarr",         "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/readarr.svg",         "https://quadstronaut.seedbox.example.com/readarr"),
-    ("Mylar3",          "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/mylar.svg",           "https://quadstronaut.seedbox.example.com/mylar/"),
-    ("Prowlarr",        "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/prowlarr.svg",        "https://quadstronaut.seedbox.example.com/prowlarr"),
-    ("qBittorrent",     "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/qbittorrent.svg",     "https://quadstronaut.seedbox.example.com/qbittorrent/"),
-    ("autobrr",         "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/autobrr.svg",         "https://quadstronaut.seedbox.example.com/autobrr/"),
-    ("Bazarr",          "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/bazarr.svg",          "https://quadstronaut.seedbox.example.com/bazarr/"),
+    ("Sonarr",            f"{ICON}/sonarr.svg",       f"https://{PUBLIC_HOST}/sonarr/"),
+    ("Sonarr2 (Anime)",   f"{ICON}/sonarr.svg",       f"https://{PUBLIC_HOST}/sonarr2/"),
+    ("Radarr",            f"{ICON}/radarr.svg",       f"https://{PUBLIC_HOST}/radarr"),
+    ("Radarr2 (AnimeMov)",f"{ICON}/radarr.svg",       f"https://{PUBLIC_HOST}/radarr2"),
+    ("Prowlarr",          f"{ICON}/prowlarr.svg",     f"https://{PUBLIC_HOST}/prowlarr"),
+    ("qBittorrent",       f"{ICON}/qbittorrent.svg",  f"https://{PUBLIC_HOST}/qbittorrent/"),
+    ("Bazarr",            f"{ICON}/bazarr.svg",       f"https://{PUBLIC_HOST}/bazarr/"),
     # Bazarr 2 (anime *arr pair) intentionally has no tile — it's internal-only
     # (loopback 127.0.0.1:17032/bazarr2/, no nginx proxy) so there's no public
     # URL to link from a browser. Reach it via the manitoba-tunnel daemon.
-    ("Maintainerr",     "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/maintainerr.svg",     "https://maintainerr-quadstronaut.seedbox.example.com/"),
-    ("Jellystat",       "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/jellyfin.svg",        "https://jellystat-quadstronaut.seedbox.example.com/"),
-    ("Notifiarr",       "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/svg/notifiarr.svg",       "https://notifiarr.com/"),
+    ("Maintainerr",       f"{ICON}/maintainerr.svg",  f"https://maintainerr-{PUBLIC_HOST}/"),
+    ("Notifiarr",         f"{ICON}/notifiarr.svg",    "https://notifiarr.com/"),
 ]
 
 

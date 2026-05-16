@@ -23,9 +23,6 @@ sed \
   -e "s|{{RADARR2_PORT}}|$(secret_read radarr2.port)|g" \
   -e "s|{{RADARR2_BASE}}|$(secret_read radarr2.urlbase 2>/dev/null || echo radarr2)|g" \
   -e "s|{{RADARR2_KEY}}|$(secret_read radarr2.key)|g" \
-  -e "s|{{READARR_PORT}}|$(secret_read readarr.port)|g" \
-  -e "s|{{READARR_BASE}}|$(secret_read readarr.urlbase 2>/dev/null || echo readarr)|g" \
-  -e "s|{{READARR_KEY}}|$(secret_read readarr.key)|g" \
   "$TMPL" > "$OUT"
 
 log_info "Backing up existing config + pushing new..."

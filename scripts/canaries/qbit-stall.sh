@@ -55,6 +55,10 @@ TINFO=$(curl -sf -m 5 -b /tmp/qbit-canary.cookie "$QB/api/v2/transfer/info")
 STATES_JSON=$(curl -sf -m 8 -b /tmp/qbit-canary.cookie "$QB/api/v2/torrents/info")
 [ -n "$STATES_JSON" ] || { printf "STAGE=qbit-up-fail msg=torrents-info-empty\n" >&2; exit 1; }
 
+# Initialize before the python heredoc so a parse failure leaves them set
+# (set -u would otherwise abort the script with an unbound-variable error
+# that bypasses the STAGE= label and shows up in Kuma as a bare exit-1).
+DL_SPEED=0; UP_SPEED=0; QUEUED_DL=0; DOWNLOADING=0; METADL=0
 printf "%s\n---\n%s" "$TINFO" "$STATES_JSON" > /tmp/qbit-canary-payload.json
 read DL_SPEED UP_SPEED QUEUED_DL DOWNLOADING METADL < <(python3 - <<"PY"
 import json
@@ -72,7 +76,11 @@ rm -f /tmp/qbit-canary-payload.json
 
 NOW=$(date +%s)
 STALLED=0
-if [ "$DL_SPEED" = "0" ] && [ "$UP_SPEED" = "0" ] && [ "$QUEUED_DL" -gt "$MIN_QUEUE" ]; then
+# Wedged libtorrent: downloads stuck while seeding may continue independently
+# (different worker pools). The original UP_SPEED=0 guard masked the wedge
+# any time even one seed completed in the cycle; the real symptom that
+# motivated this canary is DL_SPEED=0 while a download queue exists.
+if [ "$DL_SPEED" = "0" ] && [ "$QUEUED_DL" -gt "$MIN_QUEUE" ]; then
   STALLED=1
 fi
 

@@ -66,7 +66,7 @@ VENVSCRIPT
 # ── Step 5: deploy systemd unit + timer ─────────────────────────────────────
 scpm_to "$HERE/../maint/systemd/qflix-newsletter.service" '~/.config/systemd/user/qflix-newsletter.service' >/dev/null
 scpm_to "$HERE/../maint/systemd/qflix-newsletter.timer"   '~/.config/systemd/user/qflix-newsletter.timer'   >/dev/null
-sshm 'systemctl --user daemon-reload && systemctl --user enable qflix-newsletter.timer'
+sshm 'systemctl --user daemon-reload && systemctl --user enable --now qflix-newsletter.timer'
 
 # ── Step 6: dry-run smoke (renders without sending) ─────────────────────────
 log_info "running dry-run smoke (renders + writes /tmp/qflix-newsletter-smoke.html)"
