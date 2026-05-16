@@ -58,8 +58,14 @@ fi
 ./venv/bin/python -c "import requests, ruamel.yaml, plexapi; print('deps ok')"
 
 mkdir -p ~/.apps/kometa/config/metadata ~/.apps/kometa/config/assets
-[ -f ~/.apps/kometa/config/metadata/movies.yml ] || touch ~/.apps/kometa/config/metadata/movies.yml
-[ -f ~/.apps/kometa/config/metadata/shows.yml ] || touch ~/.apps/kometa/config/metadata/shows.yml
+# Kometa flags any empty metadata file as "YAML Error: File is empty" once per
+# library reference (4 libs × 2 reads = 8 errors per run). Write a minimal
+# valid stub so an unedited install boots clean.
+for stub in ~/.apps/kometa/config/metadata/movies.yml ~/.apps/kometa/config/metadata/shows.yml; do
+  if [ ! -s "$stub" ]; then
+    printf 'metadata: {}\n' > "$stub"
+  fi
+done
 CLONESCRIPT
 
 # ── Step 4: render config.yml ──────────────────────────────────────────────
