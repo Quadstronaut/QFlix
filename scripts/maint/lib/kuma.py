@@ -179,6 +179,10 @@ def audit_monitors(manifest, *, kuma_url: str | None = None,
             manifest_monitors.add(c.kuma_monitor)
     except AttributeError:
         pass
+    # The daemon's own self-heartbeat monitor — created by
+    # bootstrap-kuma-monitors.py and fed by manitoba-maint-pusher.service.
+    # Not tied to any app, but always part of the expected monitor set.
+    manifest_monitors.add("Manitoba Pusher")
 
     if kuma_url is None:
         kuma_url = _kuma_host()

@@ -12,6 +12,9 @@ kuma_external_monitors:
   - "Quadstronix"
   - "Quadstronix Node 1"
   - "Quadstronix Node 2"
+  # Workstation-side hourly collector. The seedbox manifest cannot self-heal
+  # a Windows scheduled task, so it stays outside the audit scope.
+  - "QFlix Collect (workstation)"
 
 apps:
 

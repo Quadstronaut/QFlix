@@ -28,8 +28,25 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "maint"))
+# When running on the seedbox the script lives at ~/scripts/maint/ — parents[2]
+# resolves to ~/, where there is no checked-out repo. Also add ~/scripts/maint
+# directly so `from lib.*` works without a manifest/ sibling.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from lib.manifest import load as manifest_load  # noqa: E402
+
+
+def _resolve_manifest_path() -> Path:
+    """Honor MANITOBA_MANIFEST; otherwise prefer the deployed copy
+    (~/.opt/maint/apps.yaml) before falling back to the in-repo location."""
+    env = os.environ.get("MANITOBA_MANIFEST")
+    if env:
+        return Path(env).expanduser()
+    deployed = Path("~/.opt/maint/apps.yaml").expanduser()
+    if deployed.is_file():
+        return deployed
+    return REPO_ROOT / "manifest" / "apps.yaml"
+
 
 KUMA_URL = os.environ.get("KUMA_URL", "http://127.0.0.1:42005")
 USER = "quadstronaut"
@@ -218,7 +235,7 @@ def _delete_all_http_monitors(api):
     """Delete the 22 HTTP monitors I created in the previous pass.
     Idempotent — skips anything that's not HTTP-typed or that doesn't
     match a name from the manifest."""
-    manifest_path = REPO_ROOT / "manifest" / "apps.yaml"
+    manifest_path = _resolve_manifest_path()
     manifest = manifest_load(manifest_path)
     target_names = {a.kuma_monitor for a in manifest.apps() if a.kuma_monitor}
     to_delete = []
@@ -242,7 +259,7 @@ def main() -> int:
         print("ERROR: uptime-kuma-api not installed. pip install uptime-kuma-api", file=sys.stderr)
         return 2
 
-    manifest_path = REPO_ROOT / "manifest" / "apps.yaml"
+    manifest_path = _resolve_manifest_path()
     manifest = manifest_load(manifest_path)
 
     candidates = []
@@ -273,13 +290,15 @@ def main() -> int:
     # once. Gives the operator a single unambiguous signal.
     pusher_monitor = "Manitoba Pusher"
     existing_now = {m["name"]: m for m in api.get_monitors()}
+    pusher_create_token = ""
     if pusher_monitor not in existing_now:
         try:
-            _add_push_monitor(api, pusher_monitor)
-            print(f"  [add]{pusher_monitor:25s} PUSH (heartbeat-only)")
+            pusher_create_token = _add_push_monitor(api, pusher_monitor)
+            print(f"  [add]{pusher_monitor:25s} PUSH (heartbeat-only) token={'yes' if pusher_create_token else 'pending'}")
         except Exception as exc:
             print(f"  [FAIL]{pusher_monitor:25s} {exc}")
     else:
+        pusher_create_token = existing_now[pusher_monitor].get("pushToken", "")
         print(f"  [skip]{pusher_monitor:25s} (already exists)")
 
     print("\n--- step 1: drop any existing HTTP monitors I created previously ---")
@@ -365,6 +384,11 @@ def main() -> int:
     pusher_m = fresh.get(pusher_monitor)
     if pusher_m and pusher_m.get("pushToken"):
         tokens["manitoba-pusher"] = pusher_m["pushToken"]
+    elif pusher_create_token:
+        # get_monitors() sometimes returns the PUSH monitor without the
+        # pushToken field even seconds after creation. The token we captured
+        # from _add_push_monitor's re-fetch is the authoritative copy.
+        tokens["manitoba-pusher"] = pusher_create_token
     else:
         missing.append(("manitoba-pusher", pusher_monitor))
 

@@ -576,6 +576,7 @@ _AUDIT_METRICS = (
     'monitor_status{monitor_id="1",monitor_name="Sonarr",monitor_type="push"} 1\n'
     'monitor_status{monitor_id="2",monitor_name="Radarr",monitor_type="push"} 1\n'
     'monitor_status{monitor_id="3",monitor_name="Stranger",monitor_type="push"} 0\n'
+    'monitor_status{monitor_id="4",monitor_name="Manitoba Pusher",monitor_type="push"} 1\n'
 )
 
 
@@ -587,11 +588,13 @@ class TestAuditMonitors:
         monkeypatch.setattr("lib.kuma.requests.get", lambda *a, **k: resp)
         monkeypatch.setattr("lib.kuma._secret_read", lambda n: "fake-key")
         report = audit_monitors(m, kuma_url="http://x")
-        assert report["matched"] == ["Radarr", "Sonarr", "Stranger"]
+        # "Manitoba Pusher" is always part of the expected set (daemon's own
+        # self-heartbeat monitor) — never drift in either direction.
+        assert report["matched"] == ["Manitoba Pusher", "Radarr", "Sonarr", "Stranger"]
         assert report["manifest_only"] == []
         assert report["kuma_only"] == []
-        assert report["live_count"] == 3
-        assert report["manifest_count"] == 3
+        assert report["live_count"] == 4
+        assert report["manifest_count"] == 4
 
     def test_audit_manifest_only(self, monkeypatch):
         from lib.kuma import audit_monitors
@@ -627,8 +630,28 @@ class TestAuditMonitors:
         monkeypatch.setattr("lib.kuma.requests.get", lambda *a, **k: resp)
         monkeypatch.setattr("lib.kuma._secret_read", lambda n: "fake-key")
         report = audit_monitors(m, kuma_url="http://x")
-        assert report["manifest_count"] == 1  # only sonarr counted
+        # sonarr (1) + auto-injected "Manitoba Pusher" (1) — recyclarr skipped.
+        assert report["manifest_count"] == 2
         assert "Sonarr" in report["matched"]
+        assert "Manitoba Pusher" in report["matched"]
+
+    def test_audit_pusher_drift_when_missing_from_kuma(self, monkeypatch):
+        """Manitoba Pusher absent from Kuma must report as manifest_only
+        (drift) — that means bootstrap-kuma-monitors.py hasn't run, and the
+        daemon's self-heartbeat can never light up. Bug regression guard."""
+        from lib.kuma import audit_monitors
+        m = _make_manifest_with_monitors("Sonarr")
+        no_pusher = (
+            "# HELP monitor_status Monitor Status\n"
+            "# TYPE monitor_status gauge\n"
+            'monitor_status{monitor_id="1",monitor_name="Sonarr",monitor_type="push"} 1\n'
+        )
+        resp = MagicMock(text=no_pusher)
+        monkeypatch.setattr("lib.kuma.requests.get", lambda *a, **k: resp)
+        monkeypatch.setattr("lib.kuma._secret_read", lambda n: "fake-key")
+        report = audit_monitors(m, kuma_url="http://x")
+        assert "Manitoba Pusher" in report["manifest_only"]
+        assert "Manitoba Pusher" not in report["kuma_only"]
 
 
 class TestCliKumaAudit:

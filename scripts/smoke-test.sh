@@ -399,8 +399,12 @@ if [ -n "$M_PORT" ]; then
     # PLUS monitors for apps marked parked: true (being-down is the intended
     # state for parked apps — Ombi is the canonical example).
     K_EXCLUDE=$(python3 -c '
-import sys, yaml
-m = yaml.safe_load(open("manifest/apps.yaml"))
+import os, sys, yaml
+candidates = ["manifest/apps.yaml", os.path.expanduser("~/.opt/maint/apps.yaml")]
+path = next((p for p in candidates if os.path.isfile(p)), None)
+if not path:
+    sys.exit(0)
+m = yaml.safe_load(open(path))
 ext = list(m.get("kuma_external_monitors", []) or [])
 parked = [a.get("kuma_monitor") for a in (m.get("apps", {}) or {}).values()
           if a.get("parked") and a.get("kuma_monitor")]
