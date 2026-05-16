@@ -466,3 +466,23 @@ canaries:
     kuma_monitor: "Canary Kometa Libraries"
     script: "scripts/canaries/kometa-libraries.sh"
     schedule: "hourly"
+  stale-log-watchdog:
+    # Detects timer-driven apps whose log file has stopped advancing past
+    # the expected cadence (kometa daily, recyclarr weekly, buildarr
+    # daily). Complements qflix-vlogs-ingest's dormant-skip: the ingester
+    # quietly drops dormant logs from the index; this canary loudly fails
+    # when a log is dormant LONGER than its schedule allows — the exact
+    # failure mode that hid the recyclarr v8 migration bug behind 6 days
+    # of stale errors.
+    kuma_monitor: "Canary Stale-Log Watchdog"
+    script: "scripts/canaries/stale-log-watchdog.sh"
+    schedule: "hourly"
+  kometa-deploy-drift:
+    # Detects drift between the deployed kometa config.yml and what the
+    # install script (scripts/configure/55-kometa-install.sh) would
+    # render. Catches operator hand-edits and install-script-vs-deployed
+    # divergence. Complements kometa-libraries (semantic Plex check) on
+    # the textual install-script side.
+    kuma_monitor: "Canary Kometa Deploy-Drift"
+    script: "scripts/canaries/kometa-deploy-drift.sh"
+    schedule: "daily-0430"

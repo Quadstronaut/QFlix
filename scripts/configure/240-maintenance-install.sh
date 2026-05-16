@@ -111,6 +111,10 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.timer \
     scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.service \
     scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.timer \
+    scripts/maint/systemd/manitoba-maint-canary-stale-log-watchdog.service \
+    scripts/maint/systemd/manitoba-maint-canary-stale-log-watchdog.timer \
+    scripts/maint/systemd/manitoba-maint-canary-kometa-deploy-drift.service \
+    scripts/maint/systemd/manitoba-maint-canary-kometa-deploy-drift.timer \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.service \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.timer \
     scripts/maint/app-upgrade-all.sh \
@@ -118,9 +122,12 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/lib/ssh.sh \
     scripts/canaries/anime.sh \
     scripts/canaries/deletion.sh \
+    scripts/canaries/kometa-deploy-drift.sh \
     scripts/canaries/kometa-libraries.sh \
     scripts/canaries/mobile-ux.sh \
     scripts/canaries/movie.sh \
+    scripts/canaries/stale-log-watchdog.sh \
+    scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
 
@@ -141,16 +148,79 @@ cp -rf  "$STG"/scripts/maint/lib                  ~/scripts/maint/
 cp -rf  "$STG"/scripts/maint/systemd              ~/scripts/maint/
 cp -f   "$STG"/scripts/ops/heartbeat-maint-webhook.sh ~/scripts/ops/
 chmod +x ~/scripts/ops/heartbeat-maint-webhook.sh
-mkdir -p ~/scripts/lib ~/scripts/canaries
+mkdir -p ~/scripts/lib ~/scripts/canaries ~/scripts/configure
 cp -f   "$STG"/scripts/lib/ssh.sh                ~/scripts/lib/ssh.sh
 cp -f   "$STG"/scripts/canaries/*.sh             ~/scripts/canaries/
 chmod +x ~/scripts/canaries/*.sh
+# kometa-deploy-drift canary reads this install script's heredoc to know
+# what library names should be deployed — needs the file resident.
+cp -f   "$STG"/scripts/configure/55-kometa-install.sh ~/scripts/configure/55-kometa-install.sh
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 rm -rf  "$STG"
 STAGE
 
 # Render the port file (used by both webhook server and heartbeat script).
 sshm "echo -n '$WEBHOOK_PORT' > ~/.opt/maint/maintenance.port && chmod 600 ~/.opt/maint/maintenance.port"
+
+# ── Step 4.5: bootstrap Kuma monitors + push tokens (idempotent) ────────────
+# Creates one PUSH monitor per app/canary in manifest/apps.yaml that doesn't
+# already exist, then re-fetches all push tokens and writes them to
+# secrets/kuma-push-tokens.json. The token deploy in Step 5 picks up
+# whatever's there. Fail-soft: any prereq missing → warn and skip; the
+# install still completes and the operator can run bootstrap manually
+# later. Re-runs are no-ops once monitors exist.
+log_info "bootstrap Kuma monitors + push tokens"
+SSHM_HOST_FOR_TUNNEL=$(secret_read seedbox.ssh-host 2>/dev/null || echo "")
+KUMA_BOOTSTRAP_TUNNEL_PID=""
+KUMA_REACHABLE=0
+if [ -z "$SSHM_HOST_FOR_TUNNEL" ]; then
+  log_warn "  skip: no secrets/seedbox.ssh-host — operator must run bootstrap-kuma-monitors.py manually"
+else
+  if curl -sf -m 3 -o /dev/null "http://127.0.0.1:42005/" 2>/dev/null \
+     || curl -sf -m 3 -o /dev/null "http://127.0.0.1:42005/api/" 2>/dev/null; then
+    KUMA_REACHABLE=1
+    log_info "  kuma already reachable at 127.0.0.1:42005"
+  else
+    log_info "  opening temporary SSH tunnel for Kuma bootstrap"
+    ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -fN \
+        -L 42005:127.0.0.1:42005 "quadstronaut@${SSHM_HOST_FOR_TUNNEL}" \
+        >/dev/null 2>&1 && KUMA_BOOTSTRAP_TUNNEL_PID=opened || true
+    sleep 1
+    if curl -sf -m 3 -o /dev/null "http://127.0.0.1:42005/" 2>/dev/null; then
+      KUMA_REACHABLE=1
+    fi
+  fi
+  if [ "$KUMA_REACHABLE" = "1" ]; then
+    # Locate a workstation python with uptime-kuma-api installed. Prefer
+    # tests/.venv (matches the docstring in bootstrap-kuma-monitors.py).
+    BOOTSTRAP_PY=""
+    for cand in \
+        "$REPO_ROOT/tests/.venv/bin/python" \
+        "$REPO_ROOT/tests/.venv/Scripts/python.exe" \
+        "$REPO_ROOT/tests/.venv/Scripts/python" \
+        ; do
+      if [ -x "$cand" ] && "$cand" -c "import uptime_kuma_api" >/dev/null 2>&1; then
+        BOOTSTRAP_PY="$cand"
+        break
+      fi
+    done
+    if [ -z "$BOOTSTRAP_PY" ]; then
+      log_warn "  skip: tests/.venv missing uptime-kuma-api — run: tests/.venv/Scripts/pip install uptime-kuma-api"
+    else
+      log_info "  running bootstrap with $BOOTSTRAP_PY"
+      ( cd "$REPO_ROOT" && PYTHONPATH=scripts/maint "$BOOTSTRAP_PY" \
+          scripts/maint/bootstrap-kuma-monitors.py ) \
+        || log_warn "  bootstrap-kuma-monitors.py exited non-zero — monitors may be incomplete"
+    fi
+  else
+    log_warn "  skip: Kuma not reachable at 127.0.0.1:42005 and tunnel could not be opened"
+  fi
+  # Clean up temp tunnel if we opened one.
+  if [ "$KUMA_BOOTSTRAP_TUNNEL_PID" = "opened" ]; then
+    # ssh -fN backgrounds itself; locate by forwarding signature and kill.
+    pkill -f "ssh.*-L 42005:127.0.0.1:42005 quadstronaut@${SSHM_HOST_FOR_TUNNEL}" 2>/dev/null || true
+  fi
+fi
 
 # ── Step 5: deploy uptimekuma.key + notifiarr.key to seedbox secrets ───────
 sshm 'mkdir -p ~/secrets && chmod 700 ~/secrets'
@@ -212,6 +282,10 @@ for unit in \
     manitoba-maint-canary-vlogs-stall.timer \
     manitoba-maint-canary-kometa-libraries.service \
     manitoba-maint-canary-kometa-libraries.timer \
+    manitoba-maint-canary-stale-log-watchdog.service \
+    manitoba-maint-canary-stale-log-watchdog.timer \
+    manitoba-maint-canary-kometa-deploy-drift.service \
+    manitoba-maint-canary-kometa-deploy-drift.timer \
     manitoba-maint-cp-upgrade.service \
     manitoba-maint-cp-upgrade.timer; do
   cp -f ~/scripts/maint/systemd/$unit ~/.config/systemd/user/$unit
@@ -234,6 +308,10 @@ systemctl --user enable --now manitoba-maint-canary-vlogs-stall.timer
 # kometa-libraries canary: config-drift detector (Plex rename guard).
 # Idempotent — exits up on match, down on drift; no destructive ops.
 systemctl --user enable --now manitoba-maint-canary-kometa-libraries.timer
+# stale-log watchdog: alerts when timer-driven app logs go past their cadence.
+systemctl --user enable --now manitoba-maint-canary-stale-log-watchdog.timer
+# kometa deploy-drift: install-script vs deployed config consistency (daily 04:30).
+systemctl --user enable --now manitoba-maint-canary-kometa-deploy-drift.timer
 # UCC `app-<name> upgrade` sweep — Mon 11:30 UTC (30 min into the window).
 # --now activates the timer itself (schedules its next OnCalendar fire); it
 # does NOT trigger an immediate service run. Without --now the timer stays
@@ -353,7 +431,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime deletion mobile-ux kometa-libraries; do
+for canary in movie anime deletion mobile-ux kometa-libraries stale-log-watchdog kometa-deploy-drift; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"

@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — kometa deploy-drift (install-script vs deployed config)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push kometa-deploy-drift
+StandardOutput=journal
+StandardError=journal
