@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +27,36 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "mcp"))
 
 import logs as logs_mod  # noqa: E402
+
+
+_DURATION_RE = re.compile(r"^(\d+)([smhd])$")
+_DEFAULT_WINDOW_S = 360  # 6 minutes; matches --window default
+
+
+def _parse_window_seconds(window: str) -> int:
+    """Convert a journalctl-style duration ('6m', '2h', '30s', '1d') to
+    seconds. Falls back to _DEFAULT_WINDOW_S on garbage so a malformed
+    arg never disables the dormant-file skip."""
+    m = _DURATION_RE.match((window or "").strip())
+    if not m:
+        return _DEFAULT_WINDOW_S
+    return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def _file_is_dormant(path: str, *, max_age_s: int) -> bool:
+    """True iff the file exists and hasn't been modified within max_age_s.
+
+    Used to skip append-only logs (recyclarr weekly, kometa daily) whose
+    last entries are days old. Without this, every 5-min ingest re-tails
+    the last 5000 lines and re-publishes the same stale errors forever.
+    Non-existent files return False — logs.collect_for handles them.
+    """
+    if not os.path.exists(path):
+        return False
+    try:
+        return (time.time() - os.path.getmtime(path)) > max_age_s
+    except OSError:
+        return False
 
 
 def _read_port() -> int:
@@ -88,10 +121,20 @@ def main() -> int:
     apps = (list(logs_mod._FILE_LOGS)
             + list(getattr(logs_mod, "_GLOB_LOGS", {}))
             + list(logs_mod._SYSTEMD_LOGS))
+    window_s = _parse_window_seconds(args.window)
     total_lines = 0
     failures = 0
+    skipped_dormant = 0
 
     for app in apps:
+        # For file-routed apps, skip re-tailing logs that haven't been
+        # written to within the ingest window. journalctl already does
+        # the equivalent via --since, so systemd apps don't need this.
+        plan = logs_mod.route(app)
+        if plan.get("kind") == "file":
+            if _file_is_dormant(plan["path"], max_age_s=window_s):
+                skipped_dormant += 1
+                continue
         try:
             result = logs_mod.collect_for(app, since=args.window, tail=args.tail)
         except Exception as exc:
@@ -109,7 +152,8 @@ def main() -> int:
         if n > 0:
             print(f"{app}: {detail}")
 
-    print(f"summary: apps={len(apps)} lines_indexed={total_lines} failures={failures}")
+    print(f"summary: apps={len(apps)} lines_indexed={total_lines} "
+          f"failures={failures} skipped_dormant={skipped_dormant}")
     return 0
 
 
