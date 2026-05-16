@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Deletion canary: Maintainerr 60-day rules exist for all 4 Plex libraries
-# (Pirate Movies, Pirate TV Shows, Anime, Anime Movies) and are active.
+# under the canonical 'QFlix <short>-60d' name scheme and are active.
+# (Plex libraries were renamed to a 'QFlix - ' prefix in 2026-05; rules
+# follow the convention in scripts/configure/27b-maintainerr-rules.py
+# which strips that prefix and writes the rule as `QFlix <short>-60d`.)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -30,7 +33,7 @@ COUNT=$(echo "$RES" | grep -oE 'COUNT=[0-9]+' | cut -d= -f2)
 NAMES=$(echo "$RES" | grep -E 'NAMES=' | cut -d= -f2-)
 
 [ "${COUNT:-0}" -ge 4 ] || { echo "FAIL: <4 active Maintainerr rules (got $COUNT)" >&2; exit 1; }
-for expect in "Pirate Movies-60d" "Pirate TV Shows-60d" "Anime-60d" "Anime Movies-60d"; do
+for expect in "QFlix Movies-60d" "QFlix TV-60d" "QFlix Anime-60d" "QFlix Anime Movies-60d"; do
   echo "$NAMES" | grep -qF "$expect" || { echo "FAIL: missing rule '$expect'" >&2; exit 1; }
 done
 echo "PASS: deletion canary — 4 active 60-day rules"
