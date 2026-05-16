@@ -85,7 +85,9 @@ def main() -> int:
         print(f"FATAL: cannot read vlogs port: {exc}", file=sys.stderr)
         return 0  # don't fail the timer
 
-    apps = list(logs_mod._FILE_LOGS) + list(logs_mod._SYSTEMD_LOGS)
+    apps = (list(logs_mod._FILE_LOGS)
+            + list(getattr(logs_mod, "_GLOB_LOGS", {}))
+            + list(logs_mod._SYSTEMD_LOGS))
     total_lines = 0
     failures = 0
 
