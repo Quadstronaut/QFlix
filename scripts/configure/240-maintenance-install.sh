@@ -126,7 +126,9 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/kometa-libraries.sh \
     scripts/canaries/mobile-ux.sh \
     scripts/canaries/movie.sh \
+    scripts/canaries/qbit-stall.sh \
     scripts/canaries/stale-log-watchdog.sh \
+    scripts/canaries/vlogs-stall.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
