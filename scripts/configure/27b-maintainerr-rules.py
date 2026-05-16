@@ -93,22 +93,35 @@ TARGETS = {
 
 # Per-library-title overrides: anime libraries route to the Sonarr2/Radarr2
 # instances (anime branch). Maintainerr Settings ids: 1 = primary, 2 = anime.
+# Keys are CANONICAL SHORT NAMES (Plex title with the "QFlix - " prefix
+# stripped) so this dict survives Plex library renames as long as the
+# short identifier (Anime / Anime Movies / Movies / TV) stays stable.
 NAME_OVERRIDES = {
     "Anime":        {"radarrSettingsId": None, "sonarrSettingsId": 2, "dataType": "show"},
     "Anime Movies": {"radarrSettingsId": 2,    "sonarrSettingsId": None, "dataType": "movie"},
 }
 
+
+def canonical_short_name(plex_title: str) -> str:
+    """Strip the 'QFlix - ' prefix that the operator added during the
+    2026-05 Plex rename. Falls back to the literal title if it doesn't
+    start with the prefix, so pre-rename installs still work."""
+    prefix = "QFlix - "
+    return plex_title[len(prefix):] if plex_title.startswith(prefix) else plex_title
+
+
 for lib in libs:
     lib_type = lib["type"]   # 'movie' or 'show'
     lib_key = str(lib["key"])
     title = lib["title"]
-    name = f"{title}-60d"
+    short = canonical_short_name(title)
+    name = f"QFlix {short}-60d"
 
     if name in existing_names:
         print(f"  [skip] '{name}' already exists")
         continue
 
-    target = NAME_OVERRIDES.get(title) or TARGETS.get(lib_type)
+    target = NAME_OVERRIDES.get(short) or TARGETS.get(lib_type)
     if not target:
         print(f"  [skip] '{title}' unknown type {lib_type}")
         continue
