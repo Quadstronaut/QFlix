@@ -1,0 +1,10 @@
+[Unit]
+Description=Manitoba canary — kometa libraries (hourly)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=180
+Persistent=true
+
+[Install]
+WantedBy=timers.target
