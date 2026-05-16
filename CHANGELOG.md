@@ -1,5 +1,36 @@
 # Changelog
 
+## post-release-0.0.1 (2026-05-16) — live-verification fixes
+
+End-to-end verification on the live seedbox surfaced five deployment-time
+bugs that unit tests couldn't catch. All landed via PR #22.
+
+- **`bootstrap-kuma-monitors.py` manifest resolution.** Hard-coded
+  `REPO_ROOT/manifest/apps.yaml` was unreachable on the seedbox (no repo
+  checkout there). Now resolves `MANITOBA_MANIFEST` env var → deployed
+  `~/.opt/maint/apps.yaml` → repo path, in that order.
+- **Pusher pushToken capture.** `get_monitors()` raced behind the create
+  and returned the new monitor without its pushToken, so
+  `kuma-push-tokens.json` was missing the `manitoba-pusher` entry. Now
+  captures the token from `_add_push_monitor`'s return as fallback.
+- **Smoke-test K_EXCLUDE manifest path.** Python helper opened
+  `manifest/apps.yaml` from cwd, silently dropping the external-monitor
+  filter whenever the operator ran the script from `~`. Now tries both
+  the local repo and the deployed manifest path.
+- **`Manitoba Pusher` auto-included in drift audit.** The daemon's
+  self-heartbeat monitor exists outside the manifest's app/canary sets,
+  so `manitoba-maint kuma audit` flagged it as orphan drift. Now
+  injected into the expected manifest set so it's always matched when
+  present and reported as `manifest_only` (bootstrap needed) when absent.
+- **Workstation collector declared external.** Added `QFlix Collect
+  (workstation)` to `kuma_external_monitors` — it's a Windows scheduled
+  task that the seedbox manifest cannot self-heal.
+
+Live smoke-test on seedbox: **51/0/2** (2 skips = pre-existing
+`tdarr.server_port` secret gap documented in `todo-after-claude.md`).
+Test count 440 → 446 (+5 unit, +1 regression guard for the pusher-
+drift case).
+
 ## release-0.0.1 (2026-05-16) — audit sweep
 
 First tagged release. Closes ~90 findings from the 2026-05-15 top-to-

@@ -6,12 +6,12 @@
 repo manifest. Where the manifest, docs, and live seedbox disagree, the
 live seedbox wins and this file records both.
 
-**Counts (live as of 2026-05-12 after QFlix MCP install):**
-- **29 apps in `manifest/apps.yaml`** (19 UCC, 3 systemd, 6 cron, 1 library); +1 cron-class entry `qflix-missing-search` added 2026-05-12.
-- **37 Kuma monitors** total: 34 manitoba (32 prior + `Qflix Missing Search` for the daily MissingSearch timer + `QFlix Collect (workstation)` for the workstation-side hourly collector dead-man) + 3 quadstronix external. **34/34 manitoba UP.** Every app in the manifest plus the workstation collector now actively reports to Kuma.
-- All 32 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
+**Counts (live as of 2026-05-16 after post-release-0.0.1 verification):**
+- **33 apps in `manifest/apps.yaml`** + 9 canaries (movie, anime, deletion, mobile-ux, vlogs-stall, qbit-stall, kometa-libraries, stale-log-watchdog, kometa-deploy-drift).
+- **47 Kuma monitors** total: **43 manitoba** (33 manifest-app monitors + 9 canary monitors + 1 `Manitoba Pusher` daemon-self-heartbeat) + 4 external (`Quadstronix`, `Quadstronix Node 1`, `Quadstronix Node 2`, `QFlix Collect (workstation)`). **43/43 manitoba UP.** Every app in the manifest plus all canaries reports continuously.
+- All 43 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
 - Notification channel: single Discord webhook + operator @ping (user-id read from `secrets/discord-operator.id`) on `error` / `critical` levels via `scripts/maint/lib/notify.py`.
-- Last full smoke: **45 pass / 0 fail / 0 skip** (2026-05-11).
+- Last full smoke: **49 pass / 0 fail / 2 skip** (2026-05-16; skips = pre-existing `tdarr.server_port` secret gap per `todo-after-claude.md`).
 
 **Q2 coverage gap closed 2026-05-11** — the prior 6 apps that didn't push to Kuma (flaresolverr / unpackerr / postgres / tdarr-node / kometa / python-plexapi) now all have monitors. Required two `health.py` fixes: `os.path.expanduser` on the `venv_python` field (import_check), and a new optional `hostname` override on http_root/http_api (so FlareSolverr's Docker-bridge bind at `172.17.0.1:17011` is probable from host netns).
 
