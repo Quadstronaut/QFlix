@@ -303,10 +303,23 @@ function Update-StaleState {
 }
 
 function Count-TodaysActions {
+    # Only effective actions consume a slot; refusals stay in the file for
+    # audit but must not gate the next attempt — otherwise an orphan that
+    # fires hourly self-traps the cap (refusal → file grows → still over
+    # cap → refusal, forever). Same fix as scripts/mcp/unstick.py.
     $today = [DateTime]::UtcNow.ToString("yyyy-MM-dd")
     $f = Join-Path $DataRoot "events\$today.jsonl"
     if (-not (Test-Path $f)) { return 0 }
-    return (Get-Content $f | Where-Object { $_.Trim() -ne "" }).Count
+    $effective = @('deleted+blocklisted', 'qbit-orphan-removed')
+    $count = 0
+    Get-Content $f | ForEach-Object {
+        if ([string]::IsNullOrWhiteSpace($_)) { return }
+        try {
+            $ev = $_ | ConvertFrom-Json
+            if ($effective -contains $ev.result) { $count++ }
+        } catch { }
+    }
+    return $count
 }
 
 function Act-On-Candidates {
