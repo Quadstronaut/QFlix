@@ -1,0 +1,10 @@
+[Unit]
+Description=Manitoba canary — qBittorrent stall (every 15 minutes)
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=45
+Persistent=true
+
+[Install]
+WantedBy=timers.target

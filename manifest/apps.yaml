@@ -458,6 +458,16 @@ canaries:
     kuma_monitor: "Canary VLogs Stall"
     script: "scripts/canaries/vlogs-stall.sh"
     schedule: "every-15min"
+  qbit-stall:
+    # Detect a wedged libtorrent engine (dl_info_speed=0 for ≥5min while
+    # queuedDL > N). qBit's WebAPI stays responsive even when the engine
+    # deadlocks under heavy queue churn — only fix discovered is a
+    # systemctl --user restart qbittorrent.service. Same 15-min cadence
+    # as vlogs-stall so a stall is detected within ~15min of the script's
+    # internal 5-min threshold elapsing.
+    kuma_monitor: "Canary qBit Stall"
+    script: "scripts/canaries/qbit-stall.sh"
+    schedule: "every-15min"
   kometa-libraries:
     # Config-drift detector: every kometa-configured library must exist on
     # the live Plex server. Catches the May-2026 incident class where Plex

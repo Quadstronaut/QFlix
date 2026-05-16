@@ -109,6 +109,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-mobile-ux.timer \
     scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.service \
     scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.timer \
+    scripts/maint/systemd/manitoba-maint-canary-qbit-stall.service \
+    scripts/maint/systemd/manitoba-maint-canary-qbit-stall.timer \
     scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.service \
     scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.timer \
     scripts/maint/systemd/manitoba-maint-canary-stale-log-watchdog.service \
@@ -282,6 +284,8 @@ for unit in \
     manitoba-maint-canary-mobile-ux.timer \
     manitoba-maint-canary-vlogs-stall.service \
     manitoba-maint-canary-vlogs-stall.timer \
+    manitoba-maint-canary-qbit-stall.service \
+    manitoba-maint-canary-qbit-stall.timer \
     manitoba-maint-canary-kometa-libraries.service \
     manitoba-maint-canary-kometa-libraries.timer \
     manitoba-maint-canary-stale-log-watchdog.service \
@@ -307,6 +311,9 @@ systemctl --user enable --now manitoba-maint-canary-mobile-ux.timer
 # enable --now is safe even if vlogs isn't running yet — the canary script will
 # exit with vlogs-down/no-ingest and push the right status to Kuma.
 systemctl --user enable --now manitoba-maint-canary-vlogs-stall.timer
+# qbit-stall canary: detects libtorrent engine wedge (dl_info_speed=0 for
+# ≥5min + queuedDL>N). Same 15-min cadence as vlogs-stall.
+systemctl --user enable --now manitoba-maint-canary-qbit-stall.timer
 # kometa-libraries canary: config-drift detector (Plex rename guard).
 # Idempotent — exits up on match, down on drift; no destructive ops.
 systemctl --user enable --now manitoba-maint-canary-kometa-libraries.timer
@@ -433,7 +440,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime deletion mobile-ux kometa-libraries stale-log-watchdog kometa-deploy-drift; do
+for canary in movie anime deletion mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
