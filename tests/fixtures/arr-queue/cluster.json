@@ -1,0 +1,40 @@
+{
+  "records": [
+    {
+      "id": 1867372303,
+      "title": "NYPD.Blue.S01.1080p.HULU.WEBRip.AAC2.0.x264-AJP69",
+      "status": "downloading",
+      "trackedDownloadStatus": "ok",
+      "trackedDownloadState": "downloading",
+      "errorMessage": null,
+      "downloadId": "F3CCE7C6141E01ECDED47488E89F2CC5142FED8E",
+      "estimatedCompletionTime": "2026-08-13T11:38:13Z",
+      "size": 47160373523,
+      "sizeleft": 29952491520
+    },
+    {
+      "id": 295571643,
+      "title": "NYPD.Blue.S01.1080p.HULU.WEBRip.AAC2.0.x264-AJP69",
+      "status": "downloading",
+      "trackedDownloadStatus": "ok",
+      "trackedDownloadState": "downloading",
+      "errorMessage": null,
+      "downloadId": "F3CCE7C6141E01ECDED47488E89F2CC5142FED8E",
+      "estimatedCompletionTime": "2026-08-13T11:38:13Z",
+      "size": 47160373523,
+      "sizeleft": 29952491520
+    },
+    {
+      "id": 56165182,
+      "title": "NYPD.Blue.S01.1080p.HULU.WEBRip.AAC2.0.x264-AJP69",
+      "status": "downloading",
+      "trackedDownloadStatus": "ok",
+      "trackedDownloadState": "downloading",
+      "errorMessage": null,
+      "downloadId": "F3CCE7C6141E01ECDED47488E89F2CC5142FED8E",
+      "estimatedCompletionTime": "2026-08-13T11:38:13Z",
+      "size": 47160373523,
+      "sizeleft": 29952491520
+    }
+  ]
+}

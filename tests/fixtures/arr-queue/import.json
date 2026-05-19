@@ -1,0 +1,15 @@
+{
+  "records": [
+    {
+      "id": 999111222,
+      "title": "Some.Show.S01E01.1080p.WEB-DL",
+      "status": "completed",
+      "trackedDownloadStatus": "warning",
+      "trackedDownloadState": "importPending",
+      "errorMessage": null,
+      "downloadId": "AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555",
+      "size": 1000000000,
+      "sizeleft": 0
+    }
+  ]
+}

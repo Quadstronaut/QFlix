@@ -4,15 +4,34 @@
 Two modes:
   --missing   Fire MissingSearch command on each *arr. Sched: 04:00 Tue–Sun
               (Monday is the cp.ultra.cc maintenance window; we skip it).
-  --unstick   Scan each *arr's queue for items stuck in completed-but-not-
-              imported state (importPending / importBlocked / importFailed)
-              for >=STUCK_HOURS. For each, DELETE the queue item with
-              removeFromClient=true and blocklist=true — Sonarr/Radarr
-              auto-search a replacement after the blocklist add. Sched:
-              hourly.
+  --unstick   Scan each *arr's queue, classify stuck items, and after a
+              per-mode grace period DELETE them with removeFromClient=true
+              and blocklist=true — Sonarr/Radarr auto-search a replacement
+              after the blocklist add. Sched: hourly.
+
+Stall modes:
+  completed-not-imported  status=completed ∧ trackedDownloadState∈
+                          {importPending, importBlocked, importFailed}
+                          → ARR_STUCK_HOURS_IMPORT (default 6h)
+  stalled-no-peers        status=warning ∧ errorMessage contains
+                          'stalled' AND 'no connections'
+                          → ARR_STUCK_HOURS_PEERS (default 4h)
+  metadata-stuck          status=queued ∧ errorMessage contains
+                          'downloading metadata'
+                          → ARR_STUCK_HOURS_METADATA (default 6h)
+  slow-cluster            ≥3 queue items share one downloadId ∧
+                          ETA > ARR_STUCK_DAYS_CLUSTER_ETA (default 30d) ∧
+                          sizeleft stable over
+                          ARR_STUCK_DAYS_CLUSTER_NOPROGRESS (default 7d)
+                          → triggers immediately when predicate matches
+
+Caps: ARR_MAX_ACTIONS_PER_RUN (default 10), ARR_MAX_ACTIONS_PER_SLUG
+(default 5). Cap-hit escalates Discord notification to error level.
 
 State for stuck-tracking is keyed by qBit downloadId (hash) so it's stable
 across queue-id renumberings. Stored at ~/.opt/maint/stuck-queue-state.json.
+New fields ('mode', 'sizeleft_history') are backward-compatible — pre-
+extension records still parse correctly.
 
 Reads creds from ~/secrets/{arr}.key + ~/secrets/{arr}.urlbase + the shared
 htpasswd password. Posts a Discord summary via lib.notify on completion.
@@ -21,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import json
 import os
 import subprocess
@@ -51,8 +71,33 @@ SECRETS_DIR = Path(os.environ.get("MANITOBA_SECRETS", str(Path.home() / "secrets
 STATE_DIR = Path(os.environ.get("MANITOBA_STATE_DIR", str(Path.home() / ".opt" / "maint")))
 STUCK_STATE_FILE = STATE_DIR / "stuck-queue-state.json"
 
-STUCK_HOURS = float(os.environ.get("ARR_STUCK_HOURS", "6"))
-STUCK_STATES = {"importPending", "importBlocked", "importFailed"}
+STUCK_IMPORT_STATES = {"importPending", "importBlocked", "importFailed"}
+
+# Modes returned by _classify_stuck. Each mode has its own grace-period
+# threshold (see THRESHOLD_HOURS_BY_MODE below) and shows up in
+# state file + Discord notification body.
+MODE_IMPORT = "completed-not-imported"
+MODE_PEERS = "stalled-no-peers"
+MODE_METADATA = "metadata-stuck"
+MODE_CLUSTER = "slow-cluster"
+
+CLUSTER_MIN_ITEMS = 3
+CLUSTER_ETA_DAYS = float(os.environ.get("ARR_STUCK_DAYS_CLUSTER_ETA", "30"))
+CLUSTER_NOPROGRESS_DAYS = float(os.environ.get("ARR_STUCK_DAYS_CLUSTER_NOPROGRESS", "7"))
+
+# Per-mode grace periods (hours). Set ARR_STUCK_HOURS for one-knob backward
+# compat: if set, it overrides ARR_STUCK_HOURS_IMPORT only (the historical
+# meaning of the var). Other modes use their own env vars.
+_LEGACY_HOURS = os.environ.get("ARR_STUCK_HOURS")
+THRESHOLD_HOURS_BY_MODE = {
+    MODE_IMPORT:   float(os.environ.get("ARR_STUCK_HOURS_IMPORT",   _LEGACY_HOURS or "6")),
+    MODE_PEERS:    float(os.environ.get("ARR_STUCK_HOURS_PEERS",    "4")),
+    MODE_METADATA: float(os.environ.get("ARR_STUCK_HOURS_METADATA", "6")),
+    # Cluster mode has its own time semantics — the threshold is implicit
+    # in the 7-day-no-progress predicate, not a separate hours grace.
+    # Setting this to 0 means "trigger immediately once predicate matches".
+    MODE_CLUSTER:  0.0,
+}
 
 # (slug, api version, missing-search command name)
 # Readarr removed 2026-05-16 — app purged 2026-05-11; secret_read on its
@@ -180,12 +225,79 @@ def _save_state(state: dict) -> None:
     STUCK_STATE_FILE.write_text(json.dumps(state, indent=2, sort_keys=True))
 
 
-def _is_stuck(item: dict) -> bool:
-    """An item is 'stuck' if it's completed but the *arr hasn't imported it."""
-    return (
+def _parse_iso(ts: str | None) -> float | None:
+    """Parse Sonarr-style ISO8601 (e.g. '2026-08-13T11:38:13Z') → epoch.
+    Returns None on any parse failure rather than raising — bad timestamps
+    just mean 'don't classify this as cluster-stuck'."""
+    if not ts:
+        return None
+    try:
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        return datetime.datetime.fromisoformat(ts).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _cluster_no_progress(samples: list[dict], window_days: float) -> bool:
+    """True iff the oldest sample is at least `window_days` old AND every
+    sample shows the same sizeleft. Empty/single-sample histories → False
+    (not enough data to conclude no-progress)."""
+    if len(samples) < 2:
+        return False
+    now = time.time()
+    oldest_ts = min(s.get("ts", now) for s in samples)
+    if now - oldest_ts < window_days * 86400:
+        # Observation window too short — can't conclude no-progress yet.
+        return False
+    sizes = {s.get("sizeleft") for s in samples}
+    if None in sizes:
+        # Treat missing sizeleft as "can't tell" rather than "stable at None".
+        return False
+    return len(sizes) == 1
+
+
+def _classify_stuck(item: dict, by_downloadId: dict[str, list[dict]]) -> str | None:
+    """Return the stall mode an item matches, or None if healthy.
+
+    `by_downloadId` is a {downloadId-upper: [records...]} index of the
+    full queue, needed by slow-cluster detection only (added in Task 5).
+    Pass an empty dict if you don't care about cluster mode.
+    """
+    if (
         item.get("status") == "completed"
-        and item.get("trackedDownloadState") in STUCK_STATES
-    )
+        and item.get("trackedDownloadState") in STUCK_IMPORT_STATES
+    ):
+        return MODE_IMPORT
+
+    # Pre-completion peer starvation. Common when an indexer lists a
+    # release whose tracker is gone or the swarm has fully dispersed.
+    err = (item.get("errorMessage") or "").lower()
+    if item.get("status") == "warning" and "stalled" in err and "no connections" in err:
+        return MODE_PEERS
+
+    # Magnet hash that never resolved to a torrent file. qBit holds it
+    # in 'downloading metadata' state indefinitely.
+    if item.get("status") == "queued" and "downloading metadata" in err:
+        return MODE_METADATA
+
+    # Slow-cluster: ≥CLUSTER_MIN_ITEMS items share this downloadId,
+    # ETA pushed past CLUSTER_ETA_DAYS, sizeleft has not decreased over
+    # the last CLUSTER_NOPROGRESS_DAYS (history injected by caller as
+    # item["_sizeleft_history"]).
+    dl = (item.get("downloadId") or "").upper()
+    if not dl:
+        # Items with no downloadId aren't real cluster members — they're
+        # newly-queued items waiting for a hash assignment.
+        return None
+    cluster = by_downloadId.get(dl, [])
+    if len(cluster) >= CLUSTER_MIN_ITEMS:
+        eta = _parse_iso(item.get("estimatedCompletionTime"))
+        if eta is not None and eta > time.time() + (CLUSTER_ETA_DAYS * 86400):
+            history = item.get("_sizeleft_history") or []
+            if _cluster_no_progress(history, CLUSTER_NOPROGRESS_DAYS):
+                return MODE_CLUSTER
+    return None
 
 
 def _state_key(slug: str, download_id: str) -> str:
@@ -196,11 +308,17 @@ def cmd_unstick(dry_run: bool) -> int:
     print(f"--- unstick-queue sweep ({'DRY-RUN' if dry_run else 'LIVE'}) ---")
     state = _load_state()
     now = time.time()
-    cutoff = now - (STUCK_HOURS * 3600)
     actions: list[str] = []
     new_state: dict = {}
 
+    max_per_run  = int(os.environ.get("ARR_MAX_ACTIONS_PER_RUN",  "10"))
+    max_per_slug = int(os.environ.get("ARR_MAX_ACTIONS_PER_SLUG", "5"))
+    cap_hit = False
+    actions_total = 0
+    actions_by_slug: dict[str, int] = {}
+
     for slug, ver, _ in ARRS:
+        actions_by_slug[slug] = 0
         key = _arr_key(slug)
         if not key:
             continue
@@ -218,51 +336,91 @@ def cmd_unstick(dry_run: bool) -> int:
         if not records:
             continue
 
+        by_downloadId: dict[str, list[dict]] = {}
+        for r in records:
+            dl = (r.get("downloadId") or "").upper()
+            by_downloadId.setdefault(dl, []).append(r)
+
         for item in records:
-            if not _is_stuck(item):
-                continue
             sk = _state_key(slug, item.get("downloadId", ""))
+            prev = state.get(sk, {}) or {}
+
+            # Maintain a rolling sizeleft history (used by slow-cluster).
+            # Trim entries older than CLUSTER_NOPROGRESS_DAYS+1 then cap
+            # at 14 entries so the file stays bounded.
+            prior_hist = prev.get("sizeleft_history") or []
+            history_cutoff = now - ((CLUSTER_NOPROGRESS_DAYS + 1) * 86400)
+            trimmed = [s for s in prior_hist if s.get("ts", 0) >= history_cutoff]
+            trimmed.append({"ts": now, "sizeleft": item.get("sizeleft", 0)})
+            # Cap retained samples generously enough to keep a full window
+            # of hourly samples (CLUSTER_NOPROGRESS_DAYS + 1) + small headroom.
+            # On the default 7d window this evaluates to 194 entries.
+            history_cap = max(14, int((CLUSTER_NOPROGRESS_DAYS + 1) * 24) + 2)
+            item["_sizeleft_history"] = trimmed[-history_cap:]
+
+            mode = _classify_stuck(item, by_downloadId)
+            if mode is None:
+                continue
+
             qid = item.get("id")
             title = (item.get("title") or "?")[:80]
 
-            prev = state.get(sk)
-            if prev is None:
+            if not prev.get("first_seen_stuck"):
                 # First time seeing this stuck item — record + carry forward.
                 new_state[sk] = {
                     "title": title,
                     "queue_id": qid,
                     "first_seen_stuck": now,
                     "slug": slug,
+                    "mode": mode,
+                    "sizeleft_history": item["_sizeleft_history"],
                 }
                 continue
 
             first_seen = float(prev.get("first_seen_stuck", now))
             age_hours = (now - first_seen) / 3600
-            if first_seen >= cutoff:
-                # Still stuck but hasn't aged out yet — carry forward.
+            mode_cutoff = now - (THRESHOLD_HOURS_BY_MODE[mode] * 3600)
+            if first_seen >= mode_cutoff:
+                # Still stuck but hasn't aged out under THIS mode's grace — carry forward.
+                prev["sizeleft_history"] = item["_sizeleft_history"]
+                prev["mode"] = mode
                 new_state[sk] = prev
                 continue
 
             # Aged out: remove from client + blocklist. Sonarr/Radarr's
             # default behavior is to re-search after a blocklist add; we
             # don't pass skipRedownload so the *arr does that for us.
+            if actions_total >= max_per_run or actions_by_slug[slug] >= max_per_slug:
+                cap_hit = True
+                print(f"  [cap-hit] {slug}: would-delete id={qid} mode={mode} — "
+                      f"skipped (per-run={actions_total}/{max_per_run}, "
+                      f"per-slug[{slug}]={actions_by_slug[slug]}/{max_per_slug})")
+                prev["sizeleft_history"] = item["_sizeleft_history"]
+                prev["mode"] = mode
+                new_state[sk] = prev  # keep tracking so we retry next cycle
+                continue
+
             del_url = _arr_url(
                 slug, ver, f"queue/{qid}",
                 query="removeFromClient=true&blocklist=true",
             )
             if dry_run:
-                msg = f"  [dry-run] {slug}: would unstick (id={qid}, age={age_hours:.1f}h) -> {title}"
+                actions_total += 1
+                actions_by_slug[slug] += 1
+                msg = f"  [dry-run] {slug}: would unstick (id={qid}, age={age_hours:.1f}h, mode={mode}) -> {title}"
                 print(msg)
-                actions.append(f"DRY {slug}: {title} ({age_hours:.1f}h)")
+                actions.append(f"DRY {slug}: {title} ({age_hours:.1f}h, {mode})")
                 # Carry-forward in dry-run too so the second pass doesn't double-count
                 new_state[sk] = prev
                 continue
 
             dcode, dbody = _req("DELETE", del_url, key)
             if dcode in (200, 204):
-                msg = f"  ✓ {slug}: unstuck id={qid} age={age_hours:.1f}h — {title}"
+                actions_total += 1
+                actions_by_slug[slug] += 1
+                msg = f"  ✓ {slug}: unstuck id={qid} age={age_hours:.1f}h mode={mode} — {title}"
                 print(msg)
-                actions.append(f"{slug}: {title} ({age_hours:.1f}h) → blocklisted+research")
+                actions.append(f"{slug}: {title} ({age_hours:.1f}h, {mode}) → blocklisted+research")
                 # Don't carry-forward — once removed, this hash is gone.
             else:
                 print(f"  ! {slug}: DELETE id={qid} HTTP {dcode}: {dbody[:200]}")
@@ -275,11 +433,11 @@ def cmd_unstick(dry_run: bool) -> int:
         f"\nstuck items still tracked (carrying forward): {len(new_state)}, "
         f"actions taken: {len(actions)}"
     )
-    if actions:
-        _notify(
-            "arr-unstick swept:\n" + "\n".join(actions),
-            level="warning" if len(actions) > 0 else "info",
-        )
+    if actions or cap_hit:
+        body = "arr-unstick swept:\n" + "\n".join(actions) if actions else "arr-unstick: cap hit with zero successful actions"
+        if cap_hit:
+            body += f"\n⚠ cap hit (run≥{max_per_run} or slug≥{max_per_slug}) — systemic issue likely"
+        _notify(body, level="error" if cap_hit else "warning")
     return 0
 
 
@@ -289,7 +447,8 @@ def main() -> int:
     g.add_argument("--missing", action="store_true",
                    help="trigger MissingSearch command on each *arr")
     g.add_argument("--unstick", action="store_true",
-                   help="DELETE+blocklist queue items stuck >=STUCK_HOURS")
+                   help="DELETE+blocklist queue items stuck past their "
+                        "per-mode grace (see module docstring for modes)")
     ap.add_argument("--dry-run", action="store_true",
                     help="show planned actions without executing")
     args = ap.parse_args()
