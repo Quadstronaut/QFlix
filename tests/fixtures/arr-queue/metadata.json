@@ -1,0 +1,15 @@
+{
+  "records": [
+    {
+      "id": 326839586,
+      "title": "45502c242d89346414cd96f06b97e96da38b09ea",
+      "status": "queued",
+      "trackedDownloadStatus": "ok",
+      "trackedDownloadState": "downloading",
+      "errorMessage": "qBittorrent is downloading metadata",
+      "downloadId": "45502C242D89346414CD96F06B97E96DA38B09EA",
+      "size": 0,
+      "sizeleft": 0
+    }
+  ]
+}
