@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — FlareSolverr health probe + auto-restart
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/scripts/maint/flaresolverr-canary.py
+StandardOutput=journal
+StandardError=journal
