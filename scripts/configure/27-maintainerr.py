@@ -63,20 +63,33 @@ current["seerr_api_key"] = os.environ["JS_KEY"]
 code, resp = req("/api/settings", method="POST", body=current)
 print(f"  POST /api/settings ->HTTP {code}" + ("" if code in (200, 201, 204) else f" {str(resp)[:200]}"))
 
-# 2. Sonarr instances (Sonarr + Sonarr2)
-print("\n=== 2. Sonarr instances (general + anime) ===")
+# Canonical serverName labels (operator-set, 2026-05). Older installs
+# may have legacy "Sonarr"/"Sonarr2"/"Radarr"/"Radarr2" — the upsert
+# below matches either the canonical or legacy name and renames in place
+# (PUT) so re-running this script after a UI rename is idempotent and
+# does not create duplicate instances.
+LEGACY_NAMES = {
+    "Sonarr Cinema": "Sonarr",
+    "Sonarr Anime":  "Sonarr2",
+    "Radarr Cinema": "Radarr",
+    "Radarr Anime":  "Radarr2",
+}
+
+# 2. Sonarr instances (Cinema + Anime)
+print("\n=== 2. Sonarr instances (cinema + anime) ===")
 def upsert_sonarr(label, port, base, key):
     body = {
         "serverName": label,
         "url": f"http://172.17.0.1:{port}/{base}",
         "apiKey": key,
     }
+    accept = {label, LEGACY_NAMES.get(label)} - {None}
     code, existing = req("/api/settings/sonarr")
-    found = next((x for x in (existing or []) if x.get("serverName") == label), None)
+    found = next((x for x in (existing or []) if x.get("serverName") in accept), None)
     if found:
         body["id"] = found["id"]
         code, resp = req(f"/api/settings/sonarr/{found['id']}", method="PUT", body=body)
-        verb = "updated"
+        verb = "renamed" if found.get("serverName") != label else "updated"
     else:
         code, resp = req("/api/settings/sonarr", method="POST", body=body)
         verb = "added"
@@ -85,19 +98,20 @@ def upsert_sonarr(label, port, base, key):
     else:
         print(f"  ! {label} failed: HTTP {code} {str(resp)[:200]}")
 
-upsert_sonarr("Sonarr",  os.environ["SONARR_PORT"],  os.environ.get("SONARR_BASE", "sonarr"),  os.environ["SONARR_KEY"])
-upsert_sonarr("Sonarr2", os.environ["SONARR2_PORT"], os.environ.get("SONARR2_BASE", "sonarr2"), os.environ["SONARR2_KEY"])
+upsert_sonarr("Sonarr Cinema", os.environ["SONARR_PORT"],  os.environ.get("SONARR_BASE", "sonarr"),  os.environ["SONARR_KEY"])
+upsert_sonarr("Sonarr Anime",  os.environ["SONARR2_PORT"], os.environ.get("SONARR2_BASE", "sonarr2"), os.environ["SONARR2_KEY"])
 
 # 3. Radarr instances
-print("\n=== 3. Radarr instances ===")
+print("\n=== 3. Radarr instances (cinema + anime) ===")
 def upsert_radarr(label, port, base, key):
     body = {"serverName": label, "url": f"http://172.17.0.1:{port}/{base}", "apiKey": key}
+    accept = {label, LEGACY_NAMES.get(label)} - {None}
     code, existing = req("/api/settings/radarr")
-    found = next((x for x in (existing or []) if x.get("serverName") == label), None)
+    found = next((x for x in (existing or []) if x.get("serverName") in accept), None)
     if found:
         body["id"] = found["id"]
         code, resp = req(f"/api/settings/radarr/{found['id']}", method="PUT", body=body)
-        verb = "updated"
+        verb = "renamed" if found.get("serverName") != label else "updated"
     else:
         code, resp = req("/api/settings/radarr", method="POST", body=body)
         verb = "added"
@@ -106,8 +120,8 @@ def upsert_radarr(label, port, base, key):
     else:
         print(f"  ! {label} failed: HTTP {code} {str(resp)[:200]}")
 
-upsert_radarr("Radarr",  os.environ["RADARR_PORT"],  os.environ.get("RADARR_BASE", "radarr"),  os.environ["RADARR_KEY"])
-upsert_radarr("Radarr2", os.environ["RADARR2_PORT"], os.environ.get("RADARR2_BASE", "radarr2"), os.environ["RADARR2_KEY"])
+upsert_radarr("Radarr Cinema", os.environ["RADARR_PORT"],  os.environ.get("RADARR_BASE", "radarr"),  os.environ["RADARR_KEY"])
+upsert_radarr("Radarr Anime",  os.environ["RADARR2_PORT"], os.environ.get("RADARR2_BASE", "radarr2"), os.environ["RADARR2_KEY"])
 
 # 4. Sanity probe: hit /api/plex/libraries — confirms the adapter we just
 # configured can actually talk to Plex. The old /api/settings/test/{plex,
