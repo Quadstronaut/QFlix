@@ -1,7 +1,8 @@
 # *arr stack audit — action items 2026-05-09
 
-Generated from `scripts/smoke/arr-audit.py`. Full audit report at
-`docs/arr-audit-2026-05-09.md`.
+Generated from `scripts/maint/arr-audit.py` (moved 2026-05-18 from
+`scripts/smoke/`; now a deployed maintenance script with a weekly timer).
+Full audit report at `docs/arr-audit-2026-05-09.md`.
 
 ## Headline
 

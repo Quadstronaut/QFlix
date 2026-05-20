@@ -1,0 +1,10 @@
+[Unit]
+Description=Manitoba — weekly *arr stack audit (oneshot, loopback)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=QFLIX_ARR_AUDIT_LOOPBACK=1
+ExecStart=%h/scripts/maint/arr-audit-run.sh
+StandardOutput=journal
+StandardError=journal

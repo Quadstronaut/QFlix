@@ -499,3 +499,17 @@ canaries:
     kuma_monitor: "Canary Kometa Deploy-Drift"
     script: "scripts/canaries/kometa-deploy-drift.sh"
     schedule: "daily-0430"
+  prowlarr-indexer-health:
+    # Detects two recurring patterns surfaced by the 2026-05-09 and
+    # 2026-05-16 audits that nothing previously alerted on:
+    #   - prowlarr-429-cascade : >threshold (default 25) HTTP 429s from
+    #     the *arr stack in a 10-min window — single upstream indexer
+    #     disable rippling across sonarr/sonarr2/radarr/radarr2
+    #   - indexer-rss-stale : Prowlarr health endpoint reports chronic
+    #     indexer-down warnings (matches the nekoBT-since-2026-05-12
+    #     case from WARN.md)
+    # Detect-and-notify only. The FlareSolverr canary already handles
+    # listener-failure restarts upstream of this.
+    kuma_monitor: "Canary Prowlarr Indexer Health"
+    script: "scripts/canaries/prowlarr-indexer-health.sh"
+    schedule: "every-15min"

@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — Prowlarr indexer cascade + RSS staleness detector
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push prowlarr-indexer-health
+StandardOutput=journal
+StandardError=journal
