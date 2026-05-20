@@ -505,6 +505,25 @@ else
   done
 fi
 
+# 16. Release-tag freshness — reminder when Manitoba's master has drifted
+# >30 days from the last cut, so the soak rhythm doesn't atrophy. Customer
+# nodes pin to release-* tags (see docs/release-promotion.md); if no fresh
+# tags exist, customers can't catch the latest stable.
+echo "16. Release-tag freshness"
+LAST_TAG=$(git -C "$HERE/.." tag --list 'release-*' --sort=-v:refname 2>/dev/null | head -n1 || true)
+if [ -z "$LAST_TAG" ]; then
+  record "release-tag-fresh" fail "no release-* tags exist; cut one with scripts/ops/cut-release.sh"
+else
+  LAST_TAG_TIME=$(git -C "$HERE/.." log -1 --format=%ct "$LAST_TAG" 2>/dev/null || echo 0)
+  NOW=$(date +%s)
+  AGE_DAYS=$(( (NOW - LAST_TAG_TIME) / 86400 ))
+  if [ "$AGE_DAYS" -le 30 ]; then
+    record "release-tag-fresh" pass "$LAST_TAG is $AGE_DAYS day(s) old"
+  else
+    record "release-tag-fresh" fail "$LAST_TAG is $AGE_DAYS day(s) old (>30); cut a new tag"
+  fi
+fi
+
 # Summary
 echo
 printf "Total: %d   Pass: %d   Fail: %d   Skip: %d\n" $((PASS+FAIL+SKIP)) "$PASS" "$FAIL" "$SKIP"
