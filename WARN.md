@@ -88,7 +88,7 @@ CRITICAL findings (CRIT/FATAL/FAIL/ERROR) are reported separately in chat for op
 
 ## recyclarr — TRaSH-guide profile sync
 
-- No WARN-level entries. (CRITICAL: 12h of include-template fatal errors on the `movies` instance — see report.)
+- No WARN-level entries. CRITICAL self-resolved: prior 12h include-template fatal errors on `movies` cleared by 2026-05-16 05:37; last 5 runs (4× manual 2026-05-16 + scheduled 2026-05-17 04:55) all `Result=success` across movies/anime_foreign/tv/anime. 2026-05-17 run created 1 new custom format + updated `HD Bluray + WEB` / `WEB-1080p` profile scores cleanly.
 
 ## maintainerr — library deletion rules
 
