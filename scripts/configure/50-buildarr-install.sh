@@ -31,11 +31,18 @@ if [ ! -d .venv ] || ! .venv/bin/python --version 2>&1 | grep -q "Python 3.11"; 
   $PY311 -m venv .venv
 fi
 .venv/bin/pip install --quiet --upgrade pip
+# HARD PIN — buildarr-sonarr 0.6.4 + buildarr-radarr 0.2.6 are the targets
+# that scripts/configure/60-buildarr-patches.sh edits. Upgrading either
+# silently breaks the patches (upstream files change → patch hunks no longer
+# apply → next 04:30 buildarr run fails). Pin until upstream catches up to
+# Sonarr v4+ / Radarr v5+/v6 schemas, then retire patches + bump pins.
+# See scripts/configure/60-buildarr-patches.sh "REMOVAL PATH" for the
+# coordinated upgrade procedure.
 .venv/bin/pip install --quiet \
-  'buildarr>=0.7' \
-  'buildarr-sonarr' \
-  'buildarr-radarr' \
-  'buildarr-prowlarr'
+  'buildarr==0.7.1' \
+  'buildarr-sonarr==0.6.4' \
+  'buildarr-radarr==0.2.6' \
+  'buildarr-prowlarr==0.5.3'
 .venv/bin/pip show buildarr | grep -E "^(Name|Version):"
 VENVSCRIPT
 

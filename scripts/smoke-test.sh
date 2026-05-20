@@ -216,6 +216,19 @@ if [ -n "$BA_VER" ]; then
 else
   record "buildarr-installed" fail "venv missing or buildarr not installed"
 fi
+# Buildarr patch sentinel: each patch carries a `QFlix patch 2026-05-11`
+# marker in the modified venv file. If a pip upgrade silently overwrote the
+# patched files, markers disappear and the next 04:30 buildarr run fails.
+# This check fires immediately on smoke instead of waiting for the next
+# nightly to go red.
+BA_PATCHES=$(sshm "grep -lr 'QFlix patch 2026-05-11' ~/.apps/buildarr/.venv/lib/ 2>/dev/null | wc -l" 2>/dev/null)
+if [ "${BA_PATCHES:-0}" -ge 5 ]; then
+  record "buildarr-patches-applied" pass "$BA_PATCHES files carry QFlix patch marker"
+elif [ "${BA_PATCHES:-0}" -ge 1 ]; then
+  record "buildarr-patches-applied" fail "only $BA_PATCHES patched files (expected 5+); re-run 60-buildarr-patches.sh"
+else
+  record "buildarr-patches-applied" fail "0 patched files — venv reset or never patched; run 60-buildarr-patches.sh"
+fi
 
 # 13g. python-plexapi venv healthy
 echo "13g. python-plexapi venv"
