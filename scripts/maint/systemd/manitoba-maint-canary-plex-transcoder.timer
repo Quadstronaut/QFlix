@@ -1,0 +1,10 @@
+[Unit]
+Description=Manitoba canary — Plex transcoder responsiveness (every 10 min)
+
+[Timer]
+OnCalendar=*:0/10
+RandomizedDelaySec=30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -31,6 +31,8 @@ request id and skips the cleanup step.
 - `kometa-libraries.sh`   — every kometa-configured Plex library still exists in Plex (semantic config-drift guard)
 - `kometa-deploy-drift.sh` — deployed kometa config.yml `libraries:` set matches what scripts/configure/55-kometa-install.sh would render (textual drift guard)
 - `stale-log-watchdog.sh` — timer-driven app logs (kometa daily, recyclarr weekly, buildarr daily) are still being written on schedule
+- `hardlink-integrity.sh` — 20 most-recently-modified library files have linkcount ≥ 2 (= *arr import used hardlink mode; protects against silent storage-doubling regression)
+- `plex-transcoder.sh`   — Plex `/transcode/sessions` + `/:/prefs` respond <10s with 2xx (catches transcoder daemon stall while main `/identity` still says 200)
 
 ## Stage labels (failure messages on stderr → Kuma `msg=`)
 
@@ -46,6 +48,8 @@ request id and skips the cleanup step.
 - `install-script-parse-fail` — kometa-deploy-drift: can't read the install script's library list
 - `deploy-drift` — kometa-deploy-drift: deployed config's library set differs from what scripts/configure/55-kometa-install.sh would render
 - `log-stale` / `log-missing-<app>` — stale-log-watchdog: a timer-driven app's log file mtime exceeds its expected cadence, or the log is missing entirely
+- `library-empty` / `hardlink-regression` — hardlink-integrity: no sampleable files, or ≥50% of recent imports have linkcount=1
+- `plex-up-fail` / `transcode-api-fail` / `prefs-api-fail` — plex-transcoder: Plex /identity non-200, or transcode/prefs endpoint hung or non-200
 
 ## Exit codes
 

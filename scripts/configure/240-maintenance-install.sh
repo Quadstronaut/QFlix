@@ -20,7 +20,9 @@ log_info "Phase 240: maintenance system install"
 
 secret_exists uptimekuma.key   || die "missing secrets/uptimekuma.key (capture from Kuma UI per spec §8.3)"
 secret_exists uptimekuma.port  || die "missing secrets/uptimekuma.port (Kuma's listen port)"
-secret_exists notifiarr.key    || die "missing secrets/notifiarr.key"
+# notifiarr.key check removed 2026-05-20 — Notifiarr was decommissioned
+# 2026-05-11 (see inventory.md §L). Tautulli Webhook agent + Discord
+# webhook supersede the prior Notifiarr passthrough.
 secret_exists discord-webhook.url || die "missing secrets/discord-webhook.url — pre/post-maint Discord pings depend on it"
 secret_exists discord-operator.id || die "missing secrets/discord-operator.id — error/critical pings depend on it"
 log_info "pre-flight: all required secrets present"
@@ -119,6 +121,10 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-kometa-deploy-drift.timer \
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.service \
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.timer \
+    scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.service \
+    scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer \
+    scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.service \
+    scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.timer \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.service \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.timer \
     scripts/maint/systemd/manitoba-maint-arr-audit.service \
@@ -138,6 +144,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/stale-log-watchdog.sh \
     scripts/canaries/vlogs-stall.sh \
     scripts/canaries/prowlarr-indexer-health.sh \
+    scripts/canaries/hardlink-integrity.sh \
+    scripts/canaries/plex-transcoder.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
@@ -237,12 +245,13 @@ else
   fi
 fi
 
-# ── Step 5: deploy uptimekuma.key + notifiarr.key to seedbox secrets ───────
+# ── Step 5: deploy uptimekuma.{key,port} to seedbox secrets ────────────────
+# notifiarr.{key,port} removed 2026-05-20 — daemon decommissioned 2026-05-11.
 sshm 'mkdir -p ~/secrets && chmod 700 ~/secrets'
-for f in uptimekuma.key uptimekuma.port notifiarr.key; do
+for f in uptimekuma.key uptimekuma.port; do
   scpm_to "$REPO_ROOT/secrets/$f" "secrets/$f" >/dev/null
 done
-sshm 'chmod 600 ~/secrets/uptimekuma.key ~/secrets/uptimekuma.port ~/secrets/notifiarr.key 2>/dev/null'
+sshm 'chmod 600 ~/secrets/uptimekuma.key ~/secrets/uptimekuma.port 2>/dev/null'
 # Kuma push tokens — required for pusher service.
 if [ -f "$REPO_ROOT/secrets/kuma-push-tokens.json" ]; then
   scpm_to "$REPO_ROOT/secrets/kuma-push-tokens.json" "secrets/kuma-push-tokens.json" >/dev/null
@@ -305,6 +314,10 @@ for unit in \
     manitoba-maint-canary-kometa-deploy-drift.timer \
     manitoba-maint-canary-prowlarr-indexer-health.service \
     manitoba-maint-canary-prowlarr-indexer-health.timer \
+    manitoba-maint-canary-hardlink-integrity.service \
+    manitoba-maint-canary-hardlink-integrity.timer \
+    manitoba-maint-canary-plex-transcoder.service \
+    manitoba-maint-canary-plex-transcoder.timer \
     manitoba-maint-cp-upgrade.service \
     manitoba-maint-cp-upgrade.timer \
     manitoba-maint-arr-audit.service \
@@ -339,6 +352,14 @@ systemctl --user enable --now manitoba-maint-canary-kometa-deploy-drift.timer
 # prowlarr-indexer-health: 429-cascade and chronic-RSS-stale detector.
 # Detect-only — never disables an indexer or restarts FlareSolverr.
 systemctl --user enable --now manitoba-maint-canary-prowlarr-indexer-health.timer
+# hardlink-integrity: assert recent library imports have linkcount >= 2.
+# Detects *arr "Use Hard Links" regression / filesystem-boundary changes
+# that would double storage on every new grab.
+systemctl --user enable --now manitoba-maint-canary-hardlink-integrity.timer
+# plex-transcoder: every 10 min, exercise Plex's /transcode/sessions and
+# /:/prefs endpoints. Catches transcoder daemon stalls before customers
+# hit "Conversion failed" — main /identity stays 200 OK during this fault.
+systemctl --user enable --now manitoba-maint-canary-plex-transcoder.timer
 # UCC `app-<name> upgrade` sweep — Mon 11:30 UTC (30 min into the window).
 # --now activates the timer itself (schedules its next OnCalendar fire); it
 # does NOT trigger an immediate service run. Without --now the timer stays

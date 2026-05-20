@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — Plex transcoder responsiveness
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push plex-transcoder
+StandardOutput=journal
+StandardError=journal
