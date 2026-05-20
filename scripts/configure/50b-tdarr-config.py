@@ -9,9 +9,13 @@ differ.
 
 Run on the seedbox:  python3 50b-tdarr-config.py
 Or pipe via SSH:    sshm "python3 -" < scripts/configure/50b-tdarr-config.py
+                    (the qflix-direct-play-fix.json sidecar must already
+                    live at ~/.apps/tdarr/configs/ — the runner shell
+                    scripts/configure/50b-tdarr-config.sh handles the scp.)
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 import string
@@ -22,11 +26,42 @@ import urllib.request
 TDARR_PORT = 42018
 HOME = os.path.expanduser("~")
 
+# Real, expected library names — anything else in LibrarySettingsJSONDB is
+# an orphan from earlier UI-create attempts and gets purged. The 21→3 cleanup
+# closes the Phase 29.2 "18 orphan library rows" item.
+REAL_LIBRARY_NAMES = {"Movies", "TV", "Anime"}
+
 LIBRARIES = [
     {"name": "Movies", "folder": f"{HOME}/media/Movies"},
     {"name": "TV",     "folder": f"{HOME}/media/TV Shows"},
     {"name": "Anime",  "folder": f"{HOME}/media/Anime"},
 ]
+
+# Path to the Flow JSON (resolved relative to this script in repo, or
+# alongside it when piped over SSH). The Flow doc gets inserted into
+# FlowsJSONDB and then referenced by libraries via decisionMaker.settingsFlows
+# + flowId. See docs/superpowers/plans/2026-05-08-tdarr-install.md.
+# Look for the Flow JSON in a few well-known places. The runner shell
+# scripts/configure/50b-tdarr-config.sh scp's it to the first path; the rest
+# are fallbacks for in-repo invocations.
+FLOW_FILE_CANDIDATES = [
+    os.environ.get("TDARR_FLOW_JSON", ""),
+    f"{HOME}/.apps/tdarr/configs/qflix-direct-play-fix.json",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else ".",
+                 "tdarr-flows", "qflix-direct-play-fix.json"),
+    "tdarr-flows/qflix-direct-play-fix.json",
+]
+
+# Library decisionMaker block to flip the library into Flow mode. Mutually
+# exclusive radio in the Tdarr UI — only one of the four settings* keys is
+# allowed true at a time. settingsPlugin is the classic-plugin-stack default;
+# settingsFlows is the modern Flow engine.
+DECISION_MAKER_FLOWS = {
+    "settingsPlugin": False,
+    "settingsVideo": False,
+    "settingsAudio": False,
+    "settingsFlows": True,
+}
 
 # Worker cap for the shared seedbox (operator spec §31).
 # Two layers — both must be set:
@@ -220,6 +255,130 @@ def ensure_worker_limits() -> bool:
     return True
 
 
+def _load_flow_doc() -> dict:
+    """Read the qflix-direct-play-fix.json from the first existing candidate.
+    Fail loud — if no candidate found, we can't proceed."""
+    for path in FLOW_FILE_CANDIDATES:
+        if path and os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    raise SystemExit(
+        "FATAL: qflix-direct-play-fix.json not found. Tried: "
+        + ", ".join(p for p in FLOW_FILE_CANDIDATES if p)
+    )
+
+
+def purge_orphan_libraries() -> int:
+    """Delete LibrarySettingsJSONDB records that were created during failed
+    UI experiments — name == 'Library Name' (default placeholder) OR folder
+    is empty. Real libraries (Movies/TV/Anime) are preserved by both checks.
+
+    Direct file delete — cruddb mode=remove crashes the server on absent _id."""
+    db_dir = f"{HOME}/.apps/tdarr/server/Tdarr/DB2/LibrarySettingsJSONDB"
+    removed = 0
+    for path in glob.glob(f"{db_dir}/*.json"):
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+        name = doc.get("name", "")
+        folder = doc.get("folder", "")
+        is_real = name in REAL_LIBRARY_NAMES and folder
+        if is_real:
+            continue
+        os.remove(path)
+        print(f"[purge] orphan library '{name}' folder='{folder}' ({os.path.basename(path)[:8]})")
+        removed += 1
+    return removed
+
+
+def ensure_flow() -> bool:
+    """Insert the QFlix Direct-Play Fix Flow into FlowsJSONDB if missing.
+    Update-in-place if a record with the same _id exists but content differs."""
+    flow = _load_flow_doc()
+    flow_id = flow["_id"]
+    db_dir = f"{HOME}/.apps/tdarr/server/Tdarr/DB2/FlowsJSONDB"
+    os.makedirs(db_dir, exist_ok=True)
+    target = f"{db_dir}/{flow_id}.json"
+    if os.path.isfile(target):
+        with open(target, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+        if existing == flow:
+            print(f"[skip] flow '{flow_id}' already at desired state")
+            return False
+        with open(target + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(flow, f, indent=2)
+        os.replace(target + ".tmp", target)
+        print(f"[update] flow '{flow_id}' patched to match repo JSON")
+        return True
+    with open(target + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(flow, f, indent=2)
+    os.replace(target + ".tmp", target)
+    print(f"[create] flow '{flow_id}' written to {target}")
+    return True
+
+
+def attach_flow_to_libraries() -> int:
+    """For each real library, set flowId + decisionMaker.settingsFlows so the
+    library uses our Flow instead of the default classic plugin stack.
+
+    Library record fields modified:
+      - flowId: '<flow_id>'
+      - decisionMaker.{settingsPlugin, settingsVideo, settingsAudio,
+        settingsFlows} = DECISION_MAKER_FLOWS
+
+    Re-attaching is idempotent — only writes when current values differ."""
+    flow = _load_flow_doc()
+    flow_id = flow["_id"]
+    db_dir = f"{HOME}/.apps/tdarr/server/Tdarr/DB2/LibrarySettingsJSONDB"
+    changed = 0
+    for path in glob.glob(f"{db_dir}/*.json"):
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+        if doc.get("name") not in REAL_LIBRARY_NAMES:
+            continue
+        cur_decision = doc.get("decisionMaker") or {}
+        needs_flow_id = doc.get("flowId") != flow_id
+        needs_decision = any(
+            cur_decision.get(k) != v for k, v in DECISION_MAKER_FLOWS.items()
+        )
+        if not (needs_flow_id or needs_decision):
+            continue
+        doc["flowId"] = flow_id
+        new_decision = dict(cur_decision)
+        new_decision.update(DECISION_MAKER_FLOWS)
+        doc["decisionMaker"] = new_decision
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        os.replace(path + ".tmp", path)
+        print(f"[attach] library '{doc.get('name')}' -> flow '{flow_id}'")
+        changed += 1
+    return changed
+
+
+def set_non_destructive_mode() -> int:
+    """Phase 30 gate: keep libraries in 'watch new arrivals only' mode by
+    forcing processLibrary=false on every real library. Existing files are
+    catalogued by scanOnStart but NOT auto-queued for transcode. The 7-day
+    clean-window observation requires this; flip to true in 50d (Phase 30
+    first-run) only after the operator green-lights the library-wide pass."""
+    db_dir = f"{HOME}/.apps/tdarr/server/Tdarr/DB2/LibrarySettingsJSONDB"
+    changed = 0
+    for path in glob.glob(f"{db_dir}/*.json"):
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+        if doc.get("name") not in REAL_LIBRARY_NAMES:
+            continue
+        if doc.get("processLibrary") is False:
+            continue
+        doc["processLibrary"] = False
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        os.replace(path + ".tmp", path)
+        print(f"[lock] library '{doc.get('name')}' processLibrary=False "
+              f"(new-arrivals-only — flip in Phase 30)")
+        changed += 1
+    return changed
+
+
 def patch_server_config() -> bool:
     """Add webUIPort to Tdarr_Server_Config.json so its self-redirect uses
     the right port (instead of defaulting to :8265)."""
@@ -243,19 +402,28 @@ def patch_server_config() -> bool:
 
 
 def main() -> int:
-    print("=== Tdarr config (libraries + workers + webUIPort) ===\n")
+    print("=== Tdarr config (libraries + workers + webUIPort + flow) ===\n")
     libs_added = ensure_libraries()
     libs_patched = ensure_library_defaults()
+    orphans_purged = purge_orphan_libraries()
     workers_changed = ensure_worker_limits()
     node_changed = ensure_node_worker_limits()
     config_changed = patch_server_config()
+    flow_changed = ensure_flow()
+    libs_attached = attach_flow_to_libraries()
+    libs_locked = set_non_destructive_mode()
     print()
     print(f"Libraries added: {libs_added}")
     print(f"Library defaults patched: {libs_patched}")
+    print(f"Orphan libraries purged: {orphans_purged}")
     print(f"Global worker limits changed: {workers_changed}")
     print(f"Node worker limits changed: {node_changed}")
     print(f"webUIPort changed: {config_changed}")
-    if config_changed or workers_changed or node_changed or libs_patched:
+    print(f"Flow created/updated: {flow_changed}")
+    print(f"Libraries attached to flow: {libs_attached}")
+    print(f"Libraries locked to new-arrivals-only: {libs_locked}")
+    if any([config_changed, workers_changed, node_changed, libs_patched,
+            orphans_purged, flow_changed, libs_attached, libs_locked]):
         print("\nNote: restart tdarr-server.service + tdarr-node.service "
               "for changes to take effect:")
         print("  systemctl --user restart tdarr-server.service "
