@@ -4,6 +4,10 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+# Worst-case run: 10s probe + 180s restart subprocess + 120s post-restart
+# poll = 310s. Cap at 360s so systemd doesn't TERM the canary mid-recovery
+# (default TimeoutStartSec is 90s, which used to kill slow restarts).
+TimeoutStartSec=360
 ExecStart=/usr/bin/python3 %h/scripts/maint/flaresolverr-canary.py
 StandardOutput=journal
 StandardError=journal
