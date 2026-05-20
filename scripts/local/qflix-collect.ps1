@@ -48,7 +48,14 @@ function Push-Kuma {
     if (-not $tokenJson) { return $false }
     $tokens = $tokenJson | ConvertFrom-Json
     $token = $tokens.$monitor
-    if (-not $token) { return $false }
+    if (-not $token) {
+        # A missing token used to fail silently — and the monitor stays red on
+        # Kuma forever. Surface it loudly so a future tokens-file regen that
+        # drops a key gets noticed within the next collect cycle.
+        Write-Host "WARN: no Kuma push token for monitor '$monitor'"
+        Post-Discord "Missing Kuma push token for monitor: $monitor" "QFlix Collect WARN" 0xF1C40F
+        return $false
+    }
     # Push goes via the SSH tunnel at 127.0.0.1:42005 (Kuma admin port). Public
     # HTTPS is for the status page; the push endpoint is on the tunnel.
     $kumaHost = Read-Secret "uptimekuma.host"
