@@ -60,6 +60,18 @@ FS_TIMEOUT_S = int(os.environ.get("FS_TIMEOUT_S", "10"))
 FS_MIN_UPTIME_S = int(os.environ.get("FS_MIN_UPTIME_S", "60"))
 FS_MAX_RESTARTS_PER_HOUR = int(os.environ.get("FS_MAX_RESTARTS_PER_HOUR", "3"))
 FS_RESTART_CMD = os.environ.get("FS_RESTART_CMD", "app-flaresolverr restart")
+# Restart-command subprocess timeout. 60s was too tight: during a host-level
+# reboot recovery (load avg ≥30 on the 2026-05-20 incident), `app-flaresolverr
+# restart` exceeded 60s and the canary emitted a false-positive "restart
+# command timed out" operator alert. 180s gives Ultra.cc's helper room to
+# tear down + restart the Docker container even under heavy contention.
+FS_RESTART_TIMEOUT_S = int(os.environ.get("FS_RESTART_TIMEOUT_S", "180"))
+# After restart, poll the probes for up to this long before declaring failure.
+# Chromium subprocess spin-up takes 15-60s on a normal boot, longer under
+# post-reboot CPU contention. Old single-shot 15s wait + 10s probe timeout
+# was too short to catch a slow but successful recovery.
+FS_POST_RESTART_DEADLINE_S = int(os.environ.get("FS_POST_RESTART_DEADLINE_S", "120"))
+FS_POST_RESTART_POLL_INTERVAL_S = int(os.environ.get("FS_POST_RESTART_POLL_INTERVAL_S", "5"))
 
 
 def _read(path: Path) -> str:
@@ -169,14 +181,29 @@ def _restart() -> tuple[bool, str]:
     try:
         proc = subprocess.run(
             FS_RESTART_CMD.split(),
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=FS_RESTART_TIMEOUT_S,
         )
         ok = proc.returncode == 0
         return ok, (proc.stdout + proc.stderr).strip()[:400]
     except subprocess.TimeoutExpired:
-        return False, "restart command timed out after 60s"
+        return False, f"restart command timed out after {FS_RESTART_TIMEOUT_S}s"
     except FileNotFoundError:
         return False, f"restart command not found: {FS_RESTART_CMD!r}"
+
+
+def _wait_for_healthy(base: str) -> tuple[bool, str, str]:
+    """Poll /  and /v1 until both report ok, or until the deadline. Returns
+    (ok, root_detail, v1_detail) reflecting the LAST observed state."""
+    deadline = time.time() + FS_POST_RESTART_DEADLINE_S
+    ok_root = ok_v1 = False
+    detail_root = detail_v1 = "not-yet-probed"
+    while time.time() < deadline:
+        ok_root, detail_root = _probe_root(f"{base}/")
+        ok_v1, detail_v1 = _probe_v1(f"{base}/v1")
+        if ok_root and ok_v1:
+            return True, detail_root, detail_v1
+        time.sleep(FS_POST_RESTART_POLL_INTERVAL_S)
+    return False, detail_root, detail_v1
 
 
 def _notify(msg: str, level: str = "info") -> None:
@@ -240,20 +267,32 @@ def run(dry_run: bool) -> int:
     if ok:
         history.append(now)
         _save_state(history)
-        msg = (
-            f"flaresolverr-canary: ✓ restarted FlareSolverr — "
-            f"probes failed (root[{detail_root}] v1[{detail_v1}]); "
-            f"this is restart #{len(history)} in the last hour."
-        )
-        _notify(msg, level="warning")
-        # Brief delay then re-probe to log post-restart state. We don't fail
-        # the script if recovery hasn't completed yet — that's what next
-        # cycle is for.
-        time.sleep(15)
-        ok2_root, d2_root = _probe_root(f"{base}/")
-        ok2_v1, d2_v1 = _probe_v1(f"{base}/v1")
-        print(f"  post-restart / → ok={ok2_root} ({d2_root})")
-        print(f"  post-restart /v1 → ok={ok2_v1} ({d2_v1})")
+        # Poll for recovery instead of a single-shot probe. Chromium subprocess
+        # spin-up runs 15-60s on a normal boot, longer when the host is under
+        # post-reboot load. The single 15s wait + 10s probe used to flag
+        # successful slow recoveries as "restart failed".
+        print(f"  waiting up to {FS_POST_RESTART_DEADLINE_S}s for "
+              f"FlareSolverr to come back...")
+        healthy, d2_root, d2_v1 = _wait_for_healthy(base)
+        print(f"  post-restart / → ok={healthy} ({d2_root})")
+        print(f"  post-restart /v1 → ok={healthy} ({d2_v1})")
+        if healthy:
+            msg = (
+                f"flaresolverr-canary: ✓ restarted FlareSolverr — "
+                f"probes failed (root[{detail_root}] v1[{detail_v1}]); "
+                f"recovered after restart #{len(history)} in the last hour."
+            )
+            _notify(msg, level="warning")
+        else:
+            msg = (
+                f"flaresolverr-canary: ⚠ restart issued but not yet healthy "
+                f"after {FS_POST_RESTART_DEADLINE_S}s — "
+                f"root[{d2_root}] v1[{d2_v1}]; "
+                f"this is restart #{len(history)} in the last hour. "
+                f"Next cycle will re-probe; if still down then, operator "
+                f"intervention needed."
+            )
+            _notify(msg, level="warning")
         return 0
     else:
         msg = (

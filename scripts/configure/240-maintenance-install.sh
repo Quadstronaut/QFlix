@@ -121,6 +121,9 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-kometa-deploy-drift.timer \
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.service \
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.timer \
+    scripts/maint/systemd/manitoba-maint-flaresolverr-canary.service \
+    scripts/maint/systemd/manitoba-maint-flaresolverr-canary.timer \
+    scripts/maint/flaresolverr-canary.py \
     scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.service \
     scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer \
     scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.service \
@@ -165,6 +168,8 @@ cp -f "$STG"/scripts/maint/arr-audit.py       ~/scripts/maint/arr-audit.py
 chmod +x ~/scripts/maint/arr-audit.py
 cp -f "$STG"/scripts/maint/arr-audit-run.sh   ~/scripts/maint/arr-audit-run.sh
 chmod +x ~/scripts/maint/arr-audit-run.sh
+cp -f "$STG"/scripts/maint/flaresolverr-canary.py ~/scripts/maint/flaresolverr-canary.py
+chmod +x ~/scripts/maint/flaresolverr-canary.py
 # Remove the retired Playwright clicker if a prior install put it in place.
 rm -f ~/scripts/maint/cp_upgrade_clicker.py
 cp -rf  "$STG"/scripts/maint/lib                  ~/scripts/maint/
@@ -314,6 +319,8 @@ for unit in \
     manitoba-maint-canary-kometa-deploy-drift.timer \
     manitoba-maint-canary-prowlarr-indexer-health.service \
     manitoba-maint-canary-prowlarr-indexer-health.timer \
+    manitoba-maint-flaresolverr-canary.service \
+    manitoba-maint-flaresolverr-canary.timer \
     manitoba-maint-canary-hardlink-integrity.service \
     manitoba-maint-canary-hardlink-integrity.timer \
     manitoba-maint-canary-plex-transcoder.service \
@@ -322,6 +329,12 @@ for unit in \
     manitoba-maint-cp-upgrade.timer \
     manitoba-maint-arr-audit.service \
     manitoba-maint-arr-audit.timer; do
+  # If the user unit is a symlink pointing back at the source, `cp -f` fails
+  # with "are the same file" — the source already IS the live unit. Drop the
+  # symlink first; cp then writes a real file.
+  if [ -L ~/.config/systemd/user/$unit ]; then
+    rm -f ~/.config/systemd/user/$unit
+  fi
   cp -f ~/scripts/maint/systemd/$unit ~/.config/systemd/user/$unit
 done
 systemctl --user daemon-reload
@@ -352,6 +365,11 @@ systemctl --user enable --now manitoba-maint-canary-kometa-deploy-drift.timer
 # prowlarr-indexer-health: 429-cascade and chronic-RSS-stale detector.
 # Detect-only — never disables an indexer or restarts FlareSolverr.
 systemctl --user enable --now manitoba-maint-canary-prowlarr-indexer-health.timer
+# flaresolverr-canary: probes /  and /v1 every 5 min. On failure, calls
+# `app-flaresolverr restart` (capped 3/hour) and waits up to 120s for
+# Chromium subprocess to come back. Catches the silent-socket-stall mode
+# that bit the 2026-05-18 audit.
+systemctl --user enable --now manitoba-maint-flaresolverr-canary.timer
 # hardlink-integrity: assert recent library imports have linkcount >= 2.
 # Detects *arr "Use Hard Links" regression / filesystem-boundary changes
 # that would double storage on every new grab.
