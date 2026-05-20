@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-05-20 — random-audit findings + Kuma-push silent-failure guard (PR #29)
+
+The 2026-05-19 random audit (REA + qflix-mcp + manual log scrub) surfaced
+a 5-day-silent regression: the workstation collector's
+`"QFlix Collect (workstation)"` push-token went missing from
+`secrets/kuma-push-tokens.json` after the 2026-05-14 tokens-file regen.
+Every hourly `qflix-collect.ps1` run pushed nothing for five days; the
+seedbox-side Kuma monitor stayed red while the workstation-side
+`qflix_status` MCP (which reads the local snapshot, not seedbox Kuma)
+reported all-green. The two views disagreed and nobody noticed.
+
+- **`Push-Kuma` now fails loudly on missing tokens.** `scripts/local/qflix-collect.ps1`
+  used to `return $false` silently when `$tokens.$monitor` lookup missed.
+  Now writes a WARN line to the transcript and posts a yellow Discord embed
+  (`"Missing Kuma push token for monitor: <name>"`). Any future regression
+  surfaces within one collect cycle instead of "until somebody runs an
+  audit and reads the raw fetch."
+- **Token restored manually.** Local-only secret (`secrets/` is gitignored).
+- **Side observation, not actionable.** A single `manitoba-maint-canary-vlogs-stall.service`
+  failed-start at `2026-05-19T19:31:09Z` turned out to be a transient — the
+  next eight consecutive 15-min fires (`00:46 → 02:16 UTC`) all completed
+  cleanly with status=0/SUCCESS.
+
+`WARN.md` (this audit's punch-list) committed at repo root as historical
+record.
+
 ## post-release-0.0.1 (2026-05-16) — live-verification fixes
 
 End-to-end verification on the live seedbox surfaced five deployment-time
