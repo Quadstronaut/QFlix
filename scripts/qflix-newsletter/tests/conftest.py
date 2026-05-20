@@ -80,4 +80,5 @@ def sample_ctx() -> EmailContext:
         },
         subject="Test subject",
         public_host="quadstronaut.seedbox.example.com",
+        kuma_public_host="uptimekuma-quadstronaut.seedbox.example.com",
     )

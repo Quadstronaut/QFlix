@@ -50,6 +50,7 @@ class EmailContext:
     nerd_corner: dict
     subject: str
     public_host: str
+    kuma_public_host: str
 
 
 def group_episodes_by_show(items: Sequence[RecentItem]) -> list[ShowGroup]:
@@ -101,6 +102,7 @@ def build_email_context(
     ai_picks: Sequence[AiPick],
     library_stats: dict,
     public_host: str,
+    kuma_public_host: str,
     now: Optional[_dt.datetime] = None,
 ) -> EmailContext:
     if now is None:
@@ -137,6 +139,7 @@ def build_email_context(
         nerd_corner=library_stats,
         subject=subject,
         public_host=public_host,
+        kuma_public_host=kuma_public_host,
     )
 
 

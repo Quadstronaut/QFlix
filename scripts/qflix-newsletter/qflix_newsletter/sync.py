@@ -44,7 +44,7 @@ TEMPLATE_TITLES = {
 }
 
 
-def _preview_context(public_host: str) -> EmailContext:
+def _preview_context(public_host: str, kuma_public_host: str) -> EmailContext:
     """Representative sample data so the rendered preview shows the design
     with realistic content (not an empty shell). Mirrors tests/conftest.py
     but lives in the package so sync.py has no test-code dependency."""
@@ -91,17 +91,18 @@ def _preview_context(public_host: str) -> EmailContext:
                      "sections": [{"name": "Movies", "count": 1234}]},
         subject="QFlix preview",
         public_host=public_host,
+        kuma_public_host=kuma_public_host,
     )
 
 
-def render_preview(template_filename: str, public_host: str) -> str:
+def render_preview(template_filename: str, public_host: str, kuma_public_host: str) -> str:
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
         autoescape=select_autoescape(["html"]),
         trim_blocks=True, lstrip_blocks=True,
     )
     tmpl = env.get_template(template_filename)
-    return tmpl.render(ctx=_preview_context(public_host))
+    return tmpl.render(ctx=_preview_context(public_host, kuma_public_host))
 
 
 @dataclass
@@ -149,7 +150,7 @@ def sync(env: str, *, secrets_dir: Optional[Path] = None) -> int:
 
     for filename, title in TEMPLATE_TITLES.items():
         full_name = f"{prefix} · {title}"
-        body = render_preview(filename, cfg.public_host)
+        body = render_preview(filename, cfg.public_host, cfg.kuma_public_host)
         tid = client.upsert_template(full_name, body,
                                      existing.get(full_name))
         verb = "updated" if full_name in existing else "created"

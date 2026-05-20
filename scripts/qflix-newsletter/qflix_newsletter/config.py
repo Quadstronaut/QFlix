@@ -26,6 +26,21 @@ def maybe_read_secret(name: str, secrets_dir: Optional[Path] = None) -> Optional
     return p.read_text(encoding="utf-8").strip()
 
 
+def _derive_kuma_host(secrets_dir: Optional[Path]) -> str:
+    """Resolve Kuma's public hostname. Order:
+      1. secrets/kuma.public-host        — explicit operator override
+      2. uptimekuma-{seedbox.host}        — Ultra.cc convention (app subdomain)
+      3. example placeholder              — only hit when no secrets exist
+    """
+    override = maybe_read_secret("kuma.public-host", secrets_dir)
+    if override:
+        return override
+    seedbox = maybe_read_secret("seedbox.host", secrets_dir)
+    if seedbox:
+        return f"uptimekuma-{seedbox}"
+    return "uptimekuma-quadstronaut.seedbox.example.com"
+
+
 @dataclass
 class ArrEndpoint:
     base_url: str
@@ -52,6 +67,7 @@ class Config:
     listmonk_template_id: Optional[int]
 
     public_host: str
+    kuma_public_host: str
     poster_cache_dir: Path
 
     @classmethod
@@ -118,5 +134,10 @@ class Config:
                 else None
             ),
             public_host=(maybe_read_secret("seedbox.host", d) or "quadstronaut.seedbox.example.com"),
+            # Kuma's public hostname follows the Ultra.cc app-subdomain
+            # convention: uptimekuma-<slot>.<shared>. If the operator runs
+            # Kuma elsewhere they can override via secrets/kuma.public-host;
+            # otherwise we derive it by prefixing public_host.
+            kuma_public_host=_derive_kuma_host(d),
             poster_cache_dir=poster_cache_dir,
         )
