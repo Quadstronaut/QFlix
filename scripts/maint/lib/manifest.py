@@ -13,7 +13,7 @@ import yaml
 
 VALID_CLASSES = {"ucc", "systemd", "cron", "library"}
 
-VALID_CANARY_SCHEDULES = {"hourly", "daily-0430", "every-15min"}
+VALID_CANARY_SCHEDULES = {"hourly", "daily-0430", "every-15min", "every-30min", "every-10min"}
 
 
 class ManifestError(Exception):

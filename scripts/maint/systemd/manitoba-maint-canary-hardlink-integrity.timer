@@ -1,0 +1,10 @@
+[Unit]
+Description=Manitoba canary — Hardlink integrity (every 30 min)
+
+[Timer]
+OnCalendar=*:0/30
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

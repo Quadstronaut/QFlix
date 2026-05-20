@@ -513,3 +513,27 @@ canaries:
     kuma_monitor: "Canary Prowlarr Indexer Health"
     script: "scripts/canaries/prowlarr-indexer-health.sh"
     schedule: "every-15min"
+  hardlink-integrity:
+    # Sample the 20 most-recently-modified video files across Movies + TV
+    # Shows + Anime and assert linkcount >= 2 (= the *arr import used
+    # hardlink mode, the qBit seed is still referenceable).
+    #
+    # Detects: "Use Hard Links" config flipped off in a *arr, filesystem
+    # boundary changes (e.g. mount layout drift), or copy-mode regression.
+    # A break here doubles storage on every new grab — invisible in *arr
+    # and Plex logs until disk fills weeks later.
+    #
+    # Wider net than smoke #5 (5 Movies samples) and runs every 30 min.
+    kuma_monitor: "Canary Hardlink Integrity"
+    script: "scripts/canaries/hardlink-integrity.sh"
+    schedule: "every-30min"
+  plex-transcoder:
+    # Every 10 min, exercise Plex's /transcode/sessions and /:/prefs
+    # endpoints. Catches transcoder daemon stalls before customers hit
+    # "Conversion failed" — main /identity stays 200 OK during this
+    # fault, so the existing Plex monitor would stay green for hours
+    # while every playback that needs a transcode (60% of recent
+    # sessions per Tautulli) silently buffers or dies.
+    kuma_monitor: "Canary Plex Transcoder"
+    script: "scripts/canaries/plex-transcoder.sh"
+    schedule: "every-10min"
