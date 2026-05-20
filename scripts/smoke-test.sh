@@ -292,9 +292,26 @@ if [ -n "$TD_PORT" ]; then
   else
     record "tdarr-node-registered" fail "no nodes registered"
   fi
+  # Flow engaged: exactly 3 libraries, all with flowId=qflix-direct-play-fix
+  # and decisionMaker.settingsFlows=true (so the Flow engine — not the classic
+  # plugin stack — drives transcode decisions on every new arrival).
+  TD_FLOW=$(sshm "curl -sf -m 5 -X POST http://127.0.0.1:$TD_PORT/api/v2/cruddb -H 'Content-Type: application/json' -d '{\"data\":{\"collection\":\"LibrarySettingsJSONDB\",\"mode\":\"getAll\"}}' 2>/dev/null | python3 -c 'import sys,json; libs=json.load(sys.stdin); ok=[l for l in libs if l.get(\"flowId\")==\"qflix-direct-play-fix\" and (l.get(\"decisionMaker\") or {}).get(\"settingsFlows\") is True]; print(str(len(ok))+\"/\"+str(len(libs)))'" 2>/dev/null)
+  case "$TD_FLOW" in
+    3/3) record "tdarr-flow-engaged" pass "$TD_FLOW libs attached to qflix-direct-play-fix" ;;
+    *)   record "tdarr-flow-engaged" fail "$TD_FLOW libs attached (expected 3/3)" ;;
+  esac
+  # Quiet-hours timers armed (18:00-23:00 UTC pause to spare streaming users).
+  TD_QH=$(sshm "systemctl --user list-timers tdarr-node-pause.timer tdarr-node-resume.timer --no-pager 2>/dev/null | grep -cE 'tdarr-node-(pause|resume).timer'" 2>/dev/null)
+  if [ "${TD_QH:-0}" -ge 2 ]; then
+    record "tdarr-quiet-hours-armed" pass "pause+resume timers loaded"
+  else
+    record "tdarr-quiet-hours-armed" fail "expected 2 timers, found ${TD_QH:-0}"
+  fi
 else
   record "tdarr-up" skip "no server_port"
   record "tdarr-node-registered" skip "no server_port"
+  record "tdarr-flow-engaged" skip "no server_port"
+  record "tdarr-quiet-hours-armed" skip "no server_port"
 fi
 
 # 13j. Kometa timer scheduled

@@ -1,0 +1,146 @@
+{
+  "_id": "qflix-direct-play-fix",
+  "name": "QFlix Direct-Play Fix",
+  "description": "Surgical re-encode for browser direct-play. vc1 + mpeg2video video streams -> h264. Non-AAC primary audio (including EAC3) -> add aac/en/2ch stream alongside (original audio preserved). Files that are already direct-play-safe pass through untouched.",
+  "tags": "qflix",
+  "flowPlugins": [
+    {
+      "id": "qfxInputFile",
+      "name": "Input File",
+      "sourceRepo": "Community",
+      "pluginName": "inputFile",
+      "version": "1.0.0",
+      "position": {"x": 0,    "y": 0   }
+    },
+    {
+      "id": "qfxCheckVc1",
+      "name": "Check vc1",
+      "sourceRepo": "Community",
+      "pluginName": "checkVideoCodec",
+      "version": "1.0.0",
+      "position": {"x": 0,    "y": 120 },
+      "inputsDB": {"codec": "vc1"}
+    },
+    {
+      "id": "qfxCheckMpeg2",
+      "name": "Check mpeg2video",
+      "sourceRepo": "Community",
+      "pluginName": "checkVideoCodec",
+      "version": "1.0.0",
+      "position": {"x": 200,  "y": 240 },
+      "inputsDB": {"codec": "mpeg2video"}
+    },
+    {
+      "id": "qfxCheckAac",
+      "name": "Check primary audio aac",
+      "sourceRepo": "Community",
+      "pluginName": "checkAudioCodec",
+      "version": "1.0.0",
+      "position": {"x": 400,  "y": 360 },
+      "inputsDB": {"codec": "aac"}
+    },
+    {
+      "id": "qfxStartVideo",
+      "name": "Start (video re-encode pipeline)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandStart",
+      "version": "1.0.0",
+      "position": {"x": -200, "y": 360 }
+    },
+    {
+      "id": "qfxSetH264",
+      "name": "Set Video Encoder h264",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandSetVideoEncoder",
+      "version": "1.0.0",
+      "position": {"x": -200, "y": 480 },
+      "inputsDB": {"outputCodec": "h264", "ffmpegPresetEnabled": "true", "ffmpegPreset": "veryfast"}
+    },
+    {
+      "id": "qfxEnsureAacVideo",
+      "name": "Ensure aac/en/2ch audio (video path)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandEnsureAudioStream",
+      "version": "1.0.0",
+      "position": {"x": -200, "y": 600 },
+      "inputsDB": {"audioEncoder": "aac", "language": "en", "channels": "2", "enableBitrate": "true", "bitrate": "128k"}
+    },
+    {
+      "id": "qfxSetMkvVideo",
+      "name": "Set Container mkv (video path)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandSetContainer",
+      "version": "1.0.0",
+      "position": {"x": -200, "y": 720 },
+      "inputsDB": {"container": "mkv"}
+    },
+    {
+      "id": "qfxExecuteVideo",
+      "name": "Execute (video path)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandExecute",
+      "version": "1.0.0",
+      "position": {"x": -200, "y": 840 }
+    },
+    {
+      "id": "qfxStartAudio",
+      "name": "Start (audio-only pipeline)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandStart",
+      "version": "1.0.0",
+      "position": {"x": 600,  "y": 480 }
+    },
+    {
+      "id": "qfxEnsureAacAudio",
+      "name": "Ensure aac/en/2ch audio (audio path)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandEnsureAudioStream",
+      "version": "1.0.0",
+      "position": {"x": 600,  "y": 600 },
+      "inputsDB": {"audioEncoder": "aac", "language": "en", "channels": "2", "enableBitrate": "true", "bitrate": "128k"}
+    },
+    {
+      "id": "qfxSetMkvAudio",
+      "name": "Set Container mkv (audio path)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandSetContainer",
+      "version": "1.0.0",
+      "position": {"x": 600,  "y": 720 },
+      "inputsDB": {"container": "mkv"}
+    },
+    {
+      "id": "qfxExecuteAudio",
+      "name": "Execute (audio path)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandExecute",
+      "version": "1.0.0",
+      "position": {"x": 600,  "y": 840 }
+    },
+    {
+      "id": "qfxReplace",
+      "name": "Replace Original File",
+      "sourceRepo": "Community",
+      "pluginName": "replaceOriginalFile",
+      "version": "1.0.0",
+      "position": {"x": 200,  "y": 960 }
+    }
+  ],
+  "flowEdges": [
+    {"id": "e01", "source": "qfxInputFile",    "sourceHandle": "1", "target": "qfxCheckVc1",       "targetHandle": null},
+    {"id": "e02", "source": "qfxCheckVc1",     "sourceHandle": "1", "target": "qfxStartVideo",     "targetHandle": null},
+    {"id": "e03", "source": "qfxCheckVc1",     "sourceHandle": "2", "target": "qfxCheckMpeg2",     "targetHandle": null},
+    {"id": "e04", "source": "qfxCheckMpeg2",   "sourceHandle": "1", "target": "qfxStartVideo",     "targetHandle": null},
+    {"id": "e05", "source": "qfxCheckMpeg2",   "sourceHandle": "2", "target": "qfxCheckAac",       "targetHandle": null},
+    {"id": "e06", "source": "qfxCheckAac",     "sourceHandle": "1", "target": "qfxReplace",        "targetHandle": null},
+    {"id": "e07", "source": "qfxCheckAac",     "sourceHandle": "2", "target": "qfxStartAudio",     "targetHandle": null},
+    {"id": "e08", "source": "qfxStartVideo",   "sourceHandle": "1", "target": "qfxSetH264",        "targetHandle": null},
+    {"id": "e09", "source": "qfxSetH264",      "sourceHandle": "1", "target": "qfxEnsureAacVideo", "targetHandle": null},
+    {"id": "e10", "source": "qfxEnsureAacVideo","sourceHandle":"1", "target": "qfxSetMkvVideo",    "targetHandle": null},
+    {"id": "e11", "source": "qfxSetMkvVideo",  "sourceHandle": "1", "target": "qfxExecuteVideo",   "targetHandle": null},
+    {"id": "e12", "source": "qfxExecuteVideo", "sourceHandle": "1", "target": "qfxReplace",        "targetHandle": null},
+    {"id": "e13", "source": "qfxStartAudio",   "sourceHandle": "1", "target": "qfxEnsureAacAudio", "targetHandle": null},
+    {"id": "e14", "source": "qfxEnsureAacAudio","sourceHandle":"1", "target": "qfxSetMkvAudio",    "targetHandle": null},
+    {"id": "e15", "source": "qfxSetMkvAudio",  "sourceHandle": "1", "target": "qfxExecuteAudio",   "targetHandle": null},
+    {"id": "e16", "source": "qfxExecuteAudio", "sourceHandle": "1", "target": "qfxReplace",        "targetHandle": null}
+  ]
+}
