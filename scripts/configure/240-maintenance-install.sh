@@ -117,8 +117,14 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-stale-log-watchdog.timer \
     scripts/maint/systemd/manitoba-maint-canary-kometa-deploy-drift.service \
     scripts/maint/systemd/manitoba-maint-canary-kometa-deploy-drift.timer \
+    scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.service \
+    scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.timer \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.service \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.timer \
+    scripts/maint/systemd/manitoba-maint-arr-audit.service \
+    scripts/maint/systemd/manitoba-maint-arr-audit.timer \
+    scripts/maint/arr-audit.py \
+    scripts/maint/arr-audit-run.sh \
     scripts/maint/app-upgrade-all.sh \
     scripts/ops/heartbeat-maint-webhook.sh \
     scripts/lib/ssh.sh \
@@ -131,6 +137,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/qbit-stall.sh \
     scripts/canaries/stale-log-watchdog.sh \
     scripts/canaries/vlogs-stall.sh \
+    scripts/canaries/prowlarr-indexer-health.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
@@ -146,6 +153,10 @@ cp -f "$STG"/scripts/maint/manitoba-maint        ~/scripts/maint/manitoba-maint
 chmod +x ~/scripts/maint/manitoba-maint
 cp -f "$STG"/scripts/maint/app-upgrade-all.sh ~/scripts/maint/app-upgrade-all.sh
 chmod +x ~/scripts/maint/app-upgrade-all.sh
+cp -f "$STG"/scripts/maint/arr-audit.py       ~/scripts/maint/arr-audit.py
+chmod +x ~/scripts/maint/arr-audit.py
+cp -f "$STG"/scripts/maint/arr-audit-run.sh   ~/scripts/maint/arr-audit-run.sh
+chmod +x ~/scripts/maint/arr-audit-run.sh
 # Remove the retired Playwright clicker if a prior install put it in place.
 rm -f ~/scripts/maint/cp_upgrade_clicker.py
 cp -rf  "$STG"/scripts/maint/lib                  ~/scripts/maint/
@@ -292,8 +303,12 @@ for unit in \
     manitoba-maint-canary-stale-log-watchdog.timer \
     manitoba-maint-canary-kometa-deploy-drift.service \
     manitoba-maint-canary-kometa-deploy-drift.timer \
+    manitoba-maint-canary-prowlarr-indexer-health.service \
+    manitoba-maint-canary-prowlarr-indexer-health.timer \
     manitoba-maint-cp-upgrade.service \
-    manitoba-maint-cp-upgrade.timer; do
+    manitoba-maint-cp-upgrade.timer \
+    manitoba-maint-arr-audit.service \
+    manitoba-maint-arr-audit.timer; do
   cp -f ~/scripts/maint/systemd/$unit ~/.config/systemd/user/$unit
 done
 systemctl --user daemon-reload
@@ -321,11 +336,18 @@ systemctl --user enable --now manitoba-maint-canary-kometa-libraries.timer
 systemctl --user enable --now manitoba-maint-canary-stale-log-watchdog.timer
 # kometa deploy-drift: install-script vs deployed config consistency (daily 04:30).
 systemctl --user enable --now manitoba-maint-canary-kometa-deploy-drift.timer
+# prowlarr-indexer-health: 429-cascade and chronic-RSS-stale detector.
+# Detect-only — never disables an indexer or restarts FlareSolverr.
+systemctl --user enable --now manitoba-maint-canary-prowlarr-indexer-health.timer
 # UCC `app-<name> upgrade` sweep — Mon 11:30 UTC (30 min into the window).
 # --now activates the timer itself (schedules its next OnCalendar fire); it
 # does NOT trigger an immediate service run. Without --now the timer stays
 # inactive until reboot — which is what bit us on 2026-05-11.
 systemctl --user enable --now manitoba-maint-cp-upgrade.timer
+# Weekly *arr stack audit — Sun 04:00 UTC. Read-only; writes markdown
+# reports to ~/.opt/maint/audit-reports/arr-audit-YYYY-MM-DD.md (90d
+# retention). Runs in loopback mode (no nginx hop).
+systemctl --user enable --now manitoba-maint-arr-audit.timer
 # Restart long-running services so they pick up code/manifest changes
 # (enable --now doesn't restart an already-running unit). Window timers
 # don't need a restart — next fire uses the latest code.
@@ -440,7 +462,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime deletion mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift; do
+for canary in movie anime deletion mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
@@ -448,6 +470,14 @@ for canary in movie anime deletion mobile-ux vlogs-stall qbit-stall kometa-libra
     gate "canary-timer-${canary}" fail "timer not in systemctl list-timers"
   fi
 done
+
+# Smoke 13: weekly arr-audit timer scheduled
+AAT=$(sshm "systemctl --user list-timers manitoba-maint-arr-audit.timer --no-pager 2>/dev/null | grep -c manitoba-maint-arr-audit.timer" </dev/null 2>/dev/null)
+if [ "${AAT:-0}" -ge 1 ]; then
+  gate "arr-audit-timer-scheduled" pass
+else
+  gate "arr-audit-timer-scheduled" fail "weekly arr-audit timer not in systemctl list-timers"
+fi
 
 echo
 TOTAL=$((PASS + FAIL))
