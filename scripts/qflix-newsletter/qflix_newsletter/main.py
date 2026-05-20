@@ -69,6 +69,7 @@ def run(
         ai_picks=ai_picks,
         library_stats=library_stats,
         public_host=cfg.public_host,
+        kuma_public_host=cfg.kuma_public_host,
     )
     html = render_html(ctx)
 
