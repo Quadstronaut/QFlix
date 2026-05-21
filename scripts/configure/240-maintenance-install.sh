@@ -83,7 +83,6 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
 # uses different uid/gid than the local workstation.
 ( cd "$REPO_ROOT" && tar -cf - \
     scripts/maint/manitoba-maint \
-    scripts/maint/lib/__init__.py \
     scripts/maint/lib/manifest.py \
     scripts/maint/lib/state.py \
     scripts/maint/lib/notify.py \
@@ -172,6 +171,13 @@ cp -f "$STG"/scripts/maint/flaresolverr-canary.py ~/scripts/maint/flaresolverr-c
 chmod +x ~/scripts/maint/flaresolverr-canary.py
 # Remove the retired Playwright clicker if a prior install put it in place.
 rm -f ~/scripts/maint/cp_upgrade_clicker.py
+# Remove maint/lib/__init__.py if a prior install put it in place. The 2026-
+# 05-12 namespace-package fix (commit 1242706) requires it absent so the
+# `lib.X` import root can simultaneously resolve scripts/maint/lib AND
+# scripts/mcp/lib. A re-introduction on 2026-05-20 (A6 install repair) broke
+# `from lib.qbit_client import` in collect.py — undo on every install so
+# stale boxes self-heal.
+rm -f ~/scripts/maint/lib/__init__.py
 cp -rf  "$STG"/scripts/maint/lib                  ~/scripts/maint/
 cp -rf  "$STG"/scripts/maint/systemd              ~/scripts/maint/
 cp -f   "$STG"/scripts/ops/heartbeat-maint-webhook.sh ~/scripts/ops/
