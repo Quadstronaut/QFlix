@@ -307,11 +307,22 @@ if [ -n "$TD_PORT" ]; then
   else
     record "tdarr-quiet-hours-armed" fail "expected 2 timers, found ${TD_QH:-0}"
   fi
+  # worker1.js cleanup-handler null-guard patch — without this, Tdarr 2.17.01
+  # crashes the entire node on every job completion (TypeError: worker2[T(...)]
+  # is not a function inside the Exit handler).  Patch marker is injected by
+  # 50-tdarr-install.sh; absence means a fresh unzip needs re-patching.
+  TD_PATCH=$(sshm "grep -c QFLIX-WORKER2-EXIT-NULLGUARD ~/.apps/tdarr/Tdarr_Node/srcug/workers/worker1.js 2>/dev/null" 2>/dev/null)
+  if [ "${TD_PATCH:-0}" -ge 1 ]; then
+    record "tdarr-worker-patch" pass "worker1.js exit-handler null-guard applied"
+  else
+    record "tdarr-worker-patch" fail "patch missing — re-run 50-tdarr-install.sh"
+  fi
 else
   record "tdarr-up" skip "no server_port"
   record "tdarr-node-registered" skip "no server_port"
   record "tdarr-flow-engaged" skip "no server_port"
   record "tdarr-quiet-hours-armed" skip "no server_port"
+  record "tdarr-worker-patch" skip "no server_port"
 fi
 
 # 13j. Kometa timer scheduled
