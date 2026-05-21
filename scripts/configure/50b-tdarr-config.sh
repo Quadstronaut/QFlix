@@ -17,15 +17,20 @@ source "$HERE/../lib/log.sh"
 
 FLOW_JSON_LOCAL="$HERE/tdarr-flows/qflix-direct-play-fix.json"
 FLOW_JSON_REMOTE='~/.apps/tdarr/configs/qflix-direct-play-fix.json'
+LIB_DEFAULTS_LOCAL="$HERE/tdarr-flows/library-defaults.json"
+LIB_DEFAULTS_REMOTE='~/.apps/tdarr/configs/library-defaults.json'
 
-if [ ! -f "$FLOW_JSON_LOCAL" ]; then
-  echo "FATAL: missing $FLOW_JSON_LOCAL" >&2
-  exit 1
-fi
+for f in "$FLOW_JSON_LOCAL" "$LIB_DEFAULTS_LOCAL"; do
+  if [ ! -f "$f" ]; then
+    echo "FATAL: missing $f" >&2
+    exit 1
+  fi
+done
 
-log_info "Uploading flow sidecar -> $FLOW_JSON_REMOTE"
+log_info "Uploading flow + library defaults sidecars -> ~/.apps/tdarr/configs/"
 sshm 'mkdir -p ~/.apps/tdarr/configs'
 scpm_to "$FLOW_JSON_LOCAL" "$FLOW_JSON_REMOTE"
+scpm_to "$LIB_DEFAULTS_LOCAL" "$LIB_DEFAULTS_REMOTE"
 
 log_info "Running 50b-tdarr-config.py on seedbox"
 sshm 'python3 -' < "$HERE/50b-tdarr-config.py"

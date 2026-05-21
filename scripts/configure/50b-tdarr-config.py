@@ -133,29 +133,54 @@ def get_libraries() -> list:
     return data
 
 
+def _load_tdarr_library_defaults() -> dict:
+    """Load Tdarr's own libraryDefaults dict from the sidecar JSON. Without
+    these ~49 fields, Tdarr's file scanner crashes silently with
+    `Cannot set properties of undefined (setting 'storeID')` and the library
+    is unscannable. The JSON is dumped from the live Tdarr install via:
+        cd ~/.apps/tdarr/Tdarr_Server && node -e \\
+          'const d=require("./srcug/commonModules/jobs/libraryDefaults.js"); \\
+           console.log(JSON.stringify(d.default,null,2))'
+    Refresh when bumping Tdarr versions (currently pinned to 2.17.01)."""
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__))
+                     if "__file__" in globals() else ".",
+                     "tdarr-flows", "library-defaults.json"),
+        f"{HOME}/.apps/tdarr/configs/library-defaults.json",
+        "tdarr-flows/library-defaults.json",
+    ]
+    for p in candidates:
+        if p and os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+    raise SystemExit(
+        "FATAL: tdarr library-defaults.json not found. Tried: "
+        + ", ".join(candidates)
+    )
+
+
 def add_library(spec: dict) -> bool:
-    """Insert a minimal library record via mode=insert + obj. Tdarr
-    generates the _id server-side and fills in defaults on read."""
+    """Insert a library record built from Tdarr's own libraryDefaults dict,
+    overlaid with QFlix-specific customizations (name, folder, flow attach,
+    processLibrary gate). The full-default approach replaces the earlier
+    skeleton record that crashed Tdarr's file scanner — see commit history
+    on this file for the 2026-05-21 incident notes."""
     if not os.path.isdir(spec["folder"]):
         print(f"[skip] '{spec['name']}': folder missing: {spec['folder']}",
               file=sys.stderr)
         return False
-    record = {
-        "name": spec["name"],
-        "folder": spec["folder"],
-        "folderToProcess": spec["folder"],
-        "useFolderToProcess": False,
-        "scheduleEnabled": False,
-        "deleteFromArr": False,
-        "expanded": True,
-        "copyMode": False,
-        "priority": 0,
-        **LIBRARY_DEFAULTS,
-    }
+    record = dict(_load_tdarr_library_defaults())
+    record["name"] = spec["name"]
+    record["folder"] = spec["folder"]
+    record["folderToProcess"] = spec["folder"]
+    record["_id"] = _short_id()
+    record["scanOnStart"] = True
+    record["folderWatching"] = True
+    record["useFsEvents"] = False
     code, resp = _cruddb("LibrarySettingsJSONDB", "insert", obj=record)
     ok = code == 200
     if ok:
-        print(f"[create] '{spec['name']}' → {spec['folder']}")
+        print(f"[create] '{spec['name']}' → {spec['folder']} (id={record['_id']}, fields={len(record)})")
     else:
         print(f"[fail] '{spec['name']}': HTTP {code}: {str(resp)[:200]}",
               file=sys.stderr)
@@ -212,6 +237,30 @@ def ensure_node_worker_limits() -> bool:
               f"healthcheck={NODE_WORKER_LIMITS['healthcheckcpu']}")
         changed = True
     return changed
+
+
+def heal_skeleton_libraries() -> int:
+    """Detect any LibrarySettingsJSONDB records created via the pre-2026-05-21
+    skeleton-insert path (fewer than 30 fields — the scanner needs ~49). For
+    each: delete the file from disk, then re-create through add_library().
+    This is a one-shot upgrade that idempotently no-ops on healthy installs."""
+    import glob
+    db_dir = f"{HOME}/.apps/tdarr/server/Tdarr/DB2/LibrarySettingsJSONDB"
+    healed = 0
+    for path in glob.glob(f"{db_dir}/*.json"):
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+        name = doc.get("name", "")
+        if name not in REAL_LIBRARY_NAMES:
+            continue
+        if len(doc) >= 30:
+            continue
+        os.remove(path)
+        print(f"[heal] '{name}' skeleton record ({len(doc)} fields) removed; will recreate")
+        spec = next((s for s in LIBRARIES if s["name"] == name), None)
+        if spec and add_library(spec):
+            healed += 1
+    return healed
 
 
 def ensure_libraries() -> int:
@@ -403,9 +452,10 @@ def patch_server_config() -> bool:
 
 def main() -> int:
     print("=== Tdarr config (libraries + workers + webUIPort + flow) ===\n")
+    orphans_purged = purge_orphan_libraries()
+    libs_healed = heal_skeleton_libraries()
     libs_added = ensure_libraries()
     libs_patched = ensure_library_defaults()
-    orphans_purged = purge_orphan_libraries()
     workers_changed = ensure_worker_limits()
     node_changed = ensure_node_worker_limits()
     config_changed = patch_server_config()
@@ -413,9 +463,10 @@ def main() -> int:
     libs_attached = attach_flow_to_libraries()
     libs_locked = set_non_destructive_mode()
     print()
+    print(f"Orphan libraries purged: {orphans_purged}")
+    print(f"Skeleton libraries healed (re-created with full defaults): {libs_healed}")
     print(f"Libraries added: {libs_added}")
     print(f"Library defaults patched: {libs_patched}")
-    print(f"Orphan libraries purged: {orphans_purged}")
     print(f"Global worker limits changed: {workers_changed}")
     print(f"Node worker limits changed: {node_changed}")
     print(f"webUIPort changed: {config_changed}")
