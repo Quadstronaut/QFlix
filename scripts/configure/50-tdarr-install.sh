@@ -68,6 +68,36 @@ for asset in Tdarr_Server Tdarr_Node; do
   fi
 done
 ls -la Tdarr_Server/Tdarr_Server Tdarr_Node/Tdarr_Node
+
+# ── QFlix worker1.js patch: null-guard the worker2 cleanup call in the Exit
+# handler.  Tdarr 2.17.01 ships a minified worker1.js that calls
+# `worker2[T(0x289)]()` after an Exit message arrives.  When worker2 has
+# already disconnected (which is common because the child sends Exit on its
+# way out), the property lookup returns undefined and the cleanup call
+# crashes the WHOLE node with `TypeError: worker2[T(...)] is not a function`,
+# leaving staged items orphaned and forcing the node to respawn.  The patch
+# wraps the call in a typeof guard + try/catch.  Idempotent via marker.
+python3 <<'PY'
+import os, shutil, time
+SRC = os.path.expanduser('~/.apps/tdarr/Tdarr_Node/srcug/workers/worker1.js')
+MARK = '/*QFLIX-WORKER2-EXIT-NULLGUARD*/'
+NEEDLE = "sendWorker2(g),worker2[T(0x289)](),"
+with open(SRC) as f:
+    txt = f.read()
+if MARK in txt:
+    raise SystemExit(0)
+if NEEDLE not in txt:
+    # Upstream changed the obfuscation; bail loudly so the operator notices.
+    raise SystemExit("QFlix patch needle missing — Tdarr_Node/worker1.js layout changed")
+repl = ("sendWorker2(g),"
+        + "(" + MARK + "function(){try{var k=T(0x289);"
+        + "if(worker2&&typeof worker2[k]==='function')worker2[k]()"
+        + "}catch(_){}}()),")
+shutil.copy2(SRC, SRC + '.qflix-bak-' + str(int(time.time())))
+with open(SRC, 'w') as f:
+    f.write(txt.replace(NEEDLE, repl))
+print("QFlix worker1.js null-guard applied")
+PY
 INSTSCRIPT
 
 # ── Step 4: server config ──────────────────────────────────────────────────
