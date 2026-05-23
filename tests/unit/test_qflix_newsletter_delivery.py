@@ -26,6 +26,7 @@ def _cfg() -> Config:
         listmonk_list_id=7,
         listmonk_template_id=42,
         public_host="seedbox.example.com",
+        kuma_public_host="kuma.seedbox.example.com",
         poster_cache_dir=Path("/tmp/poster-cache"),
     )
 

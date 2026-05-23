@@ -1,0 +1,26 @@
+name: tests
+
+# Runs the pure-Python unit suite on every PR and every push to master.
+# tests/run.sh is self-contained: it builds tests/.venv, installs
+# pytest/pyyaml/requests/jinja2, and runs tests/unit/ (no SSH, no secrets).
+# Gate this job in branch protection (required_status_checks: "pytest") so a
+# red suite blocks merge — the gap that let 17 failing tests sit on master.
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: bash tests/run.sh -q
