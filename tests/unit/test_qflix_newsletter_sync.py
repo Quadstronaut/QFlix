@@ -26,6 +26,7 @@ def _config(tmp_path: Path) -> Config:
         listmonk_api_user="u", listmonk_api_token="tok",
         listmonk_list_id=1, listmonk_template_id=None,
         public_host="seedbox.example.com",
+        kuma_public_host="kuma.seedbox.example.com",
         poster_cache_dir=tmp_path / "poster-cache",
     )
 
@@ -43,7 +44,7 @@ def test_render_preview_includes_sample_pick_and_no_template_slot():
     `{{ template "content" . }}` slot is added later by upsert_template,
     not by render_preview itself. A future refactor that moves the slot
     injection into render_preview would silently double it."""
-    out = sync.render_preview("weekly.html.j2", "example.com")
+    out = sync.render_preview("weekly.html.j2", "example.com", "kuma.example.com")
     assert "Suzume" in out  # sample pick title
     assert "{{ template" not in out
     assert "Sample Movie A" in out

@@ -517,7 +517,7 @@
         <span class="pill pill-plex"><span class="dot"></span>Plex-primary</span>
         <span class="pill pill-good"><span class="dot"></span>Self-healing</span>
         <span class="pill pill-accent"><span class="dot"></span>Single manifest</span>
-        <span class="pill pill-gold"><span class="dot"></span>Mon 04&ndash;08 UTC window</span>
+        <span class="pill pill-gold"><span class="dot"></span>Mon 11&ndash;15 UTC window</span>
         <span class="pill pill-warn"><span class="dot"></span>Discord-only alerts</span>
       </div>
     </div>
@@ -698,7 +698,7 @@
       <article class="card user" id="q-newsletter" data-tags="newsletter listmonk qflix-newsletter weekly digest email subscribe">
         <h3>What is the Monday newsletter and how do I subscribe? <a class="qhash" href="#q-newsletter">#</a></h3>
         <p>
-          Every Monday at 08:00 UTC (after the maintenance window closes) a Python job (<code>qflix-newsletter</code>) renders a digest of what's new in Plex, what's on deck for the next two weeks, and an AI section that says &ldquo;if you liked X, try Y&rdquo; &mdash; and emails it via Listmonk.
+          Every Monday at 08:00 America/Phoenix (15:00 UTC, right after the maintenance window closes) a Python job (<code>qflix-newsletter</code>) renders a digest of what's new in Plex, what's on deck for the next two weeks, and an AI section that says &ldquo;if you liked X, try Y&rdquo; &mdash; and emails it via Listmonk.
         </p>
         <p>
           Subscribers are pulled from two places automatically: <strong>your Plex friends list</strong> and <strong>Seerr users</strong>. If you're in either, you're already subscribed. Unsubscribe link at the bottom of every email &mdash; that's standard Listmonk and works instantly.
@@ -806,7 +806,7 @@ maintainerr 42007</code></pre>
       <article class="card tut" id="q-out-of-window" data-tags="upgradinatorr newsletter monday sunday timer out-of-window">
         <h3>Why do upgradinatorr and the newsletter fire outside the window? <a class="qhash" href="#q-out-of-window">#</a></h3>
         <ul>
-          <li><strong>upgradinatorr.timer</strong> fires <strong>Sun 06:04</strong> &mdash; pre-window stale-grab re-search, so by Monday the *arr stack is already chasing fresh releases (good for the post-window cleanup pass).</li>
+          <li><strong>upgradinatorr.timer</strong> fires <strong>Sun 06:00</strong> &mdash; pre-window stale-grab re-search, so by Monday the *arr stack is already chasing fresh releases (good for the post-window cleanup pass).</li>
           <li><strong>qflix-newsletter.timer</strong> fires <strong>Mon 08:00</strong> &mdash; post-window so the digest reflects whatever the window just upgraded.</li>
         </ul>
       </article>
@@ -882,7 +882,7 @@ maintainerr 42007</code></pre>
           <tbody>
             <tr><td><code>canary-movie</code></td><td>hourly</td><td>Seerr &rarr; Radarr &rarr; import &rarr; Plex movie path works end-to-end</td></tr>
             <tr><td><code>canary-anime</code></td><td>hourly</td><td>Seerr &rarr; Sonarr2 &rarr; import &rarr; Plex anime path works (the <em>second</em> server matters)</td></tr>
-            <tr><td><code>canary-deletion</code></td><td>Mon 04:30</td><td>Maintainerr's 60-day rule fires and at least one file actually got deleted that week</td></tr>
+            <tr><td><code>canary-deletion</code></td><td>daily 04:30</td><td>Maintainerr's 60-day rule fires and at least one file actually got deleted that week</td></tr>
             <tr><td><code>canary-mobile-ux</code></td><td>every 15 min</td><td>Public Homarr board still renders + the <code>/</code> &rarr; board redirect still works</td></tr>
           </tbody>
         </table>
@@ -968,9 +968,9 @@ maintainerr 42007</code></pre>
         <table class="tbl">
           <thead><tr><th>Tool</th><th>Fires</th><th>What it changes</th></tr></thead>
           <tbody>
-            <tr><td><strong>Recyclarr</strong></td><td>Sun 04:51 weekly</td><td>Pulls TRaSH-Guides quality profile JSON &rarr; applies to all 4 *arr servers</td></tr>
-            <tr><td><strong>Buildarr</strong></td><td>Mon 04:30 in-window</td><td>Declarative <code>buildarr.yml</code> &rarr; reconciles every other *arr setting (indexer list, download client, notifications, custom formats)</td></tr>
-            <tr><td><strong>Kometa</strong></td><td>Mon 03:37 weekly</td><td>Plex collections, posters, smart playlists (Plex Meta Manager)</td></tr>
+            <tr><td><strong>Recyclarr</strong></td><td>Sun 04:30 weekly</td><td>Pulls TRaSH-Guides quality profile JSON &rarr; applies to all 4 *arr servers</td></tr>
+            <tr><td><strong>Buildarr</strong></td><td>daily 04:30 in-window</td><td>Declarative <code>buildarr.yml</code> &rarr; reconciles every other *arr setting (indexer list, download client, notifications, custom formats)</td></tr>
+            <tr><td><strong>Kometa</strong></td><td>daily 03:30</td><td>Plex collections, posters, smart playlists (Plex Meta Manager)</td></tr>
           </tbody>
         </table>
         <p>If a quality profile mysteriously reverts, it's Recyclarr or Buildarr undoing your manual change at the next window. Edit the YAML, not the *arr UI.</p>

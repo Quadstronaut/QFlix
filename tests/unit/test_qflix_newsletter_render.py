@@ -138,6 +138,7 @@ def test_build_email_context_smoke():
         ai_picks=ai,
         library_stats={"total_items": 5000, "sections": [{"name": "Movies", "count": 3000}]},
         public_host="seedbox.example.com",
+        kuma_public_host="kuma.seedbox.example.com",
         now=_dt.datetime(2026, 5, 10, 12, 0, 0),
     )
 
@@ -159,6 +160,7 @@ def test_render_html_produces_a_full_email():
         ai_picks=[],
         library_stats={"total_items": 1, "sections": []},
         public_host="seedbox.example.com",
+        kuma_public_host="kuma.seedbox.example.com",
         now=_dt.datetime(2026, 5, 10),
     )
     html = render_html(ctx)
@@ -177,6 +179,7 @@ def test_render_handles_empty_inputs_without_crashing():
         ai_picks=[],
         library_stats={"total_items": 0, "sections": []},
         public_host="seedbox.example.com",
+        kuma_public_host="kuma.seedbox.example.com",
     )
     html = render_html(ctx)
     assert "QFlix" in html

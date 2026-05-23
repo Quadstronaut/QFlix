@@ -7,9 +7,9 @@ repo manifest. Where the manifest, docs, and live seedbox disagree, the
 live seedbox wins and this file records both.
 
 **Counts (live as of 2026-05-16 after post-release-0.0.1 verification):**
-- **33 apps in `manifest/apps.yaml`** + 9 canaries (movie, anime, deletion, mobile-ux, vlogs-stall, qbit-stall, kometa-libraries, stale-log-watchdog, kometa-deploy-drift).
-- **47 Kuma monitors** total: **43 manitoba** (33 manifest-app monitors + 9 canary monitors + 1 `Manitoba Pusher` daemon-self-heartbeat) + 4 external (`Quadstronix`, `Quadstronix Node 1`, `Quadstronix Node 2`, `QFlix Collect (workstation)`). **43/43 manitoba UP.** Every app in the manifest plus all canaries reports continuously.
-- All 43 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
+- **33 apps in `manifest/apps.yaml`** + 12 canaries (movie, anime, deletion, mobile-ux, vlogs-stall, qbit-stall, kometa-libraries, stale-log-watchdog, kometa-deploy-drift, prowlarr-indexer-health, hardlink-integrity, plex-transcoder).
+- **50 Kuma monitors** total: **46 manitoba** (33 manifest-app monitors + 12 canary monitors + 1 `Manitoba Pusher` daemon-self-heartbeat) + 4 external (`Quadstronix`, `Quadstronix Node 1`, `Quadstronix Node 2`, `QFlix Collect (workstation)`). **46/46 manitoba UP.** Every app in the manifest plus all canaries reports continuously.
+- All 46 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
 - Notification channel: single Discord webhook + operator @ping (user-id read from `secrets/discord-operator.id`) on `error` / `critical` levels via `scripts/maint/lib/notify.py`.
 - Last full smoke: **51 pass / 0 fail / 0 skip** (2026-05-20; prior `tdarr.server_port` secret gap closed — both `tdarr-up` and `tdarr-node-registered` now pass).
 
@@ -23,7 +23,7 @@ live seedbox wins and this file records both.
 
 | Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| sonarr | ucc | yes | TV main library *arr | NO | Internal | tunnel `http://localhost:17026/sonarr/` · public `https://quadstronaut.seedbox.example.com/sonarr/` (htpasswd) | yes (Mon 04-08) | yes (pusher) | 2 |  |
+| sonarr | ucc | yes | TV main library *arr | NO | Internal | tunnel `http://localhost:17026/sonarr/` · public `https://quadstronaut.seedbox.example.com/sonarr/` (htpasswd) | yes (Mon 11-15) | yes (pusher) | 2 |  |
 | sonarr2 | ucc | yes | TV anime *arr | NO | Internal | tunnel `http://localhost:17003/sonarr2/` · public same-base (htpasswd) | yes | yes (pusher) | 2 |  |
 | radarr | ucc | yes | Movies main library *arr | NO | Internal | tunnel `http://localhost:17027/radarr/` · public (htpasswd) | yes | yes (pusher) | 2 |  |
 | radarr2 | ucc | yes | Movies anime *arr | NO | Internal | tunnel `http://localhost:17008/radarr2/` · public (htpasswd) | yes | yes (pusher) | 2 |  |
@@ -32,17 +32,17 @@ live seedbox wins and this file records both.
 | bazarr2 | systemd-user | yes (bazarr2.service, bare-Python under `~/.apps/bazarr2/`) | Subtitles (anime TV + anime movies) | NO | Internal | tunnel `http://localhost:17032/bazarr2/` (loopback only, no nginx) | yes (bazarr2-sync.timer pins to bazarr-1 version) | yes (pusher) | 2 | Ultra.cc has no `app-bazarr2` slot — bare-Python install on python3.11 venv. Paired with Sonarr2 + Radarr2 via loopback ports (no htpasswd path). `bazarr2-sync.service` (hourly oneshot) keeps the version aligned with bazarr-1 by fetching the matching upstream tag and re-applying the waitress `threads=100→4` patch. Closed deferral: `docs/anime-subs-deferred.md`. |
 | qbittorrent | ucc | yes (qbittorrent.service v5.0.3) | Download client | NO | Internal (operator-public via /qbittorrent/) | tunnel `http://localhost:17041/` · public `https://…/qbittorrent/` (htpasswd + qBit auth) | yes | yes (pusher) | 2 | No `~/.apps/qbittorrent/` dir — config at system level; manifest probes via http_root. |
 | plex | ucc | yes | Media server (canonical) | NO | Public | `https://quadstronaut.seedbox.example.com/web/` (Plex SSO) | yes | yes (pusher) | 2 |  |
-| seerr | ucc | yes (Docker container `seerr-quadstronaut`, v3.2.0) | User request portal + issue tracking | NO | Public — `https://quadstronaut.seedbox.example.com/seerr/` AND canonical `https://seerr-quadstronaut.seedbox.example.com/` | port 42011 (Docker) · loopback `http://127.0.0.1:42011/` | yes (Mon 04-08) | yes (pusher; manifest `kuma_monitor: "Seerr"`, health probes `/api/v1/status` with `seerr.key`) | 2 | Installed 2026-05-11 via `app-seerr install` v3.2.0; Jellyseerr stopped + purged → `~/.purged-2026-05-11/jellyseerr-install/`. API key in `~/secrets/seerr.key`. 4 *arr servers configured via API (Sonarr Cinema default + Sonarr Anime non-default + Radarr Cinema default + Radarr Anime non-default; idempotent script `scripts/configure/30-seerr-arrs.py`). `trustProxy: true` on `/api/v1/settings/network` for the nginx reverse proxy. **Anime auto-routing caveat:** per [docs.seerr.dev](https://docs.seerr.dev/using-seerr/settings/services) only `isDefault`/`is4k` are documented routing axes — no cross-server anime field exists. Users pick "Sonarr Anime" / "Radarr Anime" from the per-request server dropdown in the Seerr UI. Restart confirmed clean 2026-05-11 (`app-seerr restart` → 8s warmup → HTTP 200 both loopback + via nginx). |
+| seerr | ucc | yes (Docker container `seerr-quadstronaut`, v3.2.0) | User request portal + issue tracking | NO | Public — `https://quadstronaut.seedbox.example.com/seerr/` AND canonical `https://seerr-quadstronaut.seedbox.example.com/` | port 42011 (Docker) · loopback `http://127.0.0.1:42011/` | yes (Mon 11-15) | yes (pusher; manifest `kuma_monitor: "Seerr"`, health probes `/api/v1/status` with `seerr.key`) | 2 | Installed 2026-05-11 via `app-seerr install` v3.2.0; Jellyseerr stopped + purged → `~/.purged-2026-05-11/jellyseerr-install/`. API key in `~/secrets/seerr.key`. 4 *arr servers configured via API (Sonarr Cinema default + Sonarr Anime non-default + Radarr Cinema default + Radarr Anime non-default; idempotent script `scripts/configure/30-seerr-arrs.py`). `trustProxy: true` on `/api/v1/settings/network` for the nginx reverse proxy. **Anime auto-routing caveat:** per [docs.seerr.dev](https://docs.seerr.dev/using-seerr/settings/services) only `isDefault`/`is4k` are documented routing axes — no cross-server anime field exists. Users pick "Sonarr Anime" / "Radarr Anime" from the per-request server dropdown in the Seerr UI. Restart confirmed clean 2026-05-11 (`app-seerr restart` → 8s warmup → HTTP 200 both loopback + via nginx). |
 | tautulli | ucc | yes | Plex stats (read-only public) | NO | Public | `https://…/tautulli/` (auth_basic off confirmed) · tunnel `localhost:17014` | yes | yes (pusher) | 2 | Second channel wired 2026-05-11. `pms_url` pinned to `http://172.17.1.250:32400` + `pms_url_manual=1` (see `scripts/configure/50-tautulli-pms-url-fix.sh`): Tautulli's Docker container can't resolve `*.plex.direct`, which silently broke `get_metadata` API + WebSocket session enrichment for ~1 month. |
 | audiobookshelf | ucc | yes | Audiobook server | NO | Internal | tunnel via port `secrets/audiobookshelf.port` | yes | yes (pusher) | 2 |  |
 | kavita | ucc | yes | Manga / comics / ebook reader | NO | Internal | tunnel via port `secrets/kavita.port` | yes | yes (pusher) | 2 |  |
 | komga | ucc | yes | Comics server | NO | Internal | tunnel `localhost:<komga.port>/komga/` | yes | yes (pusher) | 2 |  |
 | calibre-web | ucc | yes | Ebook catalog | NO | Internal | tunnel via `secrets/calibre-web.port` | yes | yes (pusher) | 2 |  |
 | homarr | ucc | yes | Public landing board | NO | Public | `https://quadstronaut.seedbox.example.com/` (root) + `/board/private` htpasswd | yes | yes (pusher) | 2 |  |
-| flaresolverr | ucc | yes | Cloudflare-bypass for Prowlarr | NO | Internal | API-only `172.17.0.1:<flaresolverr.port>` | yes | yes (pusher) — no Kuma monitor by design | n/a | `kuma_monitor: null` in manifest. |
+| flaresolverr | ucc | yes | Cloudflare-bypass for Prowlarr | NO | Internal | API-only `172.17.0.1:<flaresolverr.port>` | yes | yes (pusher) | 2 | `kuma_monitor: "FlareSolverr"` — http_root probe with `hostname: 172.17.0.1` override (Docker-bridge bind). Monitor added 2026-05-11. |
 | maintainerr | ucc | yes | Library deletion rules (60-day) | NO | Internal | tunnel `http://localhost:42007/` · per-app subdomain `https://maintainerr-quadstronaut.seedbox.example.com/` (htpasswd) | yes | yes (pusher) | 2 | Prior session falsely claimed parked — corrected in commit 30b9e08. |
-| unpackerr | ucc (Docker `/app/unpackerr -c …`) | yes | Auto-extract archives post-import for the *arr stack | NO | n/a (no HTTP surface) | n/a | yes (Mon 04-08) | yes (pusher; `process_pattern` probe matches `/app/unpackerr`) | n/a (`kuma_monitor: null` — no probe kind for raw-process supervision yet) | Smoke #8 verifies the process is running. Added to manifest 2026-05-11. |
-| postgres | ucc | yes (PID supervised by UCC) | Database backend for Listmonk | NO | Internal | localhost:`secrets/postgres.port` | yes | implicit via Listmonk health (if Postgres dies, Listmonk `/health` goes red) | n/a (`kuma_monitor: null` — covered transitively) | Manifest `process_pattern: postgres: checkpointer`. Added to manifest 2026-05-11. |
+| unpackerr | ucc (Docker `/app/unpackerr -c …`) | yes | Auto-extract archives post-import for the *arr stack | NO | n/a (no HTTP surface) | n/a | yes (Mon 11-15) | yes (pusher; `process_pattern` probe matches `/app/unpackerr`) | 2 | `kuma_monitor: "Unpackerr"` — process_pattern probe. Smoke #8 verifies the process is running. Added to manifest 2026-05-11. |
+| postgres | ucc | yes (PID supervised by UCC) | Database backend for Listmonk | NO | Internal | localhost:`secrets/postgres.port` | yes | yes (pusher; `process_pattern` matches `postgres: checkpointer`) | 2 | `kuma_monitor: "Postgres"` — `process_pattern: postgres: checkpointer`. Added to manifest 2026-05-11. |
 
 ## B. Manifest — systemd-class apps
 
@@ -50,24 +50,24 @@ live seedbox wins and this file records both.
 |---|---|---|---|---|---|---|---|---|---|---|
 | listmonk.service | systemd | yes | Newsletter / mailing list manager | NO | Public archive + Internal admin | public `https://…/listmonk/campaign/<uuid>` · admin tunnel `localhost:42014` (canonical probe port) | yes | yes (heartbeat-listmonk cron + pusher) | 2 |  |
 | tdarr-server.service | systemd | yes | Transcoding orchestrator | NO | Internal | tunnel `http://localhost:42018/` | yes | yes (heartbeat-tdarr-server cron + pusher) | 2 | Pinned to v2.17.01 (GLIBC). |
-| tdarr-node.service | systemd | yes | Transcoding worker | NO | Internal | no UI | yes | yes (heartbeat-tdarr-node cron) | n/a (`kuma_monitor: null`) |  |
+| tdarr-node.service | systemd | yes | Transcoding worker | NO | Internal | no UI | yes | yes (heartbeat-tdarr-node cron + pusher) | 2 | `kuma_monitor: "Tdarr Node"` — systemd_only probe. Monitor added 2026-05-11. |
 
 ## C. Manifest — cron/timer-driven apps
 
 | Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| recyclarr.timer | cron | scheduled (Sun 04:51) | TRaSH-guide quality profile sync | NO | n/a | no UI | yes | n/a (oneshot) | 2 | Notif wires added 2026-05-11. |
+| recyclarr.timer | cron | scheduled (Sun 04:30) | TRaSH-guide quality profile sync | NO | n/a | no UI | yes | n/a (oneshot) | 2 | Notif wires added 2026-05-11. |
 | qflix-newsletter.timer | cron | scheduled (Mon 08:00) | Weekly Plex digest → Listmonk | NO | n/a | no UI | yes | n/a (oneshot) | 2 | Notif wires added 2026-05-11. Replaces Conjurr+Newsletterr. |
 | qflix-poster-cache-prune.timer | cron | scheduled (00:00 UTC daily) | Delete poster cache files older than 30 days | NO | n/a | no UI | yes | n/a (oneshot) | n/a (`kuma_monitor: null`) | User-systemd timer. Probed via `lib/health.py systemd_oneshot`. Paired with cache directory `~/www/images/newsletter/`. |
-| buildarr.timer | cron | scheduled (Mon 04:30) | Declarative *arr state converger | NO | n/a | no UI; log `~/.apps/buildarr/logs/buildarr.log` | yes | n/a (oneshot) | 2 | Notif wires added 2026-05-11. Patched to manage Sonarr v4 + Radarr v6 — 7 in-venv edits at `scripts/patches/`, idempotently re-applied by `scripts/configure/60-buildarr-patches.sh`. End-to-end working (`Result=success`, all 4 instances clean). Retire when upstream catches up. |
-| kometa.timer | cron | scheduled (Mon 03:37) | Plex metadata + collections | NO | n/a | no UI | yes | n/a (oneshot) | n/a (`kuma_monitor: null`) | Result=success last run. |
-| upgradinatorr.timer | cron | scheduled (Sun 06:04) | Re-search stale grabs across Sonarr/Sonarr2/Radarr/Radarr2 | NO | n/a | no UI | yes (outside maint window — pre-Monday) | n/a (oneshot) | 2 | Kuma push monitor #65 added 2026-05-11. Manifest class:cron. |
+| buildarr.timer | cron | scheduled (nightly 04:30) | Declarative *arr state converger | NO | n/a | no UI; log `~/.apps/buildarr/logs/buildarr.log` | yes | n/a (oneshot) | 2 | Notif wires added 2026-05-11. Patched to manage Sonarr v4 + Radarr v6 — 7 in-venv edits at `scripts/patches/`, idempotently re-applied by `scripts/configure/60-buildarr-patches.sh`. End-to-end working (`Result=success`, all 4 instances clean). Retire when upstream catches up. |
+| kometa.timer | cron | scheduled (daily 03:30) | Plex metadata + collections | NO | n/a | no UI | yes | n/a (oneshot) | 2 | `kuma_monitor: "Kometa"` — systemd_oneshot probe. Result=success last run. |
+| upgradinatorr.timer | cron | scheduled (Sun 06:00 ±30m jitter) | Re-search stale grabs across Sonarr/Sonarr2/Radarr/Radarr2 | NO | n/a | no UI | yes (outside maint window — pre-Monday) | n/a (oneshot) | 2 | Kuma push monitor added 2026-05-11. Manifest class:cron. |
 
 ## D. Manifest — library (no service)
 
 | Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| python-plexapi | library | n/a | venv used by canaries + qflix-newsletter | NO | n/a | n/a | yes (pip-upgrade in window) | n/a | n/a |  |
+| python-plexapi | library | n/a | venv used by canaries + qflix-newsletter | NO | n/a | n/a | yes (pip-upgrade in window) | n/a | 2 | `kuma_monitor: "PlexAPI"` — import_check probe on the venv. Monitor added 2026-05-11. |
 
 ## E. ~~DRIFT — installed but NOT in manifest~~ → RESOLVED 2026-05-11
 
@@ -97,7 +97,7 @@ All three prior drift entries (unpackerr, upgradinatorr, postgres) added to `man
 |---|---|---|---|---|---|---|---|---|---|---|
 | manitoba-maint-canary-movie.timer | systemd | scheduled (hourly) | Seerr → Radarr movie path canary | NO | n/a | n/a | n/a | n/a | **1** (Kuma) | 2026-05-11 evening: rewritten to drive a real Seerr `POST /api/v1/request` and poll `media.externalServiceId` — forces traversal of the Seerr-in-container → Radarr-in-container netns hop. Stage labels on failure (`seerr-up-fail` / `radarr-up-fail` / `seed-pick-fail` / `seerr-push-fail` / `arr-not-populated` / `verify-fail` / `cleanup-fail`) reach Kuma `msg=`. |
 | manitoba-maint-canary-anime.timer | systemd | scheduled (hourly) | Seerr → Sonarr2 anime path canary | NO | n/a | n/a | n/a | n/a | **1** | Same rewrite as movie canary, `mediaType=tv` + `seasons:[1]`. Picks lowest-id Sonarr2 series as seed (tvdb→tmdb resolved via Seerr search if Sonarr2's record is missing tmdbId). |
-| manitoba-maint-canary-deletion.timer | systemd | scheduled (Mon 04:30) | Maintainerr 60-day deletion-rule audit | NO | n/a | n/a | n/a | n/a | **1** |  |
+| manitoba-maint-canary-deletion.timer | systemd | scheduled (daily 04:30) | Maintainerr 60-day deletion-rule audit | NO | n/a | n/a | n/a | n/a | **1** |  |
 | manitoba-maint-canary-mobile-ux.timer | systemd | scheduled (every 15m) | Homarr public board reachability | NO | n/a | n/a | n/a | n/a | **1** |  |
 | scripts/canaries/{movie,anime,deletion,mobile-ux}.sh | script | invoked by services above | (see services) | NO | n/a | n/a | n/a | n/a | (via Kuma push) | README at `scripts/canaries/README.md` documents stage labels + exit-code contract for orchestrator (`manitoba-maint canary push <name>`). |
 

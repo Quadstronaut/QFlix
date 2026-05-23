@@ -9,9 +9,9 @@
 _One operator. One manifest. One maintenance window. Everything else is wires._
 
 <p>
-  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-49%2F49_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-51%2F51_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-33_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-43%2F43_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-46%2F46_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -40,9 +40,9 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 | Surface | Count | State |
 |---|---:|---|
 | Apps in manifest (`manifest/apps.yaml`) | **33** | 19 UCC · 5 systemd · 8 cron · 1 library |
-| End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **9** | qbit-stall · vlogs-stall · movie · anime · mobile-ux · deletion · plus 3 helpers |
-| Kuma push monitors (manitoba-owned) | **43** | 43/43 UP — every manifest app + all 9 canaries + the daemon's self-heartbeat report continuously |
-| Cron + systemd timers | **14+** | window-aware (Mon 04–08 UTC drain) |
+| End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **12** | movie · anime · deletion · mobile-ux · vlogs-stall · qbit-stall · kometa-libraries · kometa-deploy-drift · stale-log-watchdog · prowlarr-indexer-health · hardlink-integrity · plex-transcoder |
+| Kuma push monitors (manitoba-owned) | **46** | 46/46 UP — every manifest app + all 12 canaries + the daemon's self-heartbeat report continuously |
+| Cron + systemd timers | **14+** | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **440+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
 
@@ -65,7 +65,7 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 | 🟠 Subtitles | **Bazarr** + **Bazarr 2** (anime branch) | One per arr-pair — Bazarr is hard-capped at one Sonarr + one Radarr each, so the second anime instance is a bare-Python install pinned to Bazarr-1's version (`bazarr2-sync.timer`) |
 | 🟠 Retention | **Maintainerr** | 60-day "watched + nobody else cared" deletion engine |
 
-Surrounding cast (qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 4 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
+Surrounding cast (qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 12 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
 
 ---
 
@@ -95,7 +95,7 @@ flowchart LR
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 34 push monitors)]:::kuma
+  kuma[(Uptime Kuma<br/>isolated netns · 46 push monitors)]:::kuma
   discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex
@@ -160,10 +160,10 @@ flowchart TB
   del -->|pass 1| collDel[delete from Plex collection]
   collDel --> fileDel[delete file on disk]
 
-  R[Recyclarr<br/>weekly Sun 04:51]:::weekly --> trash[TRaSH-Guides → *arr quality profiles]
-  K[Kometa<br/>weekly Mon 03:37]:::weekly --> meta[Plex-meta-manager → collections + posters]
-  B[Buildarr<br/>nightly Mon 04:30]:::nightly --> yaml[~/.apps/buildarr/buildarr.yml<br/>declarative *arr reconcile]
-  U[Upgradinatorr<br/>weekly Sun 06:04]:::weekly --> stale[re-search 5+3+5+3 stale grabs]
+  R[Recyclarr<br/>weekly Sun 04:30]:::weekly --> trash[TRaSH-Guides → *arr quality profiles]
+  K[Kometa<br/>daily 03:30]:::weekly --> meta[Plex-meta-manager → collections + posters]
+  B[Buildarr<br/>nightly 04:30]:::nightly --> yaml[~/.apps/buildarr/buildarr.yml<br/>declarative *arr reconcile]
+  U[Upgradinatorr<br/>weekly Sun 06:00]:::weekly --> stale[re-search 5+3+5+3 stale grabs]
   PR[prune-text-libraries.sh<br/>nightly 04:00]:::nightly --> txt[ebook/audiobook/comic/manga<br/>>365d → delete + rescan]
 ```
 
@@ -186,12 +186,13 @@ flowchart LR
   recovery -->|lifecycle.start ≤3 attempts| status
   recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>34 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>46 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
   C3[Canary deletion · daily 04:30]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K
   C5[Canary qbit-stall · every 15min]:::probe -->|push| K
   C6[Canary vlogs-stall · every 15min]:::probe -->|push| K
+  C7[+ 6 more canaries<br/>kometa-libraries · kometa-deploy-drift<br/>stale-log-watchdog · prowlarr-indexer-health<br/>hardlink-integrity · plex-transcoder]:::probe -->|push| K
   push1 --> K
   K -->|status page| public[/HTTPS /status/manitoba/]
 ```
@@ -342,7 +343,7 @@ The pusher dispatches on `class` for both lifecycle ops and probe selection.
 ## Repo layout
 
 ```text
-manifest/apps.yaml           # 28 apps + 4 canaries — single source of truth
+manifest/apps.yaml           # 33 apps + 12 canaries — single source of truth
 versions.env                 # pinned versions (Tdarr only — pin policy lifted 2026-05-09)
 inventory.md                 # live snapshot of every artifact on the seedbox
 Tuesday.md                   # design doc — extending Mon window to systemd apps
@@ -363,10 +364,10 @@ scripts/
   local/                     # workstation daemons + MCP server
     qflix-collect.ps1        # hourly seedbox snapshot → B:\QFlix\data\
     install-qflix-collect.ps1
-    qflix-mcp/               # stdio MCP server (qflix_query_logs + 12 more tools)
+    qflix-mcp/               # stdio MCP server (qflix_query_logs + 13 more tools)
   mcp/                       # seedbox-side helpers invoked over SSH
     collect.py · logs.py · unstick.py · missing.py · plex.py
-  smoke-test.sh              # production smoke (~49 checks across the whole stack)
+  smoke-test.sh              # production smoke (~51 checks across the whole stack)
   smoke-test-plex.sh         # Plex-ecosystem-only smoke
   qflix-top.sh               # htop-style CPU/RAM viewer — your components vs other tenants
   canaries/                  # 9 end-to-end pipeline checks (bash)
@@ -388,7 +389,7 @@ scripts/
     systemd/                 # 8 services + 8 timers → ~/.config/systemd/user/
 
 secrets/                     # gitignored — per-secret one-line files
-tests/                       # 236 pytest tests (unit/) — pure-Python, no SSH
+tests/                       # 440+ pytest tests (unit/) — pure-Python, no SSH
 ```
 
 ---
@@ -402,7 +403,7 @@ QFlix runs unattended most of the week. The things worth knowing if you're readi
 - **Maintenance window — Mon 11:00–15:00 UTC.** The only time the stack is allowed to break itself. Recyclarr syncs TRaSH-Guides, Kometa rebuilds collections, Buildarr reconciles *arr config, and `app-upgrade-all.sh` runs `app-<name> upgrade` for every UCC-managed app sequentially (replaces the prior Playwright clicker on cp.ultra.cc as of 2026-05-13). Auto-heal is paused for the duration so restarts don't race the upgrades. → [FAQ §8](https://quadstronaut.seedbox.example.com/faq/#sec-window)
 - **Self-heal loop.** Outside the window, a pusher probes every app every 60 s and pushes status to Uptime Kuma. After 3 consecutive failures it tries up to 3 restarts (10 s · 30 s · 60 s back-off) before paging on Discord. Most outages resolve inside 2 minutes without the operator touching anything. → [FAQ §10](https://quadstronaut.seedbox.example.com/faq/#sec-monitoring)
 - **One alert channel.** A single Discord webhook with an operator `@ping` on `error` / `critical` levels (Notifiarr was retired 2026-05-10). → [FAQ §15](https://quadstronaut.seedbox.example.com/faq/#sec-discord)
-- **Smoke test.** `scripts/smoke-test.sh` runs ~49 assertions across Prowlarr, *arr↔qBit, hardlinks, app liveness, and the maintenance system. Run after every tracked change. → [FAQ — what does smoke cover](https://quadstronaut.seedbox.example.com/faq/#q-smoke-buckets)
+- **Smoke test.** `scripts/smoke-test.sh` runs ~51 assertions across Prowlarr, *arr↔qBit, hardlinks, app liveness, and the maintenance system. Run after every tracked change. → [FAQ — what does smoke cover](https://quadstronaut.seedbox.example.com/faq/#q-smoke-buckets)
 - **Resource viewer.** `scripts/qflix-top.sh` is an htop-style live view of how much CPU/RAM each QFlix component is using — in ratio to each other **and** to the rest of the shared Ultra.cc box. Runs unprivileged and `hidepid`-safe: "other tenants" is derived as box-total-minus-yours from `/proc/stat` + `/proc/meminfo`, never by snooping foreign processes. Processes are grouped by cgroup, so Plex's server + transcoder + plugins collapse into one line and sonarr/sonarr2 stay distinct. Your share is reported three ways — % of in-use CPU, whole-core equivalent, and % of all 128 cores — so the numbers reconcile instead of fighting each other. `--view app|role|both`, live keys `[a]/[r]/[b]/[+]/[-]/[q]`, or `--once` for a pipe-friendly snapshot. Lives in your seedbox `$HOME`.
 - **QFlix Random Error Audit (REA).** Workstation-side second-opinion audit (`scripts/local-llm/qflix-rea.ps1` — gitignored; Task Scheduler at `\Archangel\QFlix-LLM\QFlix Random Error Audit`, AtLogOn trigger). On every Windows logon, after the SSH tunnel is up, it pulls 7 seedbox log surfaces (*arr logs, systemd journal errors, cron mail spool, maint pipeline, nginx errors, Plex errors, Kuma red-state) in **one SSH call**, then hands the consolidated blob to every code-capable Ollama model installed locally (auto-discovered via regex — `qwen3-coder:30b`, `qwen2.5-coder:7b`, `qwen3:8b` today). Models run sequentially; verdicts collapse by signature into one Discord message with the operator @ping if anything looks wrong, or a daily "✓ clean" heartbeat if nothing does. If Ollama itself is unreachable, a separate dead-man Discord alert fires (24h dedupe). Spec: [`docs/superpowers/specs/2026-05-11-qflix-rea-design.md`](docs/superpowers/specs/2026-05-11-qflix-rea-design.md). Install: `scripts/local-llm/qflix-rea.ps1 -Install`. Not wired into Kuma — purely local set of eyes.
 - **Log aggregation — VictoriaLogs on the seedbox.** Single Linux binary at `~/.apps/vlogs/bin/victoria-logs-prod`, storing 90 d of every managed app's logs at `~/.apps/vlogs/data/` (<512 MB RAM, indexed). Three user-systemd units: `victorialogs.service` (long-running server, bound loopback-only on `secrets/vlogs.port`), `qflix-vlogs-ingest.timer` (every 5 min, imports `scripts/mcp/logs.py` in-process and POSTs JSON-lines to `127.0.0.1:<vlogs.port>/insert/jsonline`), and `manitoba-maint-canary-vlogs-stall.timer` (every 15 min, detects server down or zero-ingest stalls). The MCP server (`scripts/local/qflix-mcp/qflix_mcp.py`) exposes two reads: `qflix_get_logs` (live SSH pull, narrow window) and `qflix_query_logs` (LogsQL against the persistent index via SSH-exec'd curl — e.g. `level:Error AND app:radarr`). Install: `scripts/configure/80-vlogs-install.sh`. Kuma monitors: `VictoriaLogs`, `Qflix VLogs Ingest`, `Canary VLogs Stall`. UI from workstation: `ssh -L $PORT:127.0.0.1:$PORT $SEEDBOX -N`, then `http://127.0.0.1:$PORT/select/vmui/`. Moved off the workstation 2026-05-14 to satisfy the autonomy mandate (workstation off ≠ logs lost).
