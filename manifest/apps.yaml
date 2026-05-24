@@ -537,3 +537,15 @@ canaries:
     kuma_monitor: "Canary Plex Transcoder"
     script: "scripts/canaries/plex-transcoder.sh"
     schedule: "every-10min"
+  tautulli-plex-link:
+    # Assert the Plex address Tautulli is CONFIGURED to use is a live Plex,
+    # not just that Tautulli's own web port answers. Closes the gap behind the
+    # 2026-05-20 incident: the UCC kernel migration re-IP'd Plex, Tautulli's
+    # pinned pms_url broke, and it stormed `Connection refused` for 3 days while
+    # its web port stayed green — so the app monitor never alerted. Probes
+    # Tautulli's configured pms_ip:port for /identity; fails within ~15min if
+    # Tautulli is pointed at a dead/old address. Pairs with the durable gateway
+    # pin in scripts/configure/50-tautulli-pms-url-fix.sh.
+    kuma_monitor: "Canary Tautulli-Plex Link"
+    script: "scripts/canaries/tautulli-plex-link.sh"
+    schedule: "every-15min"
