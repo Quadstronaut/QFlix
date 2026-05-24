@@ -7,9 +7,9 @@ repo manifest. Where the manifest, docs, and live seedbox disagree, the
 live seedbox wins and this file records both.
 
 **Counts (live as of 2026-05-16 after post-release-0.0.1 verification):**
-- **33 apps in `manifest/apps.yaml`** + 12 canaries (movie, anime, deletion, mobile-ux, vlogs-stall, qbit-stall, kometa-libraries, stale-log-watchdog, kometa-deploy-drift, prowlarr-indexer-health, hardlink-integrity, plex-transcoder).
-- **50 Kuma monitors** total: **46 manitoba** (33 manifest-app monitors + 12 canary monitors + 1 `Manitoba Pusher` daemon-self-heartbeat) + 4 external (`Quadstronix`, `Quadstronix Node 1`, `Quadstronix Node 2`, `QFlix Collect (workstation)`). **46/46 manitoba UP.** Every app in the manifest plus all canaries reports continuously.
-- All 46 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
+- **33 apps in `manifest/apps.yaml`** + 13 canaries (movie, anime, deletion, mobile-ux, vlogs-stall, qbit-stall, kometa-libraries, stale-log-watchdog, kometa-deploy-drift, prowlarr-indexer-health, hardlink-integrity, plex-transcoder, tautulli-plex-link).
+- **51 Kuma monitors** total: **47 manitoba** (33 manifest-app monitors + 13 canary monitors + 1 `Manitoba Pusher` daemon-self-heartbeat) + 4 external (`Quadstronix`, `Quadstronix Node 1`, `Quadstronix Node 2`, `QFlix Collect (workstation)`). **47/47 manitoba UP.** Every app in the manifest plus all canaries reports continuously.
+- All 47 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
 - Notification channel: single Discord webhook + operator @ping (user-id read from `secrets/discord-operator.id`) on `error` / `critical` levels via `scripts/maint/lib/notify.py`.
 - Last full smoke: **51 pass / 0 fail / 0 skip** (2026-05-20; prior `tdarr.server_port` secret gap closed — both `tdarr-up` and `tdarr-node-registered` now pass).
 

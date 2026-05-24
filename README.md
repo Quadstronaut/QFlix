@@ -11,7 +11,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-51%2F51_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-33_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-46%2F46_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-47%2F47_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -40,8 +40,8 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 | Surface | Count | State |
 |---|---:|---|
 | Apps in manifest (`manifest/apps.yaml`) | **33** | 19 UCC · 5 systemd · 8 cron · 1 library |
-| End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **12** | movie · anime · deletion · mobile-ux · vlogs-stall · qbit-stall · kometa-libraries · kometa-deploy-drift · stale-log-watchdog · prowlarr-indexer-health · hardlink-integrity · plex-transcoder |
-| Kuma push monitors (manitoba-owned) | **46** | 46/46 UP — every manifest app + all 12 canaries + the daemon's self-heartbeat report continuously |
+| End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **13** | movie · anime · deletion · mobile-ux · vlogs-stall · qbit-stall · kometa-libraries · kometa-deploy-drift · stale-log-watchdog · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link |
+| Kuma push monitors (manitoba-owned) | **47** | 47/47 UP — every manifest app + all 13 canaries + the daemon's self-heartbeat report continuously |
 | Cron + systemd timers | **14+** | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **440+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -65,7 +65,7 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 | 🟠 Subtitles | **Bazarr** + **Bazarr 2** (anime branch) | One per arr-pair — Bazarr is hard-capped at one Sonarr + one Radarr each, so the second anime instance is a bare-Python install pinned to Bazarr-1's version (`bazarr2-sync.timer`) |
 | 🟠 Retention | **Maintainerr** | 60-day "watched + nobody else cared" deletion engine |
 
-Surrounding cast (qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 12 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
+Surrounding cast (qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 13 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
 
 ---
 
@@ -95,7 +95,7 @@ flowchart LR
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 46 push monitors)]:::kuma
+  kuma[(Uptime Kuma<br/>isolated netns · 47 push monitors)]:::kuma
   discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex
@@ -186,7 +186,7 @@ flowchart LR
   recovery -->|lifecycle.start ≤3 attempts| status
   recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>46 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>47 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
   C3[Canary deletion · daily 04:30]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K
@@ -343,7 +343,7 @@ The pusher dispatches on `class` for both lifecycle ops and probe selection.
 ## Repo layout
 
 ```text
-manifest/apps.yaml           # 33 apps + 12 canaries — single source of truth
+manifest/apps.yaml           # 33 apps + 13 canaries — single source of truth
 versions.env                 # pinned versions (Tdarr only — pin policy lifted 2026-05-09)
 inventory.md                 # live snapshot of every artifact on the seedbox
 Tuesday.md                   # design doc — extending Mon window to systemd apps
