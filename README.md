@@ -430,7 +430,8 @@ Every *arr admin UI, Kuma admin, Listmonk admin, and qBittorrent live behind a w
 - **End-user + contributor FAQ** → [quadstronaut.seedbox.example.com/faq/](https://quadstronaut.seedbox.example.com/faq/) — 18 sections, 70 Q&As. Covers requesting media, anime routing, why things disappear, the maintenance window, hardlinks, the top 10 recurring screw-ups, an emergency playbook, and a Nerd Corner that walks through every technology QFlix is built on. Source lives in [`scripts/data/qflix-faq.html`](scripts/data/qflix-faq.html).
 - **What's installed where on the seedbox?** → [`inventory.md`](inventory.md) — the live source of truth, kept in sync with the manifest.
 - **What apps exist?** → [`manifest/apps.yaml`](manifest/apps.yaml) — the single source of truth for health probes, monitors, recovery, and the upgrader.
-- **Public status page** → [Uptime Kuma](https://uptimekuma-quadstronaut.seedbox.example.com/status/public) — every monitor, no login.
+- **Public status page** → [Uptime Kuma](https://uptimekuma-quadstronaut.seedbox.example.com/status/public) — every monitor, no login. User-facing incident notices are posted here.
+- **Incident log** → [`docs/incidents.md`](docs/incidents.md) — operator-facing technical record of outages; the source of truth behind the status-page incidents.
 
 ## Local development
 
