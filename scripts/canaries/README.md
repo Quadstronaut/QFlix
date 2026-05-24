@@ -33,6 +33,7 @@ request id and skips the cleanup step.
 - `stale-log-watchdog.sh` — timer-driven app logs (kometa daily, recyclarr weekly, buildarr daily) are still being written on schedule
 - `hardlink-integrity.sh` — 20 most-recently-modified library files have linkcount ≥ 2 (= *arr import used hardlink mode; protects against silent storage-doubling regression)
 - `plex-transcoder.sh`   — Plex `/transcode/sessions` + `/:/prefs` respond <10s with 2xx (catches transcoder daemon stall while main `/identity` still says 200)
+- `tautulli-plex-link.sh` — Tautulli's CONFIGURED `pms_ip:port` is a live Plex `/identity` (catches "Tautulli web up but pinned to a dead/old Plex address" — the 2026-05-20 re-IP class the app monitor stayed green through)
 
 ## Stage labels (failure messages on stderr → Kuma `msg=`)
 

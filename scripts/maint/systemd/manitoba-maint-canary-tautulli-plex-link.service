@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — Tautulli<->Plex connectivity (configured pms target is a live Plex)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push tautulli-plex-link
+StandardOutput=journal
+StandardError=journal
