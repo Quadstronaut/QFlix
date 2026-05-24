@@ -127,6 +127,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer \
     scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.service \
     scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.timer \
+    scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.service \
+    scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.timer \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.service \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.timer \
     scripts/maint/systemd/manitoba-maint-arr-audit.service \
@@ -148,6 +150,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/prowlarr-indexer-health.sh \
     scripts/canaries/hardlink-integrity.sh \
     scripts/canaries/plex-transcoder.sh \
+    scripts/canaries/tautulli-plex-link.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
@@ -331,6 +334,8 @@ for unit in \
     manitoba-maint-canary-hardlink-integrity.timer \
     manitoba-maint-canary-plex-transcoder.service \
     manitoba-maint-canary-plex-transcoder.timer \
+    manitoba-maint-canary-tautulli-plex-link.service \
+    manitoba-maint-canary-tautulli-plex-link.timer \
     manitoba-maint-cp-upgrade.service \
     manitoba-maint-cp-upgrade.timer \
     manitoba-maint-arr-audit.service \
@@ -384,6 +389,11 @@ systemctl --user enable --now manitoba-maint-canary-hardlink-integrity.timer
 # /:/prefs endpoints. Catches transcoder daemon stalls before customers
 # hit "Conversion failed" — main /identity stays 200 OK during this fault.
 systemctl --user enable --now manitoba-maint-canary-plex-transcoder.timer
+# tautulli-plex-link: every 15 min, assert Tautulli's CONFIGURED pms target is
+# a live Plex /identity. Catches "Tautulli web up but pinned to a dead/old Plex
+# IP" — the 2026-05-20 re-IP class the app monitor stayed green through.
+# Read-only probe; never restarts anything.
+systemctl --user enable --now manitoba-maint-canary-tautulli-plex-link.timer
 # UCC `app-<name> upgrade` sweep — Mon 11:30 UTC (30 min into the window).
 # --now activates the timer itself (schedules its next OnCalendar fire); it
 # does NOT trigger an immediate service run. Without --now the timer stays
@@ -507,7 +517,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime deletion mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health; do
+for canary in movie anime deletion mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
