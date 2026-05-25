@@ -106,8 +106,10 @@ def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
     else:
         app_list = list(manifest.apps())
 
-    # Capture timestamp once at run start (before parallel probes begin)
-    captured_at = _datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Capture timestamp once at run start (before parallel probes begin).
+    # strftime hardcodes the trailing Z, so the aware value renders identically
+    # to the old utcnow() string — this just drops the 3.12 deprecation.
+    captured_at = _datetime.datetime.now(_datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Parallel probes
     def _probe_one(app):
