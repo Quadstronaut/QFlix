@@ -196,6 +196,63 @@ class TestPushOnce:
         probe_mock.assert_not_called()
         assert "recyclarr" not in result
 
+    # -- Kuma push-endpoint resilience (intermittent read-timeout) -----------
+
+    def test_push_retries_on_timeout_then_succeeds(self):
+        """A single read-timeout is retried; the retry's 200 yields 'ok'.
+        Closes the sporadic 'Read timed out' heartbeat drops."""
+        import requests as _rq
+        from lib import pusher
+        manifest = _make_manifest(_make_app("sonarr", "Sonarr"))
+        tokens = {"sonarr": "tok-abc"}
+        probe_results = [HealthResult(ok=True, latency_ms=5, reason="ok")]
+        ok_resp = MagicMock(status_code=200)
+        result, mock_get = self._run(
+            manifest, tokens, probe_results,
+            get_side_effect=[_rq.ReadTimeout("slow"), ok_resp],
+        )
+        assert result["sonarr"] == "ok"
+        assert mock_get.call_count == pusher._PUSH_RETRIES + 1
+
+    def test_push_timeout_exhausted_returns_error(self):
+        """Timeout on every attempt → 'error:' after retries exhausted."""
+        import requests as _rq
+        from lib import pusher
+        manifest = _make_manifest(_make_app("sonarr", "Sonarr"))
+        tokens = {"sonarr": "tok-abc"}
+        probe_results = [HealthResult(ok=True, latency_ms=5, reason="ok")]
+        result, mock_get = self._run(
+            manifest, tokens, probe_results,
+            get_side_effect=_rq.ReadTimeout("always slow"),
+        )
+        assert result["sonarr"].startswith("error:")
+        assert mock_get.call_count == pusher._PUSH_RETRIES + 1
+
+    def test_push_connection_error_not_retried(self):
+        """ConnectionError (Kuma actually down) fails fast — no retry, unlike
+        a transient read-timeout."""
+        import requests as _rq
+        manifest = _make_manifest(_make_app("sonarr", "Sonarr"))
+        tokens = {"sonarr": "tok-abc"}
+        probe_results = [HealthResult(ok=True, latency_ms=5, reason="ok")]
+        result, mock_get = self._run(
+            manifest, tokens, probe_results,
+            get_side_effect=_rq.ConnectionError("refused"),
+        )
+        assert result["sonarr"].startswith("error:")
+        assert mock_get.call_count == 1
+
+    def test_push_uses_configurable_timeout_not_aggressive_5s(self):
+        """Pusher passes the longer configurable timeout (>=15s), not the old
+        5s that tripped on Kuma's transient stalls."""
+        from lib import pusher
+        manifest = _make_manifest(_make_app("sonarr", "Sonarr"))
+        tokens = {"sonarr": "tok-abc"}
+        probe_results = [HealthResult(ok=True, latency_ms=5, reason="ok")]
+        _, mock_get = self._run(manifest, tokens, probe_results)
+        assert mock_get.call_args.kwargs["timeout"] == pusher._PUSH_TIMEOUT_S
+        assert pusher._PUSH_TIMEOUT_S >= 15
+
 
 # ---------------------------------------------------------------------------
 # serve() tests

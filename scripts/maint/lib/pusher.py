@@ -40,6 +40,33 @@ _STRIKE_THRESHOLD = int(os.environ.get("MANITOBA_AUTOHEAL_STRIKES", "3"))
 # push_once() calls within the same `serve()` loop. Resets on success.
 _consecutive_failures: dict[str, int] = {}
 
+# Kuma push-endpoint timeout + retry. Kuma's /api/push endpoint intermittently
+# stalls >5s under SQLite/retention load (observed: sporadic bursts of "Read
+# timed out" across whatever apps are pushed during the stall, while the
+# endpoint is sub-10ms between bursts). The original 5s/no-retry dropped those
+# heartbeats, making healthy monitors flap DOWN. A 15s timeout absorbs the
+# common stall and one retry recovers a transient one. Override via env.
+_PUSH_TIMEOUT_S = float(os.environ.get("MANITOBA_KUMA_PUSH_TIMEOUT", "15"))
+_PUSH_RETRIES = int(os.environ.get("MANITOBA_KUMA_PUSH_RETRIES", "1"))
+
+
+def _push_get(kuma_url: str, token: str, params: dict):
+    """GET Kuma's /api/push/<token> with a bounded timeout + retry on read
+    timeout only. A timeout means Kuma is briefly slow (retry delivers the
+    heartbeat); a ConnectionError means Kuma is actually down (fail fast, no
+    retry — retrying a refused socket just wastes a cycle). Returns the
+    Response; re-raises the timeout if all attempts are exhausted."""
+    url = f"{kuma_url}/api/push/{token}"
+    for attempt in range(_PUSH_RETRIES + 1):
+        try:
+            return requests.get(url, params=params, timeout=_PUSH_TIMEOUT_S)
+        except requests.Timeout as exc:
+            if attempt < _PUSH_RETRIES:
+                log.warning("push timeout (attempt %d/%d), retrying: %s",
+                            attempt + 1, _PUSH_RETRIES + 1, exc)
+                continue
+            raise
+
 
 def reset_strike_counter(app_name: str | None = None) -> None:
     """Reset the auto-heal strike counter. Used by tests; also callable from
@@ -118,9 +145,8 @@ def push_once(
         if result.latency_ms is not None:
             params["ping"] = result.latency_ms
 
-        push_url = f"{kuma_url}/api/push/{token}"
         try:
-            resp = requests.get(push_url, params=params, timeout=5)
+            resp = _push_get(kuma_url, token, params)
             if resp.status_code == 200:
                 results[app.name] = "ok"
                 log.info("pushed %s → %s (%s)", app.name, status, result.reason)
@@ -213,11 +239,8 @@ def push_once(
                          if storm_active
                          else f"{down_count}/{total} down")
             try:
-                requests.get(
-                    f"{kuma_url}/api/push/{fleet_token}",
-                    params={"status": fleet_status, "msg": fleet_msg},
-                    timeout=5,
-                )
+                _push_get(kuma_url, fleet_token,
+                          {"status": fleet_status, "msg": fleet_msg})
             except Exception as exc:
                 log.warning("fleet aggregate push failed: %s", exc)
 
@@ -309,12 +332,9 @@ def serve(
             self_token = tokens.get(_SELF_TOKEN_KEY)
             if self_token:
                 try:
-                    requests.get(
-                        f"{kuma_url}/api/push/{self_token}",
-                        params={"status": "up",
-                                "msg": f"cycle ok={ok_count}/{len(results)}"},
-                        timeout=5,
-                    )
+                    _push_get(kuma_url, self_token,
+                              {"status": "up",
+                               "msg": f"cycle ok={ok_count}/{len(results)}"})
                 except Exception as exc:
                     # Don't let a Kuma blip kill the pusher loop.
                     log.warning("pusher self-heartbeat failed: %s", exc)
