@@ -85,6 +85,94 @@ def _render_status_table(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# Stale threshold = 1.5× the canary's scheduled interval (matches the
+# "an hourly canary not run in >~90 min is stale" guidance). Minutes.
+_CANARY_INTERVAL_MIN = {
+    "every-10min": 10,
+    "every-15min": 15,
+    "every-30min": 30,
+    "hourly": 60,
+    "daily-0430": 1440,
+}
+
+
+def _probe_canary(canary, *, now=None, run=None) -> dict:
+    """Read a canary's status from its systemd unit — cheaply and read-only,
+    WITHOUT executing the (often heavyweight) canary script. Mirrors the
+    systemd_oneshot ok-logic used for cron apps: the unit's `Result` is the
+    authoritative pass/fail of the last timer-driven run.
+
+    Returns {name, display, ok, reason, last_run, stale}:
+      display   — the canary's kuma_monitor name
+      ok        — last run succeeded (or in-flight / never-run-yet)
+      last_run  — ISO-8601 UTC of the last run end, or None if never run
+      stale     — last_run older than 1.5× the schedule interval (a fresh
+                  never-run unit is NOT stale; a missing unit IS)
+    """
+    import datetime as _dt
+    import subprocess as _sp
+    if run is None:
+        run = _sp.run
+
+    unit = f"manitoba-maint-canary-{canary.name}.service"
+    entry = {
+        "name": canary.name,
+        "display": canary.kuma_monitor,
+        "ok": True,
+        "reason": "no-run-yet",
+        "last_run": None,
+        "stale": False,
+    }
+    try:
+        cp = run(
+            ["systemctl", "--user", "show", "--timestamp=unix", unit,
+             "-p", "LoadState", "-p", "Result", "-p", "ActiveState",
+             "-p", "ExecMainStatus", "-p", "ExecMainExitTimestamp",
+             "--no-pager"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception as exc:  # subprocess.TimeoutExpired, OSError, …
+        return {**entry, "ok": False, "reason": f"probe-error: {exc}", "stale": True}
+
+    if getattr(cp, "returncode", 1) != 0:
+        return {**entry, "ok": False,
+                "reason": f"systemctl exit {cp.returncode}", "stale": True}
+
+    props: dict[str, str] = {}
+    for line in (cp.stdout or "").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            props[k.strip()] = v.strip()
+
+    if props.get("LoadState") == "not-found":
+        return {**entry, "ok": False, "reason": "unit-not-installed", "stale": True}
+
+    result = props.get("Result", "")
+    state = props.get("ActiveState", "")
+    if state in ("activating", "deactivating", "reloading"):
+        entry["ok"], entry["reason"] = True, f"in-flight ({state})"
+    elif state == "active" or result == "success" or result == "":
+        entry["ok"], entry["reason"] = True, (result or state or "no-run-yet")
+    else:
+        entry["ok"], entry["reason"] = False, f"Result={result} ActiveState={state}"
+
+    ts = props.get("ExecMainExitTimestamp", "")
+    epoch = None
+    if ts.startswith("@"):  # --timestamp=unix → "@1779670911"
+        try:
+            epoch = int(ts[1:])
+        except ValueError:
+            epoch = None
+    if epoch and epoch > 0:
+        last = _dt.datetime.fromtimestamp(epoch, _dt.timezone.utc)
+        entry["last_run"] = last.strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = now or _dt.datetime.now(_dt.timezone.utc)
+        age_min = (now - last).total_seconds() / 60.0
+        interval = _CANARY_INTERVAL_MIN.get(canary.schedule, 60)
+        entry["stale"] = age_min > interval * 1.5
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
@@ -142,6 +230,12 @@ def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
         # Machine-readable JSON output (QuadstroNot status contract schema_version 1)
         total = len(rows)
         up = sum(1 for r in rows if r["ok"])
+        # Canaries: cheap, read-only systemd-unit status (no script execution).
+        # summary stays apps-only — QuadstroNot computes canary counts itself.
+        canaries = sorted(
+            (_probe_canary(c) for c in manifest.canaries()),
+            key=lambda e: e["name"],
+        )
         payload = {
             "schema_version": 1,
             "captured_at": captured_at,
@@ -158,6 +252,7 @@ def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
                 }
                 for r in rows
             ],
+            "canaries": canaries,
         }
         print(json.dumps(payload, sort_keys=False))
         return 0

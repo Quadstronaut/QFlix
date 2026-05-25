@@ -78,6 +78,9 @@ def _make_manifest(apps: list[App]):
         def apps(self):
             return iter(app_dict.values())
 
+        def canaries(self):
+            return iter([])
+
         def resolve_kuma_monitor(self, mon):
             for a in app_dict.values():
                 if a.kuma_monitor == mon:
@@ -682,7 +685,7 @@ class TestStatusJson:
         return rc, payload, captured
 
     def test_top_level_keys_exact(self, capsys):
-        """Payload has exactly {schema_version, captured_at, summary, apps}."""
+        """Payload has exactly {schema_version, captured_at, summary, apps, canaries}."""
         apps = [_make_app_json("sonarr")]
         rc, payload, _ = self._run_json(
             apps,
@@ -690,7 +693,38 @@ class TestStatusJson:
             capsys=capsys,
         )
         assert rc == 0
-        assert set(payload.keys()) == {"schema_version", "captured_at", "summary", "apps"}
+        assert set(payload.keys()) == {"schema_version", "captured_at", "summary", "apps", "canaries"}
+
+    def test_canaries_empty_when_manifest_has_none(self, capsys):
+        """No canaries in manifest → canaries is an empty list (not absent)."""
+        apps = [_make_app_json("sonarr")]
+        _, payload, _ = self._run_json(
+            apps,
+            probe_side_effect=lambda a, **kw: HealthResult(ok=True, latency_ms=10, reason="ok"),
+            capsys=capsys,
+        )
+        assert payload["canaries"] == []
+
+    def test_summary_counts_apps_only_not_canaries(self, capsys):
+        """summary stays apps-only even when canaries are present."""
+        from lib.manifest import Canary, Manifest
+        apps = [_make_app_json("sonarr")]
+        canaries = {
+            "movie": Canary(name="movie", kuma_monitor="Canary Movie",
+                            script="x.sh", schedule="hourly"),
+        }
+        manifest = Manifest({a.name: a for a in apps}, canaries=canaries)
+        with patch("lib.health.probe", side_effect=lambda a, **kw: HealthResult(ok=True, latency_ms=10, reason="ok")), \
+             patch("lib.state.read", return_value={}), \
+             patch("lib.cli._probe_canary", return_value={"name": "movie", "display": "Canary Movie",
+                                                          "ok": True, "reason": "success",
+                                                          "last_run": "2026-05-25T00:00:00Z", "stale": False}):
+            rc = main(["status", "--all", "--json"], _manifest=manifest)
+        import json as _json
+        payload = _json.loads(capsys.readouterr().out)
+        assert payload["summary"]["total"] == 1  # only the app
+        assert len(payload["canaries"]) == 1
+        assert payload["canaries"][0]["display"] == "Canary Movie"
 
     def test_schema_version_is_1(self, capsys):
         apps = [_make_app_json("sonarr")]
@@ -1025,3 +1059,125 @@ class TestDeepCheckSubcommand:
         with patch("lib.deep_check.run_deep_check", return_value=clean):
             rc = main(["deep-check"], manifest_path=_VALID_FIXTURE)
         assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# _probe_canary tests (cheap, read-only systemd-unit status; no script run)
+# ---------------------------------------------------------------------------
+
+class TestProbeCanary:
+    """lib.cli._probe_canary: maps a canary's systemd unit to a status dict."""
+
+    @staticmethod
+    def _canary(name="movie", monitor="Canary Movie", schedule="hourly"):
+        from lib.manifest import Canary
+        return Canary(name=name, kuma_monitor=monitor, script="x.sh", schedule=schedule)
+
+    @staticmethod
+    def _runner(stdout, returncode=0):
+        """Build a fake subprocess.run that returns a CompletedProcess-like obj."""
+        from types import SimpleNamespace
+
+        def _run(*a, **kw):
+            return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+        return _run
+
+    def _show(self, *, load="loaded", result="success", state="inactive",
+              status="0", exit_epoch=None):
+        lines = [f"LoadState={load}", f"Result={result}", f"ActiveState={state}",
+                 f"ExecMainStatus={status}"]
+        if exit_epoch is not None:
+            lines.append(f"ExecMainExitTimestamp=@{exit_epoch}")
+        else:
+            lines.append("ExecMainExitTimestamp=")
+        return "\n".join(lines) + "\n"
+
+    def test_ok_recent_not_stale(self):
+        from lib.cli import _probe_canary
+        import datetime as dt
+        now = dt.datetime(2026, 5, 25, 12, 0, 0, tzinfo=dt.timezone.utc)
+        recent = int((now - dt.timedelta(minutes=20)).timestamp())  # 20m ago, hourly
+        e = _probe_canary(self._canary(), now=now,
+                          run=self._runner(self._show(exit_epoch=recent)))
+        assert e["ok"] is True
+        assert e["display"] == "Canary Movie"
+        assert e["last_run"] == "2026-05-25T11:40:00Z"
+        assert e["stale"] is False
+
+    def test_stale_when_older_than_1_5x_interval(self):
+        from lib.cli import _probe_canary
+        import datetime as dt
+        now = dt.datetime(2026, 5, 25, 12, 0, 0, tzinfo=dt.timezone.utc)
+        old = int((now - dt.timedelta(minutes=100)).timestamp())  # >90m for hourly
+        e = _probe_canary(self._canary(schedule="hourly"), now=now,
+                          run=self._runner(self._show(exit_epoch=old)))
+        assert e["ok"] is True
+        assert e["stale"] is True
+
+    def test_every_15min_stale_threshold(self):
+        from lib.cli import _probe_canary
+        import datetime as dt
+        now = dt.datetime(2026, 5, 25, 12, 0, 0, tzinfo=dt.timezone.utc)
+        # 20m ago > 1.5*15=22.5? no → not stale; 30m ago → stale
+        not_stale = int((now - dt.timedelta(minutes=20)).timestamp())
+        stale = int((now - dt.timedelta(minutes=30)).timestamp())
+        e1 = _probe_canary(self._canary(schedule="every-15min"), now=now,
+                           run=self._runner(self._show(exit_epoch=not_stale)))
+        e2 = _probe_canary(self._canary(schedule="every-15min"), now=now,
+                           run=self._runner(self._show(exit_epoch=stale)))
+        assert e1["stale"] is False
+        assert e2["stale"] is True
+
+    def test_failed_result_marks_not_ok(self):
+        from lib.cli import _probe_canary
+        import datetime as dt
+        now = dt.datetime(2026, 5, 25, 12, 0, 0, tzinfo=dt.timezone.utc)
+        recent = int((now - dt.timedelta(minutes=5)).timestamp())
+        e = _probe_canary(self._canary(), now=now,
+                          run=self._runner(self._show(result="exit-code",
+                                                      state="failed",
+                                                      status="1",
+                                                      exit_epoch=recent)))
+        assert e["ok"] is False
+        assert "exit-code" in e["reason"]
+
+    def test_not_installed_unit(self):
+        from lib.cli import _probe_canary
+        e = _probe_canary(self._canary(),
+                          run=self._runner(self._show(load="not-found")))
+        assert e["ok"] is False
+        assert e["reason"] == "unit-not-installed"
+        assert e["stale"] is True
+
+    def test_never_run_is_ok_and_not_stale(self):
+        from lib.cli import _probe_canary
+        e = _probe_canary(self._canary(),
+                          run=self._runner(self._show(result="", state="inactive",
+                                                      exit_epoch=None)))
+        assert e["ok"] is True
+        assert e["last_run"] is None
+        assert e["stale"] is False
+
+    def test_in_flight_is_ok(self):
+        from lib.cli import _probe_canary
+        e = _probe_canary(self._canary(),
+                          run=self._runner(self._show(result="success",
+                                                      state="activating")))
+        assert e["ok"] is True
+        assert "in-flight" in e["reason"]
+
+    def test_systemctl_nonzero_exit_not_ok(self):
+        from lib.cli import _probe_canary
+        e = _probe_canary(self._canary(), run=self._runner("", returncode=4))
+        assert e["ok"] is False
+        assert "systemctl exit 4" in e["reason"]
+
+    def test_subprocess_exception_not_ok_and_stale(self):
+        from lib.cli import _probe_canary
+
+        def _boom(*a, **kw):
+            raise TimeoutError("systemctl hung")
+        e = _probe_canary(self._canary(), run=_boom)
+        assert e["ok"] is False
+        assert e["stale"] is True
+        assert "probe-error" in e["reason"]
