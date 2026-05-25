@@ -45,11 +45,58 @@ def test_unstick_happy_path(mock_open, tmp_path, monkeypatch):
     res = unstick.run(slug="sonarr", queue_id=42, reason="t", dry_run=False,
                       state_file=state)
     assert res["status"] == "deleted+blocklisted"
-    # event line written
+    # Two event lines: the durable in-flight marker (written before the
+    # DELETE) then the terminal outcome.
     log_files = list(events.glob("*.jsonl"))
     assert len(log_files) == 1
-    line = json.loads(log_files[0].read_text().strip())
-    assert line["queue_id"] == 42 and line["slug"] == "sonarr"
+    lines = [json.loads(l) for l in log_files[0].read_text().splitlines() if l.strip()]
+    assert lines[0]["result"] == "delete-in-flight"
+    assert lines[-1]["result"] == "deleted+blocklisted"
+    assert lines[-1]["queue_id"] == 42 and lines[-1]["slug"] == "sonarr"
+
+
+@patch("lib.arr_client.urllib.request.urlopen")
+def test_inflight_marker_durable_when_delete_interrupted(mock_open, tmp_path, monkeypatch):
+    """If the process is killed mid-DELETE (the 2026-05 SSH-timeout case), the
+    terminal record never runs — but the in-flight marker must already be on
+    disk so the action is never silently lost."""
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    mock_open.side_effect = [
+        _resp({"records": [{"id": 42, "downloadId": "abc", "title": "X"}]}),
+    ]
+    # Simulate a kill during the destructive call.
+    with patch.object(unstick, "_execute_delete", side_effect=KeyboardInterrupt):
+        try:
+            unstick.run(slug="sonarr", queue_id=42, reason="t", dry_run=False,
+                        state_file=state)
+        except KeyboardInterrupt:
+            pass
+    today = list(events.glob("*.jsonl"))[0]
+    lines = [json.loads(l) for l in today.read_text().splitlines() if l.strip()]
+    assert any(l["result"] == "delete-in-flight" and l["queue_id"] == 42
+               for l in lines)
+
+
+@patch("lib.arr_client.urllib.request.urlopen")
+def test_dry_run_writes_no_inflight_marker(mock_open, tmp_path, monkeypatch):
+    """Dry-run must not write the in-flight marker (no destructive call to
+    protect, and the marker would falsely imply a DELETE was committed)."""
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    mock_open.side_effect = [
+        _resp({"records": [{"id": 42, "downloadId": "abc", "title": "X"}]}),
+    ]
+    res = unstick.run(slug="sonarr", queue_id=42, reason="t", dry_run=True,
+                      state_file=state)
+    assert res["status"] == "dry-run"
+    today = list(events.glob("*.jsonl"))[0]
+    lines = [json.loads(l) for l in today.read_text().splitlines() if l.strip()]
+    assert not any(l["result"] == "delete-in-flight" for l in lines)
 
 
 def test_refuse_when_arr_red(tmp_path, monkeypatch):

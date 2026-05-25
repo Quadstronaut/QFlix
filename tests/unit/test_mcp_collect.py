@@ -48,6 +48,29 @@ def test_classify_dead_slow_dl():
     assert collect.matches_stale_rule(t) == "dead-slow"
 
 
+def test_classify_stopped_dl_incomplete():
+    """qBit 5.x stoppedDL at incomplete progress → stopped-incomplete eligible
+    (the 'Unforgettable' ratio-auto-paused dead download)."""
+    t = collect.normalize_qbit_torrent(_qbit_torrent(state="stoppedDL",
+                                                     progress=0.35))
+    assert collect.matches_stale_rule(t) == "stopped-incomplete"
+
+
+def test_classify_paused_dl_incomplete_legacy():
+    """qBit 4.x pausedDL (legacy name) at incomplete progress also matches."""
+    t = collect.normalize_qbit_torrent(_qbit_torrent(state="pausedDL",
+                                                     progress=0.5))
+    assert collect.matches_stale_rule(t) == "stopped-incomplete"
+
+
+def test_classify_stopped_up_completed_returns_none():
+    """stoppedUP is a completed/seeding torrent — progress>=1.0 excludes it;
+    must NOT be flagged (no destructive unstick of finished content)."""
+    t = collect.normalize_qbit_torrent(_qbit_torrent(state="stoppedUP",
+                                                     progress=1.0))
+    assert collect.matches_stale_rule(t) is None
+
+
 def test_classify_healthy_returns_none():
     t = collect.normalize_qbit_torrent(_qbit_torrent(state="downloading",
                                                      dlspeed=2_000_000, progress=0.3))

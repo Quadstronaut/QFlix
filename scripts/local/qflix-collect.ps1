@@ -243,14 +243,18 @@ function Update-StaleState {
         }
         $latest = $samples[-1]
         if ($latest.progress -ge 1.0) { continue }
-        # Defensive guard: a paused-by-operator torrent (pausedDL / pausedUP)
-        # legitimately has zero progress across snapshots. The state-match
-        # below already excludes these, but the guard makes intent explicit
-        # so a future state-string addition can't silently widen the gate.
-        if ($latest.state -like '*paused*') { continue }
+        # qBit 5.x renamed pausedDL/pausedUP → stoppedDL/stoppedUP. A *DL
+        # torrent stopped/paused while still incomplete (zero movement across
+        # all 3 snapshots, progress < 1.0 per the guard above) is a dead or
+        # ratio-auto-stopped download — the 2026-05 "Unforgettable" incident
+        # the old `*paused*` guard silently dropped. Completed torrents
+        # (stoppedUP/pausedUP) are already excluded by the progress >= 1.0
+        # check, so matching only the *DL variants never touches finished
+        # content/hardlinks.
         $rule = $null
         if ($latest.state -eq "stalledDL") { $rule = "stalledDL" }
         elseif ($latest.state -eq "downloading" -and $latest.dlspeed -lt 10000) { $rule = "dead-slow" }
+        elseif ($latest.state -eq "stoppedDL" -or $latest.state -eq "pausedDL") { $rule = "stopped-incomplete" }
         if (-not $rule) { continue }
 
         if (-not $hashes.ContainsKey($h)) {
