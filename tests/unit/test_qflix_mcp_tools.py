@@ -245,6 +245,41 @@ def test_arr_queue(tmp_path, monkeypatch):
     assert out["missing_count"] == 5
 
 
+def test_arr_queue_fresh_snapshot_not_stale(tmp_path, monkeypatch):
+    """A recent snapshot annotates the queue with freshness fields and no warning."""
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    recent = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _seed_snapshot(tmp_path, 1, {
+        "captured_at": recent,
+        "arrs": {"sonarr": {"queue": [], "missing_count": 0}},
+    })
+    out = qflix_mcp.qflix_arr_queue("sonarr")
+    assert out["captured_at"] == recent
+    assert out["snapshot_age_minutes"] is not None
+    assert out["stale_warning"] is False
+
+
+def test_arr_queue_stale_snapshot_warns(tmp_path, monkeypatch):
+    """An old snapshot sets stale_warning so callers don't trust queue contents
+    as live (the 2026-05 misleading 'already-removed')."""
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    _seed_snapshot(tmp_path, 1, {
+        "captured_at": "1999-01-01T00:00:00Z",
+        "arrs": {"sonarr": {"queue": [], "missing_count": 0}},
+    })
+    out = qflix_mcp.qflix_arr_queue("sonarr")
+    assert out["stale_warning"] is True
+    assert out["snapshot_age_minutes"] is not None
+
+
+def test_arr_queue_no_snapshot_warns(tmp_path, monkeypatch):
+    """No snapshot at all → stale_warning True with a reason."""
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    out = qflix_mcp.qflix_arr_queue("sonarr")
+    assert out["queue"] == [] and out["missing_count"] == 0
+    assert out["stale_warning"] is True
+
+
 @patch("qflix_mcp.ssh_call")
 def test_list_log_apps_returns_routes(mock_ssh):
     fake = MagicMock()

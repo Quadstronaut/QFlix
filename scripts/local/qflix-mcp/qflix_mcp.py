@@ -285,14 +285,31 @@ def qflix_recent_events(n: int = 20) -> list:
 
 
 def qflix_arr_queue(slug: str) -> dict:
-    """Returns: one *arr's full queue + missing_count.
+    """Returns: one *arr's full queue + missing_count, annotated with snapshot
+    freshness (captured_at, snapshot_age_minutes, stale_warning).
+
+    The queue is served from the latest cached collect snapshot, which can be
+    up to an hour old — or staler if the collector is suspended. Without the
+    freshness fields a just-acted-on item shows its pre-action state, which
+    reads as a misleading 'already-removed' (the 2026-05 confusion). Callers
+    seeing stale_warning=True should qflix_refresh_collect() before trusting
+    queue contents.
 
     Use when: inspecting downloads in flight for a specific *arr.
     """
     snap = _cache().latest_snapshot()
     if snap is None:
-        return {"queue": [], "missing_count": 0}
-    return (snap.get("arrs", {}).get(slug) or {"queue": [], "missing_count": 0})
+        return {"queue": [], "missing_count": 0,
+                "captured_at": None, "snapshot_age_minutes": None,
+                "stale_warning": True,
+                "stale_reason": "no snapshot has ever been written"}
+    captured_at = snap.get("captured_at")
+    age = _snapshot_age_minutes(captured_at)
+    base = dict(snap.get("arrs", {}).get(slug) or {"queue": [], "missing_count": 0})
+    base["captured_at"] = captured_at
+    base["snapshot_age_minutes"] = age
+    base["stale_warning"] = age is not None and age > _STALE_SNAPSHOT_MINUTES
+    return base
 
 
 def qflix_list_log_apps() -> dict:

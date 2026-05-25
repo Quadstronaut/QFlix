@@ -255,6 +255,20 @@ def run(*, slug: Optional[str] = None, queue_id: Optional[int] = None,
     title = resolved["title"]
     hash_ = resolved.get("hash") or hash_
 
+    # Durability: record the intent BEFORE the destructive call. If the SSH
+    # session that invoked us is killed mid-DELETE (the 2026-05 120s-timeout
+    # case), the *arr still processes removeFromClient+blocklist, but the
+    # terminal _record_event below never runs — the action then vanishes from
+    # the events log, the daily-cap accounting, and the audit trail. The
+    # in-flight marker guarantees a durable trace from the moment we commit, so
+    # a reader (operator, MCP reconcile) can see the DELETE was issued even if
+    # we die before writing the outcome. "delete-in-flight" is NOT an effective
+    # status, so it never double-counts against the daily cap.
+    if not dry_run:
+        _record_event(slug=slug, queue_id=actual_qid, hash_=hash_,
+                       title=title, reason=reason,
+                       result_status="delete-in-flight")
+
     action = _execute_delete(c, queue_id=actual_qid, dry_run=dry_run)
     final_status = action["status"]
 

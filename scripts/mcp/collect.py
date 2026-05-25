@@ -77,6 +77,14 @@ def matches_stale_rule(t: dict) -> Optional[str]:
         return "stalledDL"
     if state == "downloading" and t.get("dl_speed_bytes_s", 0) < DEAD_SLOW_BYTES_S:
         return "dead-slow"
+    # qBit 5.x renamed pausedDL/pausedUP → stoppedDL/stoppedUP. A *DL torrent
+    # that is stopped/paused while still INCOMPLETE is a dead or ratio-auto-
+    # stopped download (the 2026-05 "Unforgettable" incident: stoppedDL at
+    # 35%, 0 seeds, ratio-limit auto-paused). The progress >= 1.0 guard above
+    # already excludes completed torrents (stoppedUP/pausedUP), so matching
+    # only the *DL variants here never touches finished content/hardlinks.
+    if state in ("stoppedDL", "pausedDL"):
+        return "stopped-incomplete"
     return None
 
 
