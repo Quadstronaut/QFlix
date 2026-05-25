@@ -137,6 +137,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-cp-upgrade.timer \
     scripts/maint/systemd/manitoba-maint-arr-audit.service \
     scripts/maint/systemd/manitoba-maint-arr-audit.timer \
+    scripts/maint/systemd/manitoba-maint-ucc-detect.service \
+    scripts/maint/systemd/manitoba-maint-ucc-detect.timer \
     scripts/maint/arr-audit.py \
     scripts/maint/arr-audit-run.sh \
     scripts/maint/app-upgrade-all.sh \
@@ -349,7 +351,9 @@ for unit in \
     manitoba-maint-cp-upgrade.service \
     manitoba-maint-cp-upgrade.timer \
     manitoba-maint-arr-audit.service \
-    manitoba-maint-arr-audit.timer; do
+    manitoba-maint-arr-audit.timer \
+    manitoba-maint-ucc-detect.service \
+    manitoba-maint-ucc-detect.timer; do
   # If the user unit is a symlink pointing back at the source, `cp -f` fails
   # with "are the same file" — the source already IS the live unit. Drop the
   # symlink first; cp then writes a real file.
@@ -421,6 +425,17 @@ systemctl --user enable --now manitoba-maint-cp-upgrade.timer
 # reports to ~/.opt/maint/audit-reports/arr-audit-YYYY-MM-DD.md (90d
 # retention). Runs in loopback mode (no nginx hop).
 systemctl --user enable --now manitoba-maint-arr-audit.timer
+# UCC upstream-maintenance gate probe — every 5 min (OnActiveSec gives the
+# first fire ~1min after enable). On a clear→active edge it pins a Kuma
+# status-page incident, fires the "Upstream Maintenance Start" subscriber
+# email, and Discord-notifies; on active→clear it unpins + fires "Complete"
+# + triggers the post-window deep-check. Edge-triggered via
+# ~/.opt/maint/ucc-response-state.json — NOT per-cycle. NOTE: the first run
+# while UCC maintenance is active WILL fire one customer "Start" email; the
+# email is idempotent at the campaign level but the operator should be aware.
+# Incident pin requires secrets/uptimekuma.password (skips with a warning if
+# absent). Disable with: systemctl --user disable --now manitoba-maint-ucc-detect.timer
+systemctl --user enable --now manitoba-maint-ucc-detect.timer
 # Restart long-running services so they pick up code/manifest changes
 # (enable --now doesn't restart an already-running unit). Window timers
 # don't need a restart — next fire uses the latest code.
@@ -550,6 +565,14 @@ if [ "${AAT:-0}" -ge 1 ]; then
   gate "arr-audit-timer-scheduled" pass
 else
   gate "arr-audit-timer-scheduled" fail "weekly arr-audit timer not in systemctl list-timers"
+fi
+
+# Smoke 14: UCC upstream-maintenance detect timer scheduled
+UDT=$(sshm "systemctl --user list-timers manitoba-maint-ucc-detect.timer --no-pager 2>/dev/null | grep -c manitoba-maint-ucc-detect.timer" </dev/null 2>/dev/null)
+if [ "${UDT:-0}" -ge 1 ]; then
+  gate "ucc-detect-timer-scheduled" pass
+else
+  gate "ucc-detect-timer-scheduled" fail "ucc-detect timer not in systemctl list-timers"
 fi
 
 echo
