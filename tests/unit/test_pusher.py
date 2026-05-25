@@ -383,3 +383,272 @@ class TestAutoHealStrikeThreshold:
         assert triggered == [], (
             f"expected no trigger; success should have reset strikes. got {triggered!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# B1 suppression: ucc-maintenance recovery suppression in pusher
+# ---------------------------------------------------------------------------
+
+class TestPusherSuppressionDuringUccMaint:
+    """When recovery_suppressed returns True, push_once must NOT call
+    trigger_async but MUST still push the health status to Kuma and MUST
+    annotate the Kuma msg with '[ucc-maint: recovery suppressed]'."""
+
+    def _run_suppressed(self, monkeypatch, *, strikes: int = 3):
+        """Run push_once `strikes` times with a failing health probe and
+        suppression=True. Returns (results, mock_get, triggered)."""
+        from lib import pusher, health, recovery
+        pusher.reset_strike_counter()
+
+        app = _make_app("sonarr", "Sonarr")
+        manifest = Manifest({"sonarr": app})
+        tokens = {"sonarr": "tok"}
+
+        monkeypatch.setattr(health, "probe", lambda a, **kw: HealthResult(
+            ok=False, latency_ms=None, reason="connection refused"))
+
+        triggered = []
+        monkeypatch.setattr(recovery, "trigger_async",
+                             lambda a, **kw: triggered.append(a.name) or "started")
+
+        # Patch suppression at the pusher's import site (the aliased name).
+        with patch("lib.pusher.suppression_mod.recovery_suppressed", return_value=True), \
+             patch("lib.pusher.requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            for _ in range(strikes):
+                result = pusher.push_once(manifest=manifest, tokens=tokens)
+
+        return result, mock_get, triggered
+
+    def test_suppressed_does_not_trigger_recovery(self, monkeypatch):
+        """When suppressed, trigger_async is NOT called on the threshold strike."""
+        _, _, triggered = self._run_suppressed(monkeypatch)
+        assert triggered == [], (
+            f"recovery fired while suppressed; got {triggered!r}"
+        )
+
+    def test_suppressed_still_pushes_status_to_kuma(self, monkeypatch):
+        """Even when suppressed, the health status POST to Kuma must happen."""
+        _, mock_get, _ = self._run_suppressed(monkeypatch)
+        # At least one GET call to Kuma (the health push)
+        kuma_calls = [
+            c for c in mock_get.call_args_list
+            if "api/push/" in str(c)
+        ]
+        assert len(kuma_calls) >= 1, "expected at least one Kuma push call while suppressed"
+
+    def test_suppressed_kuma_msg_annotated(self, monkeypatch):
+        """The Kuma msg param must include '[ucc-maint: recovery suppressed]'."""
+        from lib import pusher, health
+        pusher.reset_strike_counter()
+
+        app = _make_app("sonarr", "Sonarr")
+        manifest = Manifest({"sonarr": app})
+        tokens = {"sonarr": "tok"}
+
+        monkeypatch.setattr(health, "probe", lambda a, **kw: HealthResult(
+            ok=False, latency_ms=None, reason="connection refused"))
+
+        with patch("lib.pusher.suppression_mod.recovery_suppressed", return_value=True), \
+             patch("lib.pusher.requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            # Run 3 times to reach threshold
+            for _ in range(3):
+                pusher.push_once(manifest=manifest, tokens=tokens)
+
+        # Find the push call at or after threshold (strike 3)
+        all_params = [c.kwargs.get("params", {}) or c.args[1] if len(c.args) > 1 else c.kwargs.get("params", {})
+                      for c in mock_get.call_args_list]
+        msgs = [p.get("msg", "") for p in all_params if isinstance(p, dict)]
+        suppressed_msgs = [m for m in msgs if "ucc-maint: recovery suppressed" in str(m)]
+        assert len(suppressed_msgs) >= 1, (
+            f"expected '[ucc-maint: recovery suppressed]' annotation in at least one Kuma push; "
+            f"got msgs: {msgs!r}"
+        )
+# ---------------------------------------------------------------------------
+# Fleet aggregate monitor tests (sub-project C)
+# ---------------------------------------------------------------------------
+
+class TestFleetAggregate:
+    """Tests for the 'QFlix Fleet' aggregate push + storm notify logic."""
+
+    _FLEET_THRESHOLD = 8
+
+    def _run_push_once(self, manifest, tokens, probe_results, state_path,
+                       get_side_effect=None, notify_calls=None):
+        """Helper: patch health.probe, requests.get, fleet.evaluate, notify."""
+        from lib import pusher
+
+        probe_map = {app.name: result for app, result in zip(manifest.apps(), probe_results)}
+
+        def fake_probe(app, **kwargs):
+            return probe_map.get(app.name, HealthResult(ok=True, latency_ms=None, reason="ok"))
+
+        mock_get = MagicMock()
+        if get_side_effect:
+            mock_get.side_effect = get_side_effect
+        else:
+            resp = MagicMock()
+            resp.status_code = 200
+            mock_get.return_value = resp
+
+        captured_notify = notify_calls if notify_calls is not None else []
+
+        def fake_notify(message, level="info"):
+            captured_notify.append({"message": message, "level": level})
+            return True
+
+        # Pass an explicit state_path to push_once via fleet_state_path kwarg
+        with patch("lib.pusher.health_mod.probe", side_effect=fake_probe), \
+             patch("lib.pusher.requests.get", mock_get), \
+             patch("lib.pusher.notify_mod.notify", side_effect=fake_notify):
+            result = pusher.push_once(
+                manifest=manifest,
+                kuma_url="http://127.0.0.1:42005",
+                tokens=tokens,
+                fleet_state_path=state_path,
+            )
+
+        return result, mock_get, captured_notify
+
+    def _make_apps_and_probes(self, n_apps: int, n_failing: int):
+        """Create n_apps apps with tokens; first n_failing are down."""
+        apps = [_make_app(f"app{i}", f"Monitor{i}") for i in range(n_apps)]
+        probe_results = [
+            HealthResult(ok=False, latency_ms=None, reason="conn refused") if i < n_failing
+            else HealthResult(ok=True, latency_ms=10, reason="ok")
+            for i in range(n_apps)
+        ]
+        tokens = {f"app{i}": f"tok{i}" for i in range(n_apps)}
+        return apps, probe_results, tokens
+
+    def test_storm_cycle_pushes_aggregate_down_and_emits_notify(self, tmp_path):
+        """≥threshold failing probes → aggregate DOWN push + exactly 1 storm notify."""
+        from lib import pusher
+        pusher.reset_strike_counter()
+
+        state_path = tmp_path / "fleet-window.json"
+        n_apps = 15
+        n_failing = self._FLEET_THRESHOLD  # exactly threshold
+
+        apps, probe_results, tokens = self._make_apps_and_probes(n_apps, n_failing)
+        tokens["qflix-fleet"] = "tok-fleet"
+        manifest = _make_manifest(*apps)
+
+        notify_calls = []
+        _, mock_get, notify_calls = self._run_push_once(
+            manifest, tokens, probe_results, state_path, notify_calls=notify_calls
+        )
+
+        # Aggregate push must have been called with status=down
+        fleet_calls = [
+            c for c in mock_get.call_args_list
+            if "tok-fleet" in str(c)
+        ]
+        assert len(fleet_calls) == 1, "Expected exactly 1 fleet aggregate push"
+        fleet_params = fleet_calls[0][1]["params"]
+        assert fleet_params["status"] == "down"
+        assert "storm" in fleet_params["msg"].lower()
+
+        # Exactly 1 warning notify
+        warn_notifies = [n for n in notify_calls if n["level"] == "warning"]
+        assert len(warn_notifies) == 1, f"Expected 1 storm notify, got {warn_notifies}"
+        assert "storm" in warn_notifies[0]["message"].lower()
+
+    def test_healthy_cycle_pushes_aggregate_up_no_notify(self, tmp_path):
+        """All probes healthy → aggregate UP push, no notify."""
+        from lib import pusher
+        pusher.reset_strike_counter()
+
+        state_path = tmp_path / "fleet-window-healthy.json"
+        apps, probe_results, tokens = self._make_apps_and_probes(10, 0)
+        tokens["qflix-fleet"] = "tok-fleet"
+        manifest = _make_manifest(*apps)
+
+        notify_calls = []
+        _, mock_get, notify_calls = self._run_push_once(
+            manifest, tokens, probe_results, state_path, notify_calls=notify_calls
+        )
+
+        fleet_calls = [
+            c for c in mock_get.call_args_list
+            if "tok-fleet" in str(c)
+        ]
+        assert len(fleet_calls) == 1
+        fleet_params = fleet_calls[0][1]["params"]
+        assert fleet_params["status"] == "up"
+        assert len(notify_calls) == 0, "No notify expected on healthy cycle"
+
+    def test_absent_fleet_token_no_aggregate_push_no_crash(self, tmp_path):
+        """No 'qflix-fleet' token → no aggregate push, no crash."""
+        from lib import pusher
+        pusher.reset_strike_counter()
+
+        state_path = tmp_path / "fleet-window.json"
+        apps, probe_results, tokens = self._make_apps_and_probes(10, self._FLEET_THRESHOLD)
+        # Intentionally omit "qflix-fleet" from tokens
+        assert "qflix-fleet" not in tokens
+        manifest = _make_manifest(*apps)
+
+        # Must not raise
+        try:
+            _, mock_get, _ = self._run_push_once(
+                manifest, tokens, probe_results, state_path
+            )
+        except Exception as exc:
+            pytest.fail(f"push_once raised with absent fleet token: {exc}")
+
+        fleet_calls = [
+            c for c in mock_get.call_args_list
+            if "tok-fleet" in str(c)
+        ]
+        assert len(fleet_calls) == 0, "No fleet push expected when token absent"
+
+    def test_storm_notify_fires_only_once_across_cycles(self, tmp_path):
+        """Second storm cycle must not re-fire the notify."""
+        from lib import pusher
+        pusher.reset_strike_counter()
+
+        state_path = tmp_path / "fleet-window.json"
+        apps, probe_results, tokens = self._make_apps_and_probes(15, self._FLEET_THRESHOLD)
+        tokens["qflix-fleet"] = "tok-fleet"
+        manifest = _make_manifest(*apps)
+
+        # First cycle → onset + notify
+        n1 = []
+        self._run_push_once(manifest, tokens, probe_results, state_path, notify_calls=n1)
+        assert len([x for x in n1 if x["level"] == "warning"]) == 1
+
+        # Reset strike counter to avoid recovery side-effects
+        pusher.reset_strike_counter()
+
+        # Second cycle (still storm) → no new notify
+        n2 = []
+        self._run_push_once(manifest, tokens, probe_results, state_path, notify_calls=n2)
+        warn2 = [x for x in n2 if x["level"] == "warning"]
+        assert len(warn2) == 0, f"Storm notify must not repeat; got {warn2}"
+
+    def test_clear_notify_fires_when_storm_ends(self, tmp_path):
+        """After a storm, recovery emits one 'info' notify."""
+        from lib import pusher
+        pusher.reset_strike_counter()
+
+        state_path = tmp_path / "fleet-window.json"
+        apps, _, tokens_storm = self._make_apps_and_probes(15, self._FLEET_THRESHOLD)
+        tokens_storm["qflix-fleet"] = "tok-fleet"
+        manifest = _make_manifest(*apps)
+
+        # Establish storm
+        n1 = []
+        self._run_push_once(manifest, tokens_storm, _, state_path, notify_calls=n1)
+        pusher.reset_strike_counter()
+
+        # Recovery: all healthy
+        apps2, probe_ok_results, tokens_ok = self._make_apps_and_probes(15, 0)
+        tokens_ok["qflix-fleet"] = "tok-fleet"
+        n2 = []
+        self._run_push_once(manifest, tokens_ok, probe_ok_results, state_path, notify_calls=n2)
+
+        info_notifies = [x for x in n2 if x["level"] == "info"]
+        assert len(info_notifies) == 1, f"Expected 1 clear notify; got {info_notifies}"
+        assert "clear" in info_notifies[0]["message"].lower()

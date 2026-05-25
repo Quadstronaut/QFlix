@@ -301,6 +301,22 @@ def main() -> int:
         pusher_create_token = existing_now[pusher_monitor].get("pushToken", "")
         print(f"  [skip]{pusher_monitor:25s} (already exists)")
 
+    print("\n--- step 0c: ensure fleet aggregate PUSH monitor exists ---")
+    # "QFlix Fleet" is the dead-man for the whole pushed-app fleet. When many
+    # monitors flip DOWN simultaneously (correlated storm), this single monitor
+    # goes DOWN instead of N pages. The pusher feeds it each cycle (sub-project C).
+    fleet_monitor = "QFlix Fleet"
+    fleet_create_token = ""
+    if fleet_monitor not in existing_now:
+        try:
+            fleet_create_token = _add_push_monitor(api, fleet_monitor)
+            print(f"  [add]{fleet_monitor:25s} PUSH (heartbeat-only) token={'yes' if fleet_create_token else 'pending'}")
+        except Exception as exc:
+            print(f"  [FAIL]{fleet_monitor:25s} {exc}")
+    else:
+        fleet_create_token = existing_now[fleet_monitor].get("pushToken", "")
+        print(f"  [skip]{fleet_monitor:25s} (already exists)")
+
     print("\n--- step 1: drop any existing HTTP monitors I created previously ---")
     deleted = _delete_all_http_monitors(api)
     print(f"deleted {deleted} stale HTTP monitor(s)")
@@ -391,6 +407,17 @@ def main() -> int:
         tokens["manitoba-pusher"] = pusher_create_token
     else:
         missing.append(("manitoba-pusher", pusher_monitor))
+
+    # Fleet aggregate token — keyed "qflix-fleet" so push_once() can find it.
+    # The pusher pushes status=up/down here each cycle; if no push arrives
+    # within 90s Kuma flips DOWN as a dead-man for the whole fleet.
+    fleet_m = fresh.get(fleet_monitor)
+    if fleet_m and fleet_m.get("pushToken"):
+        tokens["qflix-fleet"] = fleet_m["pushToken"]
+    elif fleet_create_token:
+        tokens["qflix-fleet"] = fleet_create_token
+    else:
+        missing.append(("qflix-fleet", fleet_monitor))
 
     if missing:
         print(f"\n[warn] {len(missing)} monitor(s) lack a pushToken in get_monitors():")

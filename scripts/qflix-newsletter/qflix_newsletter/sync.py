@@ -41,6 +41,8 @@ TEMPLATE_TITLES = {
     "weekly.html.j2": "Weekly Digest",
     "maint-start.html.j2": "Maintenance Window Start",
     "maint-complete.html.j2": "Maintenance Window Complete",
+    "upstream-maint-start.html.j2": "Upstream Maintenance Start",
+    "upstream-maint-complete.html.j2": "Upstream Maintenance Complete",
 }
 
 

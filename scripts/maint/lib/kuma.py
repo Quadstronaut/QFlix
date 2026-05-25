@@ -183,6 +183,10 @@ def audit_monitors(manifest, *, kuma_url: str | None = None,
     # bootstrap-kuma-monitors.py and fed by manitoba-maint-pusher.service.
     # Not tied to any app, but always part of the expected monitor set.
     manifest_monitors.add("Manitoba Pusher")
+    # Fleet aggregate dead-man monitor — created by bootstrap-kuma-monitors.py
+    # (step 0c). Fed each cycle by push_once() in the pusher service. Collapses
+    # correlated mass-down storms into a single operator signal (sub-project C).
+    manifest_monitors.add("QFlix Fleet")
 
     if kuma_url is None:
         kuma_url = _kuma_host()
@@ -355,6 +359,21 @@ class KumaWebhookHandler(http.server.BaseHTTPRequestHandler):
                 state.record(state_path, app_name,
                              event="dropped_unknown_app_in_webhook")
                 return
+
+            # B1 suppression: skip recovery while UCC maintenance is active
+            # for ucc-class apps. The gate blocks `app-* start` so recovery
+            # would only churn to permanently-failed. Record the suppression
+            # event so operators can see it in state.json.
+            try:
+                from lib import suppression as _suppression_mod  # noqa: PLC0415
+                if _suppression_mod.recovery_suppressed(app):
+                    state.record(state_path, app_name,
+                                 event="ucc_maint_recovery_suppressed")
+                    return
+            except Exception as _sup_exc:
+                sys.stderr.write(
+                    f"[{_utc_now_iso()}] suppression check failed for '{app_name}': {_sup_exc}\n"
+                )
 
             decision = recovery.trigger_async(app, manifest=manifest)
             if decision == "started":

@@ -577,6 +577,7 @@ _AUDIT_METRICS = (
     'monitor_status{monitor_id="2",monitor_name="Radarr",monitor_type="push"} 1\n'
     'monitor_status{monitor_id="3",monitor_name="Stranger",monitor_type="push"} 0\n'
     'monitor_status{monitor_id="4",monitor_name="Manitoba Pusher",monitor_type="push"} 1\n'
+    'monitor_status{monitor_id="5",monitor_name="QFlix Fleet",monitor_type="push"} 1\n'
 )
 
 
@@ -588,13 +589,13 @@ class TestAuditMonitors:
         monkeypatch.setattr("lib.kuma.requests.get", lambda *a, **k: resp)
         monkeypatch.setattr("lib.kuma._secret_read", lambda n: "fake-key")
         report = audit_monitors(m, kuma_url="http://x")
-        # "Manitoba Pusher" is always part of the expected set (daemon's own
-        # self-heartbeat monitor) — never drift in either direction.
-        assert report["matched"] == ["Manitoba Pusher", "Radarr", "Sonarr", "Stranger"]
+        # "Manitoba Pusher" and "QFlix Fleet" are always part of the expected
+        # set (daemon monitors injected by audit_monitors). Never drift.
+        assert report["matched"] == ["Manitoba Pusher", "QFlix Fleet", "Radarr", "Sonarr", "Stranger"]
         assert report["manifest_only"] == []
         assert report["kuma_only"] == []
-        assert report["live_count"] == 4
-        assert report["manifest_count"] == 4
+        assert report["live_count"] == 5
+        assert report["manifest_count"] == 5
 
     def test_audit_manifest_only(self, monkeypatch):
         from lib.kuma import audit_monitors
@@ -630,10 +631,12 @@ class TestAuditMonitors:
         monkeypatch.setattr("lib.kuma.requests.get", lambda *a, **k: resp)
         monkeypatch.setattr("lib.kuma._secret_read", lambda n: "fake-key")
         report = audit_monitors(m, kuma_url="http://x")
-        # sonarr (1) + auto-injected "Manitoba Pusher" (1) — recyclarr skipped.
-        assert report["manifest_count"] == 2
+        # sonarr (1) + auto-injected "Manitoba Pusher" (1) + "QFlix Fleet" (1)
+        # — recyclarr skipped (kuma_monitor=None).
+        assert report["manifest_count"] == 3
         assert "Sonarr" in report["matched"]
         assert "Manitoba Pusher" in report["matched"]
+        assert "QFlix Fleet" in report["matched"]
 
     def test_audit_pusher_drift_when_missing_from_kuma(self, monkeypatch):
         """Manitoba Pusher absent from Kuma must report as manifest_only
@@ -699,3 +702,96 @@ class TestCliKumaAudit:
         })
         rc = cli.main(["kuma", "audit"], manifest_path=Path("/fake"))
         assert rc == 3
+
+
+# ---------------------------------------------------------------------------
+# B1 suppression: kuma webhook down path suppression
+# ---------------------------------------------------------------------------
+
+class TestWebhookSuppressionDuringUccMaint:
+    """When recovery_suppressed returns True for a ucc-class app in the
+    webhook's status==0 path, trigger_async must NOT be called but the
+    event 'ucc_maint_recovery_suppressed' must be recorded in state."""
+
+    def test_webhook_down_suppressed_does_not_trigger_recovery(
+        self, webhook_server, monkeypatch
+    ):
+        """With suppression active, webhook down path skips trigger_async."""
+        _, port, state_dir = webhook_server
+
+        triggered = []
+
+        def fake_trigger(app, **kw):
+            triggered.append(app.name)
+            return "started"
+
+        monkeypatch.setattr("lib.kuma.recovery.trigger_async", fake_trigger)
+
+        # Patch recovery_suppressed to return True for any app.
+        with patch("lib.suppression.recovery_suppressed", return_value=True):
+            payload = _load_fixture("down.json")
+            resp = requests.post(
+                f"http://127.0.0.1:{port}/kuma",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=5,
+            )
+
+        assert resp.status_code == 200
+        time.sleep(0.05)
+        assert triggered == [], (
+            f"trigger_async called while suppressed; got {triggered!r}"
+        )
+
+    def test_webhook_down_suppressed_records_event(
+        self, webhook_server, monkeypatch
+    ):
+        """Suppressed webhook down path records 'ucc_maint_recovery_suppressed'."""
+        _, port, state_dir = webhook_server
+
+        monkeypatch.setattr("lib.kuma.recovery.trigger_async", lambda a, **kw: "started")
+
+        with patch("lib.suppression.recovery_suppressed", return_value=True):
+            payload = _load_fixture("down.json")
+            requests.post(
+                f"http://127.0.0.1:{port}/kuma",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=5,
+            )
+
+        time.sleep(0.05)
+        from lib import state as state_mod
+        data = state_mod.read(state_dir / "state.json")
+        sonarr_event = data.get("apps", {}).get("sonarr", {}).get("event", "")
+        assert sonarr_event == "ucc_maint_recovery_suppressed", (
+            f"expected 'ucc_maint_recovery_suppressed' event; got {sonarr_event!r}"
+        )
+
+    def test_webhook_down_not_suppressed_triggers_recovery(
+        self, webhook_server, monkeypatch
+    ):
+        """Sanity check: with suppression False, trigger_async IS called."""
+        _, port, state_dir = webhook_server
+
+        triggered = []
+
+        def fake_trigger(app, **kw):
+            triggered.append(app.name)
+            return "started"
+
+        monkeypatch.setattr("lib.kuma.recovery.trigger_async", fake_trigger)
+
+        with patch("lib.suppression.recovery_suppressed", return_value=False):
+            payload = _load_fixture("down.json")
+            requests.post(
+                f"http://127.0.0.1:{port}/kuma",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=5,
+            )
+
+        time.sleep(0.05)
+        assert "sonarr" in triggered, (
+            f"expected trigger_async('sonarr') when not suppressed; got {triggered!r}"
+        )

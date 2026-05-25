@@ -19,9 +19,12 @@ from typing import Optional
 
 import requests
 
+from lib import fleet as fleet_mod
 from lib import health as health_mod
 from lib import manifest as manifest_mod
+from lib import notify as notify_mod
 from lib import recovery as recovery_mod
+from lib import suppression as suppression_mod
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +87,7 @@ def push_once(
     kuma_url: str = "http://127.0.0.1:42005",
     tokens: dict[str, str],
     notify_disabled: bool = True,
+    fleet_state_path=None,
 ) -> dict[str, str]:
     """Probe every app with a pushToken, POST result to Kuma.
 
@@ -93,6 +97,8 @@ def push_once(
     Apps with kuma_monitor=None are silently skipped.
     """
     results: dict[str, str] = {}
+    # Built during the per-app loop for fleet storm detection (sub-project C).
+    _probe_ok: dict[str, bool] = {}
 
     for app in manifest.apps():
         if app.kuma_monitor is None:
@@ -103,6 +109,7 @@ def push_once(
             continue
 
         result = health_mod.probe(app)
+        _probe_ok[app.name] = result.ok
         status = "up" if result.ok else "down"
         params: dict[str, object] = {
             "status": status,
@@ -165,9 +172,75 @@ def push_once(
                 # dedupes so only one recovery actually runs per outage,
                 # AND _permanently_failed prevents thread storms after the
                 # 3-attempt loop exhausts.
-                decision = recovery_mod.trigger_async(app, manifest=manifest)
-                log.info("auto-heal %s: strike %d/%d -> recovery=%s (reason: %s)",
-                         app.name, n, _STRIKE_THRESHOLD, decision, result.reason)
+                #
+                # B1 suppression: skip recovery while UCC maintenance is
+                # active for ucc-class apps. The gate blocks `app-* start`
+                # so recovery would only churn to permanently-failed. Status
+                # is still pushed (above); we annotate the Kuma msg so the
+                # dashboard explains the held state. Do NOT increment toward
+                # permanent-failure (counter stays, but trigger skipped).
+                if suppression_mod.recovery_suppressed(app):
+                    params["msg"] = f"{result.reason} [strike {n}/{_STRIKE_THRESHOLD}] [ucc-maint: recovery suppressed]"
+                    log.info("auto-heal %s: strike %d/%d -> recovery SUPPRESSED (ucc maintenance active)",
+                             app.name, n, _STRIKE_THRESHOLD)
+                else:
+                    decision = recovery_mod.trigger_async(app, manifest=manifest)
+                    log.info("auto-heal %s: strike %d/%d -> recovery=%s (reason: %s)",
+                             app.name, n, _STRIKE_THRESHOLD, decision, result.reason)
+
+    # -----------------------------------------------------------------------
+    # Fleet aggregate push + storm collapse (sub-project C).
+    # Runs AFTER the per-app loop. Gated on "qflix-fleet" token presence
+    # so it's a no-op until the operator runs bootstrap — exactly like
+    # the self-heartbeat gate in serve(). Never raises; best-effort.
+    # -----------------------------------------------------------------------
+    fleet_token = tokens.get("qflix-fleet")
+    if fleet_token:
+        try:
+            fleet_result = fleet_mod.evaluate(
+                results,
+                probe_ok=_probe_ok,
+                state_path=fleet_state_path,
+            )
+            down_count = fleet_result["down_count"]
+            total = fleet_result["total"]
+            storm_active = fleet_result["storm_active"]
+            edge = fleet_result["edge"]
+
+            # Push aggregate monitor status each cycle.
+            fleet_status = "down" if storm_active else "up"
+            fleet_msg = (f"storm: {down_count}/{total} down"
+                         if storm_active
+                         else f"{down_count}/{total} down")
+            try:
+                requests.get(
+                    f"{kuma_url}/api/push/{fleet_token}",
+                    params={"status": fleet_status, "msg": fleet_msg},
+                    timeout=5,
+                )
+            except Exception as exc:
+                log.warning("fleet aggregate push failed: %s", exc)
+
+            # Emit notify only on edge transitions — never per-cycle repeats.
+            if edge == "onset":
+                # List first ~8 failing app names for operator triage.
+                failing = [name for name, ok in _probe_ok.items() if not ok][:8]
+                names_str = ", ".join(failing) if failing else "(none)"
+                msg = (f"⚠ Fleet storm: {down_count}/{total} monitors down at once"
+                       f" — {names_str}")
+                try:
+                    notify_mod.notify(msg, level="warning")
+                except Exception as exc:
+                    log.warning("fleet storm notify failed: %s", exc)
+            elif edge == "clear":
+                msg = f"Fleet storm cleared ({down_count}/{total} down now)"
+                try:
+                    notify_mod.notify(msg, level="info")
+                except Exception as exc:
+                    log.warning("fleet clear notify failed: %s", exc)
+        except Exception as exc:
+            # Never let fleet logic break the pusher loop.
+            log.warning("fleet evaluate/push block raised unexpectedly: %s", exc)
 
     return results
 
