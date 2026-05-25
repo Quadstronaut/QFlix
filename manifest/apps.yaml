@@ -537,6 +537,32 @@ canaries:
     kuma_monitor: "Canary Plex Transcoder"
     script: "scripts/canaries/plex-transcoder.sh"
     schedule: "every-10min"
+  maintainerr-rule-sanity:
+    # Detect Maintainerr rule corruption (threshold=0 / keepFor=0 — would
+    # mass-delete every item in covered libraries on next daily cron),
+    # missing rules (count != 4), or canonical-name drift (operator
+    # in-place renamed but didn't recreate). Pure alert; no autonomous
+    # fix because recreating rules deletes collections which may have
+    # queued items mid-flight (operator decision required).
+    # 2026-05-21: a 60d→45d in-place API edit corrupted all 4 rules to
+    # 0d/0d. Daily run would have wiped every library if it hadn't been
+    # caught manually. This canary closes that gap.
+    kuma_monitor: "Canary Maintainerr Rule Sanity"
+    script: "scripts/canaries/maintainerr-rule-sanity.sh"
+    schedule: "every-30min"
+  quota:
+    # Ultra.cc per-user disk quota with autonomous reclaim. Three levels:
+    #   80% WARN     → annotate Kuma msg; stay UP
+    #   90% CRITICAL → fire Maintainerr execute + collections/handle
+    #                  autonomously (recovers space before SQLite I/O
+    #                  errors start at the 100% wall) and push DOWN
+    #   98% FAIL     → operator intervention; DOWN with explicit msg
+    # The 2026-05-21 incident took ~30+ minutes of operator triage to
+    # diagnose quota exhaustion masked as "apps won't load"; this canary
+    # turns that into a known failure mode with a 15-min detection window.
+    kuma_monitor: "Canary Quota"
+    script: "scripts/canaries/quota.sh"
+    schedule: "every-15min"
   tautulli-plex-link:
     # Assert the Plex address Tautulli is CONFIGURED to use is a live Plex,
     # not just that Tautulli's own web port answers. Closes the gap behind the

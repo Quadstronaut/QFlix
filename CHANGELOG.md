@@ -1,5 +1,103 @@
 # Changelog
 
+## 2026-05-22 — 7-gap triage closure + Kuma self-heal + hardlink-canary rewrite (PR #42)
+
+Sweep across the seedbox that started as a triage of seven known gaps
+and ended with two structural improvements: external-monitor push
+tokens now self-heal, and the hardlink-integrity canary stopped
+firing 20/20 false-positives. Final Kuma state: **50 UP / 2 dormant /
+0 DOWN** (52 monitors total).
+
+### Triage closures
+
+- **`tdarr.server_port` + `tdarr.api_key` secrets deployed.** Both
+  installer-bootstrapped via `scripts/configure/50-tdarr-install.sh`
+  but had never run on the current host. Wrote them manually
+  (`42018` and `tapi_…`), 0600 perms; `~/.config/tdarr` now serves
+  `/api/v2/status` cleanly. Functional-audit goes green.
+- **qBittorrent orphan categories purged.** `mylar` + `readarr` left
+  behind from the 2026-05-11 purge sweep. Removed via
+  `POST /api/v2/torrents/removeCategories` with a real-newline-
+  separated body (URL-encoded `%0A` is treated as one category name
+  &mdash; only `--data-binary @-` with a literal newline works). qBit
+  category list now reads `[radarr, radarr-anime, sonarr-anime,
+  tv-sonarr]`.
+- **5 chronically-failing Prowlarr indexers disabled.** BTdirectory,
+  0Magnet, TorrentProject2, EZTV, Torrent Downloads &mdash; all sat
+  in long-term-failure for &gt; 2 weeks. GET/PUT roundtrip via the
+  loopback API (URL bases require the <code>/prowlarr/</code> prefix
+  or the proxy returns HTTP 307). Prowlarr health array clears to
+  &ldquo;new update available&rdquo; only.
+- **Radarr FNAF3 stale stub deleted.** TMDB id 1692507, Radarr id
+  366, never had files and pointed at a non-existent TMDB record.
+  Radarr health array now empty.
+- **Plex log surface wired into VictoriaLogs.** Plex was the only
+  managed app without a vlogs ingest route. Added route + non-ISO
+  &ldquo;Mon DD, YYYY HH:MM:SS.fff&rdquo; timestamp parser (with
+  month-name &rarr; numeric table) to
+  <code>scripts/mcp/logs.py</code>; the ingest service auto-
+  discovers from <code>_FILE_LOGS</code>, so a 24-hour vlogs query
+  for <code>app:plex</code> immediately returned data. Self-test
+  coverage 18 &rarr; 21.
+
+### Structural improvements
+
+- **`bootstrap-kuma-monitors.py` no longer wipes operator-placed
+  tokens.** Previously the script built its tokens dict from scratch
+  &mdash; only entries it re-synced on that run survived. Any
+  manually-bootstrapped key (e.g. for an external PUSH monitor)
+  vanished on the next run. The fix seeds the dict from the existing
+  <code>secrets/kuma-push-tokens.json</code> before merging the
+  fresh app/canary/pusher tokens.
+- **External PUSH monitor tokens now self-sync.** Added a pass over
+  <code>manifest.kuma_external_monitors</code>: for each entry whose
+  Kuma type is PUSH (today: just &ldquo;QFlix Collect (workstation)&rdquo;),
+  capture its <code>pushToken</code> and write it under the display-
+  name key &mdash; that's what <code>Push-Kuma</code> in
+  <code>qflix-collect.ps1</code> looks up. HTTP-type externals
+  (Quadstronix nodes) are correctly skipped. <em>Net effect:</em>
+  regenerating an external monitor in the Kuma UI no longer
+  silently breaks its consumer; the next bootstrap sweep re-syncs
+  the rotated token automatically. Closes the
+  hourly-Discord-WARN failure mode that triggered this session.
+- **`hardlink-integrity` canary rewritten qBit-side.** The old
+  design sampled the 20 most-recently-modified library video files
+  and failed if &gt; 50% had linkcount=1 &mdash; but qBit's
+  share-ratio cleanup removes seeds faster than that sample window
+  refreshes, so recent library files are almost always
+  linkcount=1 not because *arr skipped the hardlink but because qBit
+  deleted the source afterward. Fired 20/20 DOWN this morning while
+  *arr was at 100% hardlink coverage (verified by inode cross-check:
+  60/60 qBit-completed torrents shared an inode with a library
+  path). The new design enumerates qBit completed-state torrents,
+  stats each <code>content_path</code>'s (dev, inode), and looks up
+  the media library for a sibling outside <code>~/downloads</code>.
+  Two thresholds (both must trip): <code>MAX_DETACHED</code> count
+  and <code>MAX_DETACHED_PCT</code> percent. Live run reports
+  <code>qbit_completed=60 hardlinked=60 detached=0</code> in 214 ms.
+  Old script preserved at
+  <code>~/scripts/canaries/hardlink-integrity.sh.old-pre-rewrite-20260522</code>.
+- **`docs/secrets-convention.md` documents two-copy layout.** The
+  <code>kuma-push-tokens.json</code> entry now spells out that the
+  seedbox copy (read by <code>manitoba-maint-pusher.service</code>
+  and the canary push pipeline) and the workstation copy (read by
+  <code>scripts/local/qflix-collect.ps1</code>) are independent,
+  with the bootstrap script syncing both when run from their
+  respective hosts.
+
+### Verified
+
+- Bootstrap deployed + re-run on seedbox: 48 &rarr; 49 keys,
+  workstation token captured (<code>15fk3z95Dn</code>),
+  0 monitors created (idempotent).
+- Hardlink canary deployed + service fired:
+  <code>Active: inactive (dead) since &hellip; status=0/SUCCESS</code>
+  &mdash; first PASS after several hours of 2/INVALIDARGUMENT
+  exits.
+- Kuma audit final: **50 UP / 2 ? / 0 DOWN**. The two ? (Canary
+  Deletion + Canary Kometa Deploy-Drift) are heartbeat-retention
+  artifacts; they re-prime on their daily 04:30 schedule.
+
 ## 2026-05-20 — random-audit findings + Kuma-push silent-failure guard (PR #29)
 
 The 2026-05-19 random audit (REA + qflix-mcp + manual log scrub) surfaced

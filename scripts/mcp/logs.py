@@ -46,6 +46,10 @@ _FILE_LOGS = {
     # so journalctl --user -u qbittorrent.service is empty. The real engine log
     # lives at the path below and is rotated by qbit itself.
     "qbittorrent":     str(HOME / ".local/share/qBittorrent/logs/qbittorrent.log"),
+    # Plex runs in a LinuxServer.io Docker container; /config maps to the
+    # host path below. The log file has a non-ISO "Mon DD, YYYY HH:MM:SS.fff"
+    # timestamp that the parser normalizes via _MONTH below.
+    "plex":            str(HOME / ".config/plex/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log"),
 }
 
 # Apps with date-rotated logs (no stable filename): resolve at scan time to the
@@ -101,6 +105,13 @@ _TS_PATTERNS = [
         r"^\((?P<lvl>[IWCN])\)\s+(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
         r"\s+-\s+(?P<msg>.*)$"
     ),
+    # Plex Media Server form: "May 20, 2026 16:48:34.248 [tid] LEVEL - msg"
+    # Levels seen: DEBUG, VERBOSE, INFO, WARN, ERROR. _normalize_ts rewrites
+    # the "Mon DD, YYYY" head into ISO.
+    re.compile(
+        r"^(?P<ts>[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\d{2}:\d{2}:\d{2}\.\d{3})"
+        r"\s+\[\d+\]\s+(?P<lvl>[A-Z]+)\s+-\s+(?P<msg>.*)$"
+    ),
     # Fallback ts-only forms (kept for journalctl short-iso lines that the
     # bracket variants above already handle):
     re.compile(
@@ -150,15 +161,28 @@ def _normalize_level(raw: str | None) -> str:
     return _LEVEL_NORMALIZE.get(up, up)
 
 
+_MONTH_ABBR = {
+    "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
+    "May": "05", "Jun": "06", "Jul": "07", "Aug": "08",
+    "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12",
+}
+
+
 def _normalize_ts(raw: str | None) -> str | None:
     """Coerce assorted log timestamp shapes to ISO 8601 the vlogs ingester can
-    parse. Handles space-as-T, comma-millis, and DD/MM/YYYY (maintainerr).
-    Leaves already-ISO strings alone."""
+    parse. Handles space-as-T, comma-millis, DD/MM/YYYY (maintainerr), and
+    'Mon DD, YYYY HH:MM:SS.fff' (Plex). Leaves already-ISO strings alone."""
     if not raw:
         return None
     s = raw.strip()
     if not s:
         return None
+    # Plex: "May 20, 2026 16:48:34.248" → "2026-05-20T16:48:34.248"
+    m = re.match(r"^([A-Z][a-z]{2})\s+(\d{1,2}),\s+(\d{4})\s+(\d{2}:\d{2}:\d{2}\.\d{3})$", s)
+    if m:
+        mon_name, dd, yyyy, hms = m.groups()
+        mm = _MONTH_ABBR.get(mon_name, "01")
+        return f"{yyyy}-{mm}-{int(dd):02d}T{hms}"
     m = re.match(r"^(\d{2})/(\d{2})/(\d{4})[T ](\d{2}:\d{2}:\d{2})(.*)$", s)
     if m:
         dd, mm, yyyy, hms, rest = m.groups()
@@ -279,6 +303,15 @@ _SELF_TEST_CASES = [
     ("qbit-critical",
      "(C) 2026-05-16T07:00:16 - Disk write failed",
      "FATAL"),
+    ("plex-info",
+     "May 20, 2026 16:48:34.248 [140036551703352] INFO - Plex Media Server v1.43.2.10687",
+     "INFO"),
+    ("plex-error",
+     "May 20, 2026 16:48:34.248 [140036551703352] ERROR - Failure loading codec",
+     "ERROR"),
+    ("plex-warn",
+     "May 20, 2026 16:48:34.248 [140036551703352] WARN - Could not refresh metadata",
+     "WARN"),
     ("journalctl-iso",
      "2026-05-15T10:11:12+0000 some-host process: Started",
      "unknown"),

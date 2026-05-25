@@ -11,7 +11,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-51%2F51_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-33_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-47%2F47_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-49%2F49_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -40,8 +40,8 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 | Surface | Count | State |
 |---|---:|---|
 | Apps in manifest (`manifest/apps.yaml`) | **33** | 19 UCC · 5 systemd · 8 cron · 1 library |
-| End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **13** | movie · anime · deletion · mobile-ux · vlogs-stall · qbit-stall · kometa-libraries · kometa-deploy-drift · stale-log-watchdog · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link |
-| Kuma push monitors (manitoba-owned) | **47** | 47/47 UP — every manifest app + all 13 canaries + the daemon's self-heartbeat report continuously |
+| End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **15** | movie · anime · deletion · mobile-ux · qbit-stall · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link · maintainerr-rule-sanity · quota |
+| Kuma push monitors (manitoba-owned) | **49** | 49/49 UP — every manifest app + all 15 canaries + the daemon's self-heartbeat report continuously. Plus 4 external (3 Quadstronix nodes + 1 workstation collector); external PUSH tokens self-heal across `bootstrap-kuma-monitors.py` runs as of 2026-05-22. |
 | Cron + systemd timers | **14+** | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **440+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -95,7 +95,7 @@ flowchart LR
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 47 push monitors)]:::kuma
+  kuma[(Uptime Kuma<br/>isolated netns · 49 push monitors)]:::kuma
   discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex
@@ -186,13 +186,13 @@ flowchart LR
   recovery -->|lifecycle.start ≤3 attempts| status
   recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>47 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>49 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
   C3[Canary deletion · daily 04:30]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K
   C5[Canary qbit-stall · every 15min]:::probe -->|push| K
   C6[Canary vlogs-stall · every 15min]:::probe -->|push| K
-  C7[+ 6 more canaries<br/>kometa-libraries · kometa-deploy-drift<br/>stale-log-watchdog · prowlarr-indexer-health<br/>hardlink-integrity · plex-transcoder]:::probe -->|push| K
+  C7[+ 9 more canaries<br/>kometa-libraries · stale-log-watchdog · kometa-deploy-drift<br/>prowlarr-indexer-health · hardlink-integrity · plex-transcoder<br/>tautulli-plex-link · maintainerr-rule-sanity · quota]:::probe -->|push| K
   push1 --> K
   K -->|status page| public[/HTTPS /status/manitoba/]
 ```
@@ -274,6 +274,11 @@ timeline
             : Smoke 45/45/0 · public-access bookmarks audited + fixed
             : End-user + operator FAQ page shipped at /faq/ (74 KB self-contained)
             : Buildarr patched to manage Sonarr v4 + Radarr v6 (7 venv edits at scripts/patches/, idempotent re-apply, Result=success on all 4 instances)
+  2026-05-22 : 7-gap triage closed (Tdarr port secret · qBit orphan categories · Plex vlogs ingest · 5 stale Prowlarr indexers · Radarr FNAF3 stub · 20/20 hardlink false-positive · workstation push token)
+            : bootstrap-kuma-monitors.py now seeds from existing tokens + syncs kuma_external_monitors PUSH tokens — operator-regenerated monitors auto-recover (PR #42)
+            : hardlink-integrity canary rewritten qBit-side (enumerate qbit-completed → check library inode) — eliminates the share-ratio-removal false-positive that fired the old library-mtime sample design 20/20
+            : Plex log surface wired into vlogs-ingest (Mon-DD-YYYY timestamp parser added to scripts/mcp/logs.py — Plex was the last unmanaged log)
+            : Kuma totals 50 UP / 2 dormant / 0 DOWN
 ```
 
 ---
@@ -343,7 +348,7 @@ The pusher dispatches on `class` for both lifecycle ops and probe selection.
 ## Repo layout
 
 ```text
-manifest/apps.yaml           # 33 apps + 13 canaries — single source of truth
+manifest/apps.yaml           # 33 apps + 15 canaries — single source of truth
 versions.env                 # pinned versions (Tdarr only — pin policy lifted 2026-05-09)
 inventory.md                 # live snapshot of every artifact on the seedbox
 Tuesday.md                   # design doc — extending Mon window to systemd apps
