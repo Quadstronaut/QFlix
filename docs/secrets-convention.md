@@ -38,7 +38,7 @@ back-compat).
 | `postgres.port` | Listmonk's Postgres backend | bootstrap |
 | `tdarr.server_port` / `.api_key` | Tdarr Server | 50-tdarr-install.sh |
 | `uptimekuma.key` / `.port` (+ `.host` for off-box) | Kuma API (metrics scrape + push-token bootstrap) | UI → Settings → API |
-| `kuma-push-tokens.json` | Per-app push tokens written by `scripts/maint/bootstrap-kuma-monitors.py` |
+| `kuma-push-tokens.json` | Per-monitor push tokens. **Two consumers, two copies:** (a) the seedbox copy at `~/secrets/kuma-push-tokens.json` is read by `manitoba-maint-pusher.service` and the canary push pipeline; (b) the local-repo copy at `secrets/kuma-push-tokens.json` is read by `scripts/local/qflix-collect.ps1` (Windows scheduled task) for the workstation-side push. Both are written by `scripts/maint/bootstrap-kuma-monitors.py` when run from that host. Keys for apps and canaries are slug-style (`sonarr`, `canary-quota`). Keys for entries in `manifest.kuma_external_monitors` that are PUSH-typed (e.g. `QFlix Collect (workstation)`) use the **Kuma display name verbatim** — that's what `Push-Kuma` in `qflix-collect.ps1` looks up. The bootstrap seeds from any existing token file before writing, so operator-placed keys survive across runs. |
 | `vlogs.port` | VictoriaLogs loopback port | 80-vlogs-install.sh |
 | `flaresolverr.port` | FlareSolverr Docker-bridge port | bootstrap |
 | `maintenance.port` | manitoba-maint webhook port | 240-maintenance-install.sh |

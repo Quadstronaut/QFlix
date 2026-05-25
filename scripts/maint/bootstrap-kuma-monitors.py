@@ -373,7 +373,17 @@ def main() -> int:
     import time
     time.sleep(2)
     fresh = {m["name"]: m for m in api.get_monitors()}
-    tokens: dict[str, str] = {}
+    # Seed from the existing tokens file so any operator-placed keys we don't
+    # touch below survive (e.g., manually-bootstrapped external PUSH tokens
+    # written before the external-monitor sync below existed). Without this,
+    # every bootstrap run wipes tokens.json down to only what we re-sync.
+    out = REPO_ROOT / "secrets" / "kuma-push-tokens.json"
+    try:
+        tokens: dict[str, str] = json.loads(out.read_text())
+        if not isinstance(tokens, dict):
+            tokens = {}
+    except (FileNotFoundError, ValueError):
+        tokens = {}
     missing = []
     for app in manifest.apps():
         if not app.kuma_monitor:
@@ -393,6 +403,26 @@ def main() -> int:
             tokens[key] = m["pushToken"]
         else:
             missing.append((key, canary.kuma_monitor))
+
+    # External PUSH monitors — entries in manifest.kuma_external_monitors
+    # whose Kuma type is PUSH (e.g., "QFlix Collect (workstation)"). The
+    # bootstrap doesn't create these (they're operator-owned, out of
+    # manitoba scope), but it CAN sync their tokens so consumers like
+    # qflix-collect.ps1 stay healthy after a manual monitor regen. HTTP-type
+    # externals (Quadstronix nodes) have no pushToken and are skipped.
+    # The display-name is used as the key here — that's what Push-Kuma in
+    # qflix-collect.ps1 looks up verbatim.
+    for ext_name in manifest.external_monitors():
+        m = fresh.get(ext_name)
+        if not m:
+            continue
+        mtype = str(m.get("type", "")).lower()
+        if not mtype.endswith("push"):
+            continue
+        if m.get("pushToken"):
+            tokens[ext_name] = m["pushToken"]
+        else:
+            missing.append((ext_name, ext_name))
 
     # Pusher self-heartbeat token — keyed "manitoba-pusher" so the
     # pusher loop can find it. The pusher pushes status=up here each
@@ -425,7 +455,6 @@ def main() -> int:
             print(f"  - {app_name} ({mon_name})")
 
     # Persist tokens for the push-loop service.
-    out = REPO_ROOT / "secrets" / "kuma-push-tokens.json"
     out.write_text(json.dumps(tokens, indent=2, sort_keys=True))
     try:
         os.chmod(out, 0o600)

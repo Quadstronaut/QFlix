@@ -834,7 +834,7 @@ maintainerr 42007</code></pre>
           <li>Add an entry to <code>manifest/apps.yaml</code>. Pick a class: <code>ucc</code> (managed by <code>app-&lt;slug&gt;</code>), <code>systemd</code>, <code>cron</code>, or <code>library</code>.</li>
           <li>Pick a health probe kind: <code>http_api</code>, <code>http_root</code>, <code>systemd_only</code>, <code>port_listen</code>, <code>import_check</code>, or <code>process_pattern</code>.</li>
           <li>Validate: <code>~/bin/manitoba-maint manifest validate</code>.</li>
-          <li>Create the Kuma monitor: <code>~/bin/manitoba-maint kuma audit</code> reports missing monitors; the bootstrap script creates them and writes the push-token into <code>secrets/kuma-push-tokens.json</code>.</li>
+          <li>Create the Kuma monitor: <code>~/bin/manitoba-maint kuma audit</code> reports missing monitors; the bootstrap script creates them and writes the push-token into <code>secrets/kuma-push-tokens.json</code>. The bootstrap also seeds the tokens dict from any existing file before writing, so manually-placed keys (e.g. for the workstation collector's external PUSH monitor) survive across runs &mdash; this self-heal landed 2026-05-22 after a token rotation silently broke the hourly workstation push.</li>
           <li>Wire notifications: every new monitor must attach to both <em>Mission Control - QFlix</em> (Discord) and <em>Manitoba auto-heal webhook</em>. The bootstrap script does the SQL <code>INSERT INTO monitor_notification</code> dance.</li>
           <li>Restart pusher: <code>systemctl --user restart manitoba-maint-pusher</code>.</li>
         </ol>
@@ -865,7 +865,7 @@ maintainerr 42007</code></pre>
 
     <section class="deck" id="sec-monitoring">
       <h2><span class="num">10</span>Kuma &amp; canaries</h2>
-      <p class="deck-sub">Push monitors, status page, and the 4 end-to-end canaries.</p>
+      <p class="deck-sub">Push monitors, status page, and the 14 end-to-end canaries.</p>
 
       <article class="card tut" id="q-kuma-arch" data-tags="kuma push monitor pusher webhook netns isolation 60 seconds">
         <h3>Why is auto-heal in the pusher and not in a Kuma webhook? <a class="qhash" href="#q-kuma-arch">#</a></h3>
@@ -875,8 +875,8 @@ maintainerr 42007</code></pre>
         <p>Kuma's role is visibility (status page + Discord) and the public alert side. The actual healing decision is in <code>scripts/maint/lib/recovery.py</code>.</p>
       </article>
 
-      <article class="card tut" id="q-canaries" data-tags="canary movie anime deletion mobile-ux pipeline end-to-end">
-        <h3>What do the 4 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
+      <article class="card tut" id="q-canaries" data-tags="canary movie anime deletion mobile-ux pipeline end-to-end hardlink qbit vlogs kometa quota prowlarr maintainerr">
+        <h3>What do the 14 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
         <table class="tbl">
           <thead><tr><th>Canary</th><th>Cadence</th><th>Asserts</th></tr></thead>
           <tbody>
@@ -884,6 +884,16 @@ maintainerr 42007</code></pre>
             <tr><td><code>canary-anime</code></td><td>hourly</td><td>Seerr &rarr; Sonarr2 &rarr; import &rarr; Plex anime path works (the <em>second</em> server matters)</td></tr>
             <tr><td><code>canary-deletion</code></td><td>daily 04:30</td><td>Maintainerr's 60-day rule fires and at least one file actually got deleted that week</td></tr>
             <tr><td><code>canary-mobile-ux</code></td><td>every 15 min</td><td>Public Homarr board still renders + the <code>/</code> &rarr; board redirect still works</td></tr>
+            <tr><td><code>canary-qbit-stall</code></td><td>every 15 min</td><td>qBittorrent dl_info_speed&ne;0 while a download queue exists for &gt;5 min (libtorrent wedge detector)</td></tr>
+            <tr><td><code>canary-vlogs-stall</code></td><td>every 15 min</td><td>VictoriaLogs is up and ingesting; every managed *arr is logging within the freshness window</td></tr>
+            <tr><td><code>canary-hardlink-integrity</code></td><td>every 30 min</td><td>Enumerate qBit-completed torrents; check every one has a library twin with the same (dev, inode). Detached &ge; threshold &rarr; fire. (Old design sampled library mtime &mdash; deprecated 2026-05-22 after firing 20/20 false-positive while *arr was at 100% coverage.)</td></tr>
+            <tr><td><code>canary-prowlarr-indexer-health</code></td><td>hourly</td><td>Prowlarr is actually returning search results (429 throttles tolerated); zero indexers in long-term-failure state</td></tr>
+            <tr><td><code>canary-kometa-libraries</code></td><td>hourly</td><td>All 4 Plex libraries match the expected manifest set after Kometa's nightly run</td></tr>
+            <tr><td><code>canary-kometa-deploy-drift</code></td><td>daily 04:30</td><td>Kometa's deployed config matches the repo &mdash; an in-place UI edit that gets blown away on next git-sync gets caught here</td></tr>
+            <tr><td><code>canary-stale-log-watchdog</code></td><td>hourly</td><td>3 long-cadence apps (kometa / recyclarr / buildarr) have written within their expected windows &mdash; catches a silently-failing weekly timer</td></tr>
+            <tr><td><code>canary-quota</code></td><td>hourly</td><td>Disk usage band: 80% warn / 90% critical / 98% fail. The first canary the operator sees before purges trigger.</td></tr>
+            <tr><td><code>canary-plex-transcoder</code></td><td>every 15 min</td><td>Plex Identity + Transcoder + PreferRemote endpoints all respond &mdash; if Plex enters a half-up state where the web UI works but transcoding hangs, this catches it</td></tr>
+            <tr><td><code>canary-maintainerr-rule-sanity</code></td><td>hourly</td><td>4 active rules, all canonically named, all thresholds &ge; floor &mdash; built after a 2026-05-21 incident where a rule threshold flipped to 0 days, queuing the whole library for deletion</td></tr>
           </tbody>
         </table>
         <p>Each canary pushes a status to Kuma. If Kuma goes red, the operator gets pinged. If a canary's underlying script crashes (vs. silently returning OK), <code>journalctl --user -u manitoba-maint-canary-&lt;name&gt;.service</code> has the traceback.</p>
@@ -919,7 +929,7 @@ maintainerr 42007</code></pre>
             <tr><td>1. Prowlarr</td><td>Indexer count &ge; 5; search round-trip for &ldquo;ubuntu&rdquo; returns &ge; 1</td></tr>
             <tr><td>2. *arr &harr; qBit</td><td><code>testall</code> returns 200 for sonarr / sonarr2 / radarr / radarr2</td></tr>
             <tr><td>3. Library hygiene</td><td>Hardlink count &ge; 2 on Movies samples; rescan helpers reach Komga / Kavita / Audiobookshelf</td></tr>
-            <tr><td>4. App liveness</td><td>Maintainerr (with sonarr count), qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 4 canaries</td></tr>
+            <tr><td>4. App liveness</td><td>Maintainerr (with sonarr count), qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 14 canaries</td></tr>
             <tr><td>5. Maintenance system</td><td>Webhook <code>/health</code>, window timer scheduled, manifest validates, pusher active, Kuma drift = 0, Kuma all-up (external + parked excluded)</td></tr>
           </tbody>
         </table>

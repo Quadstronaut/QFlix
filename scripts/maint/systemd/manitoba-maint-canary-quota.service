@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — disk-quota threshold + autonomous Maintainerr reclaim
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push quota
+StandardOutput=journal
+StandardError=journal

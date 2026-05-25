@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — Maintainerr rule sanity (threshold + keepFor floor)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push maintainerr-rule-sanity
+StandardOutput=journal
+StandardError=journal

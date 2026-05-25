@@ -127,6 +127,10 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer \
     scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.service \
     scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.timer \
+    scripts/maint/systemd/manitoba-maint-canary-quota.service \
+    scripts/maint/systemd/manitoba-maint-canary-quota.timer \
+    scripts/maint/systemd/manitoba-maint-canary-maintainerr-rule-sanity.service \
+    scripts/maint/systemd/manitoba-maint-canary-maintainerr-rule-sanity.timer \
     scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.service \
     scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.timer \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.service \
@@ -150,6 +154,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/prowlarr-indexer-health.sh \
     scripts/canaries/hardlink-integrity.sh \
     scripts/canaries/plex-transcoder.sh \
+    scripts/canaries/quota.sh \
+    scripts/canaries/maintainerr-rule-sanity.sh \
     scripts/canaries/tautulli-plex-link.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
@@ -334,6 +340,10 @@ for unit in \
     manitoba-maint-canary-hardlink-integrity.timer \
     manitoba-maint-canary-plex-transcoder.service \
     manitoba-maint-canary-plex-transcoder.timer \
+    manitoba-maint-canary-quota.service \
+    manitoba-maint-canary-quota.timer \
+    manitoba-maint-canary-maintainerr-rule-sanity.service \
+    manitoba-maint-canary-maintainerr-rule-sanity.timer \
     manitoba-maint-canary-tautulli-plex-link.service \
     manitoba-maint-canary-tautulli-plex-link.timer \
     manitoba-maint-cp-upgrade.service \
@@ -389,6 +399,14 @@ systemctl --user enable --now manitoba-maint-canary-hardlink-integrity.timer
 # /:/prefs endpoints. Catches transcoder daemon stalls before customers
 # hit "Conversion failed" — main /identity stays 200 OK during this fault.
 systemctl --user enable --now manitoba-maint-canary-plex-transcoder.timer
+# quota: track per-user Ultra.cc quota at 80%/90%/98% (warn/crit/fail).
+# At 90% fires Maintainerr execute + collections/handle autonomously to
+# reclaim space before the 100% wall causes SQLite I/O errors stack-wide.
+systemctl --user enable --now manitoba-maint-canary-quota.timer
+# maintainerr-rule-sanity: detect threshold=0 / keepFor=0 corruption that
+# would mass-delete every covered library item on next daily cron. Pure
+# alert; recreating rules deletes collections-in-flight so operator-only.
+systemctl --user enable --now manitoba-maint-canary-maintainerr-rule-sanity.timer
 # tautulli-plex-link: every 15 min, assert Tautulli's CONFIGURED pms target is
 # a live Plex /identity. Catches "Tautulli web up but pinned to a dead/old Plex
 # IP" — the 2026-05-20 re-IP class the app monitor stayed green through.
@@ -517,7 +535,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime deletion mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link; do
+for canary in movie anime deletion mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota maintainerr-rule-sanity; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
