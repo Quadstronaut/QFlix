@@ -90,6 +90,7 @@ def _render_status_table(rows: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
+    import datetime as _datetime
     from lib import health as health_mod
 
     apps_state = state_data.get("apps", {})
@@ -105,6 +106,9 @@ def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
     else:
         app_list = list(manifest.apps())
 
+    # Capture timestamp once at run start (before parallel probes begin)
+    captured_at = _datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
     # Parallel probes
     def _probe_one(app):
         result = health_mod.probe(app)
@@ -115,7 +119,9 @@ def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
             last_recovery = f"{last_recovery} ({updated_at[:10]})"
         return {
             "app": app.name,
+            "display": app.kuma_monitor if app.kuma_monitor else app.name,
             "class_": app.class_,
+            "probe_kind": app.health.kind,
             "ok": result.ok,
             "latency_ms": result.latency_ms,
             "last_recovery": last_recovery,
@@ -129,6 +135,31 @@ def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
 
     # Sort by app name for deterministic output
     rows.sort(key=lambda r: r["app"])
+
+    if getattr(args, "json", False):
+        # Machine-readable JSON output (QuadstroNot status contract schema_version 1)
+        total = len(rows)
+        up = sum(1 for r in rows if r["ok"])
+        payload = {
+            "schema_version": 1,
+            "captured_at": captured_at,
+            "summary": {"total": total, "up": up, "down": total - up},
+            "apps": [
+                {
+                    "app": r["app"],
+                    "display": r["display"],
+                    "class": r["class_"],
+                    "probe_kind": r["probe_kind"],
+                    "ok": r["ok"],
+                    "latency_ms": r["latency_ms"],
+                    "last_recovery": r["last_recovery"],
+                }
+                for r in rows
+            ],
+        }
+        print(json.dumps(payload, sort_keys=False))
+        return 0
+
     print(_render_status_table(rows))
     return 0
 
@@ -439,6 +470,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="app name (omit or use --all for all apps)",
     )
     p_status.add_argument("--all", dest="all_apps", action="store_true")
+    p_status.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="emit machine-readable JSON payload to stdout (QuadstroNot contract)",
+    )
 
     # start / stop / restart
     for verb in ("start", "stop", "restart"):
@@ -528,6 +565,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="show planned actions; do not log into qBit or mutate any *arr",
     )
 
+    # ucc — UCC upstream-maintenance detection
+    p_ucc = sub.add_parser("ucc", help="UCC upstream-maintenance detection")
+    ucc_sub = p_ucc.add_subparsers(dest="ucc_command", metavar="SUBCOMMAND")
+    ucc_sub.required = True
+    ucc_sub.add_parser("detect", help="run one probe + state update (timer entrypoint)")
+    ucc_sub.add_parser("status", help="read-only print of current UCC window state")
+
+    # deep-check — post-window probe + autoheal sweep (sub-project D)
+    p_deep_check = sub.add_parser(
+        "deep-check",
+        help="probe all manifest apps and recover anything still down (post-window sweep)",
+    )
+    p_deep_check.add_argument(
+        "--reason",
+        default="manual",
+        help="label recorded in deep-check.jsonl and the summary notify (default: manual)",
+    )
+
     return parser
 
 
@@ -571,6 +626,90 @@ def _cmd_qbit_rotate(args, manifest) -> int:
         return 2
     if not args.dry_run:
         print(f"new password persisted to secrets/qbittorrent.password")
+    return 0
+
+
+def _cmd_ucc_detect(args: argparse.Namespace) -> int:
+    """`manitoba-maint ucc detect` — run one probe + state update.
+
+    Exits:
+      0 — probe ran and state was written (gated/clear/probe-error are all ok).
+      2 — unexpected operational failure (e.g. unhandled exception).
+    """
+    from lib import ucc as ucc_mod
+
+    state_dir_env = os.environ.get("MANITOBA_STATE_DIR")
+    state_path = (
+        Path(state_dir_env) / "ucc-window.json"
+        if state_dir_env
+        else None
+    )
+    try:
+        state = ucc_mod.detect(state_path=state_path)
+        active = state.get("active", False)
+        result = state.get("last_probe_result", "unknown")
+        print(f"ucc detect: active={active} last_probe_result={result}", file=sys.stderr)
+    except Exception as exc:
+        print(f"error: ucc detect failed: {exc}", file=sys.stderr)
+        return 2
+
+    # B: respond to state transitions (pin/unpin incident, email, notify, deep-check).
+    try:
+        from lib import ucc_response as ucc_response_mod
+        response_state_path = (
+            Path(state_dir_env) / "ucc-response-state.json"
+            if state_dir_env
+            else None
+        )
+        ucc_response_mod.respond(state, response_state_path=response_state_path)
+    except Exception as exc:
+        # Best-effort — log but don't fail the detect command.
+        print(f"warning: ucc_response.respond failed: {exc}", file=sys.stderr)
+
+    return 0
+
+
+def _cmd_ucc_status(args: argparse.Namespace) -> int:
+    """`manitoba-maint ucc status` — read-only print of current UCC window state.
+
+    Always exits 0 (read-only, cannot operationally fail).
+    """
+    from lib import ucc as ucc_mod
+
+    state_dir_env = os.environ.get("MANITOBA_STATE_DIR")
+    state_path = (
+        Path(state_dir_env) / "ucc-window.json"
+        if state_dir_env
+        else None
+    )
+    state = ucc_mod.read_state(state_path) if state_path else ucc_mod.status()
+    if not state:
+        print("ucc: no state recorded (no probe has run yet)")
+    else:
+        active = state.get("active", False)
+        result = state.get("last_probe_result", "unknown")
+        probe_op = state.get("probe_op", "unknown")
+        last_probe = state.get("last_probe_at", "never")
+        consecutive_clear = state.get("consecutive_clear", 0)
+        consecutive_error = state.get("consecutive_error", 0)
+        print(f"ucc: active={active} last_probe_result={result}")
+        print(f"     probe_op={probe_op}")
+        print(f"     last_probe_at={last_probe}")
+        print(f"     consecutive_clear={consecutive_clear} consecutive_error={consecutive_error}")
+        if active:
+            print(f"     first_detected_at={state.get('first_detected_at', 'unknown')}")
+            print(f"     last_confirmed_at={state.get('last_confirmed_at', 'unknown')}")
+    return 0
+
+
+def _cmd_deep_check(args: argparse.Namespace) -> int:
+    """`manitoba-maint deep-check [--reason <str>]` — probe all manifest apps
+    and recover anything still down. Exits 0 unless the run couldn't start.
+    """
+    from lib import deep_check as dc_mod
+
+    result = dc_mod.run_deep_check(reason=args.reason)
+    print(result)
     return 0
 
 
@@ -635,6 +774,17 @@ def main(argv: list[str], *, manifest_path: Optional[Path] = None, _manifest=Non
 
     if args.command == "window" and args.window_command == "watchdog":
         return _cmd_window_watchdog(args)
+
+    # ucc subcommands — no manifest required
+    if args.command == "ucc":
+        if args.ucc_command == "detect":
+            return _cmd_ucc_detect(args)
+        if args.ucc_command == "status":
+            return _cmd_ucc_status(args)
+
+    # deep-check — no manifest required (loads its own via MANITOBA_MANIFEST_PATH)
+    if args.command == "deep-check":
+        return _cmd_deep_check(args)
 
     # All remaining commands need a loaded manifest
     # Allow test injection via _manifest parameter

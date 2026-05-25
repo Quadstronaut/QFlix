@@ -122,3 +122,36 @@ def test_list_templates_returns_name_to_id_map(tmp_path):
         ]})
         out = client.list_templates()
     assert out == {"Prod · Weekly Digest": 1, "Stage · Weekly Digest": 2}
+
+
+# ---------------------------------------------------------------------------
+# B3: upstream-maint-* template render tests
+# ---------------------------------------------------------------------------
+
+def test_upstream_maint_start_renders_without_error():
+    """upstream-maint-start.html.j2 renders against the preview context
+    without raising and produces non-empty HTML."""
+    out = sync.render_preview("upstream-maint-start.html.j2",
+                              "example.com", "kuma.example.com")
+    assert out.strip()
+    assert "{{ template" not in out
+    assert "upstream" in out.lower() or "maintenance" in out.lower()
+
+
+def test_upstream_maint_complete_renders_without_error():
+    """upstream-maint-complete.html.j2 renders against the preview context
+    without raising and produces non-empty HTML."""
+    out = sync.render_preview("upstream-maint-complete.html.j2",
+                              "example.com", "kuma.example.com")
+    assert out.strip()
+    assert "{{ template" not in out
+    assert "complete" in out.lower() or "maintenance" in out.lower()
+
+
+def test_template_titles_includes_upstream_maint():
+    """TEMPLATE_TITLES must contain both upstream-maint entries so sync()
+    will upsert them to Listmonk."""
+    assert "upstream-maint-start.html.j2" in sync.TEMPLATE_TITLES
+    assert sync.TEMPLATE_TITLES["upstream-maint-start.html.j2"] == "Upstream Maintenance Start"
+    assert "upstream-maint-complete.html.j2" in sync.TEMPLATE_TITLES
+    assert sync.TEMPLATE_TITLES["upstream-maint-complete.html.j2"] == "Upstream Maintenance Complete"

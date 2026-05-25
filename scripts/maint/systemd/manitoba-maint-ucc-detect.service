@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba maint — UCC upstream-maintenance gate probe
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint ucc detect
+StandardOutput=journal
+StandardError=journal

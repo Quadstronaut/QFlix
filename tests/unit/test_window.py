@@ -392,7 +392,8 @@ def test_run_calls_open_drain_smoke_close_notify_twice(tmp_path):
 
     with patch("lib.window.notify.notify") as mock_notify, \
          patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
-         patch("lib.window.health.probe", return_value=ok_health):
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.deep_check.run_deep_check"):
         w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
         w.open = _fake_open
         w.drain_queue = _fake_drain
@@ -672,7 +673,8 @@ def test_run_fires_pre_and_post_notifications_with_kuma_outcome(tmp_path):
          patch("lib.window.listmonk.fire_template_campaign", return_value=True) as mock_listmonk, \
          patch("lib.window.health.probe", return_value=ok_health), \
          patch("lib.window.lifecycle.upgrade"), \
-         patch("lib.window.kuma.monitors_status", return_value=all_up):
+         patch("lib.window.kuma.monitors_status", return_value=all_up), \
+         patch("lib.window.deep_check.run_deep_check"):
         w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
         summary = w.run()
 
@@ -741,3 +743,60 @@ def test_run_dry_run_skips_kuma_poll_and_listmonk(tmp_path):
     mock_listmonk.assert_not_called()
     assert summary.kuma_converged is True
     assert any("dry-run" in n.lower() for n in summary.notes)
+
+
+# ---------------------------------------------------------------------------
+# Sub-project D: deep_check.run_deep_check integration in run()
+# ---------------------------------------------------------------------------
+
+def test_run_calls_deep_check_after_close(tmp_path):
+    """run() must call deep_check.run_deep_check(reason='qflix-window', ...) after close."""
+    manifest = _simple_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+
+    with patch("lib.window.notify.notify"), \
+         patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.kuma.monitors_status", return_value={}), \
+         patch("lib.window.deep_check.run_deep_check") as mock_dc:
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.run()
+
+    mock_dc.assert_called_once()
+    kwargs = mock_dc.call_args[1]
+    assert kwargs.get("reason") == "qflix-window"
+    assert kwargs.get("manifest") is manifest
+
+
+def test_run_dry_run_skips_deep_check(tmp_path):
+    """dry_run=True must skip deep_check.run_deep_check entirely."""
+    manifest = _simple_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+
+    with patch("lib.window.notify.notify"), \
+         patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.kuma.monitors_status", return_value={}), \
+         patch("lib.window.deep_check.run_deep_check") as mock_dc:
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest, dry_run=True)
+        w.run()
+
+    mock_dc.assert_not_called()
+
+
+def test_run_deep_check_exception_does_not_fail_run(tmp_path):
+    """A raising deep_check must not propagate out of run() — window close is primary."""
+    manifest = _simple_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+
+    with patch("lib.window.notify.notify"), \
+         patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.kuma.monitors_status", return_value={}), \
+         patch("lib.window.deep_check.run_deep_check", side_effect=RuntimeError("deep-check crash")):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        # must not raise
+        summary = w.run()
+
+    # run() returned normally despite deep_check crash
+    assert summary is not None

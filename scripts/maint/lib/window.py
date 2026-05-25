@@ -22,7 +22,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-from lib import health, kuma, lifecycle, listmonk, notify
+from lib import deep_check, health, kuma, lifecycle, listmonk, notify
 from lib.lifecycle import LifecycleError
 from lib.manifest import Manifest
 
@@ -505,6 +505,19 @@ class WindowOrchestrator:
                 template_title="Maintenance Window Complete",
                 subject="QFlix maintenance window complete",
             )
+
+        # Post-window deep-check: probe all apps and recover anything still
+        # down that was suppressed/queued during the window. Best-effort —
+        # a deep-check failure must not fail the window close. Skipped in
+        # dry_run (no real recovery should fire during a dry run).
+        if not self._dry_run:
+            try:
+                deep_check.run_deep_check(
+                    reason="qflix-window",
+                    manifest=self._manifest,
+                )
+            except Exception:
+                pass  # best-effort; window summary already returned
 
         return summary
 
