@@ -47,7 +47,11 @@ def collect(include: set, recent_hours: int, recent_max: int) -> dict:
     out: dict = {}
     if "libraries" in include:
         libs = []
-        cutoff = (dt.datetime.utcnow() - dt.timedelta(hours=recent_hours))
+        # Naive UTC on purpose: plexapi's r.addedAt is a naive datetime, and
+        # comparing it to an aware cutoff would raise TypeError. now(utc) then
+        # strip tzinfo keeps the value naive-UTC without the deprecation.
+        cutoff = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                  - dt.timedelta(hours=recent_hours))
         for s in plex.library.sections():
             try:
                 total = s.totalSize
@@ -92,7 +96,7 @@ def collect(include: set, recent_hours: int, recent_max: int) -> dict:
         except Exception:
             out["active_sessions"] = 0
 
-    out["last_scan"] = dt.datetime.utcnow().isoformat() + "Z"
+    out["last_scan"] = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
     return out
 
 

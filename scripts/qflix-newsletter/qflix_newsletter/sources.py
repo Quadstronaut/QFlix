@@ -131,7 +131,7 @@ def _extract_tmdb_id(row: dict) -> Optional[int]:
 
 def fetch_calendar(arr: ArrEndpoint, days: int, now: Optional[_dt.datetime] = None) -> list[CalendarItem]:
     if now is None:
-        now = _dt.datetime.utcnow()
+        now = _dt.datetime.now(_dt.timezone.utc)
     end = now + _dt.timedelta(days=days)
     params = {
         "start": now.strftime("%Y-%m-%dT%H:%M:%SZ"),

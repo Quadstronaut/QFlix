@@ -85,7 +85,7 @@ def _preview_context(public_host: str, kuma_public_host: str) -> EmailContext:
         blurb="Same emotional register, different visual language.",
     )]
     return EmailContext(
-        week_label=_dt.datetime.utcnow().strftime("%B %d, %Y"),
+        week_label=_dt.datetime.now(_dt.timezone.utc).strftime("%B %d, %Y"),
         pick=pick, movies=movies, shows=shows,
         anime_movies=[], anime_shows=[], coming_soon=coming,
         ai_picks=ai_picks,

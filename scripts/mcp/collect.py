@@ -309,10 +309,13 @@ def _collect_plex(recent_hours: int) -> dict:
 
 
 def run(include: set, recent_hours: int) -> dict:
-    now = dt.datetime.utcnow().replace(microsecond=0)
+    # Aware-UTC: the old naive utcnow().astimezone(-7) silently assumed the
+    # naive value was *local* time (correct only on a UTC box). Anchoring to
+    # UTC makes captured_at_az right regardless of the host clock.
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     az = now.astimezone(dt.timezone(dt.timedelta(hours=-7)))
     out = {
-        "captured_at": now.isoformat() + "Z",
+        "captured_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "captured_at_az": az.isoformat(),
     }
 
