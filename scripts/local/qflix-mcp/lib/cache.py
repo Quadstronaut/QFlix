@@ -116,7 +116,7 @@ class Cache:
 
     def append_event(self, line: dict) -> None:
         self.events_root.mkdir(parents=True, exist_ok=True)
-        date = (line.get("ts") or dt.datetime.utcnow().isoformat())[:10]
+        date = (line.get("ts") or dt.datetime.now(dt.timezone.utc).isoformat())[:10]
         with (self.events_root / f"{date}.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(line, default=str) + "\n")
 

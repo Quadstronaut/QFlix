@@ -424,7 +424,7 @@ def qflix_refresh_collect() -> dict:
         snap = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return {"status": "bad-json", "stdout": proc.stdout[:300]}
-    now = dt.datetime.utcnow()
+    now = dt.datetime.now(dt.timezone.utc)
     path = _cache().write_snapshot(now, snap)
     return {"status": "ok", "snapshot_path": str(path),
             "captured_at": snap.get("captured_at")}

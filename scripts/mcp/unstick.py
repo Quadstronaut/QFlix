@@ -195,7 +195,7 @@ def _try_qbit_orphan_cleanup(hash_: Optional[str], *, dry_run: bool) -> dict:
 def _record_event(*, slug: str, queue_id: Optional[int], hash_: Optional[str],
                   title: str, reason: str, result_status: str) -> None:
     _append_event({
-        "ts": dt.datetime.utcnow().isoformat() + "Z",
+        "ts": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         "action": "unstick",
         "slug": slug,
         "queue_id": queue_id,
