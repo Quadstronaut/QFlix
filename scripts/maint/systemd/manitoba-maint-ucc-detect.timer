@@ -2,6 +2,11 @@
 Description=Manitoba maint — UCC gate probe (every 5 minutes)
 
 [Timer]
+# OnActiveSec gives the FIRST fire ~1min after `enable --now`. Without it,
+# OnUnitActiveSec alone has no time base until the service has run at least
+# once, so a freshly-enabled timer would never trigger its first run.
+# OnUnitActiveSec then paces every subsequent run 5min after the prior fire.
+OnActiveSec=1min
 OnUnitActiveSec=5min
 Persistent=true
 
