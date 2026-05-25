@@ -111,6 +111,12 @@ sshm "cd ~/.apps/listmonk && \
 log_info "listmonk schema bootstrapped"
 
 # ── Step 8: user-systemd service ────────────────────────────────────────────
+# Deploy the pre-start resume-resend guard first — listmonk.service's
+# ExecStartPre references it, and it must be on disk before the unit starts.
+sshm 'mkdir -p ~/scripts/ops'
+scpm_to "$HERE/../ops/listmonk-cancel-running.sh" '~/scripts/ops/listmonk-cancel-running.sh'
+sshm 'chmod +x ~/scripts/ops/listmonk-cancel-running.sh'
+
 sshm "bash -s" <<'UNITSCRIPT'
 set -euo pipefail
 cat > ~/.config/systemd/user/listmonk.service <<'UNIT'
@@ -122,6 +128,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/.apps/listmonk
+# Pre-start guard: cancel any campaign left `running` so a crash/restart
+# mid-send cannot auto-resume and re-send the whole list (root cause of the
+# 2026-05-18 + 2026-05-11 double-sends). Leading `-` = never blocks startup.
+ExecStartPre=-%h/scripts/ops/listmonk-cancel-running.sh
 ExecStart=%h/.apps/listmonk/bin/listmonk --config %h/.apps/listmonk/etc/config.toml
 Restart=on-failure
 RestartSec=5s
