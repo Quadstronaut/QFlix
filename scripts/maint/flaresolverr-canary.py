@@ -29,6 +29,18 @@ body), AND:
     rolling 60 minutes (default 3, crash-loop protection)
 then: subprocess.run(['app-flaresolverr', 'restart']) and notify via Discord.
 
+Push-suppression: this is a SECOND, independent alert path from the pusher —
+it runs on its own timer and pages Discord directly. So like the pusher, it
+honors the push-suppress registry (~/.opt/maint/push-suppress.json): if
+FlareSolverr (key FS_SUPPRESS_KEY, default "flaresolverr") is listed there,
+run() short-circuits to a clean no-op — no probe, no restart churn, no page —
+before doing anything else. Without this it would keep paging "restart REFUSED
+— crash-loop" every cycle while the operator has knowingly muted the monitor
+(e.g. awaiting an Ultra.cc fix). The self-destructing unsuppress watcher
+(flaresolverr-unsuppress-watch.sh) removes the entry once FlareSolverr is live,
+restoring both the pushed monitor and this canary in one move. Fail-open: any
+registry read error falls through to normal alerting.
+
 State file: ~/.opt/maint/flaresolverr-canary-state.json — JSON list of
 restart epoch timestamps. Trimmed to the last hour on every run.
 
