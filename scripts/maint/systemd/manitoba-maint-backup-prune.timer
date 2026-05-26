@@ -1,0 +1,14 @@
+[Unit]
+Description=Manitoba maint — weekly app-backup retention prune
+
+[Timer]
+# Weekly, Sunday 03:30 UTC — backups accrue slowly (only on install/migrate),
+# so weekly is ample. RandomizedDelaySec spreads load off the 00:00 timers.
+# Persistent=true catches up after a seedbox reboot.
+OnCalendar=Sun *-*-* 03:30:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=manitoba-maint-backup-prune.service
+
+[Install]
+WantedBy=timers.target
