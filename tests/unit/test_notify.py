@@ -120,6 +120,55 @@ def test_notify_fails_loud_when_webhook_url_missing(tmp_path, monkeypatch):
     assert "no webhook" in log
 
 
+def test_notify_writes_audit_log_on_success(tmp_path, monkeypatch):
+    """Every successful send is recorded in notify.log as 'sent' — without
+    touching notify-fail.log."""
+    secrets_dir = tmp_path / "secrets"
+    _write_secret(secrets_dir, "discord-webhook.url",
+                  "https://discord.com/api/webhooks/4/audit")
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(secrets_dir))
+    monkeypatch.setenv("MANITOBA_STATE_DIR", str(state_dir))
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 204
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("requests.post", return_value=mock_resp):
+        assert notify("audited success", level="warning") is True
+
+    audit = (state_dir / "notify.log").read_text(encoding="utf-8")
+    assert "audited success" in audit
+    assert "sent" in audit
+    assert "warning" in audit
+    assert not (state_dir / "notify-fail.log").exists()
+
+
+def test_notify_writes_audit_log_on_failure(tmp_path, monkeypatch):
+    """A failed send is recorded in BOTH notify.log ('failed: ...') and
+    notify-fail.log, with the webhook token redacted from the audit trail."""
+    secrets_dir = tmp_path / "secrets"
+    _write_secret(secrets_dir, "discord-webhook.url",
+                  "https://discord.com/api/webhooks/5/SECRET_xyz")
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(secrets_dir))
+    monkeypatch.setenv("MANITOBA_STATE_DIR", str(state_dir))
+
+    import requests as req_mod
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.raise_for_status.side_effect = req_mod.HTTPError(
+        "500 for https://discord.com/api/webhooks/5/SECRET_xyz")
+
+    with patch("requests.post", return_value=mock_resp):
+        assert notify("audited failure", level="error") is False
+
+    audit = (state_dir / "notify.log").read_text(encoding="utf-8")
+    assert "audited failure" in audit
+    assert "failed" in audit
+    assert "SECRET_xyz" not in audit
+
+
 def test_redact_url_hides_discord_webhook_token(tmp_path, monkeypatch):
     secrets_dir = tmp_path / "secrets"
     _write_secret(secrets_dir, "discord-webhook.url",

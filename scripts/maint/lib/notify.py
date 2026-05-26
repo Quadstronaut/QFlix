@@ -13,6 +13,7 @@ On failure: logs to MANITOBA_STATE_DIR/notify-fail.log (default
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from datetime import datetime, timezone
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Color map by level
@@ -154,6 +157,43 @@ def _append_fail_log(level: str, message: str, error: str) -> None:
         print(f"WARNING: could not write notify-fail.log: {exc}", file=sys.stderr)
 
 
+# Cap notify.log (the full send-audit trail) the same way as notify-fail.log.
+_NOTIFY_AUDIT_LOG_MAX_LINES = 5000
+
+
+def _append_audit_log(level: str, message: str, outcome: str) -> None:
+    """Record EVERY operator alert — sent or failed — to notify.log, so there
+    is a durable trail of what paged and when.
+
+    WHY this is needed on top of notify-fail.log: previously only *failed*
+    sends were recorded; a successfully-delivered page (the common case) left
+    no trace, and callers don't all have Python logging configured to journal
+    (flaresolverr-canary.py uses print(); the pusher uses logging). The file
+    audit is caller-independent. Best-effort; never raises."""
+    state_dir = _state_dir()
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        log_path = state_dir / "notify.log"
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        # Single tab-delimited line; message truncated so an alert flood can't
+        # bloat any one row.
+        line = f"{now}\t{level}\t{outcome}\t{message[:300]}\n"
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+        # Cheap, imprecise rotation — same approach as _append_fail_log.
+        if (hash(now) & 0xFF) == 0:
+            try:
+                lines = log_path.read_text(encoding="utf-8").splitlines(keepends=True)
+                if len(lines) > _NOTIFY_AUDIT_LOG_MAX_LINES:
+                    log_path.write_text(
+                        "".join(lines[-_NOTIFY_AUDIT_LOG_MAX_LINES:]),
+                        encoding="utf-8")
+            except Exception:
+                pass  # rotation is best-effort
+    except Exception as exc:
+        print(f"WARNING: could not write notify.log: {exc}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -161,13 +201,21 @@ def _append_fail_log(level: str, message: str, error: str) -> None:
 def notify(message: str, level: str = "info") -> bool:
     """Send a notification to the operator's Discord. Returns False (and
     logs to notify-fail.log) if the webhook URL is missing or the POST
-    fails — never raises."""
+    fails — never raises. Every attempt (sent or failed) is recorded to
+    notify.log for an audit trail."""
     webhook_url = _try_read_webhook_url()
     if not webhook_url:
         _append_fail_log(level, message, "no webhook: secrets/discord-webhook.url missing")
+        _append_audit_log(level, message, "failed: no webhook configured")
+        log.warning("alert NOT sent (no webhook configured): [%s] %s", level, message)
         return False
     ok, err = _post_discord(webhook_url, message, level)
     if ok:
+        _append_audit_log(level, message, "sent")
+        log.info("alert sent: [%s] %s", level, message)
         return True
-    _append_fail_log(level, message, _redact_url(err))
+    redacted = _redact_url(err)
+    _append_fail_log(level, message, redacted)
+    _append_audit_log(level, message, f"failed: {redacted}")
+    log.warning("alert send FAILED: [%s] %s (%s)", level, message, redacted)
     return False

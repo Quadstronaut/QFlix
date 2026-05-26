@@ -56,6 +56,12 @@ STATE_DIR = Path(os.environ.get("MANITOBA_STATE_DIR", str(Path.home() / ".opt" /
 STATE_FILE = STATE_DIR / "flaresolverr-canary-state.json"
 
 FS_HOST = os.environ.get("FS_HOST", "172.17.0.1")
+# Push-suppress registry key. The pusher mutes the "FlareSolverr" Kuma monitor
+# under this same key while flaresolverr is knowingly down (awaiting the
+# Ultra.cc cap_setuid ticket); this canary honors it too so it stops paging
+# while the outage is already acknowledged. Default matches the app name in
+# manifest/apps.yaml and the self-destructing unsuppress watcher's APP var.
+FS_SUPPRESS_KEY = os.environ.get("FS_SUPPRESS_KEY", "flaresolverr")
 FS_TIMEOUT_S = int(os.environ.get("FS_TIMEOUT_S", "10"))
 FS_MIN_UPTIME_S = int(os.environ.get("FS_MIN_UPTIME_S", "60"))
 FS_MAX_RESTARTS_PER_HOUR = int(os.environ.get("FS_MAX_RESTARTS_PER_HOUR", "3"))
@@ -206,6 +212,34 @@ def _wait_for_healthy(base: str) -> tuple[bool, str, str]:
     return False, detail_root, detail_v1
 
 
+def _suppress_reason() -> str | None:
+    """Return the push-suppression reason for FlareSolverr if its monitor is
+    muted in the push-suppress registry, else None.
+
+    WHY this canary needs its own check: the pusher already pushes the
+    "FlareSolverr" Kuma monitor UP-with-[SUPPRESSED] and skips recovery when
+    flaresolverr is listed in push-suppress.json (e.g. while it's knowingly down
+    awaiting the Ultra.cc cap_setuid ticket). But this canary runs on its OWN
+    5-minute systemd timer and notifies Discord *directly* — so without this
+    check it keeps paging "restart REFUSED — crash-loop; operator intervention
+    needed" even though the operator has already acknowledged the outage and
+    muted the monitor. The self-destructing unsuppress watcher removes the
+    registry entry once flaresolverr is live, restoring both the pushed monitor
+    and this canary in one move.
+
+    Best-effort: returns None on any error (fail toward normal alerting, never
+    toward silent suppression) — mirrors lib.suppression.push_suppressed."""
+    try:
+        here = Path(__file__).resolve().parent
+        if str(here) not in sys.path:
+            sys.path.insert(0, str(here))
+        from lib.suppression import push_suppressed
+        return push_suppressed(FS_SUPPRESS_KEY)
+    except Exception as exc:
+        print(f"suppress check failed (non-fatal): {exc}", file=sys.stderr)
+        return None
+
+
 def _notify(msg: str, level: str = "info") -> None:
     """Discord notification via lib.notify (best-effort, never raises)."""
     try:
@@ -219,6 +253,19 @@ def _notify(msg: str, level: str = "info") -> None:
 
 
 def run(dry_run: bool) -> int:
+    # Honor push-suppression FIRST: if the operator has muted FlareSolverr
+    # (monitor + recovery) in the push-suppress registry, this canary must go
+    # fully silent too — no probe, no restart churn, no Discord page. Otherwise
+    # a crash-looping flaresolverr keeps paging "restart REFUSED" every cycle
+    # despite the outage already being acknowledged. The unsuppress watcher
+    # lifts this automatically once flaresolverr is live again.
+    suppressed = _suppress_reason()
+    if suppressed:
+        print(f"SUPPRESSED ({suppressed}) — FlareSolverr is muted in the "
+              f"push-suppress registry; skipping probe/restart/notify. The "
+              f"unsuppress watcher restores alerting once it's live.")
+        return 0
+
     port = _read(SECRETS_DIR / "flaresolverr.port")
     if not port:
         print("FATAL: ~/secrets/flaresolverr.port missing or empty",
