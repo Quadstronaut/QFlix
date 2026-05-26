@@ -1181,3 +1181,38 @@ class TestProbeCanary:
         assert e["ok"] is False
         assert e["stale"] is True
         assert "probe-error" in e["reason"]
+
+
+class TestCanaryPushSuppression:
+    """`canary push <name>` honors push-suppress.json: pushes UP-with-note and
+    skips the script run when the canary is suppressed."""
+
+    def _canary(self):
+        c = MagicMock()
+        c.name = "prowlarr-indexer-health"
+        c.script = "scripts/canaries/prowlarr-indexer-health.sh"
+        c.kuma_monitor = "Canary Prowlarr Indexer Health"
+        return c
+
+    def test_suppressed_canary_pushes_up_and_skips_script(self, tmp_path):
+        import argparse, json as _json
+        from lib.cli import _cmd_canary_push
+
+        manifest = MagicMock()
+        manifest.canary.return_value = self._canary()
+        tokens_file = tmp_path / "kuma-push-tokens.json"
+        tokens_file.write_text(_json.dumps({"canary-prowlarr-indexer-health": "tok-pc"}), encoding="utf-8")
+
+        args = argparse.Namespace(name="prowlarr-indexer-health")
+        with patch("lib.cli._tokens_path", return_value=tokens_file), \
+             patch("lib.suppression.push_suppressed", return_value="downstream of flaresolverr"), \
+             patch("lib.cli.subprocess.run") as mock_run, \
+             patch("lib.cli.requests.get") as mock_get:
+            mock_get.return_value = MagicMock(status_code=200)
+            rc = _cmd_canary_push(args, manifest)
+
+        assert rc == 0
+        mock_run.assert_not_called()                      # script never ran
+        params = mock_get.call_args[1]["params"]
+        assert params["status"] == "up"
+        assert "SUPPRESSED" in params["msg"]

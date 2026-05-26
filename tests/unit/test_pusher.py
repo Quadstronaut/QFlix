@@ -196,6 +196,32 @@ class TestPushOnce:
         probe_mock.assert_not_called()
         assert "recyclarr" not in result
 
+    def test_push_once_suppressed_app_pushes_up_and_skips_probe(self):
+        """A push-suppressed app is pushed UP with a [SUPPRESSED] note, is
+        never probed, and never triggers recovery."""
+        from lib import pusher
+
+        probe_mock = MagicMock()
+        manifest = _make_manifest(_make_app("flaresolverr", "FlareSolverr"))
+        tokens = {"flaresolverr": "tok-fs"}
+
+        recovery_mock = MagicMock()
+        with patch("lib.pusher.health_mod.probe", probe_mock), \
+             patch("lib.pusher.suppression_mod.push_suppressed", return_value="awaiting UCC ticket"), \
+             patch("lib.pusher.recovery_mod.trigger_async", recovery_mock), \
+             patch("lib.pusher.requests.get") as mock_get:
+            resp = MagicMock(); resp.status_code = 200
+            mock_get.return_value = resp
+            result = pusher.push_once(manifest=manifest, kuma_url="http://127.0.0.1:42005", tokens=tokens)
+
+        probe_mock.assert_not_called()          # never probed
+        recovery_mock.assert_not_called()        # never recovered/paged
+        assert result["flaresolverr"] == "ok"
+        params = mock_get.call_args[1]["params"]
+        assert params["status"] == "up"
+        assert "SUPPRESSED" in params["msg"]
+        assert "awaiting UCC ticket" in params["msg"]
+
     # -- Kuma push-endpoint resilience (intermittent read-timeout) -----------
 
     def test_push_retries_on_timeout_then_succeeds(self):
