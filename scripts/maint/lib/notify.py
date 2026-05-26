@@ -8,8 +8,14 @@ Notifiarr passthrough was removed 2026-05-10 after the secret was purged
 from the seedbox. Earlier versions had a Notifiarr legacy fallback for
 gradual migration; that path is gone now.
 
-On failure: logs to MANITOBA_STATE_DIR/notify-fail.log (default
-~/.opt/maint/). Never raises — all errors are swallowed after logging.
+Audit trail: EVERY attempt — sent or failed — is recorded to
+MANITOBA_STATE_DIR/notify.log (default ~/.opt/maint/) so there is a durable
+record of what paged and when, independent of whether the caller has Python
+logging wired (the flaresolverr canary uses print()+journal; the pusher uses
+logging). The webhook token is redacted from the audit line.
+
+On failure: ALSO logs to MANITOBA_STATE_DIR/notify-fail.log (failures only,
+for back-compat). Never raises — all errors are swallowed after logging.
 """
 from __future__ import annotations
 

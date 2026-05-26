@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-05-26 — flaresolverr-canary honors push-suppress + alert audit trail (PR #62)
+
+FlareSolverr went into a crash-loop (HTTP listener connection-refused) pending
+an Ultra.cc ticket (s6 `cap_setuid`). Its Kuma monitor was correctly muted via
+the push-suppress registry (PR #61) — but the operator kept getting paged at
+2 AM anyway. Root cause: a **second, independent alert path** that the registry
+didn't cover.
+
+- **`flaresolverr-canary.py` now honors the push-suppress registry.** The pusher
+  mutes the `FlareSolverr` Kuma monitor and skips recovery when the app is in
+  `push-suppress.json`, but the standalone restart-bot canary runs on its **own**
+  5-min timer and pages Discord **directly** — it never consulted the registry,
+  so it kept firing `restart REFUSED — 3 restarts in last hour ≥ cap 3 …
+  crash-loop; operator intervention needed` every cycle. `run()` now checks
+  `lib.suppression.push_suppressed(FS_SUPPRESS_KEY)` **first** and short-circuits
+  to a clean no-op (no probe, no restart churn, no page). Fail-open: any registry
+  read error falls through to normal alerting. The self-destructing unsuppress
+  watcher already lifts the entry once FlareSolverr is live, restoring both the
+  monitor and this canary in one move. **Lesson:** any standalone alert path
+  (not just the pusher) must consult the suppress registry.
+- **`lib/notify.py` now writes a full send-audit trail to `notify.log`.**
+  Previously only *failed* sends were recorded (`notify-fail.log`); a delivered
+  page left no trace. Every attempt — sent or failed — is now appended to a
+  capped `notify.log` (token redacted), plus `logging.info`/`warning`. The file
+  audit is caller-independent (canary uses `print()`+journal; pusher uses
+  `logging`). `notify-fail.log` semantics are unchanged.
+- **Deployed + verified live:** seedbox runtime files are byte-identical
+  (EOL-normalized) to merged master; the canary journal logs `SUPPRESSED …`
+  instead of paging. The suppress entry auto-restores when FlareSolverr is live
+  (post-ticket); it can also be removed manually.
+
 ## 2026-05-22 — 7-gap triage closure + Kuma self-heal + hardlink-canary rewrite (PR #42)
 
 Sweep across the seedbox that started as a triage of seven known gaps
