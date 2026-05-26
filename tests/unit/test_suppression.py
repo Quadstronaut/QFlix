@@ -9,6 +9,7 @@ Matrix:
 """
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -111,3 +112,54 @@ class TestRecoverySuppressed:
         app.class_ = "library"  # mutate to non-ucc
         with patch("lib.suppression.ucc_active", return_value=True):
             assert suppression.recovery_suppressed(app) is False
+
+
+# ---------------------------------------------------------------------------
+# push_suppressed registry
+# ---------------------------------------------------------------------------
+
+class TestPushSuppressed:
+    def test_returns_none_when_no_file(self, tmp_path, monkeypatch):
+        from lib import suppression
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        assert suppression.push_suppressed("flaresolverr") is None
+
+    def test_returns_reason_when_listed(self, tmp_path, monkeypatch):
+        from lib import suppression
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        (tmp_path / "push-suppress.json").write_text(
+            json.dumps({"flaresolverr": {"reason": "awaiting UCC ticket", "since": "2026-05-25T23:00:00Z"}}),
+            encoding="utf-8",
+        )
+        assert suppression.push_suppressed("flaresolverr") == "awaiting UCC ticket"
+
+    def test_unlisted_app_returns_none(self, tmp_path, monkeypatch):
+        from lib import suppression
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        (tmp_path / "push-suppress.json").write_text(
+            json.dumps({"flaresolverr": {"reason": "x"}}), encoding="utf-8")
+        assert suppression.push_suppressed("sonarr") is None
+
+    def test_bare_string_entry_supported(self, tmp_path, monkeypatch):
+        from lib import suppression
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        (tmp_path / "push-suppress.json").write_text(
+            json.dumps({"flaresolverr": "quick mute"}), encoding="utf-8")
+        assert suppression.push_suppressed("flaresolverr") == "quick mute"
+
+    def test_corrupt_file_returns_none(self, tmp_path, monkeypatch):
+        from lib import suppression
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        (tmp_path / "push-suppress.json").write_text("not json {{{", encoding="utf-8")
+        assert suppression.push_suppressed("flaresolverr") is None
+
+    def test_push_suppressed_forces_recovery_suppressed_any_class(self, tmp_path, monkeypatch):
+        """A push-suppressed app has recovery suppressed regardless of class /
+        UCC gate state."""
+        from lib import suppression
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        (tmp_path / "push-suppress.json").write_text(
+            json.dumps({"flaresolverr": {"reason": "muted"}}), encoding="utf-8")
+        app = _make_app("ucc", name="flaresolverr")
+        with patch("lib.suppression.ucc_active", return_value=False):
+            assert suppression.recovery_suppressed(app) is True

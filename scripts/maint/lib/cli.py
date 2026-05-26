@@ -475,6 +475,29 @@ def _cmd_canary_push(args: argparse.Namespace, manifest) -> int:
         print(f"error: unknown canary '{args.name}'", file=sys.stderr)
         return 1
 
+    # Push-suppression: if this canary is muted in push-suppress.json, push UP
+    # with a note and skip the (often heavyweight) script run entirely. Keyed
+    # "canary-<name>" to share the registry namespace with the push token key.
+    # Used to mute a canary that's a known downstream symptom of an already-
+    # suppressed app (e.g. prowlarr-indexer-health while flaresolverr is down).
+    from lib import suppression as _suppression_mod
+    sup_reason = _suppression_mod.push_suppressed(f"canary-{args.name}")
+    if sup_reason:
+        try:
+            with open(_tokens_path(), "r", encoding="utf-8") as fh:
+                token = json.load(fh).get(f"canary-{args.name}")
+        except Exception:
+            token = None
+        if token:
+            kuma_url = os.environ.get("MANITOBA_KUMA_URL", "http://127.0.0.1:42005")
+            try:
+                requests.get(f"{kuma_url}/api/push/{token}",
+                             params={"status": "up", "msg": f"[SUPPRESSED] {sup_reason}"},
+                             timeout=5)
+            except Exception as exc:
+                print(f"warn: suppressed-push failed for canary '{args.name}': {exc}", file=sys.stderr)
+        return 0
+
     # Resolve script path relative to repo root (cli.py is at scripts/maint/lib/cli.py)
     lib_dir = Path(__file__).resolve().parent
     repo_root = lib_dir.parent.parent.parent

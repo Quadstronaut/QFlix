@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba maint — flaresolverr unsuppress watcher (self-destructs when flaresolverr is live)
+
+[Service]
+# Polls flaresolverr; once it's live for 2 consecutive checks, removes the
+# push-suppress entry (restoring Kuma alerting) and deletes its own units +
+# script. Ephemeral by design — not installer-wired.
+Type=oneshot
+ExecStart=/usr/bin/env bash %h/scripts/maint/flaresolverr-unsuppress-watch.sh

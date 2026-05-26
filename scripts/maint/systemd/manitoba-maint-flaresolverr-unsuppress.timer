@@ -1,0 +1,13 @@
+[Unit]
+Description=Manitoba maint — flaresolverr unsuppress watcher (every 5 min)
+
+[Timer]
+# OnActiveSec gives the first check ~1 min after enable; OnUnitActiveSec paces
+# every 5 min after. Persistent=true survives reboots. The watcher removes
+# this timer itself once flaresolverr is live.
+OnActiveSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -16,9 +16,45 @@ Design rationale (from spec):
 """
 from __future__ import annotations
 
+import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
+
+# Manual push-suppression registry (under MANITOBA_STATE_DIR). Maps app.name →
+# {"reason": str, "since": iso}. When an app is listed here the pusher pushes
+# it UP (with a [SUPPRESSED] note) and skips probe/recovery — used to mute a
+# monitor for an app awaiting an upstream fix, without touching Kuma's admin
+# API (operator-only). A self-destructing watcher removes the entry once the
+# app is live again.
+_PUSH_SUPPRESS_FILE = "push-suppress.json"
+
+
+def _state_dir() -> Path:
+    env = os.environ.get("MANITOBA_STATE_DIR")
+    return Path(env) if env else Path.home() / ".opt" / "maint"
+
+
+def push_suppressed(app_name: str) -> Optional[str]:
+    """Return the suppression reason if *app_name* is in the push-suppress
+    registry, else None. Best-effort; None on any error (fail toward normal
+    alerting, never toward silent suppression)."""
+    try:
+        path = _state_dir() / _PUSH_SUPPRESS_FILE
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        entry = data.get(app_name)
+        if not entry:
+            return None
+        if isinstance(entry, dict):
+            return entry.get("reason") or "suppressed"
+        return str(entry)
+    except Exception as exc:
+        print(f"WARNING: suppression.push_suppressed({app_name}): {exc}",
+              file=sys.stderr)
+        return None
 
 
 def ucc_active(*, state_path: Optional[Path] = None) -> bool:
@@ -42,6 +78,11 @@ def recovery_suppressed(app) -> bool:
     silent suppression.
     """
     try:
+        # Manual push-suppression mutes recovery too (the app is knowingly
+        # down, e.g. awaiting an upstream fix) — defensive belt-and-braces so
+        # recovery is skipped even if some path probes the app directly.
+        if push_suppressed(getattr(app, "name", "")):
+            return True
         if getattr(app, "class_", None) != "ucc":
             return False
         return ucc_active()
