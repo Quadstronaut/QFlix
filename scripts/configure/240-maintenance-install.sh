@@ -94,6 +94,15 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/window.py \
     scripts/maint/lib/cli.py \
     scripts/maint/lib/pusher.py \
+    scripts/maint/lib/secrets.py \
+    scripts/maint/lib/fleet.py \
+    scripts/maint/lib/suppression.py \
+    scripts/maint/lib/qbit.py \
+    scripts/maint/lib/deep_check.py \
+    scripts/maint/lib/ucc.py \
+    scripts/maint/lib/ucc_incident.py \
+    scripts/maint/lib/ucc_response.py \
+    scripts/maint/prune-app-backups.sh \
     scripts/maint/systemd/manitoba-maint-webhook.service \
     scripts/maint/systemd/manitoba-maint-window.service \
     scripts/maint/systemd/manitoba-maint-window.timer \
@@ -139,6 +148,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-arr-audit.timer \
     scripts/maint/systemd/manitoba-maint-ucc-detect.service \
     scripts/maint/systemd/manitoba-maint-ucc-detect.timer \
+    scripts/maint/systemd/manitoba-maint-backup-prune.service \
+    scripts/maint/systemd/manitoba-maint-backup-prune.timer \
     scripts/maint/arr-audit.py \
     scripts/maint/arr-audit-run.sh \
     scripts/maint/app-upgrade-all.sh \
@@ -180,6 +191,8 @@ cp -f "$STG"/scripts/maint/arr-audit-run.sh   ~/scripts/maint/arr-audit-run.sh
 chmod +x ~/scripts/maint/arr-audit-run.sh
 cp -f "$STG"/scripts/maint/flaresolverr-canary.py ~/scripts/maint/flaresolverr-canary.py
 chmod +x ~/scripts/maint/flaresolverr-canary.py
+cp -f "$STG"/scripts/maint/prune-app-backups.sh ~/scripts/maint/prune-app-backups.sh
+chmod +x ~/scripts/maint/prune-app-backups.sh
 # Remove the retired Playwright clicker if a prior install put it in place.
 rm -f ~/scripts/maint/cp_upgrade_clicker.py
 # Remove maint/lib/__init__.py if a prior install put it in place. The 2026-
@@ -353,7 +366,9 @@ for unit in \
     manitoba-maint-arr-audit.service \
     manitoba-maint-arr-audit.timer \
     manitoba-maint-ucc-detect.service \
-    manitoba-maint-ucc-detect.timer; do
+    manitoba-maint-ucc-detect.timer \
+    manitoba-maint-backup-prune.service \
+    manitoba-maint-backup-prune.timer; do
   # If the user unit is a symlink pointing back at the source, `cp -f` fails
   # with "are the same file" — the source already IS the live unit. Drop the
   # symlink first; cp then writes a real file.
@@ -436,6 +451,10 @@ systemctl --user enable --now manitoba-maint-arr-audit.timer
 # Incident pin requires secrets/uptimekuma.password (skips with a warning if
 # absent). Disable with: systemctl --user disable --now manitoba-maint-ucc-detect.timer
 systemctl --user enable --now manitoba-maint-ucc-detect.timer
+# App-backup retention prune — Sun 03:30 UTC. Keeps the 3 most recent
+# app-manager backups per app in ~/.apps/backup; deletes the rest. --now
+# activates the timer's schedule (does not run an immediate prune).
+systemctl --user enable --now manitoba-maint-backup-prune.timer
 # Restart long-running services so they pick up code/manifest changes
 # (enable --now doesn't restart an already-running unit). Window timers
 # don't need a restart — next fire uses the latest code.
@@ -573,6 +592,14 @@ if [ "${UDT:-0}" -ge 1 ]; then
   gate "ucc-detect-timer-scheduled" pass
 else
   gate "ucc-detect-timer-scheduled" fail "ucc-detect timer not in systemctl list-timers"
+fi
+
+# Smoke 15: app-backup retention prune timer scheduled
+BPT=$(sshm "systemctl --user list-timers manitoba-maint-backup-prune.timer --no-pager 2>/dev/null | grep -c manitoba-maint-backup-prune.timer" </dev/null 2>/dev/null)
+if [ "${BPT:-0}" -ge 1 ]; then
+  gate "backup-prune-timer-scheduled" pass
+else
+  gate "backup-prune-timer-scheduled" fail "backup-prune timer not in systemctl list-timers"
 fi
 
 echo

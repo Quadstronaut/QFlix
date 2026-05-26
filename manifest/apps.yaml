@@ -235,17 +235,20 @@ apps:
 
   unpackerr:
     # Auto-extracts completed archives from qBittorrent for the *arr stack.
-    # Runs as a Docker-wrapped UCC app (`/app/unpackerr -c /config/unpackerr.conf`).
-    # No HTTP surface and no user systemd unit (UCC runs it under supervisord);
-    # liveness is asserted by smoke-test.sh section 8 (`ps -ef | grep /app/unpackerr`).
-    # process_pattern probe matches `/app/unpackerr` in `ps -ef`; the pusher
-    # pushes UP/DOWN to Kuma monitor "Unpackerr" every 60s.
+    # Runs as a Docker-wrapped UCC app. No HTTP surface and no user systemd
+    # unit; liveness is a host-visible process check (smoke-test.sh section 8).
+    # NOTE (2026-05-25): after the Ultra.cc May-2026 server migration the app
+    # was reinstalled onto the upstream golift image, whose entrypoint binary
+    # is `/unpackerr` (bare) — NOT the old Ultra.cc `/app/unpackerr` path. The
+    # probe pattern `/unpackerr` matches both layouts (the old path ends in it),
+    # so it survives a future image swap either way. The pusher pushes UP/DOWN
+    # to Kuma monitor "Unpackerr" every 60s.
     class: ucc
     ucc_slug: unpackerr
     kuma_monitor: "Unpackerr"
     health:
       kind: process_pattern
-      pattern: "/app/unpackerr"
+      pattern: "/unpackerr"
 
   # --- systemd apps (managed by systemctl --user) ---
 

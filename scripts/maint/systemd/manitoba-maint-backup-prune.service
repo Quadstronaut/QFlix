@@ -1,0 +1,8 @@
+[Unit]
+Description=Manitoba maint — prune app-manager backups (keep 3 most recent per app)
+
+[Service]
+# `%h` expands to $HOME under user systemd. The script keeps KEEP (default 3)
+# most recent backups per app in ~/.apps/backup and deletes the rest.
+Type=oneshot
+ExecStart=/usr/bin/env bash %h/scripts/maint/prune-app-backups.sh

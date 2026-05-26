@@ -12,9 +12,10 @@ resolves from secret `ucc.probe_app` → fallback `kavita`.
 Classification
 --------------
 - ``gated``      — JSON result==false AND message matches /maintenance/i.
-- ``clear``      — JSON result==true (already-running, started-ok, etc.).
-- ``probe-error``— timeout, non-JSON, SSH/host stall, unknown-app /
-                   not-installed response. Never changes state.
+- ``clear``      — JSON result==true, OR empty stdout with rc 0 (the
+                   silent-success signature of app-manager >=2026.05.22).
+- ``probe-error``— timeout, non-JSON, empty stdout with non-zero rc,
+                   SSH/host stall, unknown-app / not-installed. No state change.
 
 Debounce
 --------
@@ -120,12 +121,26 @@ def write_state(path: Path, data: dict) -> None:
 # Classification
 # ---------------------------------------------------------------------------
 
-def classify(output: str) -> str:
+def classify(output: str, returncode: int = 0) -> str:
     """Classify raw stdout from `app-<name> start`.
 
     Returns one of: ``"gated"``, ``"clear"``, ``"probe-error"``.
+
+    NOTE 2026-05-25 (app-manager v2026.05.22): write-ops (start/stop/restart)
+    are now SILENT on success — empty stdout, exit 0 — instead of returning
+    ``{"result": true}``. The maintenance *rejection* path still returns the
+    gated JSON (``result:false`` + "due to maintenance"). So an empty stdout
+    with rc 0 means "the lifecycle CLI accepted the command = NOT gated" and
+    must classify as ``clear``; without this, the gate sticks ``active``
+    forever (probe-error never satisfies the clear debounce).
     """
     output = output.strip()
+
+    # Empty stdout: silent success (rc 0 → clear) vs. genuine failure
+    # (rc != 0 → probe-error). Timeouts/OS errors are handled in probe().
+    if output == "":
+        return "clear" if returncode == 0 else "probe-error"
+
     # Try to parse as JSON first.
     try:
         parsed = json.loads(output)
@@ -184,6 +199,7 @@ def probe(*, probe_app: Optional[str] = None) -> tuple[str, str, str]:
             timeout=_PROBE_TIMEOUT_S,
         )
         raw = result.stdout or ""
+        rc = result.returncode
     except subprocess.TimeoutExpired as exc:
         return "probe-error", probe_op, f"timeout after {exc.timeout}s"
     except OSError as exc:
@@ -191,7 +207,7 @@ def probe(*, probe_app: Optional[str] = None) -> tuple[str, str, str]:
     except Exception as exc:
         return "probe-error", probe_op, f"unexpected error: {exc}"
 
-    return classify(raw), probe_op, raw
+    return classify(raw, rc), probe_op, raw
 
 
 # ---------------------------------------------------------------------------

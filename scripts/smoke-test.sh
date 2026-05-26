@@ -132,7 +132,9 @@ fi
 
 # 8. Unpackerr daemon
 echo "8. Unpackerr"
-UNPACK=$(sshm "ps -ef | grep '/app/unpackerr' | grep -v grep | wc -l")
+# Match `/unpackerr` (upstream golift image entrypoint, post-2026-05 migration);
+# also matches the legacy Ultra.cc `/app/unpackerr` path, which ends in it.
+UNPACK=$(sshm "ps -ef | grep '/unpackerr' | grep -v grep | wc -l")
 if [ "${UNPACK:-0}" -ge 1 ]; then
   record "unpackerr-running" pass
 else

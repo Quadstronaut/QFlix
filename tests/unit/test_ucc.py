@@ -82,8 +82,17 @@ class TestClassify:
     def test_probe_error_not_installed(self):
         assert classify(ERROR_OUTPUT_NOT_INSTALLED) == "probe-error"
 
-    def test_probe_error_empty_output(self):
-        assert classify("") == "probe-error"
+    def test_empty_output_rc0_is_clear(self):
+        # app-manager >=2026.05.22 is silent on a successful write-op:
+        # empty stdout + rc 0 = command accepted = NOT gated = clear.
+        assert classify("", 0) == "clear"
+
+    def test_empty_output_nonzero_rc_is_probe_error(self):
+        # Empty stdout with a failure rc is a genuine error, not success.
+        assert classify("", 1) == "probe-error"
+
+    def test_whitespace_only_rc0_is_clear(self):
+        assert classify("  \n ", 0) == "clear"
 
     def test_probe_error_partial_json(self):
         assert classify('{"result":') == "probe-error"
@@ -125,6 +134,24 @@ class TestProbe:
         with patch("subprocess.run", return_value=cp):
             classification, probe_op, raw = probe(probe_app="kavita")
         assert classification == "clear"
+
+    def test_probe_empty_stdout_rc0_is_clear(self):
+        # Regression: app-manager v2026.05.22 returns empty stdout on a
+        # successful `start`. probe() must read that as clear, not probe-error.
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.returncode = 0
+        with patch("subprocess.run", return_value=cp):
+            classification, probe_op, raw = probe(probe_app="kavita")
+        assert classification == "clear"
+
+    def test_probe_empty_stdout_nonzero_rc_is_probe_error(self):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.returncode = 1
+        with patch("subprocess.run", return_value=cp):
+            classification, probe_op, raw = probe(probe_app="kavita")
+        assert classification == "probe-error"
 
     def test_probe_timeout_is_probe_error(self):
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="app-kavita start", timeout=15)):
@@ -312,6 +339,32 @@ class TestStateMachine:
                 state = detect(state_path=state_path, probe_app="kavita")
         # After flip, counter resets
         assert state["consecutive_clear"] == 0
+
+    def test_active_clears_via_empty_stdout_silent_success(self, tmp_path):
+        """Regression for the 2026-05-25 stuck-gate bug: after maintenance,
+        `app-X start` returns empty stdout + rc 0 (silent success). The gate
+        must accumulate these as clears and flip active→clear after debounce,
+        instead of treating them as probe-error forever."""
+        state_path = tmp_path / "ucc-window.json"
+        initial = {
+            "active": True,
+            "first_detected_at": "2026-05-25T02:38:00Z",
+            "last_confirmed_at": "2026-05-25T12:01:00Z",
+            "consecutive_clear": 0,
+            "consecutive_error": 128,  # the real-world stuck count
+        }
+        write_state(state_path, initial)
+        state = initial
+        for i in range(UCC_CLEAR_DEBOUNCE):
+            cp = MagicMock()
+            cp.stdout = ""          # silent success
+            cp.returncode = 0
+            with patch("subprocess.run", return_value=cp):
+                with patch("lib.notify.notify", return_value=True):
+                    state = detect(state_path=state_path, probe_app="kavita")
+            # error counter must reset on the first clear
+            assert state["consecutive_error"] == 0
+        assert state["active"] is False, "gate must clear after debounce of silent-success probes"
 
     # --- probe-error holds state, increments consecutive_error ---
 
