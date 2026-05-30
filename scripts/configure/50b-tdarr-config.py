@@ -403,12 +403,13 @@ def attach_flow_to_libraries() -> int:
     return changed
 
 
-def set_non_destructive_mode() -> int:
-    """Phase 30 gate: keep libraries in 'watch new arrivals only' mode by
-    forcing processLibrary=false on every real library. Existing files are
-    catalogued by scanOnStart but NOT auto-queued for transcode. The 7-day
-    clean-window observation requires this; flip to true in 50d (Phase 30
-    first-run) only after the operator green-lights the library-wide pass."""
+def ensure_library_processing() -> int:
+    """Phase 30 go-live: keep transcoding LIVE by forcing processLibrary=true on
+    every real library, so the qflix-direct-play-fix Flow actively processes the
+    library (not just catalogues it). Operator green-lit the library-wide pass on
+    2026-05-30; this replaces the earlier non-destructive 'watch new arrivals only'
+    lock. Idempotent — only writes when a library has drifted to False, which also
+    self-heals any library that gets paused out-of-band."""
     db_dir = f"{HOME}/.apps/tdarr/server/Tdarr/DB2/LibrarySettingsJSONDB"
     changed = 0
     for path in glob.glob(f"{db_dir}/*.json"):
@@ -416,14 +417,14 @@ def set_non_destructive_mode() -> int:
             doc = json.load(f)
         if doc.get("name") not in REAL_LIBRARY_NAMES:
             continue
-        if doc.get("processLibrary") is False:
+        if doc.get("processLibrary") is True:
             continue
-        doc["processLibrary"] = False
+        doc["processLibrary"] = True
         with open(path + ".tmp", "w", encoding="utf-8") as f:
             json.dump(doc, f)
         os.replace(path + ".tmp", path)
-        print(f"[lock] library '{doc.get('name')}' processLibrary=False "
-              f"(new-arrivals-only — flip in Phase 30)")
+        print(f"[enable] library '{doc.get('name')}' processLibrary=True "
+              f"(transcoding live — Phase 30 go-live)")
         changed += 1
     return changed
 
@@ -461,7 +462,7 @@ def main() -> int:
     config_changed = patch_server_config()
     flow_changed = ensure_flow()
     libs_attached = attach_flow_to_libraries()
-    libs_locked = set_non_destructive_mode()
+    libs_enabled = ensure_library_processing()
     print()
     print(f"Orphan libraries purged: {orphans_purged}")
     print(f"Skeleton libraries healed (re-created with full defaults): {libs_healed}")
@@ -472,9 +473,9 @@ def main() -> int:
     print(f"webUIPort changed: {config_changed}")
     print(f"Flow created/updated: {flow_changed}")
     print(f"Libraries attached to flow: {libs_attached}")
-    print(f"Libraries locked to new-arrivals-only: {libs_locked}")
+    print(f"Libraries enabled for live transcoding: {libs_enabled}")
     if any([config_changed, workers_changed, node_changed, libs_patched,
-            orphans_purged, flow_changed, libs_attached, libs_locked]):
+            orphans_purged, flow_changed, libs_attached, libs_enabled]):
         print("\nNote: restart tdarr-server.service + tdarr-node.service "
               "for changes to take effect:")
         print("  systemctl --user restart tdarr-server.service "
