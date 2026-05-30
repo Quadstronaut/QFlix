@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-05-30 — tdarr-node heartbeat honors fair-use quiet hours (PR #64)
+
+Two auto-heal mechanisms were fighting each other. `50c-tdarr-quiet-hours.sh`
+intentionally **stops** `tdarr-node` 18:00–23:00 UTC so its worker threads don't
+compete with streamers during peak watch hours. But `heartbeat-tdarr-node.sh`
+(cron `*/5`) restarts the node whenever the server reports **0 registered
+nodes** — which is exactly what a paused node looks like. The watchdog revived
+the node on the next tick, collapsing the 5-hour pause to ~2.5 minutes.
+
+- **Observed 2026-05-30:** node stopped `18:00:01 UTC`, back up `18:02:27 UTC`
+  instead of staying down until 23:00. Net effect: the node ran ~24/7 and never
+  backed off at peak.
+- **Fix:** `heartbeat-tdarr-node.sh` now early-exits during the 18:00–23:00 UTC
+  pause window (UTC-hour guard, `10#` base-10 to avoid octal parsing of `08`),
+  before any restart path. The watchdog still covers genuine failures outside
+  the window. Window kept in sync with `50c`'s `OnCalendar` values.
+- **Verified live (in-window):** deployed to seedbox, EOL-normalized SHA-256
+  parity confirmed; with the node stopped, the heartbeat exits 0 and leaves it
+  inactive (pre-fix it would have revived it). Today's pause restored manually.
+
 ## 2026-05-26 — flaresolverr-canary honors push-suppress + alert audit trail (PR #62)
 
 FlareSolverr went into a crash-loop (HTTP listener connection-refused) pending
