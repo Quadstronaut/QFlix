@@ -107,7 +107,7 @@ All three prior drift entries (unpackerr, upgradinatorr, postgres) added to `man
 |---|---|---|---|---|---|---|---|---|---|---|
 | heartbeat-listmonk.sh | cron */5m | yes | Restart Listmonk if /health fails | NO | n/a | n/a | n/a | (it IS the auto-heal) | (silent on heal; logs only) |  |
 | heartbeat-tdarr-server.sh | cron */5m | yes | Restart Tdarr Server on /api/v2/status fail | NO | n/a | n/a | n/a | (auto-heal) | (silent) |  |
-| heartbeat-tdarr-node.sh | cron */5m | yes | Restart Tdarr Node if systemd inactive | NO | n/a | n/a | n/a | (auto-heal) | (silent) |  |
+| heartbeat-tdarr-node.sh | cron */5m | yes | Restart Tdarr Node if systemd inactive / server reports 0 nodes | NO | n/a | n/a | n/a | (auto-heal) | (silent) | Early-exits 18:00–23:00 UTC so it doesn't fight the fair-use quiet-hours pause (PR #64). |
 | heartbeat-maint-webhook.sh | cron */5m | yes | Restart maint-webhook on /health fail | NO | n/a | n/a | n/a | (auto-heal) | (silent) |  |
 | listmonk-sync.py | cron 04:00 daily | scheduled | Plex friends + Seerr → Listmonk subscribers | NO | n/a | n/a | yes | n/a (idempotent) | (silent) | Logs to `~/.apps/listmonk/logs/sync.log`. |
 | arr-housekeeping.py --missing | cron 04:00 mostdays | scheduled | Find/grab missing episodes | NO | n/a | n/a | yes | n/a | (silent) | Excludes Mondays (maint window). |
