@@ -49,7 +49,7 @@ live seedbox wins and this file records both.
 | Artifact | Type | Running? | Purpose | Safe to delete? | Public/Internal | URL | In Mon-window? | Auto-heal? | Notification on fail? | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
 | listmonk.service | systemd | yes | Newsletter / mailing list manager | NO | Public archive + Internal admin | public `https://…/listmonk/campaign/<uuid>` · admin tunnel `localhost:42014` (canonical probe port) | yes | yes (heartbeat-listmonk cron + pusher) | 2 |  |
-| tdarr-server.service | systemd | yes | Transcoding orchestrator | NO | Internal | tunnel `http://localhost:42018/` | yes | yes (heartbeat-tdarr-server cron + pusher) | 2 | Pinned to v2.17.01 (GLIBC). |
+| tdarr-server.service | systemd | yes | Transcoding orchestrator | NO | Internal | tunnel `http://localhost:42018/` | yes | yes (heartbeat-tdarr-server cron + pusher) | 2 | Pinned to v2.17.01 (GLIBC). Transcoding LIVE: 3 libraries (Movies/TV/Anime) `processLibrary=True` running the `qflix-direct-play-fix` flow (Phase 30 go-live, PR #65). |
 | tdarr-node.service | systemd | yes | Transcoding worker | NO | Internal | no UI | yes | yes (heartbeat-tdarr-node cron + pusher) | 2 | `kuma_monitor: "Tdarr Node"` — systemd_only probe. Monitor added 2026-05-11. |
 
 ## C. Manifest — cron/timer-driven apps

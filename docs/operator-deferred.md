@@ -94,6 +94,7 @@ Drive this from the agent prompt — see Task #19 in the session task list.
 | 25 Listmonk cutover | UI campaign create | Superseded — see "Resolved 2026-05-11" above |
 | 26 Ombi decom | PARKED | Ombi stopped (invites paused). Decom after Wizarr alternative |
 | 29-31 Tdarr | UI library setup | 50b-tdarr-config.py adds 3 libraries (Movies/TV/Anime), worker cap 2/2, webUIPort fix |
+| Tdarr Phase 30 | Library pass gated | Go-live 2026-05-30: `processLibrary=True` enforced by 50b's `ensure_library_processing()` (was `set_non_destructive_mode()` forcing False). Transcoding is live; re-running 50b now preserves it instead of halting it (PR #65) |
 | 34 Recyclarr no-4k | Smoke gate red | 57-no-4k-enforce.py disabled 9 2160p entries across 3 factory profiles. Gate green |
 | Tautulli Notifiarr | Removed native agent | Webhook agent wired (58-tautulli-notifiarr-webhook.py) |
 | Calibre-Web pw | admin/admin123 | Rotated to shared admin password via direct SQLite UPDATE (PBKDF2-SHA256) |

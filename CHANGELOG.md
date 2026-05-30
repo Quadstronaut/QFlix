@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-05-30 — Tdarr Phase 30 go-live: keep transcoding live (PR #65)
+
+The live seedbox had `processLibrary=True` on all 3 libraries (Movies/TV/Anime)
+— Tdarr actively transcoding via the `qflix-direct-play-fix` flow (484 files
+catalogued, 637 health-checks, 20 transcodes). But the repo disagreed: the only
+code touching `processLibrary` was `50b-tdarr-config.py`'s
+`set_non_destructive_mode()`, which **forced it to False** ("Phase 30 gate, flip
+in 50d") — and no 50d ever existed. **Hazard:** re-running the idempotent 50b
+config would have silently flipped every library back to False and halted all
+transcoding.
+
+- **`set_non_destructive_mode()` → `ensure_library_processing()`.** Now enforces
+  `processLibrary=True` (Phase 30 go-live, operator green-lit 2026-05-30).
+  Idempotent: only writes a library that has drifted to False, so it also
+  self-heals any library paused out-of-band. Re-running 50b now *preserves* live
+  transcoding instead of killing it.
+- **Verified live:** re-ran 50b over SSH against the box — reported
+  `Libraries enabled for live transcoding: 0` (already True) with no `[lock]`
+  output; box re-confirmed `processLibrary=True` on all three after the run.
+- Docs: `inventory.md` (tdarr-server row) + `operator-deferred.md` (new Phase 30
+  row) record that transcoding is live.
+
 ## 2026-05-30 — tdarr-node heartbeat honors fair-use quiet hours (PR #64)
 
 Two auto-heal mechanisms were fighting each other. `50c-tdarr-quiet-hours.sh`
