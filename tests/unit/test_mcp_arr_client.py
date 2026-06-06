@@ -57,6 +57,17 @@ def test_delete_with_query(mock_open, tmp_path):
     assert sent.method == "DELETE"
 
 
+@patch("urllib.request.urlopen")
+def test_put_sends_put_method_and_body(mock_open, tmp_path):
+    mock_open.return_value = _resp([], status=202)
+    c = ArrClient("sonarr", "v3", secrets_dir=_secrets(tmp_path))
+    code, _ = c.put("/movie/editor", body={"movieIds": [5], "qualityProfileId": 9})
+    assert code == 202
+    req = mock_open.call_args[0][0]
+    assert req.get_method() == "PUT"
+    assert json.loads(req.data) == {"movieIds": [5], "qualityProfileId": 9}
+
+
 def _setup_secrets(tmp_path: Path) -> Path:
     s = tmp_path / "secrets"
     s.mkdir()

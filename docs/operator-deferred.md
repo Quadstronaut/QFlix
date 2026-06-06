@@ -117,3 +117,10 @@ Drive this from the agent prompt — see Task #19 in the session task list.
 - ✓ Listmonk API user + token → `secrets/listmonk.{api_user,api_token}`
 - ✓ Discord webhook + operator user-id → `secrets/discord-webhook.url`, `secrets/discord-operator.id`
 - ✓ Seedbox public FQDN + SSH host → `secrets/seedbox.host`, `secrets/seedbox.ssh-host`
+
+### 2026-06-06 — quality-fallback Kuma monitor
+
+`qflix-quality-fallback` (daily 07:30 UTC) is in the manifest but its Kuma
+push monitor "Qflix Quality Fallback" requires operator-held Kuma creds:
+run `scripts/maint/bootstrap-kuma-monitors.py` once. Until then the pusher
+logs a missing-token WARN for this app (harmless).
