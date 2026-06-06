@@ -1,0 +1,11 @@
+[Unit]
+Description=QFlix quality-fallback sweep — two-stage loosening for stuck movies
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/scripts/mcp/quality_fallback.py --cron
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

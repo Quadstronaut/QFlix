@@ -70,6 +70,12 @@ class ArrClient:
                           timeout=timeout if timeout is not None
                           else (self._default_timeout if self._default_timeout is not None else 30))
 
+    def put(self, path: str, *, body: Optional[dict] = None,
+            query: str = "", timeout: Optional[int] = None):
+        return self._req("PUT", path, body=body, query=query,
+                          timeout=timeout if timeout is not None
+                          else (self._default_timeout if self._default_timeout is not None else 30))
+
     def delete(self, path: str, *, query: str = "", timeout: Optional[int] = None):
         return self._req("DELETE", path, query=query,
                           timeout=timeout if timeout is not None

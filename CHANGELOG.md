@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-06-06 — quality fallback: two-stage loosening for stuck missing movies (PR #66)
+
+A movie missing for 5 continuous attempted days (proof via `lastSearchTime`)
+gets swapped to `QFlix Fallback HDTV` (+HDTV-720p/1080p, +WEB 720p); day 10 →
+`QFlix Fallback SD` (+SDTV/DVD/WEB 480p/Bluray-480p/REGIONAL); day 15 →
+original profile restored, unmonitored, Discord alert. A grab at any fallback
+stage restores the original profile so upgradinatorr/RSS can upgrade later.
+CAM/TELESYNC/TELECINE/DVDSCR/WORKPRINT hard-banned everywhere; fallback
+profiles live outside recyclarr's managed set. TV is alert-only (once-per-
+episode Discord digest) — v2 decided from v1 data.
+
+- `scripts/mcp/quality_fallback.py` — pure planners + null-skipping
+  `PUT /movie/editor` writes (only `qualityProfileId` + `monitored`, ever);
+  25-per-instance blast-radius cap; `--bootstrap-profiles|--cron|--emit-json|--dry-run`.
+- `qflix-quality-fallback.timer` daily 07:30 UTC (30 min after missing sweep);
+  manifest cron entry (34th app); Kuma monitor pending operator bootstrap
+  (docs/operator-deferred.md).
+- Verified live post-deploy: profiles on both radarr instances ban all
+  pre-retail; dry-run clean; timer armed.
+- Plan double-reviewed by 2 independent Opus panels (unanimous approve);
+  all API payloads verified against deployed Radarr 6.1.1.10360 + source at
+  tag (RTFM section in the plan doc).
+
 ## 2026-05-30 — Tdarr Phase 30 go-live: keep transcoding live (PR #65)
 
 The live seedbox had `processLibrary=True` on all 3 libraries (Movies/TV/Anime)

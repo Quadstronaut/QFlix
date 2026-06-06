@@ -415,6 +415,17 @@ apps:
       kind: systemd_oneshot
       unit: qflix-missing-search.service
 
+  qflix-quality-fallback:
+    # Two-stage quality loosening for movies stuck in the missing sweep
+    # (day 5 -> HDTV tier, day 10 -> SD retail, day 15 -> park + alert).
+    # Daily 07:30 UTC, 30 min after qflix-missing-search.
+    class: cron
+    unit: qflix-quality-fallback.service
+    kuma_monitor: "Qflix Quality Fallback"
+    health:
+      kind: systemd_oneshot
+      unit: qflix-quality-fallback.service
+
   victorialogs:
     # Log aggregator. Single static Rust binary, ~200MB RAM, on-disk index
     # at ~/.apps/vlogs/data with 90d retention. Bound loopback-only on the

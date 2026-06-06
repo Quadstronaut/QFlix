@@ -1,0 +1,10 @@
+[Unit]
+Description=QFlix daily quality-fallback — 07:30 UTC (30 min after missing sweep)
+
+[Timer]
+OnCalendar=*-*-* 07:30:00 UTC
+Persistent=true
+Unit=qflix-quality-fallback.service
+
+[Install]
+WantedBy=timers.target
