@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -55,6 +56,32 @@ def push_suppressed(app_name: str) -> Optional[str]:
         print(f"WARNING: suppression.push_suppressed({app_name}): {exc}",
               file=sys.stderr)
         return None
+
+
+def in_pause_window(app, *, now: Optional[datetime] = None) -> bool:
+    """True iff *app* declares a pause_window and the current UTC hour is inside
+    it — i.e. the unit is INTENTIONALLY stopped right now (e.g. tdarr-node during
+    fair-use quiet hours). The canonical predicate consulted by BOTH recovery
+    entry points (pusher auto-heal + recovery.trigger_async, which also covers
+    deep_check and the Kuma webhook) so no path revives a deliberately-paused app.
+
+    `now` is for test injection. A naive datetime is read as UTC (never the host's
+    local time) so behavior is identical on the CEST seedbox and a UTC-N CI host.
+    Fail-open: any error → False (probe/recover as normal), never silence a real
+    outage on a parse glitch.
+    """
+    pw = getattr(app, "pause_window", None)
+    if pw is None:
+        return False
+    try:
+        if now is None:
+            now = datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return bool(pw.contains(now.astimezone(timezone.utc).hour))
+    except Exception as exc:
+        print(f"WARNING: suppression.in_pause_window: {exc}", file=sys.stderr)
+        return False
 
 
 def ucc_active(*, state_path: Optional[Path] = None) -> bool:

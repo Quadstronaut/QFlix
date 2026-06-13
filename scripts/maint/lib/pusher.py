@@ -14,6 +14,7 @@ import logging
 import os
 import signal
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -66,6 +67,12 @@ def _push_get(kuma_url: str, token: str, params: dict):
                             attempt + 1, _PUSH_RETRIES + 1, exc)
                 continue
             raise
+
+
+def _utcnow() -> datetime:
+    """Current UTC time. Indirected through a module function so tests can
+    patch the clock to land inside/outside an app's pause window."""
+    return datetime.now(timezone.utc)
 
 
 def reset_strike_counter(app_name: str | None = None) -> None:
@@ -153,6 +160,26 @@ def push_once(
             except Exception as exc:
                 results[app.name] = f"error: {exc}"
                 log.error("push (suppressed) %s failed: %s", app.name, exc)
+            continue
+
+        # Fair-use pause window: the app is INTENTIONALLY stopped right now
+        # (e.g. tdarr-node 18:00-23:00 UTC, stopped by tdarr-node-pause.timer).
+        # Without this, the pusher probed it `inactive`, accrued strikes, and
+        # auto-healed it ~2min into the pause every day — a false "recovered"
+        # alert that also defeated the 5h fair-use pause. Treat the window like
+        # push-suppression: push UP (Kuma stays green, clearly labelled), clear
+        # any stale strikes, and skip probe + recovery entirely.
+        if suppression_mod.in_pause_window(app, now=_utcnow()):
+            _probe_ok[app.name] = True
+            _consecutive_failures.pop(app.name, None)
+            params = {"status": "up", "msg": "[paused: fair-use quiet hours]"}
+            try:
+                resp = _push_get(kuma_url, token, params)
+                results[app.name] = "ok" if resp.status_code == 200 else f"http_{resp.status_code}"
+                log.info("pushed %s → up [PAUSED: quiet hours]", app.name)
+            except Exception as exc:
+                results[app.name] = f"error: {exc}"
+                log.error("push (paused) %s failed: %s", app.name, exc)
             continue
 
         result = health_mod.probe(app)

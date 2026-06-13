@@ -51,6 +51,29 @@ class Canary:
 
 
 @dataclass
+class PauseWindow:
+    """An app's intentional daily downtime, expressed in UTC hours.
+
+    Used by the pusher to avoid treating a deliberately-stopped unit (e.g.
+    tdarr-node during fair-use quiet hours) as a fault. The window is
+    [start_hour_utc, end_hour_utc) — start inclusive, end exclusive — so it
+    lines up exactly with the systemd OnCalendar pause/resume timers and the
+    heartbeat's `HOUR_UTC >= start && < end` guard.
+    """
+    start_hour_utc: int
+    end_hour_utc: int
+
+    def contains(self, hour_utc: int) -> bool:
+        s, e = self.start_hour_utc, self.end_hour_utc
+        if s == e:
+            return False  # zero-width window — never paused
+        if s < e:
+            return s <= hour_utc < e
+        # wrap-around window that spans midnight (e.g. 22..6)
+        return hour_utc >= s or hour_utc < e
+
+
+@dataclass
 class UpgradeConfig:
     kind: str
     version_pin: Optional[VersionPin] = None
@@ -76,6 +99,7 @@ class App:
     defaults: dict
     upgrade: Optional[UpgradeConfig] = None
     parked: bool = False
+    pause_window: Optional["PauseWindow"] = None
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -164,6 +188,31 @@ def _parse_upgrade(raw_upgrade: dict) -> UpgradeConfig:
     )
 
 
+def _parse_pause_window(raw_pw, *, app_name: str) -> "PauseWindow":
+    if not isinstance(raw_pw, dict):
+        raise ManifestError(
+            f"App '{app_name}' pause_window must be a mapping with "
+            f"start_hour_utc + end_hour_utc"
+        )
+    try:
+        start = int(raw_pw["start_hour_utc"])
+        end = int(raw_pw["end_hour_utc"])
+    except KeyError as exc:
+        raise ManifestError(
+            f"App '{app_name}' pause_window missing required key {exc}"
+        )
+    except (TypeError, ValueError) as exc:
+        raise ManifestError(
+            f"App '{app_name}' pause_window hours must be integers: {exc}"
+        )
+    for label, h in (("start_hour_utc", start), ("end_hour_utc", end)):
+        if not (0 <= h <= 23):
+            raise ManifestError(
+                f"App '{app_name}' pause_window {label}={h} out of range 0..23"
+            )
+    return PauseWindow(start_hour_utc=start, end_hour_utc=end)
+
+
 # Mirror of health._PROBES keys, duplicated here to avoid a circular import
 # at module load. Update both lists when adding a new probe kind.
 VALID_HEALTH_KINDS: frozenset[str] = frozenset({
@@ -242,6 +291,12 @@ def load(path: str | Path) -> Manifest:
         raw_upgrade = app_data.get("upgrade")
         upgrade = _parse_upgrade(raw_upgrade) if raw_upgrade else None
 
+        raw_pw = app_data.get("pause_window")
+        pause_window = (
+            _parse_pause_window(raw_pw, app_name=app_name)
+            if raw_pw is not None else None
+        )
+
         apps[app_name] = App(
             name=app_name,
             class_=class_,
@@ -250,6 +305,7 @@ def load(path: str | Path) -> Manifest:
             defaults=defaults,
             upgrade=upgrade,
             parked=bool(app_data.get("parked", False)),
+            pause_window=pause_window,
             raw=app_data,
         )
 

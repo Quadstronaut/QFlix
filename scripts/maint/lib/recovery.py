@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from lib import health, kuma, lifecycle, notify, state
+from lib import health, kuma, lifecycle, notify, state, suppression
 from lib.manifest import App, Manifest
 
 # ---------------------------------------------------------------------------
@@ -104,6 +104,10 @@ def trigger_async(app: App, *, manifest: Optional[Manifest] = None) -> str:
       - "cap_exceeded"        — global semaphore full; skipped
       - "not_recoverable"     — class can't be auto-recovered (library/cron)
       - "parked"              — manifest marks app as intentionally stopped
+      - "paused"              — app is inside its declared pause_window (fair-use
+        quiet hours); intentionally down right now, so do NOT revive it. Covers
+        EVERY recovery entry point (pusher, deep_check, kuma webhook) at the
+        chokepoint, not just the pusher's push-up branch.
       - "permanently_failed"  — prior 3-attempt loop exhausted; caller must
         clear_permanent_failure() once the probe self-recovers
 
@@ -111,6 +115,8 @@ def trigger_async(app: App, *, manifest: Optional[Manifest] = None) -> str:
     """
     if getattr(app, "parked", False):
         return "parked"
+    if suppression.in_pause_window(app):
+        return "paused"
     if not _is_recoverable(app):
         return "not_recoverable"
     if is_permanently_failed(app.name):

@@ -302,6 +302,15 @@ apps:
     class: systemd
     unit: tdarr-node.service
     kuma_monitor: "Tdarr Node"
+    # Fair-use quiet hours: tdarr-node-pause.timer STOPS this unit 18:00-23:00
+    # UTC (scripts/configure/50c-tdarr-quiet-hours.sh). Declaring the window
+    # here tells the pusher the unit is intentionally down — it pushes UP
+    # (Kuma green, "[paused…]") and skips probe + auto-heal instead of reviving
+    # it ~2min into the pause every day (the false-recovery bug, 2026-06-12).
+    # Keep in sync with 50c's OnCalendar AND heartbeat-tdarr-node.sh's guard.
+    pause_window:
+      start_hour_utc: 18
+      end_hour_utc: 23
     health:
       kind: systemd_only
       expect: active
