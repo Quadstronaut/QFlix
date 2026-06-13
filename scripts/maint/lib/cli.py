@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -395,7 +396,35 @@ def _cmd_window_watchdog(args: argparse.Namespace) -> int:
 from lib.secrets import read_secret as _secret_read  # noqa: E402, F401
 
 
+def _configure_service_logging() -> None:
+    """Wire INFO-level logging to stdout for the long-running maint services
+    (pusher, kuma webhook). Without this, Python's last-resort handler only
+    emits WARNING+ to stderr — so the services' log.info() auto-heal decisions
+    ("strike N/3", "recovery=started", "[PAUSED: quiet hours]") never reach
+    journald, and an operator can't reconstruct what the watchdog did from
+    `journalctl`. systemd routes StandardOutput=journal, so stdout → journald.
+    (This gap is exactly why the 2026-06-12 tdarr false-recovery bug was
+    invisible in the journal and had to be reconstructed from notify.log.)
+
+    Level is overridable via MANITOBA_LOG_LEVEL (default INFO). Idempotent: a
+    re-exec / second call won't stack handlers and double-emit. One-shot CLI
+    verbs deliberately don't call this — they speak to the operator via print().
+    """
+    level = getattr(logging, os.environ.get("MANITOBA_LOG_LEVEL", "INFO").upper(),
+                    logging.INFO)
+    if not isinstance(level, int):  # guard a bogus env value (e.g. "Formatter")
+        level = logging.INFO
+    root = logging.getLogger()
+    if not any(getattr(h, "_manitoba_service", False) for h in root.handlers):
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        handler._manitoba_service = True  # marker → idempotency across re-exec
+        root.addHandler(handler)
+    root.setLevel(level)
+
+
 def _cmd_webhook(args: argparse.Namespace) -> int:
+    _configure_service_logging()
     port_env = os.environ.get("MANITOBA_WEBHOOK_PORT")
     if port_env:
         port = int(port_env)
@@ -424,6 +453,7 @@ def _tokens_path() -> Path:
 
 
 def _cmd_pusher(args: argparse.Namespace, manifest_path: Path) -> int:
+    _configure_service_logging()
     from lib import pusher as pusher_mod
 
     try:
