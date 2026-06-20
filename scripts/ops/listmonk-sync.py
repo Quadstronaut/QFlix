@@ -92,7 +92,22 @@ def upsert(email, name, list_id, source, existing_map):
             if e.code == 304:
                 return "noop"
             raise
-    lm_req("POST", "/api/subscribers", body)
+    try:
+        resp = lm_req("POST", "/api/subscribers", body)
+    except urllib.error.HTTPError as e:
+        # 409 = subscriber already exists. Happens for a brand-new user who
+        # is in BOTH sources (Plex friend + Seerr user): the first source
+        # creates them, then the second source — working off the start-of-run
+        # snapshot that predates the create — tries to POST again. Benign; the
+        # subscriber is already on the list, so treat as a no-op.
+        if e.code == 409:
+            return "noop"
+        raise
+    # Record the freshly-created subscriber in the snapshot so the second
+    # source takes the update path instead of re-POSTing (which 409s above).
+    created = resp.get("data") if isinstance(resp, dict) else None
+    if isinstance(created, dict) and created.get("id"):
+        existing_map[email.lower()] = created
     return "created"
 
 
