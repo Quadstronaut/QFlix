@@ -219,19 +219,10 @@ apps:
       port_secret: flaresolverr.port
       expect_status: 200
 
-  maintainerr:
-    class: ucc
-    ucc_slug: maintainerr
-    kuma_monitor: "Maintainerr"
-    health:
-      kind: http_api
-      path_template: "/api/settings"
-      auth_header: "X-Api-Key"
-      auth_secret: maintainerr.key
-      port_secret: maintainerr.port
-      expect_status: 200
-      basic_auth_user: "quadstronaut"
-      basic_auth_secret: "htpasswd.password"
+  # maintainerr: DECOMMISSIONED 2026-06-20 — its Plex autodelete was unfixable
+  # (docs/maintainerr-plex-id-resolution-bug.md); replaced by scripts/maint/
+  # qflix-reaper.py (self-pushes the "QFlix Reaper" Kuma monitor). App stopped,
+  # its 3 Kuma monitors deleted, the deletion + rule-sanity canaries retired.
 
   unpackerr:
     # Auto-extracts completed archives from qBittorrent for the *arr stack.
@@ -470,10 +461,8 @@ canaries:
     kuma_monitor: "Canary Anime"
     script: "scripts/canaries/anime.sh"
     schedule: "hourly"
-  deletion:
-    kuma_monitor: "Canary Deletion"
-    script: "scripts/canaries/deletion.sh"
-    schedule: "daily-0430"
+  # deletion: RETIRED 2026-06-20 with Maintainerr (verified its 60-day rules).
+  # qflix-reaper has its own observability; Maintainerr no longer runs.
   mobile-ux:
     kuma_monitor: "Canary Mobile-UX"
     script: "scripts/canaries/mobile-ux.sh"
@@ -560,19 +549,10 @@ canaries:
     kuma_monitor: "Canary Plex Transcoder"
     script: "scripts/canaries/plex-transcoder.sh"
     schedule: "every-10min"
-  maintainerr-rule-sanity:
-    # Detect Maintainerr rule corruption (threshold=0 / keepFor=0 — would
-    # mass-delete every item in covered libraries on next daily cron),
-    # missing rules (count != 4), or canonical-name drift (operator
-    # in-place renamed but didn't recreate). Pure alert; no autonomous
-    # fix because recreating rules deletes collections which may have
-    # queued items mid-flight (operator decision required).
-    # 2026-05-21: a 60d→45d in-place API edit corrupted all 4 rules to
-    # 0d/0d. Daily run would have wiped every library if it hadn't been
-    # caught manually. This canary closes that gap.
-    kuma_monitor: "Canary Maintainerr Rule Sanity"
-    script: "scripts/canaries/maintainerr-rule-sanity.sh"
-    schedule: "every-30min"
+  # maintainerr-rule-sanity: RETIRED 2026-06-20 with Maintainerr. It guarded
+  # against Maintainerr rule corruption (threshold/keepFor=0 mass-delete); with
+  # Maintainerr gone the risk is gone. qflix-reaper's own safety caps (max-items
+  # / max-pct, abort-before-mutation) are the equivalent runaway guard.
   quota:
     # Ultra.cc per-user disk quota with autonomous reclaim. Three levels:
     #   80% WARN     → annotate Kuma msg; stay UP
