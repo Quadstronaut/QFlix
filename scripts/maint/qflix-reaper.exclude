@@ -1,0 +1,23 @@
+# qflix-reaper.exclude — items the reaper must NEVER delete, regardless of age.
+#
+# This is a protect-list: any item matching a line here is skipped even when it
+# is over the age threshold. Lenient parse: '#' starts a comment, blank lines are
+# ignored, leading/trailing whitespace is stripped. A missing file = no
+# exclusions + a logged WARNING (not an error).
+#
+# Each non-comment line is exactly one of these four forms:
+#
+#   tmdb:<id>        match a movie by its TMDB id        e.g.  tmdb:603
+#   tvdb:<id>        match a series by its TVDB id        e.g.  tvdb:81189
+#   plex:<ratingKey> match a Plex item by its ratingKey   e.g.  plex:14823
+#   <title text>     bare line = case-insensitive title   e.g.  The Matrix
+#
+# Prefer tmdb:/tvdb:/plex: forms — they are exact. Bare-title matching is a
+# convenience for one-off pins but will exclude EVERY item whose title matches
+# case-insensitively, so use it carefully.
+
+# --- examples (delete or replace with your real pins) ---
+# tmdb:603
+# tvdb:81189
+# plex:14823
+# Planet Earth II

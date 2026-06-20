@@ -1,0 +1,16 @@
+[Unit]
+Description=Manitoba maint — QFlix reaper (60-day autodelete, replaces broken Maintainerr)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# DEFAULT = DRY-RUN. The unit ships SAFE: it enumerates, resolves, prints the
+# plan, and mutates NOTHING. To actually arm deletion, an operator edits this
+# ExecStart to append --execute (or ships a drop-in override). Never enable
+# --execute blindly — read a dry-run plan first.
+ExecStart=/usr/bin/python3 %h/scripts/maint/qflix-reaper.py
+# Large library scans (4 libraries, per-item Guid lookups) can run long;
+# give the oneshot generous headroom so systemd doesn't TERM it mid-scan.
+TimeoutStartSec=1800
+StandardOutput=journal
+StandardError=journal
