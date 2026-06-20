@@ -1,0 +1,14 @@
+[Unit]
+Description=Manitoba maint — QFlix reaper (daily, 05:00 UTC off-peak)
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+# Spread load off the exact minute so the reaper doesn't collide with other
+# 05:00 maint jobs hammering Plex/arr at once.
+RandomizedDelaySec=20min
+# Catch up if the box was asleep/off at the scheduled time.
+Persistent=true
+Unit=manitoba-maint-reaper.service
+
+[Install]
+WantedBy=timers.target
