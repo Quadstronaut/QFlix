@@ -46,6 +46,7 @@ Then open `http://localhost:<local>/` in a browser.
 | Bazarr | 17031 | `ssh -L 17031:127.0.0.1:17031 quadstronaut@<fqdn>` |
 | Bazarr 2 (anime; internal-only — no nginx proxy) | 17032 | `ssh -L 17032:127.0.0.1:17032 quadstronaut@<fqdn>` — bare-Python install under `~/.apps/bazarr2/` |
 | qBittorrent | 17041 | `ssh -L 17041:127.0.0.1:17041 quadstronaut@<fqdn>` |
+| SABnzbd (Usenet DL client) | 17007 | `ssh -L 17007:127.0.0.1:17007 quadstronaut@<fqdn>` — then `http://localhost:17007/sabnzbd/`. The *arr reach it at `172.17.0.1:17007` (Docker bridge), not loopback. |
 | Maintainerr | 42007 | `ssh -L 42007:127.0.0.1:42007 quadstronaut@<fqdn>` (start service first: `app-maintainerr start`) |
 | Tdarr | 42018 | `ssh -L 42018:127.0.0.1:42018 quadstronaut@<fqdn>` |
 | Uptime Kuma admin | 42005 | `ssh -L 42005:127.0.0.1:42005 quadstronaut@<fqdn>` |

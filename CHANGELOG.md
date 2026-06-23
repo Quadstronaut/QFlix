@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-06-22 — Usenet path: SABnzbd + NZBgeek + Frugal (fix dead-swarm back-catalog)
+
+A member flagged Vanderpump Rules S2 present but S1 missing. S1 (2013 Bravo
+reality) exists on the stack's public trackers only as **dead-swarm SD** — 8/10
+episodes had 0 real seeders (indexers reported fake "100+ seeders"; qBittorrent
+showed 0 connected, while an unrelated download pulled fine). The stack was
+**public-torrent-only** (qBittorrent + 22 public trackers, no Usenet/private),
+so old back-catalog was unsourceable. Built a Usenet path; S1 now live in Plex
+as 10/10 1080p.
+
+- **`scripts/configure/90-sabnzbd-usenet-install.sh`** — installs SABnzbd
+  (`app-sabnzbd`), adds the Frugal provider + `sonarr` category + docker-bridge
+  host_whitelist, wires it into Sonarr as a download client via the bridge
+  gateway `172.17.0.1:<port>` (the *arr run in linuxserver Docker — their
+  `127.0.0.1` is not the host's), adds **NZBgeek** as a Newznab indexer, and
+  flips the Sonarr delay profile to **enableUsenet + prefer usenet**.
+- **Delay-profile fix (library-wide):** a fresh Sonarr ships
+  `enableUsenet=False`/`preferredProtocol=torrent`, so automatic and
+  failed-redownload grabs picked dead torrents over reliable NZBs ("Usenet is
+  not enabled for this series" rejections). Now Usenet-preferred everywhere.
+- **Prowlarr caveat:** its app-sync skips Usenet indexers that return nothing to
+  the empty-term category probe ("No Results in configured categories"), so
+  NZBgeek is held directly in Sonarr rather than synced.
+- New gitignored secrets: `usenet.{host,port,user,pass,ssl,connections}`,
+  `sabnzbd.{key,port}`, `nzbgeek.{key,url}` (see docs/secrets-convention.md).
+- Not yet in `manifest/apps.yaml` (no Kuma monitor / lifecycle) — follow-up.
+
 ## 2026-06-06 — quality fallback: two-stage loosening for stuck missing movies (PR #66)
 
 A movie missing for 5 continuous attempted days (proof via `lastSearchTime`)

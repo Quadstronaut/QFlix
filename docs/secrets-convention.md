@@ -26,6 +26,9 @@ back-compat).
 | `sonarr.key` / `sonarr2.key` / `radarr.key` / `radarr2.key` (+ `.port` + `.urlbase` each) | *arr API + listener | bootstrap-discover.sh scrapes config.xml + nginx upstream port |
 | `bazarr.key` / `bazarr2.key` (+ `.port`, `.urlbase`) | Subtitles API | UI / 06-bazarr2.sh |
 | `qbittorrent.user` / `.password` / `.port` | qBit WebUI | Ultra.cc panel + bootstrap |
+| `usenet.host` / `.port` / `.user` / `.pass` / `.ssl` / `.connections` | Usenet provider (Frugal block account) — SABnzbd downloads from this | operator signup; consumed by 90-sabnzbd-usenet-install.sh |
+| `sabnzbd.key` / `.port` | SABnzbd API + loopback port (17007; *arr reach it at `172.17.0.1:17007` over the Docker bridge) | 90-sabnzbd-usenet-install.sh scrapes sabnzbd.ini |
+| `nzbgeek.key` / `.url` | NZBgeek Newznab indexer (Usenet search), added directly to Sonarr | operator signup (https://nzbgeek.info); url `https://api.nzbgeek.info` |
 | `seerr.key` / `.port` / `.urlbase` | Seerr API | UI → Settings → General |
 | `maintainerr.key` | Maintainerr API | UI → Settings |
 | `plex.token` / `.host` / `.port` | Plex API | https://www.plex.tv/claim or X-Plex-Token from a web session |
