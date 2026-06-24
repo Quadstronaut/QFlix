@@ -478,10 +478,12 @@ else
   record "maint-kuma-all-up" skip "no maintenance.port"
 fi
 
-# 15. Phase-15 canaries (movie / anime / deletion / mobile-ux)
+# 15. Phase-15 canaries (movie / anime / quota / mobile-ux)
+# Spot-checks a representative subset of the 13 live canaries — not all of them.
+# (deletion canary retired 2026-06-20 with Maintainerr; swapped to quota.)
 echo "15. Phase-15 canaries"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-for canary in movie anime deletion mobile-ux; do
+for canary in movie anime quota mobile-ux; do
   if bash "$HERE/canaries/$canary.sh" >/dev/null 2>&1; then
     record "canary-$canary" pass
   else
@@ -498,7 +500,7 @@ K_PORT=$(sshm "cat ~/secrets/uptimekuma.port 2>/dev/null" </dev/null 2>/dev/null
 K_KEY=$(sshm "cat ~/secrets/uptimekuma.key 2>/dev/null" </dev/null 2>/dev/null)
 if [ -n "$K_PORT" ] && [ -n "$K_KEY" ]; then
   K_METRICS=$(sshm "curl -s -m 5 -u ':$K_KEY' http://127.0.0.1:$K_PORT/metrics 2>/dev/null" </dev/null 2>/dev/null)
-  for canary_name in "Canary Movie" "Canary Anime" "Canary Deletion" "Canary Mobile-UX"; do
+  for canary_name in "Canary Movie" "Canary Anime" "Canary Quota" "Canary Mobile-UX"; do
     slug=$(echo "$canary_name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
     # Filter to monitor_status lines specifically — there are multiple
     # Prometheus metrics per monitor (status, response_time, cert_days), and
@@ -513,7 +515,7 @@ if [ -n "$K_PORT" ] && [ -n "$K_KEY" ]; then
     fi
   done
 else
-  for canary_name in movie anime deletion mobile-ux; do
+  for canary_name in movie anime quota mobile-ux; do
     record "canary-kuma-canary-${canary_name}" skip "no uptimekuma.{port,key}"
   done
 fi

@@ -24,8 +24,9 @@ request id and skips the cleanup step.
 
 - `movie.sh`              — Seerr → Radarr push test (creates+deletes a request, verifies externalServiceId)
 - `anime.sh`              — Seerr → Sonarr2 push test (same pattern, tv mediaType, seasons:[1])
-- `deletion.sh`           — verify the 4 Maintainerr 60-day rules exist under canonical QFlix names and are active
 - `mobile-ux.sh`          — render-time check on the Homarr public board
+- `prowlarr-indexer-health.sh` — detects *arr→Prowlarr 429 cascades + chronically-unavailable indexers (detect-and-notify)
+- `quota.sh`              — Ultra.cc per-user disk quota thresholds (80% warn / 90% critical+reclaim / 98% fail)
 - `vlogs-stall.sh`        — VictoriaLogs reachable + non-zero ingest in last 15 min
 - `qbit-stall.sh`         — qBittorrent has had a state change in the last N hours
 - `kometa-libraries.sh`   — every kometa-configured Plex library still exists in Plex (semantic config-drift guard)

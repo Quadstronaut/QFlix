@@ -39,9 +39,9 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 
 | Surface | Count | State |
 |---|---:|---|
-| Apps in manifest (`manifest/apps.yaml`) | **34** | 19 UCC · 5 systemd · 9 cron · 1 library |
+| Apps in manifest (`manifest/apps.yaml`) | **33** | 18 UCC · 5 systemd · 9 cron · 1 library |
 | End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **13** | movie · anime · mobile-ux · qbit-stall · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link · quota |
-| Kuma push monitors (manitoba-owned) | **47** | every manifest app + all 13 canaries + the daemon's self-heartbeat report continuously ("Qflix Quality Fallback" pending one-time operator bootstrap — see docs/operator-deferred.md). Plus 4 external (3 Quadstronix nodes + 1 workstation collector); external PUSH tokens self-heal across `bootstrap-kuma-monitors.py` runs as of 2026-05-22. |
+| Kuma push monitors (manitoba-owned) | **47** | 33 manifest apps + 13 canaries + 1 daemon self-heartbeat, all reporting continuously (audited 2026-06-24: 47/47 green). Plus the self-pushed "QFlix Reaper" monitor and 4 external (3 Quadstronix nodes + 1 workstation collector); external PUSH tokens self-heal across `bootstrap-kuma-monitors.py` runs as of 2026-05-22. |
 | Cron + systemd timers | **14+** | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **650+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -63,7 +63,7 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 | 🟠 TV | **Sonarr** + **Sonarr2** (anime branch) | One per release-naming convention |
 | 🟠 Movies | **Radarr** + **Radarr2** (anime branch) | Same split |
 | 🟠 Subtitles | **Bazarr** + **Bazarr 2** (anime branch) | One per arr-pair — Bazarr is hard-capped at one Sonarr + one Radarr each, so the second anime instance is a bare-Python install pinned to Bazarr-1's version (`bazarr2-sync.timer`) |
-| 🟠 Retention | **Maintainerr** | 60-day "watched + nobody else cared" deletion engine |
+| 🟠 Retention | **qflix-reaper** | 60-day "watched + nobody else cared" deletion engine — script-driven (`scripts/maint/qflix-reaper.py`, daily timer, caps 50 items / 30% per library, audit manifest, re-requestable). Replaced Maintainerr 2026-06-20 after its Plex-ID resolution bug made deletes unfixable. |
 
 Surrounding cast (qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 13 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
 
@@ -155,10 +155,9 @@ Hardlinks are sacred — *arrs hardlink, never copy. `scripts/smoke-test.sh` ste
 flowchart TB
   classDef nightly fill:#0e1d33,stroke:#ff8c42,color:#f8fafc
   classDef weekly fill:#0a1628,stroke:#d4af37,color:#f8fafc
-  M[Maintainerr<br/>nightly rule pass]:::nightly
-  M -->|watched ≥60d + nobody else watched| del{tag for delete}
-  del -->|pass 1| collDel[delete from Plex collection]
-  collDel --> fileDel[delete file on disk]
+  M[qflix-reaper<br/>daily 60-day autodelete]:::nightly
+  M -->|watched ≥60d + nobody else watched| del{eligible?}
+  del -->|caps: 50 items / 30% per lib · audit manifest| fileDel[delete file + Plex item<br/>re-requestable via Seerr]
 
   R[Recyclarr<br/>weekly Sun 04:30]:::weekly --> trash[TRaSH-Guides → *arr quality profiles]
   K[Kometa<br/>daily 03:30]:::weekly --> meta[Plex-meta-manager → collections + posters]
@@ -186,13 +185,13 @@ flowchart LR
   recovery -->|lifecycle.start ≤3 attempts| status
   recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>49 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>47 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
-  C3[Canary deletion · daily 04:30]:::probe -->|push| K
+  C3[Canary plex-transcoder · 10min]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K
   C5[Canary qbit-stall · every 15min]:::probe -->|push| K
   C6[Canary vlogs-stall · every 15min]:::probe -->|push| K
-  C7[+ 9 more canaries<br/>kometa-libraries · stale-log-watchdog · kometa-deploy-drift<br/>prowlarr-indexer-health · hardlink-integrity · plex-transcoder<br/>tautulli-plex-link · maintainerr-rule-sanity · quota]:::probe -->|push| K
+  C7[+ 7 more canaries<br/>kometa-libraries · stale-log-watchdog · kometa-deploy-drift<br/>prowlarr-indexer-health · hardlink-integrity<br/>tautulli-plex-link · quota]:::probe -->|push| K
   push1 --> K
   K -->|status page| public[/HTTPS /status/manitoba/]
 ```
@@ -279,6 +278,14 @@ timeline
             : hardlink-integrity canary rewritten qBit-side (enumerate qbit-completed → check library inode) — eliminates the share-ratio-removal false-positive that fired the old library-mtime sample design 20/20
             : Plex log surface wired into vlogs-ingest (Mon-DD-YYYY timestamp parser added to scripts/mcp/logs.py — Plex was the last unmanaged log)
             : Kuma totals 50 UP / 2 dormant / 0 DOWN
+  2026-06-20 : Maintainerr decommissioned — Plex-ID resolution bug made deletes unfixable
+            : qflix-reaper armed (script-driven 60-day autodelete · caps + audit manifest)
+            : deletion + maintainerr-rule-sanity canaries retired (13 canaries remain)
+  2026-06-22 : Usenet path added — SABnzbd + NZBgeek + Frugal block account
+            : Sonarr delay-profile flipped Usenet-preferred (dead-swarm back-catalog fix)
+  2026-06-24 : Full stack audit — 33/33 apps UP · 13/13 canaries green · smoke 51/56
+            : dead Prowlarr indexer "TorrentDownload" disabled (cleared chronic canary)
+            : Sonarr/Sonarr2 4.0.17→4.0.18 + qBittorrent 5.0.3→5.2 flagged for cp-upgrade sweep
 ```
 
 ---
