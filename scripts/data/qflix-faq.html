@@ -865,7 +865,7 @@ maintainerr 42007</code></pre>
 
     <section class="deck" id="sec-monitoring">
       <h2><span class="num">10</span>Kuma &amp; canaries</h2>
-      <p class="deck-sub">Push monitors, status page, and the 14 end-to-end canaries.</p>
+      <p class="deck-sub">Push monitors, status page, and the 13 end-to-end canaries.</p>
 
       <article class="card tut" id="q-kuma-arch" data-tags="kuma push monitor pusher webhook netns isolation 60 seconds">
         <h3>Why is auto-heal in the pusher and not in a Kuma webhook? <a class="qhash" href="#q-kuma-arch">#</a></h3>
@@ -876,13 +876,13 @@ maintainerr 42007</code></pre>
       </article>
 
       <article class="card tut" id="q-canaries" data-tags="canary movie anime deletion mobile-ux pipeline end-to-end hardlink qbit vlogs kometa quota prowlarr maintainerr">
-        <h3>What do the 14 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
+        <h3>What do the 13 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
         <table class="tbl">
           <thead><tr><th>Canary</th><th>Cadence</th><th>Asserts</th></tr></thead>
           <tbody>
             <tr><td><code>canary-movie</code></td><td>hourly</td><td>Seerr &rarr; Radarr &rarr; import &rarr; Plex movie path works end-to-end</td></tr>
             <tr><td><code>canary-anime</code></td><td>hourly</td><td>Seerr &rarr; Sonarr2 &rarr; import &rarr; Plex anime path works (the <em>second</em> server matters)</td></tr>
-            <tr><td><code>canary-deletion</code></td><td>daily 04:30</td><td>Maintainerr's 60-day rule fires and at least one file actually got deleted that week</td></tr>
+            <tr><td><code>canary-tautulli-plex-link</code></td><td>every 15 min</td><td>Tautulli's <em>configured</em> Plex address is a live <code>/identity</code> &mdash; catches &ldquo;Tautulli web up but pinned to a dead/old Plex&rdquo; (the 2026-05-20 re-IP class the app monitor stayed green through)</td></tr>
             <tr><td><code>canary-mobile-ux</code></td><td>every 15 min</td><td>Public Homarr board still renders + the <code>/</code> &rarr; board redirect still works</td></tr>
             <tr><td><code>canary-qbit-stall</code></td><td>every 15 min</td><td>qBittorrent dl_info_speed&ne;0 while a download queue exists for &gt;5 min (libtorrent wedge detector)</td></tr>
             <tr><td><code>canary-vlogs-stall</code></td><td>every 15 min</td><td>VictoriaLogs is up and ingesting; every managed *arr is logging within the freshness window</td></tr>
@@ -892,8 +892,7 @@ maintainerr 42007</code></pre>
             <tr><td><code>canary-kometa-deploy-drift</code></td><td>daily 04:30</td><td>Kometa's deployed config matches the repo &mdash; an in-place UI edit that gets blown away on next git-sync gets caught here</td></tr>
             <tr><td><code>canary-stale-log-watchdog</code></td><td>hourly</td><td>3 long-cadence apps (kometa / recyclarr / buildarr) have written within their expected windows &mdash; catches a silently-failing weekly timer</td></tr>
             <tr><td><code>canary-quota</code></td><td>hourly</td><td>Disk usage band: 80% warn / 90% critical / 98% fail. The first canary the operator sees before purges trigger.</td></tr>
-            <tr><td><code>canary-plex-transcoder</code></td><td>every 15 min</td><td>Plex Identity + Transcoder + PreferRemote endpoints all respond &mdash; if Plex enters a half-up state where the web UI works but transcoding hangs, this catches it</td></tr>
-            <tr><td><code>canary-maintainerr-rule-sanity</code></td><td>hourly</td><td>4 active rules, all canonically named, all thresholds &ge; floor &mdash; built after a 2026-05-21 incident where a rule threshold flipped to 0 days, queuing the whole library for deletion</td></tr>
+            <tr><td><code>canary-plex-transcoder</code></td><td>every 10 min</td><td>Plex Identity + Transcoder + PreferRemote endpoints all respond &mdash; if Plex enters a half-up state where the web UI works but transcoding hangs, this catches it</td></tr>
           </tbody>
         </table>
         <p>Each canary pushes a status to Kuma. If Kuma goes red, the operator gets pinged. If a canary's underlying script crashes (vs. silently returning OK), <code>journalctl --user -u manitoba-maint-canary-&lt;name&gt;.service</code> has the traceback.</p>
@@ -921,7 +920,7 @@ maintainerr 42007</code></pre>
       <article class="card tut" id="q-smoke-buckets" data-tags="smoke smoke-test 45 production buckets prowlarr hardlinks canary check">
         <h3>What does the production smoke actually check? <a class="qhash" href="#q-smoke-buckets">#</a></h3>
         <p>
-          <code>scripts/smoke-test.sh</code> runs ~45 assertions in five buckets. A clean &ldquo;45/45 pass&rdquo; means everything from indexers through subscriber email is reachable. A single failure is operator-actionable &mdash; rerun after every tracked change.
+          <code>scripts/smoke-test.sh</code> runs ~50 assertions in five buckets. A clean run means everything from indexers through subscriber email is reachable. A single failure is operator-actionable &mdash; rerun after every tracked change.
         </p>
         <table class="tbl">
           <thead><tr><th>Bucket</th><th>What it asserts</th></tr></thead>
@@ -929,7 +928,7 @@ maintainerr 42007</code></pre>
             <tr><td>1. Prowlarr</td><td>Indexer count &ge; 5; search round-trip for &ldquo;ubuntu&rdquo; returns &ge; 1</td></tr>
             <tr><td>2. *arr &harr; qBit</td><td><code>testall</code> returns 200 for sonarr / sonarr2 / radarr / radarr2</td></tr>
             <tr><td>3. Library hygiene</td><td>Hardlink count &ge; 2 on Movies samples; rescan helpers reach Komga / Kavita / Audiobookshelf</td></tr>
-            <tr><td>4. App liveness</td><td>Maintainerr (with sonarr count), qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 14 canaries</td></tr>
+            <tr><td>4. App liveness</td><td>qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 13 canaries</td></tr>
             <tr><td>5. Maintenance system</td><td>Webhook <code>/health</code>, window timer scheduled, manifest validates, pusher active, Kuma drift = 0, Kuma all-up (external + parked excluded)</td></tr>
           </tbody>
         </table>

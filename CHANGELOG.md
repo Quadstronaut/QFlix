@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-06-24 — Full-stack audit (host · apps · canaries · scripts · 72h logs)
+
+End-to-end audit against the live seedbox. Headline: **33/33 apps UP, 13/13
+canaries green, 711 pytest pass, smoke 51/56** (4 fails were non-faults). No
+host/perf problems — disk 1.77 TB / 2.79 TB quota (63%), load is shared-box
+noise, glibc 2.31 (the documented Tdarr pin reason).
+
+**Fixed this audit:**
+- **Prowlarr `prowlarr-indexer-health` canary was red** (true-positive): the dead
+  public indexer **`TorrentDownload`** (id=5) had been failing >6h, tripping
+  Prowlarr's health warning and the *arr "Indexers unavailable" warnings.
+  Disabled it + triggered `CheckHealth` → 0 issues, canary green.
+- **`smoke-test.sh` + `scripts/canaries/README.md`** still referenced the retired
+  `deletion` canary (its Kuma monitor was deleted 2026-06-20, so smoke false-
+  failed every run). Swapped the spot-check to `quota`; README now lists the real
+  13 canaries (added `prowlarr-indexer-health` + `quota`, dropped `deletion`).
+- **Doc reconciliation** — README/inventory/FAQ still presented **Maintainerr as a
+  load-bearing app** and an off-by-one **34→33** app count. Completed the
+  2026-06-20 Maintainerr→`qflix-reaper` decommission across all three: required-
+  apps table, library-hygiene + monitoring diagrams, timeline (appended 06-20 /
+  06-22 / 06-24), FAQ canary table (14→13, swapped `deletion`/`maintainerr-rule-
+  sanity` for `tautulli-plex-link`), and the smoke buckets.
+
+**Flagged (not auto-applied):**
+- **Sonarr + Sonarr2 4.0.17.2952 → 4.0.18.2971** and **qBittorrent 5.0.3 → 5.2.x**
+  available — left for the `cp-upgrade` weekly sweep (Radarr pair already latest).
+- **Sonarr↔SABnzbd "Connection refused"** ~32/hr ongoing (2028/72h) even though SAB
+  is up (v5.0.4, 200 on both loopback + `172.17.0.1` bridge) — intermittent,
+  needs a deeper look; not pipeline-breaking.
+- **Maintainerr container still answers** (4 rules/4 collections) — UCC auto-
+  restarts it; `app-maintainerr uninstall` to fully remove.
+- **Orphan files** from the retirement to `git rm`: `scripts/canaries/{deletion,
+  maintainerr-rule-sanity}.sh`, their 4 systemd units, and the matching refs in
+  `scripts/configure/240-maintenance-install.sh`. `functional-audit.py` still has
+  a stale MAINTAINERR section + Tautulli urlbase / Plex-version probe bugs.
+- **`QFlix Reaper`** Kuma monitor is an orphan to the manifest (self-pushed) — add
+  to the manifest/external list to clear `kuma audit` drift.
+
+**72h log scan:** 7.40 M lines ingested, **97,454 ERROR-level**; journald `-p err`
+clean (0). 97% of ERRORs are benign Plex `Unknown metadata type: folder` spam
+(94,930). See the audit report for the full per-app error table.
+
 ## 2026-06-22 — Usenet path: SABnzbd + NZBgeek + Frugal (fix dead-swarm back-catalog)
 
 A member flagged Vanderpump Rules S2 present but S1 missing. S1 (2013 Bravo
