@@ -243,10 +243,29 @@ def collect_for(app: str, *, since: str, tail: int) -> dict:
         source = f"journalctl:{plan['unit']}"
     else:
         return {"app": app, "error": "unsupported", "lines": []}
+    # Stack-trace / continuation lines have no parseable timestamp (parse_line
+    # returns ts=None). Without help the vlogs ingester stamps them with the
+    # current INGEST time — so a re-tailed old exception block (e.g. a stale
+    # "Connection refused (127.0.0.1:17007)") resurfaces as a phantom "recent"
+    # error and corrupts the error-rate signal (this masked the 2026-06-25
+    # SAB/Plex fixes and misled the council audit). Carry the preceding
+    # timestamped line's ts forward so a continuation line inherits its parent
+    # entry's time instead of looking brand-new on every 5-min re-tail.
+    parsed: list[dict] = []
+    last_ts = None
+    for line in lines:
+        if not line.strip():
+            continue
+        rec = parse_line(line, source=source)
+        if rec["ts"] is None:
+            rec["ts"] = last_ts
+        else:
+            last_ts = rec["ts"]
+        parsed.append(rec)
     return {
         "app": app,
         "source": source,
-        "lines": [parse_line(line, source=source) for line in lines if line.strip()],
+        "lines": parsed,
     }
 
 

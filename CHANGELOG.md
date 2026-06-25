@@ -24,25 +24,29 @@ noise, glibc 2.31 (the documented Tdarr pin reason).
   sanity` for `tautulli-plex-link`), and the smoke buckets.
 
 **Remediated in the follow-up pass (2026-06-25):**
-- **#2 Sonarr↔SABnzbd "Connection refused" → config FIXED; benign residual.** SAB
-  was never down (process up 2d+, 200 on loopback + bridge). The SAB download-client
-  config is corrected + verified: deleted the old client and recreated it fresh as
-  **id 6 at `172.17.0.1`** with the real API key — live test 200, downloads work.
-  The residual ~3/5min `127.0.0.1` log-error is Sonarr's `DownloadedEpisodesScan`
-  (Completed Download Handling) re-testing the client from a **tracked failed-SAB-
-  grab record** that stores the grab-time address. That state lives in Sonarr's
-  **container-private `/config/sonarr.db`** and survived config-correction, client
-  delete+recreate, AND three restarts. No host/API/UI lever reaches it (this UCC
-  box exposes no `docker exec`; the Sonarr UI has no clear-queue control) — it's
-  cosmetic log-noise that will age out.
-- **Plex library-update connection fixed on all four *arr.** They were pinned to the
-  dead **`172.17.1.250:32400`** — the pre-re-IP Plex address that only Tautulli had
-  been migrated off after the 2026-05-20 Ultra.cc kernel migration (per
+- **#2 Sonarr↔SABnzbd "Connection refused" → FULLY FIXED.** SAB was never down. The
+  SAB download-client was recreated fresh (**id 6 at `172.17.0.1`**) with the real
+  API key. The live Sonarr **debug log** shows it polling `http://172.17.0.1:17007/
+  sabnzbd/api` (mode=queue/history) every minute and succeeding — **zero `127.0.0.1`
+  across 28+ min of debug log**; the last real SAB event in `sonarr.txt` is a Jun-23
+  *success*. Correction: `~/.apps/sonarr/sonarr.db` IS host-readable and is **clean
+  of `127.0.0.1`** — the earlier "container-private, no lever" claim was wrong (the
+  DB was never the source).
+- **Plex library-update connection → FULLY FIXED on all four *arr.** They were pinned
+  to the dead **`172.17.1.250:32400`** — the pre-re-IP Plex address that only Tautulli
+  had been migrated off after the 2026-05-20 Ultra.cc kernel migration (per
   `50-tautulli-pms-url-fix.sh`). Repointed live to the stable bridge gateway
-  **`172.17.0.1:<plex.port>`** (all four test 200), restoring native Plex refresh-
-  on-import (silently broken for ~5 weeks). Source fixed: `09-phase5-arr-connects-
-  and-sync.sh` `PLEX_HOST` → gateway, not `plex.host` (=127.0.0.1). Same container-
-  private-DB residual as SAB drains the stale 172.17.1.250 queued updates.
+  **`172.17.0.1:<plex.port>`** (all four test 200; verified `172.17.0.1:17025` reaches
+  Plex `/identity` 200 and the dead `172.17.1.250:32400` does not). Source fixed:
+  `09-phase5-arr-connects-and-sync.sh` `PLEX_HOST` → gateway, not `plex.host`
+  (=127.0.0.1). Native Plex refresh-on-import works again (last real failure Jun-23).
+- **Observability fix — `scripts/mcp/logs.py` mis-timestamped continuation lines.**
+  Multi-line stack-trace lines (no leading timestamp — `---> ...Connection refused
+  (127.0.0.1:17007)`, ` -- : Test was aborted`) were assigned the *ingest* time, so
+  old pre-fix exception lines resurfaced in VictoriaLogs as phantom "recent" errors.
+  This made the SAB/Plex fixes *look* unapplied and fed the council a corrupted error
+  signal. Fixed `collect_for()` to carry each timestamped line's ts forward to its
+  continuation lines; the real Sonarr logs were clean all along.
 - **#3 Maintainerr → fully UNINSTALLED.** `app-maintainerr uninstall` — `~/.apps/
   maintainerr` removed, no process, no UCC auto-restart, subdomain now 502.
 - **#4 Orphan cleanup done.** `git rm` of `scripts/canaries/{deletion,maintainerr-
