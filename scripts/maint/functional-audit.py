@@ -225,7 +225,7 @@ def main():
         code, body = _get(f"http://127.0.0.1:{p}{path}?X-Plex-Token={t}")
         # Plex returns XML
         size = re.search(r'size="(\d+)"', body)
-        version = re.search(r'version="([^"]+)"', body)
+        version = re.search(r'<MediaContainer[^>]*\bversion="([^"]+)"', body)
         info = []
         if size:
             info.append(f"size={size.group(1)}")
@@ -236,28 +236,9 @@ def main():
             info.append(f"titles={titles}")
         row(label, code, " ".join(info))
 
-    section("MAINTAINERR")
-    mport = _read("maintainerr.port")
-    mkey = _read("maintainerr.key")
-    basic = base64.b64encode(f"quadstronaut:{HTPW}".encode()).decode()
-    userpart, domain = HOST.split(".", 1)
-    mhost = f"https://maintainerr-{userpart}.{domain}"
-    mh = {"X-Api-Key": mkey, "Authorization": f"Basic {basic}"}
-    for label, path in [
-        ("mt rules", "/api/rules"),
-        ("mt collections", "/api/collections"),
-        ("mt plex/libraries", "/api/plex/libraries"),
-        ("mt settings", "/api/settings"),
-    ]:
-        code, body = _get(f"{mhost}{path}", mh)
-        try:
-            d = json.loads(body)
-            if isinstance(d, list):
-                row(label, code, f"count={len(d)}")
-            else:
-                row(label, code, f"keys={list(d.keys())[:6]}" if isinstance(d, dict) else "ok")
-        except Exception:
-            row(label, code, body[:80])
+    # MAINTAINERR section removed 2026-06-24 — app decommissioned 2026-06-20
+    # (replaced by scripts/maint/qflix-reaper.py). The reaper self-pushes the
+    # "QFlix Reaper" Kuma monitor; there is no HTTP feature surface to probe.
 
     section("PLEX-ADJACENT (Tautulli / Seerr / Audiobookshelf / Kavita / Komga / Calibre-Web / Homarr / FlareSolverr)")
     # Tautulli — api_v2 with api_key
@@ -271,7 +252,7 @@ def main():
             tkey = _read(cand)
             break
     if tkey:
-        code, body = _get(f"http://127.0.0.1:{tp}/api/v2?apikey={tkey}&cmd=get_activity")
+        code, body = _get(f"http://127.0.0.1:{tp}/tautulli/api/v2?apikey={tkey}&cmd=get_activity")
         try:
             d = json.loads(body)
             r2 = d.get("response", {})
@@ -279,7 +260,7 @@ def main():
             row("tautulli get_activity", code, f"streams={data.get('stream_count', '?')} bw={data.get('total_bandwidth', '?')}KB/s")
         except Exception as e:
             row("tautulli get_activity", code, f"parse-fail {e}")
-        code, body = _get(f"http://127.0.0.1:{tp}/api/v2?apikey={tkey}&cmd=get_libraries")
+        code, body = _get(f"http://127.0.0.1:{tp}/tautulli/api/v2?apikey={tkey}&cmd=get_libraries")
         try:
             d = json.loads(body)
             libs = d.get("response", {}).get("data", [])

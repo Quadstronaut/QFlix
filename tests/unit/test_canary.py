@@ -385,6 +385,7 @@ class TestAuditIncludesCanaries:
             'monitor_status{monitor_name="Canary Movie"} 1\n'
             'monitor_status{monitor_name="Manitoba Pusher"} 1\n'
             'monitor_status{monitor_name="QFlix Fleet"} 1\n'
+            'monitor_status{monitor_name="QFlix Reaper"} 1\n'
         )
         resp = MagicMock(text=metrics)
         monkeypatch.setattr("lib.kuma.requests.get", lambda *a, **k: resp)
@@ -392,5 +393,5 @@ class TestAuditIncludesCanaries:
 
         report = audit_monitors(m, kuma_url="http://x")
         assert "Canary Movie" in report["matched"]
-        # sonarr (1) + canary (1) + auto-injected "Manitoba Pusher" (1) + "QFlix Fleet" (1).
-        assert report["manifest_count"] == 4
+        # sonarr (1) + canary (1) + auto-injected "Manitoba Pusher" (1) + "QFlix Fleet" (1) + "QFlix Reaper" (1).
+        assert report["manifest_count"] == 5
