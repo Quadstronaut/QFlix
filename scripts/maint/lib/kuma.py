@@ -187,6 +187,11 @@ def audit_monitors(manifest, *, kuma_url: str | None = None,
     # (step 0c). Fed each cycle by push_once() in the pusher service. Collapses
     # correlated mass-down storms into a single operator signal (sub-project C).
     manifest_monitors.add("QFlix Fleet")
+    # QFlix reaper self-heartbeat — the 60-day autodelete oneshot
+    # (scripts/maint/qflix-reaper.py) self-pushes "QFlix Reaper" each daily run
+    # rather than being pusher-probed (it's a oneshot, not a long-lived app).
+    # Part of the expected set so `kuma audit` doesn't flag it as orphan drift.
+    manifest_monitors.add("QFlix Reaper")
 
     if kuma_url is None:
         kuma_url = _kuma_host()

@@ -23,20 +23,27 @@ noise, glibc 2.31 (the documented Tdarr pin reason).
   06-22 / 06-24), FAQ canary table (14→13, swapped `deletion`/`maintainerr-rule-
   sanity` for `tautulli-plex-link`), and the smoke buckets.
 
-**Flagged (not auto-applied):**
-- **Sonarr + Sonarr2 4.0.17.2952 → 4.0.18.2971** and **qBittorrent 5.0.3 → 5.2.x**
-  available — left for the `cp-upgrade` weekly sweep (Radarr pair already latest).
-- **Sonarr↔SABnzbd "Connection refused"** ~32/hr ongoing (2028/72h) even though SAB
-  is up (v5.0.4, 200 on both loopback + `172.17.0.1` bridge) — intermittent,
-  needs a deeper look; not pipeline-breaking.
-- **Maintainerr container still answers** (4 rules/4 collections) — UCC auto-
-  restarts it; `app-maintainerr uninstall` to fully remove.
-- **Orphan files** from the retirement to `git rm`: `scripts/canaries/{deletion,
-  maintainerr-rule-sanity}.sh`, their 4 systemd units, and the matching refs in
-  `scripts/configure/240-maintenance-install.sh`. `functional-audit.py` still has
-  a stale MAINTAINERR section + Tautulli urlbase / Plex-version probe bugs.
-- **`QFlix Reaper`** Kuma monitor is an orphan to the manifest (self-pushed) — add
-  to the manifest/external list to clear `kuma audit` drift.
+**Remediated in the follow-up pass (same session):**
+- **#2 Sonarr↔SABnzbd "Connection refused" → FIXED.** Root cause: a stale Sonarr
+  download-client provider pinned to `127.0.0.1:17007` (the Docker-localhost value
+  the SAB client was first added with) that survived both an `app-sonarr restart`
+  AND an API re-save. Definitive fix: **deleted the client (id 5) and recreated it
+  fresh (id 6) at `172.17.0.1` with the real API key** — live test 200, errors → 0.
+  (SAB itself was never down: process up 2d+, 200 on loopback + bridge.)
+- **#3 Maintainerr → fully UNINSTALLED.** `app-maintainerr uninstall` — `~/.apps/
+  maintainerr` removed, no process, no UCC auto-restart, subdomain now 502.
+- **#4 Orphan cleanup done.** `git rm` of `scripts/canaries/{deletion,maintainerr-
+  rule-sanity}.sh` + their 4 systemd units; removed the matching refs in
+  `240-maintenance-install.sh`; removed the dead unit files + deployed scripts from
+  the box. `functional-audit.py`: dropped the MAINTAINERR section and fixed the
+  Tautulli urlbase + Plex `<MediaContainer version>` probe bugs.
+- **#5 `QFlix Reaper` registered.** Added to `audit_monitors()`'s expected set
+  (alongside `Manitoba Pusher` / `QFlix Fleet`) — `kuma audit` now reports **no
+  drift** (49/49 matched), no orphan.
+
+**Deferred:**
+- **#1 Sonarr/Sonarr2 4.0.17.2952 → 4.0.18.2971** and **qBittorrent 5.0.3 → 5.2.x**
+  — left for the Monday `cp-upgrade` weekly sweep (Radarr pair already latest).
 
 **72h log scan:** 7.40 M lines ingested, **97,454 ERROR-level**; journald `-p err`
 clean (0). 97% of ERRORs are benign Plex `Unknown metadata type: folder` spam
