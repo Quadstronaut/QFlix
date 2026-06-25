@@ -95,7 +95,7 @@ flowchart LR
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 49 push monitors)]:::kuma
+  kuma[(Uptime Kuma<br/>isolated netns · 47 push monitors)]:::kuma
   discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex

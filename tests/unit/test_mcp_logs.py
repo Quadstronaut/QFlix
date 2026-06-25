@@ -45,6 +45,30 @@ def test_parse_line_unknown_format():
     assert parsed["message"] == "garbage"
 
 
+def test_collect_for_carries_ts_to_continuation_lines(monkeypatch):
+    # A timestamped error followed by untimestamped stack-trace/continuation
+    # lines: each continuation must INHERIT the error line's ts (not None), so
+    # the vlogs ingester can't restamp re-tailed old blocks with ingest-time
+    # and resurrect them as phantom "recent" errors (the 2026-06-25 SAB/Plex
+    # false-residual that misled the council).
+    raw = [
+        "2026-06-23 04:55:11.1|Error|DownloadClientCheck|Unable to connect to SABnzbd",
+        "  ---> System.Net.Http.HttpRequestException: Connection refused (127.0.0.1:17007)",
+        "   at NzbDrone.Core.Download.Clients.Sabnzbd.SabnzbdProxy.ProcessRequest()",
+        "2026-06-23 04:55:12.0|Info|RssSyncService|RSS Sync Completed.",
+    ]
+    monkeypatch.setattr(logs, "route", lambda app: {"kind": "file", "path": "/x/sonarr.txt"})
+    monkeypatch.setattr(logs, "_tail_file", lambda path, n: raw)
+    lines = logs.collect_for("sonarr", since="5m", tail=100)["lines"]
+    assert len(lines) == 4
+    err_ts = lines[0]["ts"]
+    assert err_ts and err_ts.startswith("2026-06-23")
+    assert lines[1]["ts"] == err_ts          # continuation inherits parent ts
+    assert lines[2]["ts"] == err_ts
+    assert "127.0.0.1:17007" in lines[1]["message"]
+    assert lines[3]["ts"].startswith("2026-06-23") and lines[3]["level"] == "INFO"
+
+
 LOGS_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "mcp" / "logs.py"
 
 
