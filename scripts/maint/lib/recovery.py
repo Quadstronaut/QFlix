@@ -212,9 +212,17 @@ def run(app_name: str, *, manifest: Optional[Manifest] = None) -> dict:
 
 def _recovery_loop(app: App) -> dict:
     app_name = app.name
-    attempts_max = int(app.defaults.get("recovery_attempts", 3))
-    backoff = list(app.defaults.get("recovery_backoff_s", [10, 30, 60]))
-    recheck_delay = int(app.defaults.get("kuma_recheck_delay_s", 90))
+    # Per-app override (App.raw, the manifest entry) wins over the global
+    # `defaults` block. Lets a slow-booting app widen its probe window so the
+    # loop catches the boot instead of false-firing "could not be started":
+    # victorialogs opens 86 partitions in ~48s clean / >150s after unclean-
+    # shutdown debris, well past the default [10,30,60] horizon (~100s).
+    attempts_max = int(app.raw.get("recovery_attempts",
+                                   app.defaults.get("recovery_attempts", 3)))
+    backoff = list(app.raw.get("recovery_backoff_s",
+                               app.defaults.get("recovery_backoff_s", [10, 30, 60])))
+    recheck_delay = int(app.raw.get("kuma_recheck_delay_s",
+                                    app.defaults.get("kuma_recheck_delay_s", 90)))
 
     for attempt in range(1, attempts_max + 1):
         lifecycle.start(app)
