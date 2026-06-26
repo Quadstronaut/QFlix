@@ -243,6 +243,64 @@ class TestRecoveryBackoff:
         assert 90 in sleep_calls
 
 
+class TestRecoveryPerAppOverride:
+    """recovery_attempts / recovery_backoff_s / kuma_recheck_delay_s may be
+    overridden per-app via the manifest entry (App.raw), falling back to the
+    global `defaults` block. Lets a slow-booting app (victorialogs: ~48s clean,
+    >150s after unclean-shutdown debris cleanup) get a probe window long enough
+    to catch the boot instead of false-firing "could not be started after 3
+    attempts" — the 2026-06-26 incident follow-up."""
+
+    def test_per_app_backoff_overrides_global_defaults(self, tmp_path):
+        app = _make_app(kuma_monitor=None, recovery_backoff_s=[10, 30, 60])
+        app.raw["recovery_backoff_s"] = [30, 90, 180]
+        manifest = _FakeManifest({"sonarr": app})
+
+        sleep_calls = []
+        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+             patch("lib.recovery.health.probe", return_value=_fail_health()), \
+             patch("lib.recovery.notify.notify"), \
+             patch("lib.recovery.state.record"), \
+             patch("lib.recovery.time.sleep", side_effect=lambda s: sleep_calls.append(s)):
+            result = run("sonarr", manifest=manifest)
+
+        assert result["event"] == "failed"
+        assert sleep_calls == [30, 90, 180]
+
+    def test_per_app_attempts_overrides_global_defaults(self, tmp_path):
+        app = _make_app(kuma_monitor=None, recovery_attempts=3, recovery_backoff_s=[5, 5, 5, 5, 5])
+        app.raw["recovery_attempts"] = 5
+        manifest = _FakeManifest({"sonarr": app})
+
+        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()) as mock_start, \
+             patch("lib.recovery.health.probe", return_value=_fail_health()), \
+             patch("lib.recovery.notify.notify"), \
+             patch("lib.recovery.state.record"), \
+             patch("lib.recovery.time.sleep"):
+            result = run("sonarr", manifest=manifest)
+
+        assert result["event"] == "failed"
+        assert result["attempts"] == 5
+        assert mock_start.call_count == 5
+
+    def test_falls_back_to_global_defaults_when_no_per_app_override(self, tmp_path):
+        # raw has no recovery_* keys → global defaults still apply.
+        app = _make_app(kuma_monitor=None, recovery_backoff_s=[10, 30, 60])
+        assert "recovery_backoff_s" not in app.raw
+        manifest = _FakeManifest({"sonarr": app})
+
+        sleep_calls = []
+        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+             patch("lib.recovery.health.probe", return_value=_fail_health()), \
+             patch("lib.recovery.notify.notify"), \
+             patch("lib.recovery.state.record"), \
+             patch("lib.recovery.time.sleep", side_effect=lambda s: sleep_calls.append(s)):
+            result = run("sonarr", manifest=manifest)
+
+        assert result["event"] == "failed"
+        assert sleep_calls == [10, 30, 60]
+
+
 # ---------------------------------------------------------------------------
 # Tests: auto-downgrade after attempt-cap
 # ---------------------------------------------------------------------------

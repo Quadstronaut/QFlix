@@ -427,7 +427,7 @@ apps:
       unit: qflix-quality-fallback.service
 
   victorialogs:
-    # Log aggregator. Single static Rust binary, ~200MB RAM, on-disk index
+    # Log aggregator. Single static Go binary (VictoriaLogs), on-disk index
     # at ~/.apps/vlogs/data with 90d retention. Bound loopback-only on the
     # port stored in secrets/vlogs.port. Migrated from workstation to seedbox
     # 2026-05-14 because workstation-resident ingest violated the autonomy
@@ -435,6 +435,13 @@ apps:
     class: systemd
     unit: victorialogs.service
     kuma_monitor: "VictoriaLogs"
+    # Opening 86 daily partitions on the contended shared disk takes ~48s on a
+    # clean boot and >150s after unclean-shutdown debris cleanup — past the
+    # default [10,30,60]s probe window (~100s), which would false-fire
+    # "could not be started after 3 attempts". Widen this app's recovery
+    # backoff so the loop waits long enough to see the boot complete.
+    # (2026-06-26 incident follow-up; lib/recovery.py reads raw before defaults.)
+    recovery_backoff_s: [30, 90, 180]
     health:
       kind: http_root
       port_secret: vlogs.port

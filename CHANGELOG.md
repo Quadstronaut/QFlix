@@ -33,11 +33,14 @@ lines / 0 failures**, LogsQL count query returns data. Steady-state clean boot
 a one-time cost). `manitoba-maint-pusher` re-probes healthy and clears the
 permanent-failure mark.
 
-**Follow-up (optional):** the 48 s clean boot fits recovery's `[10,30,60]` s probe
-window (3rd probe ≈100 s), but an unclean-shutdown debris boot (>100 s) could still
-trip a false alert. If that recurs, add a per-app `recovery_backoff_s` override
-(read `app.raw` then fall back to `app.defaults` in `lib/recovery.py`) and set e.g.
-`[30, 90, 180]` on the `victorialogs` manifest entry.
+**Recovery-window hardening (implemented):** the 48 s clean boot fits recovery's
+`[10,30,60]` s probe window (3rd probe ≈100 s), but an unclean-shutdown debris boot
+(>150 s) would trip a false alert. `lib/recovery.py` now reads `recovery_attempts`
+/ `recovery_backoff_s` / `kuma_recheck_delay_s` from the per-app manifest entry
+(`App.raw`) before falling back to the global `defaults`; the `victorialogs` entry
+sets `recovery_backoff_s: [30, 90, 180]` (probes at ≈30/120/300 s — catches both the
+48 s clean boot and a >150 s debris boot). Covered by 3 new `test_recovery.py` cases;
+full suite 715 pass / 5 skip.
 
 ## 2026-06-24 — Full-stack audit (host · apps · canaries · scripts · 72h logs)
 
