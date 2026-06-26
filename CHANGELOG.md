@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-06-26 — VictoriaLogs crash-loop fixed (thread-cap exhaustion)
+
+**Alert:** `✗ victorialogs could not be started after 3 attempts — operator needed`
+— fired 06-23 (×2), 06-24, 06-26 per `~/.opt/maint/notify.log`; `lib/recovery.py`'s
+3-attempt loop exhausted every time and marked the app permanently-failed.
+
+**Root cause — `pthread_create: Resource temporarily unavailable` (EAGAIN) → SIGABRT.**
+Storage opens cleanly, then the process aborts while spinning up worker/flusher
+threads. The shared Ultra.cc seedbox exposes all **128 host cores**, so the Go
+runtime defaulted `GOMAXPROCS=128` and burst a ~thread-per-core pool at startup;
+combined with the per-partition flusher fan-out over **86 daily partitions** (90d
+retention), that pushed the *user's* total OS-thread count past the `ulimit -u` /
+`RLIMIT_NPROC` = **2000** cap (the rest of the QFlix stack already holds ~1000
+threads — python3 alone 239, Plex 162). `pthread_create` then returns EAGAIN and
+the process SIGABRTs in a 10s `Restart=on-failure` loop, never binding
+`127.0.0.1:42015`.
+
+**Why now:** hard failures begin **06-23**, the day after the **06-22 usenet
+buildout** (SABnzbd/Frugal) raised the baseline thread count over the edge. The
+06-11 `recovered after 3 attempt(s)` entries were the early warning.
+
+**Fix:** `Environment=GOMAXPROCS=4` in `scripts/maint/systemd/victorialogs.service`
+(deployed to `~/.config/systemd/user/`). vlogs is I/O-bound, not CPU-bound (3s CPU
+over a 48s boot), so capping the scheduler bounds the thread high-water mark at no
+perf cost.
+
+**Verified:** 2 clean restarts, **0** `pthread_create` aborts, thread count 11–28
+(was bursting past 2000); `is-active=active`, **health 200**, ingest cycle **25178
+lines / 0 failures**, LogsQL count query returns data. Steady-state clean boot
+**47.6 s** (the first post-crash boot took 156 s clearing unclean-shutdown debris —
+a one-time cost). `manitoba-maint-pusher` re-probes healthy and clears the
+permanent-failure mark.
+
+**Follow-up (optional):** the 48 s clean boot fits recovery's `[10,30,60]` s probe
+window (3rd probe ≈100 s), but an unclean-shutdown debris boot (>100 s) could still
+trip a false alert. If that recurs, add a per-app `recovery_backoff_s` override
+(read `app.raw` then fall back to `app.defaults` in `lib/recovery.py`) and set e.g.
+`[30, 90, 180]` on the `victorialogs` manifest entry.
+
 ## 2026-06-24 — Full-stack audit (host · apps · canaries · scripts · 72h logs)
 
 End-to-end audit against the live seedbox. Headline: **33/33 apps UP, 13/13

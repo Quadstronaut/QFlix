@@ -6,6 +6,16 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=HOME=%h
+# This shared Ultra.cc seedbox exposes all 128 host cores, so the Go runtime
+# defaults GOMAXPROCS=128 and bursts a ~thread-per-core worker pool at startup.
+# Combined with the per-partition flusher fan-out (86 daily partitions opened
+# concurrently), that pushed the *user's* total OS-thread count past the
+# RLIMIT_NPROC / `ulimit -u` = 2000 cap (the rest of the QFlix stack already
+# holds ~1000 threads). pthread_create then returns EAGAIN ("Resource
+# temporarily unavailable") and the process aborts with SIGABRT in a 10s
+# restart loop — the 2026-06-26 incident. vlogs needs almost no CPU for this
+# ingest volume, so cap the scheduler to bound the thread high-water mark.
+Environment=GOMAXPROCS=4
 ExecStart=/bin/sh -c 'exec %h/.apps/vlogs/bin/victoria-logs-prod -storageDataPath=%h/.apps/vlogs/data -httpListenAddr=127.0.0.1:$(cat %h/secrets/vlogs.port) -retentionPeriod=90d -loggerOutput=stderr'
 Restart=on-failure
 RestartSec=10s
