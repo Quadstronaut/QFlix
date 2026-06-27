@@ -1,0 +1,15 @@
+# manitoba-qflix-dash-root — replaces the Homarr root redirect at CUTOVER.
+# Installed by scripts/configure/91-nginx-root-to-dash.sh into the user-nginx
+# default site's `location /`. The existing prefix locations (^~ /seerr, /faq,
+# /tautulli, /status, ...) keep precedence, so only the bare root is taken over.
+# @@PORT@@ = secrets/qflix-dash.port (42020). Reload with `app-nginx restart`.
+location / {
+    auth_basic              off;
+    proxy_pass              http://127.0.0.1:@@PORT@@;
+    proxy_http_version      1.1;
+    proxy_set_header        Host                 $host;
+    proxy_set_header        X-Forwarded-Host     $http_host;
+    proxy_set_header        X-Forwarded-Proto    $scheme;
+    proxy_set_header        Upgrade              $http_upgrade;
+    proxy_set_header        Connection           "upgrade";
+}

@@ -102,6 +102,15 @@ Node's libuv threadpool is tiny (default 4) — no concern against the box's
 `ulimit -u`. The SvelteKit bundle is **built on the workstation**; only the
 prebuilt `build/` + production `node_modules` ship to the box (`npm ci --omit=dev`).
 
+**Runtime flags (verified on the box, 2026-06-27 — undici WASM gotcha):** the slot
+caps `ulimit -v` at ~10 GB (hard) while reporting ~515 GB RAM, so Node auto-sizes a
+huge heap and undici's WASM HTTP parser can't reserve its ~8 GB trap guard region →
+`RangeError: Cannot allocate Wasm memory` crash on the first outbound `fetch()`.
+Fixed with `NODE_OPTIONS=--disable-wasm-trap-handler --max-old-space-size=512` (+
+`UV_THREADPOOL_SIZE=2`) in the service env file. Verified reliable across restarts;
+the full status path (manitoba-maint JSON + GitHub/FAQ reachability via fetch) works.
+Runs as `qflix-dash.service` on loopback `:42020` with `~/.nvm/versions/node/v20.20.2/bin/node`.
+
 ---
 
 ## 4. Tiles

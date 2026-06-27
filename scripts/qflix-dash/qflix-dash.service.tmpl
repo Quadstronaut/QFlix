@@ -1,0 +1,18 @@
+[Unit]
+Description=QFlix Dashboard (SvelteKit adapter-node)
+After=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/.apps/qflix-dash
+EnvironmentFile=%h/.config/qflix-dash/qflix-dash.env
+# @@NODE@@ = absolute nvm node path (e.g. ~/.nvm/versions/node/v20.20.2/bin/node),
+# pinned so the unit never depends on login-shell PATH.
+ExecStart=@@NODE@@ %h/.apps/qflix-dash/build/index.js
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:%h/.apps/qflix-dash/logs/app.log
+StandardError=append:%h/.apps/qflix-dash/logs/app.log
+
+[Install]
+WantedBy=default.target
