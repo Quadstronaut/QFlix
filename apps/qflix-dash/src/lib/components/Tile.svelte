@@ -1,25 +1,38 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { TileDef, TileState } from '$lib/tiles';
 	import StatusPuck from './StatusPuck.svelte';
 
 	interface Props {
 		tile: TileDef;
-		state?: TileState;
+		puck?: TileState;
 		onsupport?: () => void;
 	}
-	let { tile, state = 'unknown', onsupport }: Props = $props();
-	const ext = tile.href?.startsWith('http') ?? false;
+	let { tile, puck = 'unknown', onsupport }: Props = $props();
+
+	// Dynamic tiles resolve their host-specific URL client-side (e.g. Kuma's
+	// per-app subdomain), so the real host never lands in committed source.
+	let dyn = $state('');
+	onMount(() => {
+		if (tile.dynamic === 'kuma') {
+			const h = location.host;
+			const i = h.indexOf('.');
+			if (i > 0) dyn = `https://uptimekuma-${h.slice(0, i)}.${h.slice(i + 1)}/status/public`;
+		}
+	});
 </script>
 
 {#if tile.action === 'support'}
 	<button class="tile" onclick={() => onsupport?.()}>
 		<img class="ic" class:inv={tile.invert} src={tile.icon} alt="" />
-		<span class="row"><span class="lbl">{tile.label}</span><StatusPuck {state} /></span>
+		<span class="row"><span class="lbl">{tile.label}</span><StatusPuck state={puck} /></span>
 	</button>
 {:else}
-	<a class="tile" href={tile.href} target={ext ? '_blank' : null} rel={ext ? 'noreferrer' : null}>
+	{@const href = tile.dynamic ? dyn || '#' : (tile.href ?? '#')}
+	{@const ext = href.startsWith('http')}
+	<a class="tile" href={href} target={ext ? '_blank' : null} rel={ext ? 'noreferrer' : null}>
 		<img class="ic" class:inv={tile.invert} src={tile.icon} alt="" />
-		<span class="row"><span class="lbl">{tile.label}</span><StatusPuck {state} /></span>
+		<span class="row"><span class="lbl">{tile.label}</span><StatusPuck state={puck} /></span>
 	</a>
 {/if}
 
