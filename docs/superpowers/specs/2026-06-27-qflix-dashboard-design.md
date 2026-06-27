@@ -92,6 +92,16 @@ live forwarded host so the user returns to whichever host they started on). The
 user-nginx fragment must forward those headers; set `XFF_DEPTH=2` for correct
 client IP in rate-limiting.
 
+### Runtime Node (we install it)
+
+The seedbox has **no user-accessible Node** — verified over SSH: the login shell
+has no `node`/`npm`, no nvm; Homarr and Seerr run Node *inside Docker*, not in the
+user environment. So the install script provisions **Node 20 in `$HOME` via nvm**,
+and the systemd unit invokes the **absolute** nvm node path (not login-shell PATH).
+Node's libuv threadpool is tiny (default 4) — no concern against the box's
+`ulimit -u`. The SvelteKit bundle is **built on the workstation**; only the
+prebuilt `build/` + production `node_modules` ship to the box (`npm ci --omit=dev`).
+
 ---
 
 ## 4. Tiles
@@ -220,10 +230,11 @@ On `POST /api/support` with a valid session:
     input, so it can't be spoofed.)
 - The webhook URL lives only in `secrets/` and is never sent to the client.
 
-> ⚠️ **Rotate the webhook.** The current webhook URL was pasted into a chat
-> transcript and Discord webhooks need no auth (URL = post access). Before go-live,
-> regenerate it in Discord and store the fresh value in
-> `secrets/qflix-dash.discord_webhook`. The leaked one must be deleted.
+> **Webhook rotation — operator declined (2026-06-27).** The current webhook URL
+> stays as-is. For the record: Discord webhooks are unauthenticated (URL = post
+> access) and this one appeared in a chat transcript, but the operator has accepted
+> that and is not rotating it. The value still lives only in
+> `secrets/qflix-dash.discord_webhook` and is never shipped to the client.
 
 ---
 
@@ -247,33 +258,23 @@ the source of truth.
 
 ## 10. URL & DNS continuity
 
-### The new homepage URL (for the DNS update)
+### The new homepage URL (DNS — already wired, no change needed)
 
-Post-cutover, the dashboard is served at the **seedbox root**:
+Post-cutover, the dashboard is served at the **seedbox root** `https://<fqdn>/`.
 
-```
-https://<fqdn>/
-```
+`qflix.quadstronix.dev` is a **Porkbun URL-forward** (CNAME → `uixie.porkbun.com`)
+that **already 301s to `https://<fqdn>/`** (verified 2026-06-27). Since the seedbox
+root is exactly where the new dashboard will serve, **no DNS or Porkbun change is
+required** — the same forward simply lands on the new board instead of the old
+homarr 302. The address bar settles on `<fqdn>` (as it does today), now showing a
+clean dashboard instead of the ugly `homarr-upstream-…` host.
 
-That is the URL `qflix.quadstronix.dev` must resolve to. Two ways to wire it:
-
-- **A — Ultra.cc custom domain (clean; recommended if available).** If the UCP
-  plan offers a Custom Domain feature, add `qflix.quadstronix.dev` there so
-  Ultra.cc provisions the outer-nginx vhost **and a TLS cert** for it, then set
-  DNS `CNAME qflix.quadstronix.dev → <fqdn>`. Result: the
-  dashboard is served **directly** at `https://qflix.quadstronix.dev/` and the
-  pretty domain stays in the address bar. **Requires UCP support** — TLS is
-  Ultra.cc-managed, so a bare CNAME without the custom-domain feature throws a
-  cert-name mismatch. *(Operator must verify this in UCP — see §16.)*
-- **B — Porkbun URL-forward (works tonight, no Ultra.cc cooperation).** Keep the
-  CNAME to `uixie.porkbun.com`; in Porkbun, set the **forward target** to
-  `https://<fqdn>/`. After cutover that root serves the
-  dashboard directly (no homarr 302). The address bar ends on
-  `<fqdn>`, not the pretty domain — but it's no longer the
-  ugly `homarr-upstream-…` host. Do **not** use Porkbun "masked/cloaked"
-  forwarding: it iframes the site and breaks the Plex OAuth popup + SSR.
-
-Recommendation: try **A**; fall back to **B** if UCP doesn't offer custom domains.
+Ultra.cc custom domains are **not an option** — the UCP supports no third-party
+integrations of any kind, and you can't bring your own cert on a shared slot. The
+*only* way to make `qflix.quadstronix.dev` itself stay in the address bar would be
+to front it with a CDN that terminates TLS for the domain (e.g. Cloudflare proxy,
+DNS-side — nothing to do with UCP) and proxies to the seedbox origin. Left as an
+optional future polish; **not in scope** for this build.
 
 ### Forwarding the old Homarr URL
 
@@ -426,13 +427,21 @@ budget.
 
 ## 16. Operator-deferred / open items
 
-- **UCP custom domain (§10-A):** confirm whether the Ultra.cc plan offers a Custom
-  Domain feature + cert for `qflix.quadstronix.dev`. If yes → clean direct serve;
-  if no → Porkbun forward fallback (§10-B).
-- **Node version on the box:** confirm `node -v` ≥ 20 (SvelteKit/adapter-node);
-  install via nvm if needed. (Homarr/Seerr prove Node exists; version TBD.)
-- **Webhook rotation (§8):** regenerate before go-live; delete the leaked URL.
-- **Plex client id:** generate the stable UUID for `qflix-dash.plex_client_id`.
+Resolved during spec review (2026-06-27):
+
+- **UCP custom domain — N/A.** Ultra.cc UCP supports no third-party integrations
+  (no custom domains, no BYO cert). Plan uses the existing Porkbun forward, which
+  already targets the seedbox root — **no DNS change needed** (§10).
+- **Node on the box — none; we install it.** Verified over SSH: no user `node`/
+  `npm`, no nvm (Homarr/Seerr run Node inside Docker). The install script
+  provisions **Node 20 in `$HOME` via nvm**; the systemd unit pins the absolute
+  node path (§3, §11).
+- **Webhook rotation — declined.** Operator keeps the current webhook (§8).
+
+Still genuinely deferred:
+
+- **Plex client id:** generate the stable UUID for `qflix-dash.plex_client_id`
+  (the install script can mint it on first run).
 
 ---
 
