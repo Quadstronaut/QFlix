@@ -23,7 +23,7 @@
 		max-width: var(--maxw);
 		margin: 1.6rem auto;
 		padding: 0 1rem;
-		grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
 	}
 	/* single column on phones — no clipped labels, big tap targets */
 	@media (max-width: 520px) {
