@@ -66,6 +66,7 @@ DISCORD_WEBHOOK=$(cat ~/secrets/qflix-dash.discord_webhook)
 SESSION_SECRET=$(cat ~/secrets/qflix-dash.session_secret)
 Q_AVATAR_URL=https://raw.githubusercontent.com/Quadstronaut/QFlix/master/Q.png
 FAQ_PROBE_URL=https://$FQDN/faq/
+QFLIX_TOP_BIN=$HOME/scripts/qflix-top-pub.sh
 ENV
 chmod 600 ~/.config/qflix-dash/qflix-dash.env
 sed "s#@@NODE@@#$NODE#g" ~/.apps/qflix-dash/qflix-dash.service.tmpl > ~/.config/systemd/user/qflix-dash.service
