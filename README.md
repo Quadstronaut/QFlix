@@ -65,7 +65,7 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 | 🟠 Subtitles | **Bazarr** + **Bazarr 2** (anime branch) | One per arr-pair — Bazarr is hard-capped at one Sonarr + one Radarr each, so the second anime instance is a bare-Python install pinned to Bazarr-1's version (`bazarr2-sync.timer`) |
 | 🟠 Retention | **qflix-reaper** | 60-day "watched + nobody else cared" deletion engine — script-driven (`scripts/maint/qflix-reaper.py`, daily timer, caps 50 items / 30% per library, audit manifest, re-requestable). Replaced Maintainerr 2026-06-20 after its Plex-ID resolution bug made deletes unfixable. |
 
-Surrounding cast (qBittorrent, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 13 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Full breakdown in [`inventory.md`](inventory.md).
+Surrounding cast (qBittorrent, SABnzbd, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, Homarr, Kuma, manitoba-maint, 13 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Download clients are now dual-stack: **torrent** (qBittorrent) and **Usenet** (SABnzbd + NZBgeek indexer + Frugal block account). Full breakdown in [`inventory.md`](inventory.md).
 
 ---
 
@@ -286,6 +286,10 @@ timeline
   2026-06-24 : Full stack audit — 33/33 apps UP · 13/13 canaries green · smoke 51/56
             : dead Prowlarr indexer "TorrentDownload" disabled (cleared chronic canary)
             : Sonarr/Sonarr2 4.0.17→4.0.18 + qBittorrent 5.0.3→5.2 flagged for cp-upgrade sweep
+  2026-06-26 : Maintainerr decom finished — quota canary reclaim repointed to qflix-reaper · orphan refs + secrets purged
+            : SABnzbd manifested (33→34 apps) + Kuma monitor "SABnzbd" added
+            : qui (orphaned autobrr qBit web-UI, port 42010) removed
+            : VictoriaLogs crash-loop fixed (GOMAXPROCS=4 thread-cap)
 ```
 
 ---
