@@ -31,7 +31,7 @@ ssh quadstronaut@seedbox.example.com 'chmod +x ~/scripts/maint/rollback-buildarr
 
 ## Launching the session
 
-1. Open a fresh Claude Code window at `P:\Documents\GIT\QFlix`.
+1. Open a fresh Claude Code window at `<repo-root>`.
 2. Confirm permission mode. Two options:
    - **Default (per-tool prompts)**: safest. You'll approve each SSH command, each file write. Slow but everything is auditable in real time.
    - **`--dangerously-skip-permissions`**: fast. Recommended only after you've watched one normal-mode session and trust the prompt's safety rails. Skips approval prompts entirely.
@@ -91,7 +91,7 @@ Expected output:
 After rollback, optionally clean up repo-side agent artifacts:
 
 ```bash
-cd P:\Documents\GIT\QFlix
+cd <repo-root>
 git status   # see what the agent staged
 git diff     # review changes
 # To discard everything the agent created:
@@ -123,7 +123,7 @@ After accepting the session result, you'll want to:
    ```
 2. Review the agent's repo-side changes (`git status` + `git diff`) and commit when you're satisfied:
    ```bash
-   cd P:\Documents\GIT\QFlix
+   cd <repo-root>
    git add manifest/apps.yaml inventory.md scripts/patches/ scripts/configure/60-buildarr-patches.sh \
            docs/buildarr-v4-patch-session-prompt.md docs/buildarr-v4-patch-session-runbook.md \
            scripts/maint/rollback-buildarr-patches.sh
@@ -139,7 +139,7 @@ Periodically:
 3. If it works without applying `scripts/configure/60-buildarr-patches.sh`, you can retire the whole compatibility layer:
    ```bash
    ssh quadstronaut@seedbox.example.com 'rm ~/scripts/maint/rollback-buildarr-patches.sh'
-   cd P:\Documents\GIT\QFlix
+   cd <repo-root>
    rm -rf scripts/patches/ scripts/configure/60-buildarr-patches.sh scripts/maint/rollback-buildarr-patches.sh
    # Update inventory.md to remove the patch references
    # Update memory project_buildarr-upstream-broken.md to "retired YYYY-MM-DD"
