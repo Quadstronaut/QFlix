@@ -25,26 +25,29 @@
 {#if tile.action === 'support'}
 	<button class="tile" onclick={() => onsupport?.()}>
 		<img class="ic" class:inv={tile.invert} src={tile.icon} alt="" />
-		<span class="row"><span class="lbl">{tile.label}</span><StatusPuck state={puck} /></span>
+		<span class="lbl">{tile.label}</span>
+		<span class="puck-slot"><StatusPuck state={puck} /></span>
 	</button>
 {:else}
 	{@const href = tile.dynamic ? dyn || '#' : (tile.href ?? '#')}
 	{@const ext = href.startsWith('http')}
 	<a class="tile" href={href} target={ext ? '_blank' : null} rel={ext ? 'noreferrer' : null}>
 		<img class="ic" class:inv={tile.invert} src={tile.icon} alt="" />
-		<span class="row"><span class="lbl">{tile.label}</span><StatusPuck state={puck} /></span>
+		<span class="lbl">{tile.label}</span>
+		<span class="puck-slot"><StatusPuck state={puck} /></span>
 	</a>
 {/if}
 
 <style>
+	/* Inline row: icon · label · status puck (pushed right). Compact so all
+	   tiles fit a phone above the fold and the usage panel hints below. */
 	.tile {
 		display: flex;
-		flex-direction: column;
-		gap: 0.7rem;
-		align-items: flex-start;
-		justify-content: space-between;
-		min-height: 124px;
-		padding: 1rem;
+		flex-direction: row;
+		gap: 0.85rem;
+		align-items: center;
+		min-height: 0;
+		padding: 0.85rem 1.1rem;
 		background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
 		border: 1px solid var(--tile-border);
 		border-radius: var(--radius);
@@ -65,24 +68,26 @@
 		outline: none;
 	}
 	.ic {
-		width: 34px;
-		height: 34px;
+		width: 30px;
+		height: 30px;
+		flex: 0 0 auto;
 	}
 	.ic.inv {
 		filter: invert(1) brightness(1.1);
 	}
-	.row {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		width: 100%;
-		justify-content: space-between;
-	}
 	.lbl {
 		font-weight: 700;
 		letter-spacing: 0.02em;
-		white-space: normal;
-		overflow-wrap: anywhere;
-		font-size: clamp(0.95rem, 3.6vw, 1.15rem);
+		font-size: clamp(1rem, 3.6vw, 1.1rem);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	/* puck pinned to the right edge of the row */
+	.puck-slot {
+		margin-left: auto;
+		display: inline-flex;
+		align-items: center;
+		flex: 0 0 auto;
 	}
 </style>
