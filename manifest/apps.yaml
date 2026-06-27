@@ -202,9 +202,27 @@ apps:
     class: ucc
     ucc_slug: homarr
     kuma_monitor: "Homarr"
+    # Decommissioned as the public board 2026-06-27 (replaced by qflix-dash at root).
+    # Kept installed + running: its public board now serves a "QFlix has moved"
+    # notice (scripts/qflix-dash/homarr-moved-notice.py) — a true 301 off its
+    # subdomain is impossible (rootless container holds the port; uninstall kills
+    # the outer-nginx route).
     health:
       kind: http_root
       port_secret: homarr.port
+      expect_status: 200
+
+  qflix-dash:
+    class: systemd
+    unit: qflix-dash.service
+    kuma_monitor: "QFlix Dashboard"
+    # SvelteKit board that replaced Homarr at the public root 2026-06-27.
+    # adapter-node on loopback; NODE_OPTIONS=--disable-wasm-trap-handler required
+    # (see node-ultracc-wasm-fix). /healthz is a plain 200 liveness route.
+    health:
+      kind: http_root
+      port_secret: qflix-dash.port
+      path_override: /healthz
       expect_status: 200
 
   flaresolverr:
