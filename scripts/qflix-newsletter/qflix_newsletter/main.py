@@ -10,7 +10,7 @@ from typing import Optional
 from . import __version__
 from .changelog import fetch_behind_scenes
 from .config import Config
-from .delivery import create_and_send_campaign
+from .delivery import create_and_send_campaign, send_test_campaign
 from .posters import mirror_posters
 from .render import build_email_context, render_html
 from .sources import (
@@ -44,6 +44,7 @@ def run(
     dry_run: bool = False,
     out_html: Optional[Path] = None,
     secrets_dir: Optional[Path] = None,
+    test_to: Optional[list[str]] = None,
 ) -> int:
     log = logging.getLogger("qflix-newsletter")
     cfg = Config.from_env(secrets_dir=secrets_dir)
@@ -82,6 +83,14 @@ def run(
         log.info("dry-run: subject=%r body_bytes=%d", ctx.subject, len(html))
         return 0
 
+    if test_to:
+        result = send_test_campaign(cfg, subject=ctx.subject, html_body=html, to_emails=test_to)
+        log.info(
+            "test campaign sent: id=%d to=%s (list untouched)",
+            result.campaign_id, ", ".join(test_to),
+        )
+        return 0
+
     result = create_and_send_campaign(cfg, subject=ctx.subject, html_body=html)
     log.info(
         "campaign sent: id=%d status=%s archive=%s",
@@ -98,6 +107,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--out-html", type=Path, default=None, help="write rendered HTML to this path")
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--secrets-dir", type=Path, default=None, help="override ~/secrets")
+    parser.add_argument(
+        "--test-to",
+        action="append",
+        default=None,
+        metavar="EMAIL",
+        help="send a single Listmonk test render to this address (repeatable; "
+        "must already be a subscriber). The subscriber list is NOT mailed.",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -105,7 +122,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format=LOG_FORMAT,
     )
-    return run(dry_run=args.dry_run, out_html=args.out_html, secrets_dir=args.secrets_dir)
+    return run(
+        dry_run=args.dry_run,
+        out_html=args.out_html,
+        secrets_dir=args.secrets_dir,
+        test_to=args.test_to,
+    )
 
 
 if __name__ == "__main__":

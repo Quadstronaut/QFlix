@@ -97,3 +97,74 @@ def create_and_send_campaign(
         else None
     )
     return CampaignResult(campaign_id=campaign_id, status="running", archive_url=archive_url)
+
+
+def send_test_campaign(
+    cfg: Config,
+    *,
+    subject: str,
+    html_body: str,
+    to_emails: list[str],
+    name: Optional[str] = None,
+) -> CampaignResult:
+    """Send a single true-to-production render to specific addresses only.
+
+    Creates a *draft* campaign with the real subject/body, then fires Listmonk's
+    test endpoint (`POST /campaigns/{id}/test`) at the given addresses. The
+    campaign stays a draft — the subscriber list is never mailed. Recipients
+    must already exist as Listmonk subscribers (Listmonk looks them up); a
+    non-subscriber yields a 4xx we surface in the log.
+    """
+    auth = (cfg.listmonk_api_user, cfg.listmonk_api_token)
+    name = name or f"[TEST] {subject}"
+
+    create_payload = {
+        "name": name,
+        "subject": subject,
+        "lists": [cfg.listmonk_list_id],
+        "from_email": "",
+        "type": "regular",
+        "content_type": "html",
+        "body": html_body,
+    }
+    r = requests.post(
+        f"{cfg.listmonk_base_url}/api/campaigns",
+        json=create_payload,
+        auth=auth,
+        timeout=DEFAULT_TIMEOUT_S,
+    )
+    if r.status_code >= 400:
+        logger.error(
+            "listmonk POST /api/campaigns (test) failed: HTTP %d — body=%s",
+            r.status_code, (r.text or "")[:500],
+        )
+    r.raise_for_status()
+    body = r.json().get("data") or {}
+    campaign_id = int(body.get("id") or 0)
+    if not campaign_id:
+        raise RuntimeError(f"listmonk test campaign create returned no id: {body}")
+
+    test_payload = {
+        "subscribers": to_emails,
+        "lists": [cfg.listmonk_list_id],
+        "messenger": "email",
+        "name": name,
+        "subject": subject,
+        "from_email": "",
+        "content_type": "html",
+        "body": html_body,
+        "template_id": body.get("template_id"),
+    }
+    tr = requests.post(
+        f"{cfg.listmonk_base_url}/api/campaigns/{campaign_id}/test",
+        json=test_payload,
+        auth=auth,
+        timeout=DEFAULT_TIMEOUT_S,
+    )
+    if tr.status_code >= 400:
+        logger.error(
+            "listmonk POST /api/campaigns/%d/test failed: HTTP %d — body=%s",
+            campaign_id, tr.status_code, (tr.text or "")[:500],
+        )
+    tr.raise_for_status()
+    return CampaignResult(campaign_id=campaign_id, status="test-sent", archive_url=None)
