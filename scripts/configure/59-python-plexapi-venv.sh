@@ -22,7 +22,7 @@ log_info "python-plexapi version = $PLXVER"
 sshm "PLXVER_NUM='${PLXVER_NUM}' bash -s" <<'EOF'
 set -euo pipefail
 PY311=$HOME/.local/python311/bin/python3.11
-[ -x "$PY311" ] || { echo "FATAL: Astral python3.11 not found at $PY311 — run scripts/configure/47-conjurr-install.sh first"; exit 1; }
+[ -x "$PY311" ] || { echo "FATAL: Astral python3.11 not found at $PY311 — install python-build-standalone 3.11 to ~/.local/python311 (formerly staged by the now-decommissioned Conjurr installer)"; exit 1; }
 mkdir -p ~/.apps/python-plexapi
 cd ~/.apps/python-plexapi
 if [ ! -d venv ] || ! ./venv/bin/python --version 2>&1 | grep -q "Python 3.11"; then

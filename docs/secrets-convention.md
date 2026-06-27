@@ -21,7 +21,7 @@ back-compat).
 
 | File | Purpose | Source |
 |---|---|---|
-| `htpasswd.password` | Shared admin password (outer Ultra.cc htpasswd + Listmonk + Calibre-Web rotated to match) | scripts/configure/00-htpasswd-bootstrap.sh |
+| `htpasswd.password` | Shared admin password (outer Ultra.cc htpasswd + Listmonk + Calibre-Web rotated to match) | Ultra.cc panel (outer htpasswd), operator-captured; consumed by 34-nginx-root-to-homarr.sh + 43-listmonk-install.sh |
 | `prowlarr.key` / `.port` / `.urlbase` | Prowlarr API | `~/.apps/prowlarr/config.xml` ApiKey + bootstrap-discover.sh |
 | `sonarr.key` / `sonarr2.key` / `radarr.key` / `radarr2.key` (+ `.port` + `.urlbase` each) | *arr API + listener | bootstrap-discover.sh scrapes config.xml + nginx upstream port |
 | `bazarr.key` / `bazarr2.key` (+ `.port`, `.urlbase`) | Subtitles API | UI / 06-bazarr2.sh |
