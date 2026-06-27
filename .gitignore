@@ -11,7 +11,10 @@ seedbox-layout.env
 *.bak
 .DS_Store
 Thumbs.db
-.claude/
+# Ignore local Claude state but DO version-control project skills, so the
+# scheduled cloud routine inherits them from the checkout.
+.claude/*
+!.claude/skills/
 .playwright-mcp/
 .superpowers/
 .tmp/

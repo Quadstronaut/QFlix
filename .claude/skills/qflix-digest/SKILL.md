@@ -1,0 +1,92 @@
+---
+name: qflix-digest
+description: Use to generate the QFlix newsletter's weekly "Behind the scenes" blurb — a warm, non-technical, subscriber-facing summary of what improved this past week, derived from the repo's commits and published to the newsletter-digest branch. Invoked manually or by the Monday 14:00 UTC scheduled cloud routine, one hour before the newsletter sends.
+---
+
+# QFlix weekly digest blurb
+
+Turn this week's commits into one short, friendly paragraph for **Plex members**
+(non-technical) and publish it where the newsletter can read it. The newsletter
+(`scripts/qflix-newsletter`) fires Monday **15:00 UTC**; this runs at **14:00 UTC**,
+one hour ahead. If this never runs, the newsletter falls back to an auto-generated
+commit list — so a good blurb here is an upgrade, never a hard dependency.
+
+## Output contract
+
+Write `digest/latest.json` on the **`newsletter-digest`** branch:
+
+```json
+{
+  "week_of": "YYYY-MM-DD",
+  "generated_at": "YYYY-MM-DDTHH:MM:SSZ",
+  "since": "YYYY-MM-DDTHH:MM:SSZ",
+  "html": "<friendly blurb as inline HTML>"
+}
+```
+
+- `week_of` = today's date (UTC). The newsletter rejects a blurb whose `week_of`
+  is not within the current send week, so this MUST be today's run date.
+- `html` = the blurb as simple inline HTML (`<p>…</p>`, maybe one `<ul>`). No
+  `<style>`, no scripts, no images. It is dropped verbatim into a dark card, so
+  keep text light-on-dark friendly (don't set colors; the card handles that).
+
+## Editorial rules — translate, don't transcribe
+
+The audience are members who just want their movies and shows. They do not know
+or care about `GOMAXPROCS`, `*arr`, or `vlogs`.
+
+- **Lead with the benefit to them.** "cap GOMAXPROCS=4 to stop crash-loop" →
+  "more reliable streaming". "add SABnzbd + NZBgeek Usenet path" → "a new
+  high-quality download source, so new titles arrive faster and look better".
+- **Include** user-facing improvements: new capabilities (`feat`), reliability
+  and speed (`fix`, `perf`), anything a member would notice.
+- **Skip** pure internals: docs, chores, refactors, CI, audits, decommissions,
+  and changes to the newsletter/digest machinery itself. If a week is all
+  internals, write a brief, honest "quiet week — kept everything humming"
+  rather than inventing news.
+- **Never** mention deleting members' content, version numbers, file names,
+  branch names, or jargon. No marketing fluff. 2–4 sentences or ≤4 short bullets.
+- Warm, a little playful, signed off lightly (a single emoji is fine).
+
+## Procedure
+
+1. **Gather the week.** From the repo root on `master`:
+   ```bash
+   git log --since="7 days ago" --pretty=format:"%h %s%n%b%n---"
+   ```
+   Read subjects and bodies. Note any commit body line starting `Newsletter:` —
+   that is the operator's hand-written phrasing; prefer it verbatim.
+
+2. **Draft the blurb** per the editorial rules above. Build the JSON object.
+   `generated_at`/`since` use real UTC timestamps (`date -u +%Y-%m-%dT%H:%M:%SZ`).
+
+3. **Publish to the `newsletter-digest` branch** without disturbing `master`,
+   via a throwaway worktree:
+   ```bash
+   WEEK=$(date -u +%Y-%m-%d)
+   TMP=$(mktemp -d)
+   git fetch origin newsletter-digest
+   git worktree add "$TMP" newsletter-digest        # branch is pre-seeded; exists
+   mkdir -p "$TMP/digest"
+   # write the JSON to "$TMP/digest/latest.json"
+   ( cd "$TMP" && git add digest/latest.json \
+        && git commit -m "chore(digest): week of $WEEK" \
+        && git push origin newsletter-digest )
+   git worktree remove "$TMP" --force
+   ```
+   If `newsletter-digest` does not exist yet (first ever run), create it as an
+   **orphan** branch containing only `digest/latest.json`, then push it.
+
+4. **Verify** the push succeeded and the raw URL serves the new JSON:
+   ```bash
+   curl -fsS "https://raw.githubusercontent.com/Quadstronaut/QFlix/newsletter-digest/digest/latest.json" | head
+   ```
+   Confirm `week_of` is today. Done — the newsletter will pick it up at 15:00 UTC.
+
+## Notes
+
+- The repo is public; reading commits needs no token. **Pushing** the branch
+  needs write access — the scheduled cloud routine must run with the repo
+  connected for write. If push fails, the newsletter still sends (fallback).
+- Keep `digest/latest.json` to a single current week. History lives in the
+  branch's git log; the newsletter only ever reads the latest.
