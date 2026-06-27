@@ -932,6 +932,73 @@ class TestStatusJson:
         assert "class_" not in entry
         assert entry["class"] == "ucc"
 
+
+class TestStatusPauseWindow:
+    """An app inside its pause_window is reported up (intentionally stopped, not a
+    fault) and is NOT probed — so the dashboard + QuadstroNot stop false-alarming
+    on scheduled quiet-hours pauses (e.g. tdarr-node 18:00-23:00 UTC)."""
+
+    def test_paused_app_reported_up_in_json_without_probing(self, capsys):
+        from lib.manifest import Manifest
+        apps = [_make_app_json("tdarr-node", kuma_monitor="Tdarr Node",
+                               health_kind="systemd_only")]
+        manifest = Manifest({a.name: a for a in apps})
+        # probe would say "inactive" — proves the short-circuit, not the probe,
+        # produced ok:true.
+        probe_mock = MagicMock(return_value=HealthResult(ok=False, latency_ms=None, reason="inactive"))
+
+        with patch("lib.health.probe", probe_mock), \
+             patch("lib.state.read", return_value={}), \
+             patch("lib.suppression.in_pause_window", return_value=True):
+            rc = main(["status", "--all", "--json"], _manifest=manifest)
+
+        import json as _json
+        payload = _json.loads(capsys.readouterr().out)
+        assert rc == 0
+        probe_mock.assert_not_called()  # paused → real probe skipped entirely
+        entry = payload["apps"][0]
+        assert entry["app"] == "tdarr-node"
+        assert entry["ok"] is True
+        assert entry["latency_ms"] is None
+        assert payload["summary"]["down"] == 0  # paused counts as up
+        # JSON contract unchanged — no `paused` field leaks into the payload.
+        assert set(entry.keys()) == {"app", "display", "class", "probe_kind",
+                                     "ok", "latency_ms", "last_recovery"}
+
+    def test_paused_app_shows_paused_in_human_table(self, capsys):
+        from lib.manifest import Manifest
+        apps = [_make_app_json("tdarr-node", kuma_monitor="Tdarr Node",
+                               health_kind="systemd_only")]
+        manifest = Manifest({a.name: a for a in apps})
+
+        with patch("lib.health.probe",
+                   return_value=HealthResult(ok=False, latency_ms=None, reason="inactive")), \
+             patch("lib.state.read", return_value={}), \
+             patch("lib.suppression.in_pause_window", return_value=True):
+            rc = main(["status", "--all"], _manifest=manifest)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "paused" in out
+        assert "✗" not in out  # never rendered as a fault
+
+    def test_non_paused_app_still_probed_normally(self, capsys):
+        from lib.manifest import Manifest
+        apps = [_make_app_json("sonarr", kuma_monitor="Sonarr")]
+        manifest = Manifest({a.name: a for a in apps})
+        probe_mock = MagicMock(return_value=HealthResult(ok=True, latency_ms=7, reason="ok"))
+
+        with patch("lib.health.probe", probe_mock), \
+             patch("lib.state.read", return_value={}), \
+             patch("lib.suppression.in_pause_window", return_value=False):
+            rc = main(["status", "--all", "--json"], _manifest=manifest)
+
+        import json as _json
+        payload = _json.loads(capsys.readouterr().out)
+        assert rc == 0
+        probe_mock.assert_called_once()  # not paused → normal probe runs
+        assert payload["apps"][0]["latency_ms"] == 7
+
     def test_unknown_app_json_mode_stderr_empty_stdout(self, capsys):
         """Single unknown app with --json: exit 1, stderr has error, stdout is empty."""
         with patch("lib.state.read", return_value={}):
