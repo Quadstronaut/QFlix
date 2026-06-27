@@ -74,7 +74,13 @@ def _render_status_table(rows: list[dict]) -> str:
     sep = "-" * (sum(_COL_WIDTHS.values()) + 14)
     lines = [header, sep]
     for row in rows:
-        status_sym = "✓" if row["ok"] else "✗"
+        # An app inside its pause_window is intentionally stopped (not a fault),
+        # so show "paused" rather than ✗ — the operator shouldn't read a
+        # scheduled quiet-hours stop as an outage.
+        if row.get("paused"):
+            status_sym = "paused"
+        else:
+            status_sym = "✓" if row["ok"] else "✗"
         latency = f"{row['latency_ms']}ms" if row["latency_ms"] is not None else "-"
         lines.append(
             f"{row['app']:<{_COL_WIDTHS['app']}}"
@@ -181,6 +187,7 @@ def _probe_canary(canary, *, now=None, run=None) -> dict:
 def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
     import datetime as _datetime
     from lib import health as health_mod
+    from lib import suppression as suppression_mod
 
     apps_state = state_data.get("apps", {})
 
@@ -202,7 +209,20 @@ def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
 
     # Parallel probes
     def _probe_one(app):
-        result = health_mod.probe(app)
+        # An app inside its declared pause_window is INTENTIONALLY stopped right
+        # now (e.g. tdarr-node 18:00-23:00 UTC fair-use quiet hours, stopped by
+        # tdarr-node-pause.timer). Mirror the pusher: report it up and skip the
+        # real probe, so status — consumed by the QFlix dashboard AND QuadstroNot
+        # — never counts a scheduled pause as a fault. The JSON contract stays
+        # ok:true with no new field (schema_version 1); the human table shows
+        # "paused" via the internal `paused` flag. in_pause_window is fail-open,
+        # so any error falls through to a normal probe.
+        paused = suppression_mod.in_pause_window(app)
+        if paused:
+            ok, latency_ms = True, None
+        else:
+            result = health_mod.probe(app)
+            ok, latency_ms = result.ok, result.latency_ms
         app_state = apps_state.get(app.name, {})
         last_recovery = app_state.get("event", "") or ""
         updated_at = app_state.get("updated_at", "")
@@ -213,9 +233,10 @@ def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
             "display": app.kuma_monitor if app.kuma_monitor else app.name,
             "class_": app.class_,
             "probe_kind": app.health.kind,
-            "ok": result.ok,
-            "latency_ms": result.latency_ms,
+            "ok": ok,
+            "latency_ms": latency_ms,
             "last_recovery": last_recovery,
+            "paused": paused,
         }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
