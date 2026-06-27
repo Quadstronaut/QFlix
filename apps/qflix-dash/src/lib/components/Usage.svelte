@@ -4,8 +4,15 @@
 
 	let usage = $state<Usage | null>(null);
 
-	// Sort by RAM — the stable signal on an idle box; CPU spikes only under load.
-	let rows = $derived(usage ? [...usage.components].sort((a, b) => b.ram_gib - a.ram_gib) : []);
+	// Alphabetical by label (numeric-aware so "Sonarr 2" follows "Sonarr",
+	// case-insensitive so "nginx" sorts among the N's).
+	let rows = $derived(
+		usage
+			? [...usage.components].sort((a, b) =>
+					a.label.localeCompare(b.label, undefined, { sensitivity: 'base', numeric: true })
+				)
+			: []
+	);
 
 	const fmt = (n: number, d = 1) => n.toFixed(d);
 	const pct = (n: number) => Math.max(0, Math.min(100, n));
