@@ -140,7 +140,7 @@ sequenceDiagram
   Q->>FS: download → /data/torrents/...
   Q->>S: "Run external program" on completion
   S->>FS: import (hardlink, not copy)
-  S->>PX: rescan via scripts/post-import/library-rescan-plex.sh
+  S->>PX: partial scan via Plex Media Server Connect (native, no script)
   PX-->>U: ready to stream
 ```
 

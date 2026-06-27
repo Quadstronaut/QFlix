@@ -1043,7 +1043,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
           <li>Trigger qflix-reaper immediately (dry-run first, then execute): <code>python3 ~/scripts/maint/qflix-reaper.py</code> to preview, then <code>python3 ~/scripts/maint/qflix-reaper.py --execute --json</code> to delete. The quota canary at 90% disk fires this automatically.</li>
           <li>Manually purge old <code>~/.purged-YYYY-MM-DD/</code> quarantine dirs that have aged out.</li>
           <li>Check qBit for completed torrents past their seed ratio that you can remove.</li>
-          <li>Run <code>scripts/maint/qbit-trim.py</code> (operator script that removes the lowest-ratio completed torrents).</li>
+          <li>Remove the lowest-ratio completed torrents directly in the qBittorrent WebUI (sort completed by ratio, right-click &rarr; Delete with data). There is no scripted auto-trim &mdash; this is a manual operator action.</li>
         </ol>
         <div class="callout danger"><strong>Hard limit:</strong> on Ultra.cc, the user slot has a quota. Hit it and writes start failing silently &mdash; imports stop, Plex transcodes start dying mid-stream. Watch <code>scripts/smoke-test.sh</code> step 6 for &ldquo;disk usage&rdquo; alerts.</div>
       </article>
