@@ -1,6 +1,6 @@
 # Autonomous-patching session prompt — buildarr v4/v5 compatibility
 
-Paste the fenced block below as the **first message** of a fresh Claude Code session opened at `P:\Documents\GIT\QFlix`. Make sure every tool is enabled (Bash, Read/Edit/Write, Glob/Grep, WebFetch/WebSearch, TaskCreate/Update, Agent).
+Paste the fenced block below as the **first message** of a fresh Claude Code session opened at `<repo-root>`. Make sure every tool is enabled (Bash, Read/Edit/Write, Glob/Grep, WebFetch/WebSearch, TaskCreate/Update, Agent).
 
 See [`buildarr-v4-patch-session-runbook.md`](buildarr-v4-patch-session-runbook.md) for: pre-flight checks, how to interrupt mid-session, how to roll back, and what to watch in real time.
 
@@ -9,7 +9,7 @@ See [`buildarr-v4-patch-session-runbook.md`](buildarr-v4-patch-session-runbook.m
 ```
 # Buildarr v4/v5 compatibility — autonomous patching session
 
-You are working on QFlix at `P:\Documents\GIT\QFlix` (Windows, PowerShell + bash via the Bash tool). Live seedbox is `quadstronaut@seedbox.example.com`, SSH key already configured (use `ssh quadstronaut@seedbox.example.com '<cmd>'`).
+You are working on QFlix at `<repo-root>` (Windows, PowerShell + bash via the Bash tool). Live seedbox is `quadstronaut@seedbox.example.com`, SSH key already configured (use `ssh quadstronaut@seedbox.example.com '<cmd>'`).
 
 The endpoint of this session is: **buildarr.service runs to clean Result=success against a populated config managing all 4 *arr instances (sonarr/sonarr2/radarr/radarr2), with our patches captured as committed artifacts so a future `pip install -U buildarr-sonarr buildarr-radarr` cleanly retires them when upstream catches up.** Buildarr is a Python application (https://buildarr.github.io/installation/python/) — full source visibility, monkey-patches are tractable, no Docker rebuild needed.
 
