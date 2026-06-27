@@ -50,6 +50,7 @@ classify() {
   case $1 in
     *plexmediaserver*|*"Plex Media Server"*|*"Plex Transcoder"*) CL_LABEL=Plex; CL_ROLE=Media;;
     *qbittorrent-nox*)            CL_LABEL=qBittorrent; CL_ROLE=Download;;
+    *SABnzbd.py*)                 CL_LABEL=SABnzbd; CL_ROLE=Download;;
     *unpackerr*)                  CL_LABEL=unpackerr; CL_ROLE=Download;;
     */app/sonarr/bin/Sonarr*)     CL_LABEL=Sonarr; CL_ROLE=Arr;;
     */app/radarr/bin/Radarr*)     CL_LABEL=Radarr; CL_ROLE=Arr;;
@@ -68,7 +69,8 @@ classify() {
     *qflix_newsletter*|*qflix-newsletter*) CL_LABEL=Newsletter; CL_ROLE=Comms;;
     *listmonk*)                   CL_LABEL=Listmonk; CL_ROLE=Comms;;
     *manitoba-maint*)             CL_LABEL=manitoba-maint; CL_ROLE=Maint;;
-    *wssServer.cjs*|*apps/nextjs*) CL_LABEL=Maintainerr; CL_ROLE=Retention;;
+    *qflix-dash/build*)           CL_LABEL="QFlix Dash"; CL_ROLE=Web;;
+    *next-server*)                CL_LABEL=Homarr; CL_ROLE=Web;;  # legacy board, being decommissioned
     *dist/index.js*)              CL_LABEL=Seerr; CL_ROLE=Requests;;
     *postgres*)                   CL_LABEL=Postgres; CL_ROLE=Data;;
     *"node index.js"*)            CL_LABEL=Audiobookshelf; CL_ROLE=Books;;  # entry=index.js, CONFIG_PATH=/config
@@ -78,17 +80,6 @@ classify() {
     */lib/systemd/systemd*)       CL_LABEL="systemd (user)"; CL_ROLE=System; CL_TIER=1;;
     *dbus-daemon*)                CL_LABEL=dbus; CL_ROLE=System; CL_TIER=1;;
     *) CL_LABEL=''; CL_ROLE=''; CL_TIER=0;;
-  esac
-}
-
-# Some apps are only distinguishable by working directory, not cmdline (e.g.
-# Maintainerr's API backend runs a bare `node dist/main`). Resolve via cwd —
-# only called for node/npm processes the cmdline pass couldn't identify, so the
-# extra readlink fork stays rare. Sets CL_LABEL/CL_ROLE on a hit.
-classify_by_cwd() {
-  local cwd; cwd=$(readlink "/proc/$1/cwd" 2>/dev/null)
-  case $cwd in
-    /opt/app|*/opt/app/apps/server*) CL_LABEL="Maintainerr api"; CL_ROLE=Retention; CL_TIER=2;;
   esac
 }
 
@@ -171,9 +162,6 @@ sample() {
       mapfile -d '' -t parts < "/proc/$pid/cmdline" 2>/dev/null  # NUL-delimited, fork-free
       cmd="${parts[*]}"
       classify "$cmd"
-      if [ -z "$CL_LABEL" ] && { [[ $cmd == *node* ]] || [[ $cmd == *npm* ]]; }; then
-        classify_by_cwd "$pid"
-      fi
       if [ -n "$CL_LABEL" ] && [ "${CL_TIER:-0}" -gt "${G_TIER[$key]:-0}" ]; then
         G_LABEL[$key]=$CL_LABEL; G_ROLE[$key]=$CL_ROLE; G_TIER[$key]=$CL_TIER
       elif [ -z "${G_LABEL[$key]:-}" ]; then   # only an init wrapper seen so far
