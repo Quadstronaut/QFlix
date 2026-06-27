@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import __version__
-from .ai import fetch_ai_picks
+from .changelog import fetch_behind_scenes
 from .config import Config
 from .delivery import create_and_send_campaign
 from .posters import mirror_posters
@@ -59,14 +59,15 @@ def run(
 
     library_stats = _build_library_stats(cfg)
 
-    library_titles = [r.title for r in recent if r.media_type in {"movie", "show"}][:25]
-    recent_titles = [r.title for r in recent if r.media_type in {"movie", "episode"}][:10]
-    ai_picks = fetch_ai_picks(cfg.gemini_api_key, library_titles, recent_titles)
+    # "Behind the scenes": a Claude-authored blurb from the digest branch if the
+    # scheduled routine posted one this week, else a deterministic recap built
+    # from the week's public commits. Fail-safe: None hides the section.
+    behind_scenes = fetch_behind_scenes(cfg.github_repo)
 
     ctx = build_email_context(
         recent=recent,
         coming=coming,
-        ai_picks=ai_picks,
+        behind_scenes=behind_scenes,
         library_stats=library_stats,
         public_host=cfg.public_host,
         kuma_public_host=cfg.kuma_public_host,

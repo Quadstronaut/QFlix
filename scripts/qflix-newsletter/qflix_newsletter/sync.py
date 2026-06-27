@@ -29,7 +29,7 @@ from typing import Optional
 import requests
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from .ai import AiPick
+from .changelog import BehindScenes, Commit
 from .config import Config
 from .render import EmailContext, ShowGroup
 from .sources import CalendarItem, RecentItem
@@ -79,16 +79,18 @@ def _preview_context(public_host: str, kuma_public_host: str) -> EmailContext:
         air_date=_dt.date.today() + _dt.timedelta(days=7),
         show_title="Upcoming Show", season=1, episode=1,
     )]
-    ai_picks = [AiPick(
-        if_you_liked="Spirited Away",
-        try_this="The Tale of the Princess Kaguya",
-        blurb="Same emotional register, different visual language.",
-    )]
+    behind_scenes = BehindScenes(
+        features=[Commit(sha="1", type="feat", scope=None,
+                         summary="add Usenet downloads for better quality", friendly=None)],
+        fixes=[Commit(sha="2", type="fix", scope="vlogs", summary="improve streaming stability",
+                      friendly=None)],
+        other_count=2, feature_count=1, fix_count=1, generated_label="preview",
+    )
     return EmailContext(
         week_label=_dt.datetime.now(_dt.timezone.utc).strftime("%B %d, %Y"),
         pick=pick, movies=movies, shows=shows,
         anime_movies=[], anime_shows=[], coming_soon=coming,
-        ai_picks=ai_picks,
+        behind_scenes=behind_scenes,
         nerd_corner={"total_items": 12345,
                      "sections": [{"name": "Movies", "count": 1234}]},
         subject="QFlix preview",

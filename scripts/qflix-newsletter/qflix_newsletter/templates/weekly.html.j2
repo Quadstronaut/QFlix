@@ -196,27 +196,52 @@
       </td></tr>
       {% endif %}
 
-      {# AI Picks (BOTTOM by design — operator note: people don't love AI) #}
-      {% if ctx.ai_picks %}
-      <tr><td style="padding:24px 16px 8px 16px;">
-        <h3 style="margin:0;color:#cbd5e1;font-size:14px;font-weight:600;">✨ A few things you might like</h3>
+      {# Behind the scenes — weekly improvement recap. Renders a Claude-authored
+         blurb from the newsletter-digest branch when the scheduled routine
+         posted one this week, else a deterministic recap from the week's public
+         commits. Replaces the retired Gemini AI Picks section. #}
+      {% if ctx.behind_scenes and ctx.behind_scenes.has_items %}
+      {% set bs = ctx.behind_scenes %}
+      <tr><td style="padding:16px 16px 8px 16px;">
+        <h3 style="margin:0;color:#f8fafc;font-size:18px;font-weight:600;">🔧 Behind the scenes</h3>
 {{ section_divider() }}
-        <div style="color:#7dd3fc;font-size:11px;opacity:.7;margin-top:4px;">Recommendations from your Plex history</div>
+        <div style="color:#7dd3fc;font-size:11px;opacity:.7;margin-top:4px;">What we improved for you this week</div>
       </td></tr>
-      <tr><td style="padding:8px 16px 16px 16px;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-          {% for p in ctx.ai_picks %}
-          <tr><td style="padding:6px 0;">
-            <div style="background:#0e1d33;border:1px solid rgba(125,211,252,.10);border-radius:6px;padding:10px 12px;">
-              <div style="color:#7dd3fc;font-size:11px;text-transform:uppercase;letter-spacing:1px;">If you liked</div>
-              <div style="color:#f8fafc;font-size:14px;font-weight:600;margin-top:2px;">{{ p.if_you_liked }}</div>
-              <div style="color:#7dd3fc;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-top:8px;">Try</div>
-              <div style="color:#ff8c42;font-size:14px;font-weight:600;margin-top:2px;">{{ p.try_this }}</div>
-              <div style="color:#cbd5e1;font-size:12px;margin-top:6px;line-height:1.5;">{{ p.blurb }}</div>
-            </div>
-          </td></tr>
-          {% endfor %}
-        </table>
+      <tr><td style="padding:0 16px 16px 16px;">
+        <div style="background:#05101f;border:1px solid rgba(125,211,252,.10);border-radius:6px;padding:14px 16px;">
+          {% if bs.has_blurb %}
+          {# Trusted, Claude-authored inline HTML — intentionally not escaped. #}
+          <div style="color:#cbd5e1;font-size:14px;line-height:1.6;">{{ bs.blurb_html | safe }}</div>
+          {% else %}
+          {% if bs.features %}
+          <div style="color:#7dd3fc;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">✨ New</div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:4px 0 10px 0;">
+            {% for c in bs.features %}
+            <tr><td style="color:#cbd5e1;font-size:13px;line-height:1.5;padding:2px 0;">• {{ c.display | e }}</td></tr>
+            {% endfor %}
+            {% if bs.feature_overflow %}
+            <tr><td style="color:#7dd3fc;font-size:11px;opacity:.6;padding:2px 0;">+{{ bs.feature_overflow }} more</td></tr>
+            {% endif %}
+          </table>
+          {% endif %}
+          {% if bs.fixes %}
+          <div style="color:#7dd3fc;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">🔧 Fixes &amp; tune-ups</div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:4px 0 6px 0;">
+            {% for c in bs.fixes %}
+            <tr><td style="color:#cbd5e1;font-size:13px;line-height:1.5;padding:2px 0;">• {{ c.display | e }}</td></tr>
+            {% endfor %}
+            {% if bs.fix_overflow %}
+            <tr><td style="color:#7dd3fc;font-size:11px;opacity:.6;padding:2px 0;">+{{ bs.fix_overflow }} more</td></tr>
+            {% endif %}
+          </table>
+          {% endif %}
+          <div style="color:#7dd3fc;font-size:11px;opacity:.55;margin-top:8px;border-top:1px solid rgba(125,211,252,.08);padding-top:8px;">
+            {{ bs.feature_count }} new {{ 'feature' if bs.feature_count == 1 else 'features' }}
+            · {{ bs.fix_count }} {{ 'fix' if bs.fix_count == 1 else 'fixes' }}
+            {% if bs.generated_label %} · {{ bs.generated_label }}{% endif %}
+          </div>
+          {% endif %}
+        </div>
       </td></tr>
       {% endif %}
 

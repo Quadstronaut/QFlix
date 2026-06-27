@@ -58,7 +58,7 @@ class Config:
     radarr_anime: Optional[ArrEndpoint]
 
     tmdb_read_token: Optional[str]
-    gemini_api_key: Optional[str]
+    github_repo: str  # "owner/name" for the Behind-the-scenes commit recap
 
     listmonk_base_url: str
     listmonk_api_user: str
@@ -123,7 +123,9 @@ class Config:
                 else None
             ),
             tmdb_read_token=maybe_read_secret("tmdb.read_token", d),
-            gemini_api_key=maybe_read_secret("gemini.api_key", d),
+            # Public repo whose weekly commits drive the Behind-the-scenes recap.
+            # Override via secrets/github.repo; default is the canonical slug.
+            github_repo=maybe_read_secret("github.repo", d) or "Quadstronaut/QFlix",
             listmonk_base_url=f"http://127.0.0.1:{listmonk_port}",
             listmonk_api_user=read_secret("listmonk.api_user", d),
             listmonk_api_token=read_secret("listmonk.api_token", d),

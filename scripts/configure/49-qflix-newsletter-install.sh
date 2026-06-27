@@ -26,7 +26,6 @@ for f in tautulli.key tautulli.port \
          sonarr.key sonarr.port sonarr.urlbase \
          radarr.key radarr.port radarr.urlbase \
          tmdb.api_key tmdb.read_token \
-         gemini.api_key \
          listmonk.api_user listmonk.api_token; do
   if [ -f "secrets/$f" ]; then
     scpm_to "secrets/$f" "secrets/$f" >/dev/null

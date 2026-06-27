@@ -10,7 +10,7 @@ from typing import Optional, Sequence
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from .ai import AiPick
+from .changelog import BehindScenes
 from .sources import CalendarItem, RecentItem
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -46,7 +46,7 @@ class EmailContext:
     anime_movies: list[RecentItem]
     anime_shows: list[ShowGroup]
     coming_soon: list[CalendarItem]
-    ai_picks: list[AiPick]
+    behind_scenes: Optional[BehindScenes]
     nerd_corner: dict
     subject: str
     public_host: str
@@ -99,7 +99,7 @@ def build_email_context(
     *,
     recent: Sequence[RecentItem],
     coming: Sequence[CalendarItem],
-    ai_picks: Sequence[AiPick],
+    behind_scenes: Optional[BehindScenes],
     library_stats: dict,
     public_host: str,
     kuma_public_host: str,
@@ -135,7 +135,7 @@ def build_email_context(
         anime_movies=anime_movies,
         anime_shows=anime_shows,
         coming_soon=list(coming),
-        ai_picks=list(ai_picks),
+        behind_scenes=behind_scenes,
         nerd_corner=library_stats,
         subject=subject,
         public_host=public_host,
