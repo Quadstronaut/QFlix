@@ -161,25 +161,6 @@ for tgt in komga kavita audiobookshelf; do
   fi
 done
 
-# 11. Maintainerr API alive
-echo "11. Maintainerr"
-MT_KEY=$(secret_read maintainerr.key 2>/dev/null || echo "")
-HTPW=$(secret_read htpasswd.password 2>/dev/null || echo "")
-USERPART="${PUBLIC_HOST%%.*}"
-DOMAIN="${PUBLIC_HOST#*.}"
-MT_HOST="maintainerr-${USERPART}.${DOMAIN}"
-if [ -n "$MT_KEY" ] && [ -n "$HTPW" ]; then
-  CODE=$(curl -sk -m 10 -u "quadstronaut:$HTPW" -H "X-Api-Key: $MT_KEY" -o /dev/null -w "%{http_code}" "https://${MT_HOST}/api/settings" 2>/dev/null)
-  if [ "$CODE" = "200" ]; then
-    SC=$(curl -sk -m 10 -u "quadstronaut:$HTPW" -H "X-Api-Key: $MT_KEY" "https://${MT_HOST}/api/settings/sonarr" 2>/dev/null | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null)
-    record "maintainerr-api" pass "$SC sonarr instances configured"
-  else
-    record "maintainerr-api" fail "HTTP $CODE"
-  fi
-else
-  record "maintainerr-api" skip "no key/htpasswd"
-fi
-
 # 12. qBittorrent health + seeding count
 echo "12. qBittorrent"
 QC=$(sshm "C=\$(mktemp); curl -sS -c \$C --data-urlencode 'username=$(secret_read qbittorrent.user)' --data-urlencode 'password=$(secret_read qbittorrent.password)' http://127.0.0.1:17041/api/v2/auth/login >/dev/null; curl -sS -b \$C 'http://127.0.0.1:17041/api/v2/sync/maindata' | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get(\"torrents\",{})))'" 2>/dev/null)

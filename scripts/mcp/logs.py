@@ -54,9 +54,7 @@ _FILE_LOGS = {
 
 # Apps with date-rotated logs (no stable filename): resolve at scan time to the
 # newest matching file. Glob is relative to HOME.
-_GLOB_LOGS = {
-    "maintainerr": ".apps/maintainerr/logs/maintainerr-*.log",
-}
+_GLOB_LOGS = {}
 
 _SYSTEMD_LOGS = {
     "listmonk":      "listmonk.service",

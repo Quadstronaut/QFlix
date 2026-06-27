@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-06-26 — Maintainerr decom finished, SABnzbd manifested, qui removed
+
+A council audit found the 2026-06-20 Maintainerr decommission left live
+references behind — including a broken disk-safety path. A second council (arch
+tier, unanimous 5-lens **commit**) produced the code fixes.
+
+**Fixed — broken autonomous disk-reclaim (`scripts/canaries/quota.sh`).** The 90%
+CRITICAL branch still read `~/secrets/maintainerr.key` and POSTed to the
+decommissioned Maintainerr subdomain (502) — so autonomous space reclaim above
+90% disk silently failed and would have marched to the 98% FAIL wall. Repointed
+to the deployed replacement `python3 ~/scripts/maint/qflix-reaper.py --execute
+--json`, relying on the reaper's built-in `--max-items`/`--max-pct` caps +
+run-lock (no `--force`); preserves the `STAGE=quota-critical`/`quota-reclaim-fail`
+labels and Kuma-DOWN exit. Verified live: canary runs `PASS` at 63% (reaper
+branch correctly dormant).
+
+**Orphan references purged.** `scripts/mcp/logs.py` (dead maintainerr glob route),
+`scripts/smoke-test-plex.sh` E18 + `scripts/smoke-test.sh` #11 (maintainerr tests
+that false-failed once the key was gone), and `scripts/ops/maintainerr-fix-watch.ps1`
+(205-line dead watcher, deleted). Orphan `~/secrets/maintainerr.key`/`.port`
+deleted on the seedbox (only stale `apps.yaml` backups still name them). Two
+benign historical comments left intentionally.
+
+**SABnzbd manifested (33→34 apps).** The 2026-06-22 usenet buildout left SABnzbd
+unmanaged. Added a `sabnzbd` UCC entry (`kuma_monitor: SABnzbd`, http_root
+`/sabnzbd/` expect 200 — SAB's form-login redirect resolves to a final 200) and
+created the live **SABnzbd** Kuma PUSH monitor + token via
+`bootstrap-kuma-monitors.py`. Pusher now reports **34/34 ok**, sabnzbd pushes
+`up`, health 200. README/inventory counts reconciled: apps 33→34, manitoba
+monitors 47→48, total 51→52.
+
+**qui removed.** Orphaned autobrr qBittorrent web-UI (`app-qui`, port 42010,
+installed 2026-05-25, zero references, not in manifest/inventory) uninstalled via
+`app-qui uninstall` — service/unit/binary/data gone, port freed.
+
+Repo 715 tests pass / 5 skip; 0 failed systemd units on the box. Council ledger
+in `.claude/council-ledger.jsonl`.
+
 ## 2026-06-26 — VictoriaLogs crash-loop fixed (thread-cap exhaustion)
 
 **Alert:** `✗ victorialogs could not be started after 3 attempts — operator needed`
