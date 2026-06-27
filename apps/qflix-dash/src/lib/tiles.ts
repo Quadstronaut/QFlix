@@ -8,6 +8,8 @@ export interface TileDef {
 	href?: string;
 	/** When set, the tile is a button that triggers an in-page action instead of navigating. */
 	action?: 'support';
+	/** Resolve href client-side from the live host (keeps the per-app subdomain out of source). */
+	dynamic?: 'kuma';
 	/** Invert the icon (for dark monochrome glyphs like GitHub) so it shows on navy. */
 	invert?: boolean;
 	/** Key into the /api/status payload that drives this tile's status puck. */
@@ -17,8 +19,8 @@ export interface TileDef {
 // Audiobooks + Comics intentionally dropped for v1 (spec §17). Admin tiles stay on the SSH tunnel.
 export const TILES: TileDef[] = [
 	{ key: 'seerr', label: 'Requests', icon: '/icons/seerr.svg', href: '/seerr/', statusKey: 'seerr' },
-	{ key: 'plex', label: 'Watch', icon: '/icons/plex.svg', href: '/web/', statusKey: 'plex' },
-	{ key: 'status', label: 'Status', icon: '/icons/kuma.svg', href: '/status/manitoba', statusKey: 'status' },
+	{ key: 'plex', label: 'Watch', icon: '/icons/plex.svg', href: 'https://app.plex.tv/', statusKey: 'plex' },
+	{ key: 'status', label: 'Status', icon: '/icons/kuma.svg', dynamic: 'kuma', statusKey: 'status' },
 	{
 		key: 'github',
 		label: 'Source',
