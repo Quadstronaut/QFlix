@@ -38,10 +38,13 @@ RADARR_URLBASE=$(cat ~/secrets/radarr.urlbase 2>/dev/null || echo radarr)
 JS=http://127.0.0.1:${JS_PORT}
 RR=http://127.0.0.1:${RADARR_PORT}/${RADARR_URLBASE}/api/v3
 
-H_JS=$(curl -s -o /dev/null -w "%{http_code}" -m 5 -H "X-Api-Key: $JS_KEY" "${JS}/api/v1/status")
-[ "$H_JS" = "200" ] || { printf "STAGE=seerr-up-fail msg=seerr-status-http-%s\n" "$H_JS" >&2; exit 1; }
-H_RR=$(curl -s -o /dev/null -w "%{http_code}" -m 5 -H "X-Api-Key: $RADARR_KEY" "${RR}/system/status")
-[ "$H_RR" = "200" ] || { printf "STAGE=radarr-up-fail msg=radarr-status-http-%s\n" "$H_RR" >&2; exit 1; }
+# Retry transient 5xx/timeouts up to 3x before declaring a service down — a
+# single shared-box 500 was firing this canary (tuned 2026-06-27).
+http_up() { local c; for _ in 1 2 3; do
+  c=$(curl -s -o /dev/null -w "%{http_code}" -m 6 -H "X-Api-Key: $2" "$1")
+  [ "$c" = "200" ] && return 0; sleep 3; done; printf "%s" "$c"; return 1; }
+H_JS=$(http_up "${JS}/api/v1/status" "$JS_KEY") || { printf "STAGE=seerr-up-fail msg=seerr-status-http-%s-after-3-tries\n" "$H_JS" >&2; exit 1; }
+H_RR=$(http_up "${RR}/system/status" "$RADARR_KEY") || { printf "STAGE=radarr-up-fail msg=radarr-status-http-%s-after-3-tries\n" "$H_RR" >&2; exit 1; }
 
 SEED=$(curl -sf -m 8 -H "X-Api-Key: $RADARR_KEY" "${RR}/movie" \
   | python3 -c "import sys, json
