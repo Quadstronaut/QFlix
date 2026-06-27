@@ -219,6 +219,23 @@ apps:
       port_secret: flaresolverr.port
       expect_status: 200
 
+  sabnzbd:
+    # Usenet download client (added 2026-06-22 usenet buildout). Binds host
+    # loopback 127.0.0.1:17007 and serves its UI under urlbase /sabnzbd/. The
+    # http_root probe follows redirects, so the /sabnzbd/ -> form-login redirect
+    # resolves to a FINAL 200 (SAB uses a form login, not HTTP 401), making
+    # expect_status: 200 a deterministic up-signal. Root "/" would risk a 404
+    # against the urlbase. No sabnzbd.key secret exists, so this is an
+    # unauthenticated liveness probe — deliberately no auth_header/auth_secret.
+    class: ucc
+    ucc_slug: sabnzbd
+    kuma_monitor: "SABnzbd"
+    health:
+      kind: http_root
+      port_secret: sabnzbd.port
+      path_override: "/sabnzbd/"
+      expect_status: 200
+
   # maintainerr: DECOMMISSIONED 2026-06-20 — its Plex autodelete was unfixable
   # (docs/maintainerr-plex-id-resolution-bug.md); replaced by scripts/maint/
   # qflix-reaper.py (self-pushes the "QFlix Reaper" Kuma monitor). App stopped,

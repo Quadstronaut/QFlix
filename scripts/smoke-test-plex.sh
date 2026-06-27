@@ -192,24 +192,6 @@ fi
 # ─── E. Plex-aware companions ────────────────────────────────────────────────
 echo "E. Plex companions"
 
-# E18. Maintainerr — Plex companion; sonarr integration confirms Plex is working.
-# Maintainerr runs behind nginx basic auth; call via HTTPS proxy.
-echo "E18. Maintainerr Sonarr API (Plex companion)"
-MT_KEY=$(secret_read maintainerr.key 2>/dev/null || echo "")
-HTPW=$(secret_read htpasswd.password 2>/dev/null || echo "")
-if [ -n "$MT_KEY" ] && [ -n "$HTPW" ]; then
-  MT_SC=$(curl -sk -m 10 -u "quadstronaut:$HTPW" -H "X-Api-Key: $MT_KEY" \
-    "https://maintainerr-quadstronaut.seedbox.example.com/api/settings/sonarr" 2>/dev/null \
-    | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo "")
-  if [ "${MT_SC:-0}" -ge 1 ]; then
-    record "maintainerr-plex-companion" pass "$MT_SC Sonarr instances configured"
-  else
-    record "maintainerr-plex-companion" fail "no Sonarr instances (got '$MT_SC')"
-  fi
-else
-  record "maintainerr-plex-companion" skip "no maintainerr key/htpasswd"
-fi
-
 # E19. Seerr /api/v1/settings/plex — Plex server configured
 echo "E19. Seerr Plex settings"
 JS_KEY=$(secret_read seerr.key 2>/dev/null || echo "")
