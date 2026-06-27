@@ -12,6 +12,7 @@ export interface Cfg {
 	sessionSecret: string;
 	qAvatar: string;
 	faqUrl: string;
+	qflixTopBin: string; // path to scripts/qflix-top-pub.sh (powers /api/usage)
 }
 
 export function cfg(): Cfg {
@@ -26,6 +27,7 @@ export function cfg(): Cfg {
 		discordWebhook: e.DISCORD_WEBHOOK || '',
 		sessionSecret: e.SESSION_SECRET || '',
 		qAvatar: e.Q_AVATAR_URL || 'https://raw.githubusercontent.com/Quadstronaut/QFlix/master/Q.png',
-		faqUrl: e.FAQ_PROBE_URL || ''
+		faqUrl: e.FAQ_PROBE_URL || '',
+		qflixTopBin: e.QFLIX_TOP_BIN || ''
 	};
 }
