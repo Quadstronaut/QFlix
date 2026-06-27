@@ -136,19 +136,21 @@ for app in sonarr radarr prowlarr qbittorrent; do
   fi
 done
 
-if [ -n "$STALE" ]; then
-  # Per-app routing breaks (e.g. sonarr logs stop ingesting but radarr is
-  # fine) are a real signal: the 30-min window is conservative enough that a
-  # healthy app will have logged something. A definitive zero here means
-  # logs.py routing broke for that app.
-  STALE_COUNT=$(printf "%s" "$STALE" | wc -w)
+# A single quiet *arr is NORMAL — radarr/qbittorrent legitimately go >30m with
+# no log lines when idle (no grabs/imports/searches). Require >=2 stale apps
+# before failing: a real logs.py/ingest routing break shows up as multiple apps
+# stale at once, whereas one stale app is just idleness. Tuned 2026-06-27 after
+# 153 false "stale-30m-1 radarr" fires. 0-1 stale is tolerated and noted.
+STALE_COUNT=$(printf "%s" "$STALE" | wc -w)
+if [ "${STALE_COUNT:-0}" -ge 2 ]; then
   printf "STAGE=vlogs-stale-app msg=apps-stale-30m-%s%s\n" "$STALE_COUNT" "$STALE" >&2
   logfail "vlogs-stale-app apps-stale-30m-$STALE_COUNT$STALE"
   exit 1
 fi
 
-printf "vlogs-flowing total_15m=%s all-arr-fresh=true%s\n" "$N" \
-  "$( [ -n "$SKIPPED" ] && printf " inconclusive-apps:%s" "$SKIPPED" )"
+printf "vlogs-flowing total_15m=%s stale-tolerated=%s%s%s\n" "$N" "${STALE_COUNT:-0}" \
+  "$( [ -n "$STALE" ] && printf " idle:%s" "$STALE" )" \
+  "$( [ -n "$SKIPPED" ] && printf " inconclusive:%s" "$SKIPPED" )"
 exit 0
 ')
 RC=$?
