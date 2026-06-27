@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-06-27 — Newsletter "Behind the scenes" + autonomous digest; Gemini retired; repo public
+
+**Newsletter gains a "Behind the scenes" section.** The weekly digest
+(`scripts/qflix-newsletter`) now renders a "🔧 Behind the scenes" block between
+Coming Soon and Nerd Corner, summarizing what improved for members that week.
+Two sources, override-then-fallback, both fail-safe (hide the section, the email
+still sends): (a) a Claude-authored, non-technical blurb published to the new
+**`newsletter-digest`** branch as `digest/latest.json`, freshness-guarded so a
+stale blurb is never shown; (b) a deterministic recap built from the week's
+public GitHub commits — grouped feat / fix·perf, scope-stripped, with an opt-in
+`Newsletter:` commit-body trailer to override any subject with friendly copy.
+New `changelog.py` + 18 unit tests (27 in the package, all green).
+
+**Gemini / "AI Picks" retired.** Confirmed from the seedbox logs: every run since
+2026-05-11 hit `HTTP 429 quota exceeded, limit:0` for `gemini-2.0-flash` (free
+tier revoked on the deprecated endpoint), so the section never once rendered.
+Deleted `ai.py`, the `google-generativeai` dependency, the config field, the
+template block, the install copy line, the `gemini.api_key` secret (local +
+seedbox), and the stale `secrets-convention` row (replaced with optional
+`github.repo`).
+
+**Autonomous weekly digest routine.** A scheduled cloud agent (the `/qflix-digest`
+skill, committed at `.claude/skills/qflix-digest/`) runs in Anthropic's cloud
+every **Mon 14:00 UTC** — one hour before the 15:00 UTC send — reads the week's
+commits from its own checkout, writes the member blurb, and pushes it to the
+`newsletter-digest` branch. It runs independently of any workstation; proven
+end-to-end (a test-fire pushed `5b4aa20` in ~20 s). If a run is missed, the
+deterministic commit recap covers it. Routine `trig_01ARibSXarcy5ddQdDXiV3Dp`.
+
+**Repo made public.** `Quadstronaut/QFlix` flipped to public after verifying the
+history is secret-clean (264 commits, root is the deliberate "sanitized public
+release" squash, `secrets/` never tracked, no keys/tokens/private keys in any
+diff). This removes the need for any GitHub token on the seedbox or in the cloud
+routine — both read commits + the digest unauthenticated. Scrubbed the real SSH
+host + a stale local path out of the two `buildarr-v4-patch-session-*` docs.
+
+**Reusable single-recipient test send.** `python -m qflix_newsletter --test-to
+EMAIL` renders the true production email and fires a single Listmonk test to one
+address (recipient must be a subscriber) without mailing the list.
+
 ## 2026-06-26 — Maintainerr decom finished, SABnzbd manifested, qui removed
 
 A council audit found the 2026-06-20 Maintainerr decommission left live

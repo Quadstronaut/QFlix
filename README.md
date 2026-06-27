@@ -16,7 +16,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
 
-<sub>install scripts · single-source manifest · Python maintenance daemon · app-upgrade-all weekly sweep · Kuma-integrated auto-recovery · end-to-end canaries · weekly AI-curated newsletter</sub>
+<sub>install scripts · single-source manifest · Python maintenance daemon · app-upgrade-all weekly sweep · Kuma-integrated auto-recovery · end-to-end canaries · weekly Plex digest newsletter</sub>
 
 </div>
 
@@ -203,7 +203,7 @@ Each canary asserts a whole pipeline, not just liveness. Mobile-UX renders the p
 
 </details>
 
-<details><summary><b>4. Subscriber comms</b> — Monday-morning AI-curated digest</summary>
+<details><summary><b>4. Subscriber comms</b> — Monday-morning Plex digest</summary>
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#0e1d33','primaryTextColor':'#f8fafc','primaryBorderColor':'#ff8c42','lineColor':'#7dd3fc','secondaryColor':'#05101f','tertiaryColor':'#0a1628','clusterBkg':'#05101f','clusterBorder':'#7dd3fc','edgeLabelBackground':'#0a1628','fontFamily':'Segoe UI, Roboto, sans-serif'}}}%%
@@ -224,9 +224,9 @@ flowchart TB
 
   py --> norm
   norm --> mirror[mirror_posters · SHA-keyed cache<br/>TMDB → Tautulli fallback<br/>~/www/images/newsletter/]:::proc
-  norm --> ai[Gemini · &quot;if you liked X try Y&quot;<br/>3 picks bottom-of-email]:::proc
+  GH[GitHub · public repo<br/>week's commits + digest-branch blurb]:::src --> bts[Behind the scenes<br/>Claude blurb override · else commit recap]:::proc
   mirror --> jinja[Jinja2 render<br/>weekly.html.j2 · QFlix theme]:::proc
-  ai --> jinja
+  bts --> jinja
 
   jinja --> camp[Listmonk POST /api/campaigns]:::proc
   camp -->|status=running| smtp[SMTP fan-out]:::out
@@ -234,7 +234,7 @@ flowchart TB
   camp --> archive[server-rendered archive<br/>https://fqdn/listmonk/campaign/uuid]:::out
 ```
 
-Email sections: **Pick of Week → New Movies → New TV → New Anime → Coming Soon → AI Picks → Nerd Corner.** Failure modes are isolated — if Gemini rate-limits, the AI section just goes silent; the rest of the email still ships. Posters are mirrored to `~/www/images/newsletter/<sha>.<ext>` at render time so delivered mail survives upstream TMDB CDN rot; cache is pruned daily by `qflix-poster-cache-prune.timer` (30-day retention). See `scripts/qflix-newsletter/qflix_newsletter/main.py` and `posters.py`.
+Email sections: **Pick of Week → New Movies → New TV → New Anime → Coming Soon → Behind the scenes → Nerd Corner.** The "Behind the scenes" recap is written by a Mon-14:00-UTC cloud routine (`/qflix-digest`) that commits a friendly, non-technical blurb to the `newsletter-digest` branch an hour before send; if it's missing or stale the newsletter auto-builds the recap from that week's public commits. Failure modes are isolated — if GitHub is unreachable that section just goes silent; the rest of the email still ships. (Gemini "AI Picks" was retired 2026-06-27 — the free tier returned `429 limit:0` on every run, so it never rendered.) Posters are mirrored to `~/www/images/newsletter/<sha>.<ext>` at render time so delivered mail survives upstream TMDB CDN rot; cache is pruned daily by `qflix-poster-cache-prune.timer` (30-day retention). See `scripts/qflix-newsletter/qflix_newsletter/main.py` and `posters.py`.
 
 </details>
 
