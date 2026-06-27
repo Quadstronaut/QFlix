@@ -140,15 +140,23 @@ def _login(api, candidates):
 # + a buffer or Kuma will mark them down between scheduled runs.
 APP_HEARTBEAT_S = 90
 
+# Heartbeat MUST exceed (schedule period + the timer's RandomizedDelaySec) or Kuma
+# flips the monitor to a false "no heartbeat" DOWN whenever the jitter grows between
+# two runs. Retuned 2026-06-27 from 40 days of beat history: the old 60s buffers were
+# smaller than the 120-240s timer jitter and caused ~40% false-down flapping (e.g.
+# Stale-Log Watchdog + Kometa Libraries were 100% missed-heartbeat, ZERO real fails).
+# every-30min / every-10min were also missing entirely (defaulted to the hourly buffer).
 CANARY_HEARTBEAT_S_BY_SCHEDULE = {
-    "hourly": 3660,        # 1h + 60s buffer
-    "every-15min": 960,    # 15min + 60s buffer
-    "daily-0430": 90000,   # 24h + 10min buffer (canary may run a bit late)
+    "every-10min": 900,    # 10min + jitter + margin
+    "every-15min": 1500,   # 15min + jitter + margin
+    "every-30min": 2400,   # 30min + jitter + margin
+    "hourly": 4200,        # 1h + RandomizedDelaySec (<=240s) + margin
+    "daily-0430": 90000,   # 24h + buffer
 }
 
 
 def _heartbeat_for_canary(canary) -> int:
-    return CANARY_HEARTBEAT_S_BY_SCHEDULE.get(canary.schedule, 3660)
+    return CANARY_HEARTBEAT_S_BY_SCHEDULE.get(canary.schedule, 4200)
 
 
 def _add_push_monitor(api, name: str, interval: int = APP_HEARTBEAT_S) -> str:
