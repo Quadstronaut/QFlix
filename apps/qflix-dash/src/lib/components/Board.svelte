@@ -12,7 +12,7 @@
 
 <section class="grid">
 	{#each TILES as t (t.key)}
-		<Tile tile={t} state={states[t.statusKey] ?? 'unknown'} {onsupport} />
+		<Tile tile={t} puck={states[t.statusKey] ?? 'unknown'} {onsupport} />
 	{/each}
 </section>
 
