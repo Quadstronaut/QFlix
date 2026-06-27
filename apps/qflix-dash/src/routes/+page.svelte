@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import Hero from '$lib/components/Hero.svelte';
 	import Board from '$lib/components/Board.svelte';
+	import Usage from '$lib/components/Usage.svelte';
 	import SupportModal from '$lib/components/SupportModal.svelte';
 	import type { TileState } from '$lib/tiles';
 
@@ -35,6 +36,7 @@
 <main>
 	<Hero {greeting} />
 	<Board {states} onsupport={() => (supportOpen = true)} />
+	<Usage />
 </main>
 
 <SupportModal bind:open={supportOpen} />
