@@ -13,7 +13,7 @@ from pathlib import Path
 def _seedbox_host() -> str:
     # Allow env override (for tests / dry-runs from a workstation); otherwise
     # read the real FQDN from ~/secrets/seedbox.host — same pattern as
-    # scripts/canaries/deletion.sh. The sanitized placeholder is never used
+    # scripts/maint/arr-audit.py. The sanitized placeholder is never used
     # at runtime; it only appears in committed text.
     env = os.environ.get("PUBLIC_HOST")
     if env:
