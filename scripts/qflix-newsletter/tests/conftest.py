@@ -5,7 +5,7 @@ import datetime as _dt
 
 import pytest
 
-from qflix_newsletter.ai import AiPick
+from qflix_newsletter.changelog import BehindScenes, Commit
 from qflix_newsletter.render import EmailContext, ShowGroup
 from qflix_newsletter.sources import CalendarItem, RecentItem
 
@@ -58,13 +58,14 @@ def sample_ctx() -> EmailContext:
             episode=1,
         )
     ]
-    ai_picks = [
-        AiPick(
-            if_you_liked="Spirited Away",
-            try_this="The Tale of the Princess Kaguya",
-            blurb="Same Ghibli emotional gut-punch, different visual register.",
-        )
-    ]
+    behind_scenes = BehindScenes(
+        features=[Commit(sha="1", type="feat", scope=None, summary="add Usenet downloads", friendly=None)],
+        fixes=[Commit(sha="2", type="fix", scope="vlogs", summary="improve streaming stability", friendly=None)],
+        other_count=2,
+        feature_count=1,
+        fix_count=1,
+        generated_label="May 11",
+    )
     return EmailContext(
         week_label="May 11, 2026",
         pick=pick,
@@ -73,7 +74,7 @@ def sample_ctx() -> EmailContext:
         anime_movies=[],
         anime_shows=[],
         coming_soon=coming,
-        ai_picks=ai_picks,
+        behind_scenes=behind_scenes,
         nerd_corner={
             "total_items": 12345,
             "sections": [{"name": "Movies", "count": 1234}, {"name": "TV Shows", "count": 11111}],

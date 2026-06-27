@@ -58,8 +58,11 @@ def test_section_labels_have_emoji_prefixes(sample_ctx):
     assert "📺 New TV" in html
     # Coming soon present in fixture
     assert "🗓 Coming soon" in html
-    # AI picks section (smaller heading)
-    assert "✨ A few things you might like" in html
+    # Behind-the-scenes recap (replaces the retired Gemini AI Picks section)
+    assert "🔧 Behind the scenes" in html
+    assert "add Usenet downloads" in html  # deterministic feature bullet
+    assert "improve streaming stability" in html  # deterministic fix bullet
+    assert "A few things you might like" not in html  # old AI Picks heading gone
     # Nerd corner uses a <div> label, also gets the emoji
     assert "🤓 Nerd corner" in html
 

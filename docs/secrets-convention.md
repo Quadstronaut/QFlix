@@ -36,7 +36,7 @@ back-compat).
 | `tautulli.key` / `.port` | Tautulli API | UI → Settings → Web Interface |
 | `komga.key` / `kavita.key` / `audiobookshelf.key` / `calibre-web.key` (+ `.port` each) | Book/comic stack APIs | Per-app UI |
 | `tmdb.read_token` | TMDB API v4 read token | https://themoviedb.org → API |
-| `gemini.key` (optional) | Gemini API key for the "if you liked X" newsletter section | https://aistudio.google.com |
+| `github.repo` (optional) | `owner/name` of the public repo whose weekly commits drive the newsletter's "Behind the scenes" recap. Defaults to `Quadstronaut/QFlix` if absent. | n/a (public repo; no token) |
 | `listmonk.api_user` / `.api_token` / `.port` / `.list_id` / `.from_email` / `.smtp_user` / `.smtp_password` | Listmonk admin + SMTP creds | 43-listmonk-install.sh provisions the API user; SMTP/from_email come from the operator |
 | `postgres.port` | Listmonk's Postgres backend | bootstrap |
 | `tdarr.server_port` / `.api_key` | Tdarr Server | 50-tdarr-install.sh |
