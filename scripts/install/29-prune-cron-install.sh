@@ -8,7 +8,7 @@ source "$HERE/lib/secrets.sh"
 
 # Push the prune script to manitoba
 sshm 'mkdir -p ~/scripts/post-import ~/.opt/secrets ~/.cache/prune-text'
-scpm_to "$HERE/prune-text-libraries.sh" "/home/quadstronaut/scripts/post-import/prune-text-libraries.sh"
+scpm_to "$HERE/post-import/prune-text-libraries.sh" "/home/quadstronaut/scripts/post-import/prune-text-libraries.sh"
 sshm 'chmod +x ~/scripts/post-import/prune-text-libraries.sh'
 
 # Push the notifiarr key (so the cron job can use it without controller intervention)
