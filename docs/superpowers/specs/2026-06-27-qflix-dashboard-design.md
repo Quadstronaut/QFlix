@@ -55,6 +55,7 @@ this so the dashboard is served **directly at the seedbox root** (no 302 bounce)
 | Support sink | Discord webhook, `username:"QFlix"`, avatar = the public Q.png |
 | Scope | **Full build, then one clean cutover** (no half-state at root) |
 | Visual | QFlix full palette (navy + orange/cyan/gold), cinema effects, blue Q |
+| Greeting | silent Plex-detected "welcome back" on the landing page — check-only, silent fail, silent on empty |
 
 ---
 
@@ -128,6 +129,10 @@ removes a third-party runtime dependency.
   signed httpOnly session cookie. Redirect back to the Support form.
 - **`POST /api/support`** — requires a valid session; validates + rate-limits;
   posts to the Discord webhook (§8). Returns success/failure for a toast.
+- **`GET /api/me`** — **silent** identity read for the landing-page greeting
+  (§7a). Validates the cosmetic greeting cookie; returns `{name}` on success or
+  an empty `200 {}` when absent/invalid. Never triggers a login, never errors to
+  the client.
 - **`GET /healthz`** — 200 plain liveness for the Kuma probe + smoke test.
 
 ---
@@ -187,6 +192,16 @@ cookie** (HMAC with `secrets/qflix-dash.session_secret`), carrying the verified
 Plex username/email + an expiry (e.g. 30 min). The Support form reads this; the
 submit endpoint re-verifies the signature server-side. No server-side session
 store needed.
+
+### 7a. Greeting cookie (cosmetic, long-lived)
+
+Sign-in **also** sets a separate **long-lived (e.g. 30-day) signed cookie carrying
+only the display name** — purely cosmetic, for the landing-page greeting (§13). It
+is **never** trusted for the Support gate: `POST /api/support` always relies on the
+short auth session (and re-checks membership), so a stale greeting cookie can't
+authorize a submission. `GET /api/me` reads this cookie. Splitting the two keeps
+the security-sensitive gate short-lived while letting "welcome back" persist across
+visits.
 
 ---
 
@@ -361,6 +376,13 @@ Q logo as the hero mark.
 tiles, large tap targets, **no clipped labels** (responsive type, wrapping,
 min-heights). Desktop: CSS-grid `auto-fit minmax(...)`. The Homarr screenshot's
 truncated "REQUESTS…/AUDIOBOO…/COMICS…" is the explicit failure we're fixing.
+
+**Silent greeting:** after hydration the board calls `GET /api/me`. If a valid
+greeting cookie is present, a cinema-flavored welcome fades into the hero (e.g.
+"Now showing for &lt;name&gt;") near the Q mark — with space reserved so there's no
+layout shift. **Silent check** (never triggers a login popup), **silent fail** (any
+error renders nothing), **silent on empty** (not-signed-in just shows the normal
+board). Only ever greets someone already authenticated via the Support flow.
 
 **Accessibility & perf:** WCAG-AA contrast (high contrast is requested anyway),
 visible focus states, `prefers-reduced-motion` disables grain/scanline animation,
