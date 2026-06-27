@@ -19,10 +19,13 @@ S2_URLBASE=$(cat ~/secrets/sonarr2.urlbase 2>/dev/null || echo sonarr2)
 JS=http://127.0.0.1:${JS_PORT}
 S2=http://127.0.0.1:${S2_PORT}/${S2_URLBASE}/api/v3
 
-H_JS=$(curl -s -o /dev/null -w "%{http_code}" -m 5 -H "X-Api-Key: $JS_KEY" "${JS}/api/v1/status")
-[ "$H_JS" = "200" ] || { printf "STAGE=seerr-up-fail msg=seerr-status-http-%s\n" "$H_JS" >&2; exit 1; }
-H_S2=$(curl -s -o /dev/null -w "%{http_code}" -m 5 -H "X-Api-Key: $S2_KEY" "${S2}/system/status")
-[ "$H_S2" = "200" ] || { printf "STAGE=sonarr2-up-fail msg=sonarr2-status-http-%s\n" "$H_S2" >&2; exit 1; }
+# Retry transient 5xx/timeouts up to 3x before declaring a service down — a
+# single shared-box 500 was firing this canary (tuned 2026-06-27).
+http_up() { local c; for _ in 1 2 3; do
+  c=$(curl -s -o /dev/null -w "%{http_code}" -m 6 -H "X-Api-Key: $2" "$1")
+  [ "$c" = "200" ] && return 0; sleep 3; done; printf "%s" "$c"; return 1; }
+H_JS=$(http_up "${JS}/api/v1/status" "$JS_KEY") || { printf "STAGE=seerr-up-fail msg=seerr-status-http-%s-after-3-tries\n" "$H_JS" >&2; exit 1; }
+H_S2=$(http_up "${S2}/system/status" "$S2_KEY") || { printf "STAGE=sonarr2-up-fail msg=sonarr2-status-http-%s-after-3-tries\n" "$H_S2" >&2; exit 1; }
 
 SEED=$(curl -sf -m 8 -H "X-Api-Key: $S2_KEY" "${S2}/series" \
   | python3 -c "import sys, json

@@ -41,8 +41,12 @@ source "$ROOT/scripts/lib/ssh.sh"
 RES=$(sshm '
 set -uo pipefail
 SECRETS=~/secrets
-THRESHOLD=${PROWLARR_CASCADE_429_THRESHOLD:-25}
+THRESHOLD=${PROWLARR_CASCADE_429_THRESHOLD:-40}
 WINDOW=${PROWLARR_CASCADE_WINDOW:-10m}
+# Require >=2 chronically-stale indexers before firing — a single public indexer
+# (Tokyo Toshokan, Knaben, ...) going briefly unavailable is routine noise, not a
+# real outage. Tuned 2026-06-27 (set to 1 for strict single-indexer detection).
+STALE_THRESHOLD=${PROWLARR_INDEXER_STALE_THRESHOLD:-2}
 
 VL_PORT=$(cat "$SECRETS/vlogs.port" 2>/dev/null)
 PROW_PORT=$(cat "$SECRETS/prowlarr.port" 2>/dev/null)
@@ -136,7 +140,7 @@ print(\";\".join(items)[:120])
   FAIL=1
 fi
 
-if [ "$STALE_COUNT" -gt 0 ] && [ "$CASCADE" = "0" ]; then
+if [ "$STALE_COUNT" -ge "$STALE_THRESHOLD" ] && [ "$CASCADE" = "0" ]; then
   # RSS-stale fires independently of cascade so we get the slow-decay
   # signal (chronic disabled indexer with no current 429 storm) too.
   STALE_HINT=$(printf "%s" "$STALE" | python3 -c "
