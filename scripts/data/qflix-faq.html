@@ -578,9 +578,9 @@
           <li>Open <a href="https://quadstronaut.seedbox.example.com/seerr/">Seerr</a>.</li>
           <li>Search the title, click <em>Request</em>.</li>
           <li>For TV: pick seasons (or &ldquo;All seasons&rdquo;).</li>
-          <li>Done. Seerr hands it to Sonarr / Radarr, which hands it to qBittorrent, which downloads, which feeds Plex.</li>
+          <li>Done. Seerr hands it to Sonarr / Radarr, which searches Prowlarr and grabs the best release &mdash; either via <strong>qBittorrent</strong> (torrents) or <strong>SABnzbd</strong> (Usenet), depending on which download client the *arr's delay profile prefers. Both are wired up and active.</li>
         </ol>
-        <div class="callout tip"><strong>How long?</strong> Popular catalogue items show up in Plex within minutes. Obscure stuff: hours. Brand-new releases: whenever a public/private tracker has it.</div>
+        <div class="callout tip"><strong>How long?</strong> Popular catalogue items show up in Plex within minutes. Obscure stuff: hours. Brand-new releases: whenever a public/private tracker or Usenet indexer has it.</div>
       </article>
 
       <article class="card user" id="q-anime-routing" data-tags="anime sonarr2 radarr2 anime routing dropdown advanced">
@@ -721,15 +721,15 @@
       <h2><span class="num">6</span>Why things disappear</h2>
       <p class="deck-sub">QFlix is a self-pruning library &mdash; here's the rules.</p>
 
-      <article class="card user" id="q-why-deleted" data-tags="maintainerr deletion retention 60 days watched">
+      <article class="card user" id="q-why-deleted" data-tags="maintainerr deletion retention 60 days watched reaper">
         <h3>Something I watched is gone &mdash; what gives? <a class="qhash" href="#q-why-deleted">#</a></h3>
         <p>
-          QFlix runs <strong>Maintainerr</strong> nightly. The rule on movies is roughly: <em>if you watched it &ge; 60 days ago and nobody else has watched it</em>, it gets removed (from Plex collection first, then from disk). This keeps the disk usable on a shared seedbox.
+          QFlix runs <strong>qflix-reaper</strong> on a daily timer. The rule on movies is roughly: <em>if you watched it &ge; 60 days ago and nobody else has watched it</em>, it gets removed (from Plex and from disk). This keeps the disk usable on a shared seedbox. The reaper runs with caps (max 50 items / 30% per library) and writes an audit manifest before every deletion run.
         </p>
         <p>
           Re-request via Seerr and it'll be re-grabbed. The 60-day clock restarts.
         </p>
-        <div class="callout tip"><strong>Want a title preserved?</strong> The operator can pin items to skip the Maintainerr rule. Just ask.</div>
+        <div class="callout tip"><strong>Want a title preserved?</strong> The operator can pin items to skip the reaper rule. Just ask.</div>
       </article>
 
       <article class="card user" id="q-text-prune" data-tags="ebook audiobook comic deleted text-libraries prune">
@@ -755,8 +755,7 @@
         <p>Default forwards:</p>
         <pre><code>sonarr 17026   | sonarr2 17003   | radarr 17027    | radarr2 17008
 prowlarr 17024 | bazarr 17031    | bazarr2 17032   | tautulli 17014
-qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018
-maintainerr 42007</code></pre>
+qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre>
         <div class="callout tip"><strong>Why <code>ExitOnForwardFailure=no</code>?</strong> A stopped service shouldn't kill the whole tunnel. The poll target is port 42014 (Listmonk, always-on systemd).</div>
       </article>
 
@@ -1032,16 +1031,16 @@ maintainerr 42007</code></pre>
           <em>Hardlinks</em> let one file exist at two paths with the same inode &mdash; one copy on disk, two filenames. The *arr stack uses this to import torrents into the Plex library without duplicating the file: qBittorrent keeps seeding from <code>~/data/torrents/</code> while Plex sees the same bytes at <code>~/data/media/</code>.
         </p>
         <p>
-          If hardlinks break (e.g., torrents and media end up on different mountpoints), the *arr quietly falls back to <em>copy</em> &mdash; doubling the disk usage and breaking seeding when Maintainerr later deletes the Plex copy.
+          If hardlinks break (e.g., torrents and media end up on different mountpoints), the *arr quietly falls back to <em>copy</em> &mdash; doubling the disk usage and breaking seeding when qflix-reaper later deletes the Plex copy.
         </p>
         <p>Smoke test step 5 spot-checks <code>linkcount &ge; 2</code> on a sample of Movies. If that fails, fix the *arr download client config so the import path is on the same mountpoint as the torrent path.</p>
       </article>
 
-      <article class="card tut danger" id="q-disk-full" data-tags="disk full quota seedbox 100% maintainerr clear space">
+      <article class="card tut danger" id="q-disk-full" data-tags="disk full quota seedbox 100% reaper clear space">
         <h3>The seedbox is full / over quota <a class="qhash" href="#q-disk-full">#</a></h3>
         <ol>
           <li>Check: <code>df -h ~</code> on the seedbox.</li>
-          <li>Trigger Maintainerr immediately: <code>app-maintainerr restart; curl -X POST http://localhost:42007/api/rules/runall</code>.</li>
+          <li>Trigger qflix-reaper immediately (dry-run first, then execute): <code>python3 ~/scripts/maint/qflix-reaper.py</code> to preview, then <code>python3 ~/scripts/maint/qflix-reaper.py --execute --json</code> to delete. The quota canary at 90% disk fires this automatically.</li>
           <li>Manually purge old <code>~/.purged-YYYY-MM-DD/</code> quarantine dirs that have aged out.</li>
           <li>Check qBit for completed torrents past their seed ratio that you can remove.</li>
           <li>Run <code>scripts/maint/qbit-trim.py</code> (operator script that removes the lowest-ratio completed torrents).</li>
@@ -1134,7 +1133,7 @@ maintainerr 42007</code></pre>
 
       <article class="card warn" id="q-pitfall-4" data-tags="verify before claiming verify-before maintainerr false-park drift">
         <h3>4. Claiming &ldquo;X is parked / removed&rdquo; without verifying live state <a class="qhash" href="#q-pitfall-4">#</a></h3>
-        <p>The 2026-05-10 Maintainerr false-park incident: a stale comment said Maintainerr was &ldquo;intentionally parked&rdquo;; it had been running fine for weeks. Verify against the seedbox before writing any &ldquo;not running&rdquo; claim. <code>inventory.md</code> is the source of truth.</p>
+        <p>The 2026-05-10 Maintainerr false-park incident: a stale comment said Maintainerr was &ldquo;intentionally parked&rdquo;; it had been running fine for weeks. Verify against the seedbox before writing any &ldquo;not running&rdquo; claim. <code>inventory.md</code> is the source of truth. (Maintainerr itself was subsequently decommissioned 2026-06-20 and replaced by qflix-reaper &mdash; the lesson stands regardless of which app is in scope.)</p>
       </article>
 
       <article class="card warn" id="q-pitfall-5" data-tags="restart wait seerr probe immediately too fast">
@@ -1186,7 +1185,7 @@ maintainerr 42007</code></pre>
 
       <article class="card danger" id="q-er-disk" data-tags="disk full emergency space recovery write-fail">
         <h3>The disk is full <a class="qhash" href="#q-er-disk">#</a></h3>
-        <p>See <a href="#q-disk-full">&sect; 13</a>. Sequence: <code>df -h</code> &rarr; run Maintainerr &rarr; purge oldest <code>~/.purged-*</code> &rarr; qBit cleanup &rarr; re-check.</p>
+        <p>See <a href="#q-disk-full">&sect; 13</a>. Sequence: <code>df -h</code> &rarr; run qflix-reaper (<code>python3 ~/scripts/maint/qflix-reaper.py --execute --json</code>) &rarr; purge oldest <code>~/.purged-*</code> &rarr; qBit cleanup &rarr; re-check.</p>
       </article>
 
       <article class="card danger" id="q-er-everything" data-tags="everything red on fire down restart all">
@@ -1238,9 +1237,9 @@ maintainerr 42007</code></pre>
       </article>
 
       <article class="card tut" id="q-tech-node" data-tags="node nodejs javascript typescript nestjs nextjs uptimekuma maintainerr tdarr audiobookshelf seerr overseerr jellyseerr homarr vue react">
-        <h3>The Node.js wing &mdash; Uptime Kuma, Maintainerr, Tdarr, Audiobookshelf, Seerr, Homarr <a class="qhash" href="#q-tech-node">#</a></h3>
+        <h3>The Node.js wing &mdash; Uptime Kuma, Tdarr, Audiobookshelf, Seerr, Homarr <a class="qhash" href="#q-tech-node">#</a></h3>
         <p>
-          <strong>Uptime Kuma</strong> is by Louis Lam &mdash; started as a personal Hong Kong side-project and became the de-facto self-hosted status page (think open-source UptimeRobot). <strong>Maintainerr</strong> is NestJS (TypeScript) + React; it stepped in after Deleterr was abandoned, and the operator runs it as the 60-day retention engine.
+          <strong>Uptime Kuma</strong> is by Louis Lam &mdash; started as a personal Hong Kong side-project and became the de-facto self-hosted status page (think open-source UptimeRobot). <strong>Maintainerr</strong> (NestJS + React) was the former 60-day retention engine &mdash; it stepped in after Deleterr was abandoned but was itself decommissioned 2026-06-20 after a Plex-ID resolution bug made its deletes unfixable. The 60-day retention rule is now handled by <strong>qflix-reaper</strong> (<code>scripts/maint/qflix-reaper.py</code>), a bespoke Python script on a daily systemd timer.
         </p>
         <p>
           <strong>Tdarr</strong> wraps FFmpeg with a Node orchestrator and a worker-node model (&ldquo;servers&rdquo; + &ldquo;nodes&rdquo;). <strong>Audiobookshelf</strong> is Node + Vue with surprisingly good iOS / Android apps for a self-hosted project. <strong>Seerr</strong> (the Overseerr / Jellyseerr family) is Next.js + TypeScript. <strong>Homarr</strong> &mdash; also Next.js &mdash; is the dashboard you see at the QFlix root URL.
