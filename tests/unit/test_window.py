@@ -369,6 +369,9 @@ def test_run_calls_open_drain_smoke_close_notify_twice(tmp_path):
     def _fake_drain():
         call_order.append("drain_queue")
 
+    def _fake_upgrade_sweep():
+        call_order.append("upgrade_sweep")
+
     def _fake_smoke():
         call_order.append("smoke")
 
@@ -397,12 +400,13 @@ def test_run_calls_open_drain_smoke_close_notify_twice(tmp_path):
         w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
         w.open = _fake_open
         w.drain_queue = _fake_drain
+        w.upgrade_sweep = _fake_upgrade_sweep
         w.smoke = _fake_smoke
         w.wait_for_kuma_green = _fake_wait_green
         w.close = _fake_close
         w.run()
 
-    assert call_order == ["open", "drain_queue", "smoke", "wait_green", "close"]
+    assert call_order == ["open", "drain_queue", "upgrade_sweep", "smoke", "wait_green", "close"]
     assert mock_notify.call_count == 2
 
 
@@ -673,6 +677,7 @@ def test_run_fires_pre_and_post_notifications_with_kuma_outcome(tmp_path):
          patch("lib.window.listmonk.fire_template_campaign", return_value=True) as mock_listmonk, \
          patch("lib.window.health.probe", return_value=ok_health), \
          patch("lib.window.lifecycle.upgrade"), \
+         patch("lib.window.run_upgrade_sweep", return_value={}), \
          patch("lib.window.kuma.monitors_status", return_value=all_up), \
          patch("lib.window.deep_check.run_deep_check"):
         w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
@@ -711,6 +716,7 @@ def test_run_escalates_notification_level_on_kuma_timeout(tmp_path):
     with patch("lib.window.notify.notify") as mock_notify, \
          patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
          patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.run_upgrade_sweep", return_value={}), \
          patch("lib.window.kuma.monitors_status", return_value=perma_down), \
          patch("lib.window._KUMA_GREEN_MAX_WAIT_S", 120), \
          patch("lib.window._KUMA_GREEN_POLL_INTERVAL_S", 60), \
@@ -757,6 +763,7 @@ def test_run_calls_deep_check_after_close(tmp_path):
     with patch("lib.window.notify.notify"), \
          patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
          patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.run_upgrade_sweep", return_value={}), \
          patch("lib.window.kuma.monitors_status", return_value={}), \
          patch("lib.window.deep_check.run_deep_check") as mock_dc:
         w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
@@ -792,6 +799,7 @@ def test_run_deep_check_exception_does_not_fail_run(tmp_path):
     with patch("lib.window.notify.notify"), \
          patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
          patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.run_upgrade_sweep", return_value={}), \
          patch("lib.window.kuma.monitors_status", return_value={}), \
          patch("lib.window.deep_check.run_deep_check", side_effect=RuntimeError("deep-check crash")):
         w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
@@ -799,4 +807,123 @@ def test_run_deep_check_exception_does_not_fail_run(tmp_path):
         summary = w.run()
 
     # run() returned normally despite deep_check crash
+    assert summary is not None
+
+
+# ---------------------------------------------------------------------------
+# UCC app-upgrade sweep folded into the window (2026-06-28)
+# ---------------------------------------------------------------------------
+
+def test_run_upgrade_sweep_parses_results(tmp_path):
+    """run_upgrade_sweep invokes the script (via injected runner) and returns the
+    JSON the script wrote to last-upgrade.json."""
+    from lib import window
+    results = {
+        "schema_version": 1,
+        "summary": {"upgraded": 2, "failed": 0, "bailed": 0, "total": 2, "skipped": 5},
+        "apps": {"sonarr": "upgraded", "radarr": "upgraded"},
+        "upgraded": ["radarr", "sonarr"],
+    }
+
+    captured = {}
+
+    def fake_runner(cmd, env=None, timeout=None, capture_output=False, text=False):
+        captured["cmd"] = cmd
+        captured["budget"] = env.get("MANITOBA_UPGRADE_BUDGET_S")
+        Path(env["MANITOBA_UPGRADE_RESULTS"]).write_text(json.dumps(results), encoding="utf-8")
+        class _R:
+            returncode = 0; stdout = ""; stderr = ""
+        return _R()
+
+    out = window.run_upgrade_sweep(state_dir=tmp_path, runner=fake_runner)
+    assert out == results
+    assert (tmp_path / "last-upgrade.json").exists()
+    assert captured["cmd"][0] == "bash"
+    assert "--dry-run" not in captured["cmd"]
+    assert captured["budget"]  # budget passed to the script
+
+
+def test_run_upgrade_sweep_dry_run_passes_flag(tmp_path):
+    from lib import window
+
+    def fake_runner(cmd, env=None, timeout=None, capture_output=False, text=False):
+        Path(env["MANITOBA_UPGRADE_RESULTS"]).write_text('{"summary":{}}', encoding="utf-8")
+        class _R:
+            returncode = 0; stdout = ""; stderr = ""
+        return _R()
+
+    out = window.run_upgrade_sweep(state_dir=tmp_path, dry_run=True, runner=fake_runner)
+    assert out == {"summary": {}}
+
+
+def test_run_upgrade_sweep_missing_script_returns_empty(tmp_path, monkeypatch):
+    from lib import window
+    monkeypatch.setattr(window, "_upgrade_script_path", lambda: tmp_path / "nope.sh")
+    called = []
+    out = window.run_upgrade_sweep(
+        state_dir=tmp_path,
+        runner=lambda *a, **k: called.append(1),
+    )
+    assert out == {}
+    assert called == [], "runner must not be invoked when the script is missing"
+
+
+def test_run_upgrade_sweep_runner_raises_returns_empty(tmp_path):
+    """A runner that raises (timeout / OSError) must not propagate — return {}."""
+    from lib import window
+
+    def boom(*a, **k):
+        raise RuntimeError("bash exploded")
+
+    out = window.run_upgrade_sweep(state_dir=tmp_path, runner=boom)
+    assert out == {}
+
+
+def test_run_records_upgrade_results_and_notes(tmp_path):
+    """run() stores the sweep results on the summary and notes the counts."""
+    manifest = _simple_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+    sweep = {"summary": {"upgraded": 3, "failed": 0, "bailed": 0}, "upgraded": ["a", "b", "c"]}
+
+    with patch("lib.window.notify.notify"), \
+         patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.kuma.monitors_status", return_value={}), \
+         patch("lib.window.deep_check.run_deep_check"), \
+         patch("lib.window.run_upgrade_sweep", return_value=sweep):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        summary = w.run()
+
+    assert summary.upgrade_results == sweep
+    assert any("upgrade sweep" in n.lower() for n in summary.notes)
+
+
+def test_run_dry_run_skips_upgrade_sweep(tmp_path):
+    manifest = _simple_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+
+    with patch("lib.window.notify.notify"), \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.run_upgrade_sweep") as mock_sweep:
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest, dry_run=True)
+        summary = w.run()
+
+    mock_sweep.assert_not_called()
+    assert any("upgrade sweep skipped" in n.lower() for n in summary.notes)
+
+
+def test_run_upgrade_sweep_exception_does_not_fail_run(tmp_path):
+    """A raising run_upgrade_sweep must not propagate out of run()."""
+    manifest = _simple_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+
+    with patch("lib.window.notify.notify"), \
+         patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.kuma.monitors_status", return_value={}), \
+         patch("lib.window.deep_check.run_deep_check"), \
+         patch("lib.window.run_upgrade_sweep", side_effect=RuntimeError("boom")):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        summary = w.run()  # must not raise
+
     assert summary is not None
