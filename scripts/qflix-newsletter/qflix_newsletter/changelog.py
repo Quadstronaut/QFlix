@@ -13,9 +13,11 @@ or to "hide the section", so the newsletter always sends.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, Sequence
 
 import requests
@@ -27,6 +29,23 @@ DEFAULT_BRANCH = "newsletter-digest"
 DEFAULT_WINDOW_DAYS = 7
 DEFAULT_TIMEOUT_S = 15
 MAX_BULLETS = 6  # cap visible items per group; full counts still reported
+
+# Box-local file the maintenance window writes after its UCC app-upgrade sweep
+# (app-upgrade-all.sh → last-upgrade.json). The newsletter runs on the same box
+# Mon 15:00, hours after the window, so it can read it directly.
+DEFAULT_UPGRADE_FILE = Path("~/.opt/maint/last-upgrade.json").expanduser()
+
+# Member-facing names for the handful of apps a Plex member would recognize.
+# Everything else (the *arr stack, indexers, FlareSolverr, …) is invisible
+# plumbing and is bucketed into a count — members don't know "Prowlarr".
+_FRIENDLY_APP_NAMES = {
+    "plex": "Plex",
+    "tautulli": "viewing stats",
+    "overseerr": "the request system",
+    "jellyseerr": "the request system",
+    "seerr": "the request system",
+    "ombi": "the request system",
+}
 
 # Conventional-commit subject:  type(scope)!: description
 _CC_RE = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]*)\))?(?P<bang>!)?:\s*(?P<desc>.+)$")
@@ -56,8 +75,18 @@ class Commit:
 
 
 @dataclass
+class UpgradeRecap:
+    """Member-friendly view of the week's UCC app-upgrade sweep."""
+
+    named: list[str] = field(default_factory=list)  # friendly names (deduped)
+    other_count: int = 0  # invisible-plumbing apps, bucketed as a count
+    total: int = 0  # total apps upgraded this week
+
+
+@dataclass
 class BehindScenes:
-    """What the template renders — either a human blurb OR grouped commit lists."""
+    """What the template renders — either a human blurb OR grouped commit lists,
+    plus (independently) a friendly "what we tuned" upgrade line."""
 
     blurb_html: Optional[str] = None  # Claude-authored override (preferred)
     week_of: Optional[str] = None
@@ -67,14 +96,42 @@ class BehindScenes:
     feature_count: int = 0  # full count (may exceed len(features))
     fix_count: int = 0
     generated_label: Optional[str] = None  # e.g. "Jun 27" for the date line
+    # "What we tuned" — populated from the maintenance window's last-upgrade.json.
+    # Independent of the blurb/commit recap above: it renders whenever the weekly
+    # sweep upgraded something, even on an all-internals (blurb-less) week.
+    upgrade_named: list[str] = field(default_factory=list)
+    upgrade_other_count: int = 0
+    upgrade_total: int = 0
 
     @property
     def has_blurb(self) -> bool:
         return bool(self.blurb_html)
 
     @property
+    def has_upgrades(self) -> bool:
+        return self.upgrade_total > 0
+
+    @property
     def has_items(self) -> bool:
-        return bool(self.blurb_html or self.features or self.fixes)
+        return bool(self.blurb_html or self.features or self.fixes or self.upgrade_total)
+
+    @property
+    def upgrade_phrase(self) -> str:
+        """One member-friendly sentence: 'Updated Plex, the request system, and
+        4 behind-the-scenes apps for speed, stability, and the latest features.'"""
+        parts = list(self.upgrade_named)
+        if self.upgrade_other_count:
+            label = "app" if self.upgrade_other_count == 1 else "apps"
+            parts.append(f"{self.upgrade_other_count} behind-the-scenes {label}")
+        if not parts:
+            return ""
+        if len(parts) == 1:
+            listed = parts[0]
+        elif len(parts) == 2:
+            listed = f"{parts[0]} and {parts[1]}"
+        else:
+            listed = ", ".join(parts[:-1]) + f", and {parts[-1]}"
+        return f"Updated {listed} for speed, stability, and the latest features."
 
     @property
     def feature_overflow(self) -> int:
@@ -230,6 +287,53 @@ def fetch_behind_scenes(
     bs = build_behind_scenes(commits)
     bs.generated_label = now.strftime("%b %d")
     return bs if bs.has_items else None
+
+
+def fetch_upgrades(
+    path: Optional[Path] = None,
+    *,
+    now: Optional[_dt.datetime] = None,
+) -> Optional[UpgradeRecap]:
+    """Read the box-local last-upgrade.json the maintenance window writes and
+    return a member-friendly recap of what was upgraded THIS send-week, or None.
+
+    None when the file is absent, unreadable, stale (its generated_at isn't in
+    the current send week — so a missed window never shows last week's list), or
+    nothing was upgraded. Never raises: any error degrades to None (hide the
+    line), matching the rest of the newsletter's fail-safe philosophy.
+    """
+    if path is None:
+        path = DEFAULT_UPGRADE_FILE
+    if now is None:
+        now = _dt.datetime.now(_dt.timezone.utc)
+    try:
+        data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except Exception as exc:  # missing / unreadable / bad JSON
+        logger.info("upgrade recap unavailable (%s); hiding the tune-ups line", exc)
+        return None
+
+    generated_day = (data.get("generated_at") or "")[:10]
+    if not _is_fresh(generated_day, now):
+        logger.info("upgrade recap stale (generated_at=%r); hiding the tune-ups line",
+                    data.get("generated_at"))
+        return None
+
+    upgraded = data.get("upgraded") or []
+    if not upgraded:
+        return None
+
+    named: list[str] = []
+    other = 0
+    seen: set[str] = set()
+    for slug in upgraded:
+        friendly = _FRIENDLY_APP_NAMES.get(str(slug).lower())
+        if friendly:
+            if friendly not in seen:
+                named.append(friendly)
+                seen.add(friendly)
+        else:
+            other += 1
+    return UpgradeRecap(named=named, other_count=other, total=len(upgraded))
 
 
 def _parse_iso(raw: Optional[str]) -> Optional[_dt.datetime]:
