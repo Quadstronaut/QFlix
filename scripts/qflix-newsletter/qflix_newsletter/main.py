@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import __version__
-from .changelog import fetch_behind_scenes
+from .changelog import BehindScenes, fetch_behind_scenes, fetch_upgrades
 from .config import Config
 from .delivery import create_and_send_campaign, send_test_campaign
 from .posters import mirror_posters
@@ -64,6 +64,18 @@ def run(
     # scheduled routine posted one this week, else a deterministic recap built
     # from the week's public commits. Fail-safe: None hides the section.
     behind_scenes = fetch_behind_scenes(cfg.github_repo)
+
+    # "What we tuned" — the maintenance window's app-upgrade sweep, read from the
+    # box-local last-upgrade.json. Attached to behind_scenes so it renders inside
+    # the same card; on an all-internals (blurb-less) week it carries the card
+    # on its own. Fail-safe: None just omits the line.
+    upgrade_recap = fetch_upgrades()
+    if upgrade_recap:
+        if behind_scenes is None:
+            behind_scenes = BehindScenes()
+        behind_scenes.upgrade_named = upgrade_recap.named
+        behind_scenes.upgrade_other_count = upgrade_recap.other_count
+        behind_scenes.upgrade_total = upgrade_recap.total
 
     ctx = build_email_context(
         recent=recent,
