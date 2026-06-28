@@ -548,6 +548,76 @@ class TestPusherSuppressionDuringUccMaint:
             f"expected '[ucc-maint: recovery suppressed]' annotation in at least one Kuma push; "
             f"got msgs: {msgs!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Weekly maintenance window: pusher must honour the window lockfile
+# ---------------------------------------------------------------------------
+
+class TestPusherMaintenanceWindow:
+    """While $STATE_DIR/lock is present (Monday window + the 11:30 cp-upgrade
+    sweep that overlaps it), the pusher must push UP with a [maint-window]
+    note and NEVER probe or call trigger_async — otherwise its auto-heal
+    restarts an app mid-`app-* upgrade`. This is the gap the Kuma webhook
+    already closes (lib/kuma.do_POST) but the pusher (the operative auto-heal
+    path) did not."""
+
+    def test_window_present_pushes_up_and_skips_probe_and_recovery(self, tmp_path, monkeypatch):
+        from lib import pusher, health, recovery
+        pusher.reset_strike_counter()
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        (tmp_path / "lock").write_text("1\n2026-06-30T11:00:00Z\n", encoding="utf-8")
+
+        app = _make_app("sonarr", "Sonarr")
+        manifest = _make_manifest(app)
+        tokens = {"sonarr": "tok"}
+
+        # Probe would FAIL (app down mid-upgrade) — the window must mask it.
+        probe_called = []
+        monkeypatch.setattr(health, "probe",
+            lambda a, **kw: probe_called.append(a.name) or HealthResult(
+                ok=False, latency_ms=None, reason="connection refused"))
+        triggered = []
+        monkeypatch.setattr(recovery, "trigger_async",
+            lambda a, **kw: triggered.append(a.name) or "started")
+
+        with patch("lib.pusher.requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            for _ in range(3):  # past the 3-strike threshold
+                pusher.push_once(manifest=manifest, tokens=tokens)
+
+        assert triggered == [], f"recovery fired during maint window: {triggered!r}"
+        assert probe_called == [], "health.probe ran during maint window (should skip)"
+        params_list = [c.kwargs.get("params") for c in mock_get.call_args_list]
+        assert params_list, "no Kuma push happened during the window"
+        for p in params_list:
+            assert p["status"] == "up", f"expected status=up during window; got {p!r}"
+            assert "maint-window" in p["msg"], f"missing [maint-window] note; got {p!r}"
+
+    def test_no_window_recovers_as_normal(self, tmp_path, monkeypatch):
+        """Sanity: with no lockfile, the 3rd consecutive failure still triggers
+        recovery — the guard must not suppress outside the window."""
+        from lib import pusher, health, recovery
+        pusher.reset_strike_counter()
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))  # no lock file
+
+        app = _make_app("sonarr", "Sonarr")
+        manifest = _make_manifest(app)
+        tokens = {"sonarr": "tok"}
+        monkeypatch.setattr(health, "probe", lambda a, **kw: HealthResult(
+            ok=False, latency_ms=None, reason="connection refused"))
+        triggered = []
+        monkeypatch.setattr(recovery, "trigger_async",
+            lambda a, **kw: triggered.append(a.name) or "started")
+
+        with patch("lib.pusher.requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            for _ in range(3):
+                pusher.push_once(manifest=manifest, tokens=tokens)
+
+        assert triggered == ["sonarr"], f"expected normal recovery; got {triggered!r}"
+
+
 # ---------------------------------------------------------------------------
 # Fleet aggregate monitor tests (sub-project C)
 # ---------------------------------------------------------------------------

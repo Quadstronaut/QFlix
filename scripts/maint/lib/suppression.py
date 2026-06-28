@@ -31,10 +31,37 @@ from typing import Optional
 # app is live again.
 _PUSH_SUPPRESS_FILE = "push-suppress.json"
 
+# Lockfile written by the window orchestrator (lib/window.py) for the duration
+# of the Monday maintenance window — which overlaps the 11:30 UTC cp-upgrade
+# sweep that stops/upgrades/restarts apps on purpose.
+_WINDOW_LOCK_FILE = "lock"
+
 
 def _state_dir() -> Path:
     env = os.environ.get("MANITOBA_STATE_DIR")
     return Path(env) if env else Path.home() / ".opt" / "maint"
+
+
+def in_maintenance_window(*, state_dir: Optional[Path] = None) -> bool:
+    """True iff the weekly maintenance-window lockfile is present.
+
+    The window orchestrator holds ``$STATE_DIR/lock`` for the whole Monday
+    window, which overlaps the cp-upgrade sweep (apps are intentionally cycled).
+    BOTH recovery entry points must consult this so neither restarts an app the
+    window is mid-upgrade on. The Kuma webhook (lib/kuma.do_POST) already does;
+    the pusher — the operative auto-heal path — must too.
+
+    Simple existence check, mirroring kuma.do_POST: the standalone
+    window-watchdog clears a stale lock at 15:00 UTC, so a lingering lock can't
+    silence alerting indefinitely. Fail-open: any error → False (recover as
+    normal), never silence a real outage on a path glitch.
+    """
+    try:
+        sd = state_dir if state_dir is not None else _state_dir()
+        return (sd / _WINDOW_LOCK_FILE).exists()
+    except Exception as exc:
+        print(f"WARNING: suppression.in_maintenance_window: {exc}", file=sys.stderr)
+        return False
 
 
 def push_suppressed(app_name: str) -> Optional[str]:
