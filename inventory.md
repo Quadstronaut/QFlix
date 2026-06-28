@@ -87,9 +87,9 @@ All three prior drift entries (unpackerr, upgradinatorr, postgres) added to `man
 |---|---|---|---|---|---|---|---|---|---|---|
 | manitoba-maint-pusher.service | systemd | yes | Kuma push-loop (host netns → /api/push) | NO | Internal | loopback | n/a | systemd Restart= | (none — failure surfaces as Kuma monitor going stale) |  |
 | manitoba-maint-webhook.service | systemd | yes | Kuma webhook receiver → `~/.opt/maint/state.json` | NO | Internal | `127.0.0.1:<maintenance.port>/health` returns "ok" | n/a | heartbeat-maint-webhook.sh (cron every 5m) | (downstream — receives notifications, doesn't send) |  |
-| manitoba-maint-window.timer | systemd | scheduled (Mon 13:00 CEST = 11:00 UTC) | Weekly maintenance window orchestrator | NO | n/a | no UI | n/a (it IS the window) | n/a | n/a |  |
+| manitoba-maint-window.timer | systemd | scheduled (Mon 13:00 CEST = 11:00 UTC) | Weekly maintenance window orchestrator — now also runs the UCC app-upgrade sweep as a step | NO | n/a | no UI | n/a (it IS the window) | n/a | n/a |  |
 | manitoba-maint-window-watchdog.timer | systemd | scheduled (Mon 17:00) | Clears stale lockfile | NO | n/a | no UI | n/a | n/a | n/a |  |
-| manitoba-maint-cp-upgrade.timer + .service | systemd | not scheduled (manual) | cp.ultra.cc Upgrade & Repair sweep | NO | n/a | no UI | yes (when invoked) | n/a | n/a | Manual trigger. |
+| manitoba-maint-cp-upgrade.service | systemd | manual only (timer retired 2026-06-28) | UCC app-upgrade sweep; routine path is now inside the window orchestrator | NO | n/a | no UI | yes (when invoked) | n/a | n/a | Writes last-upgrade.json (newsletter "what we tuned" source). |
 | `~/bin/manitoba-maint` CLI | UCC | n/a (CLI) | Manifest validation, kuma audit, app lifecycle | NO | n/a | n/a | n/a | n/a | n/a |  |
 
 ## H. Canaries

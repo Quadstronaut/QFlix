@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -36,6 +37,14 @@ _LOG_DATE_FMT = "%Y-%m-%dT%H:%M:%SZ"
 # tolerance for service-settling; 60 s cadence is gentle on Kuma.
 _KUMA_GREEN_MAX_WAIT_S = 3600
 _KUMA_GREEN_POLL_INTERVAL_S = 60
+
+# UCC app-upgrade sweep budget when run INSIDE the window (was a standalone
+# 3h30m unit at 11:30 UTC; folded into the orchestrator 2026-06-28). Kept to
+# 2h30m so sweep + the ≤60m green-poll + overhead all finish well before the
+# 15:00 UTC watchdog (window opens 11:00 UTC = 4h budget). Override via env.
+_UPGRADE_SWEEP_BUDGET_S = int(
+    os.environ.get("MANITOBA_UPGRADE_BUDGET_S", str(2 * 3600 + 30 * 60))
+)
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +70,9 @@ class WindowSummary:
     kuma_converged: bool = False
     kuma_wait_s: int = 0
     kuma_still_down: list = field(default_factory=list)
+    # UCC app-upgrade sweep results (the JSON app-upgrade-all.sh writes to
+    # last-upgrade.json; {} when the sweep was skipped/dry-run/failed).
+    upgrade_results: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +145,66 @@ def _version_exceeds_max(target: str, max_ver: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# UCC app-upgrade sweep (folded into the window 2026-06-28)
+# ---------------------------------------------------------------------------
+
+def _upgrade_script_path() -> Path:
+    """Resolve app-upgrade-all.sh. window.py is at scripts/maint/lib/window.py,
+    so the script is one directory up — same layout in the repo and on the box
+    (~/scripts/maint/app-upgrade-all.sh)."""
+    return Path(__file__).resolve().parent.parent / "app-upgrade-all.sh"
+
+
+def _upgrade_results_path(state_dir: Path) -> Path:
+    env = os.environ.get("MANITOBA_UPGRADE_RESULTS")
+    return Path(env).expanduser() if env else Path(state_dir) / "last-upgrade.json"
+
+
+def run_upgrade_sweep(
+    *,
+    state_dir: Path,
+    dry_run: bool = False,
+    budget_s: int = _UPGRADE_SWEEP_BUDGET_S,
+    runner=subprocess.run,
+) -> dict:
+    """Run the UCC app-upgrade sweep (app-upgrade-all.sh) and return the parsed
+    results dict — the same JSON the script writes to last-upgrade.json, which
+    the newsletter reads for its "what we tuned" section.
+
+    Best-effort, NEVER raises: a sweep crash/timeout must not fail the window.
+    Returns {} if the script is missing, the run errors with no partial output,
+    or the results file is unparseable. The script's internal budget is passed
+    via env so it bails gracefully (and still writes results) before the Python
+    subprocess timeout fires.
+    """
+    script = _upgrade_script_path()
+    results_path = _upgrade_results_path(Path(state_dir))
+    if not script.exists():
+        logger.warning("upgrade sweep: script missing at %s — skipping", script)
+        return {}
+
+    cmd = ["bash", str(script)]
+    if dry_run:
+        cmd.append("--dry-run")
+    env = dict(os.environ)
+    env["MANITOBA_UPGRADE_RESULTS"] = str(results_path)
+    env["MANITOBA_UPGRADE_BUDGET_S"] = str(budget_s)
+
+    try:
+        runner(cmd, env=env, timeout=budget_s + 300,
+               capture_output=True, text=True)
+    except Exception as exc:
+        # Timeout / OSError / anything — log and still try to read whatever the
+        # script managed to write before dying.
+        logger.error("upgrade sweep run failed: %s", exc)
+
+    try:
+        return json.loads(results_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # WindowOrchestrator
 # ---------------------------------------------------------------------------
 
@@ -161,6 +233,7 @@ class WindowOrchestrator:
         self._kuma_wait_s: int = 0
         self._kuma_still_down: list[str] = []
         self._queue_depth_at_open: int = 0
+        self._upgrade_results: dict = {}
 
     # ------------------------------------------------------------------ paths
 
@@ -296,6 +369,34 @@ class WindowOrchestrator:
                 for dl in deferred_lines:
                     fh.write(dl + "\n")
 
+    # ------------------------------------------------------------------ upgrade_sweep
+
+    def upgrade_sweep(self) -> None:
+        """Run the UCC app-upgrade sweep INSIDE the window (after the queue drain,
+        before smoke). Folding it in (was a standalone Mon-11:30 timer) means every
+        app restart it triggers happens under the lock — the pusher + canaries
+        suppress, the webhook queues — so nothing fights the upgrade. Results land
+        in last-upgrade.json (the newsletter's "what we tuned" source) and on the
+        summary. Best-effort: a failure is noted, never fatal.
+        """
+        if self._dry_run:
+            self._notes.append("dry-run: upgrade sweep skipped")
+            return
+        try:
+            results = run_upgrade_sweep(state_dir=self._state_dir)
+        except Exception as exc:  # run_upgrade_sweep is meant not to raise; belt+braces
+            logger.error("upgrade_sweep: unexpected error: %s", exc)
+            results = {}
+        self._upgrade_results = results or {}
+        summ = self._upgrade_results.get("summary", {}) if isinstance(self._upgrade_results, dict) else {}
+        if summ:
+            self._notes.append(
+                f"upgrade sweep: upgraded={summ.get('upgraded', 0)} "
+                f"failed={summ.get('failed', 0)} bailed={summ.get('bailed', 0)}"
+            )
+        else:
+            self._notes.append("upgrade sweep: no results recorded")
+
     # ------------------------------------------------------------------ smoke
 
     def smoke(self) -> None:
@@ -400,6 +501,7 @@ class WindowOrchestrator:
             kuma_converged=self._kuma_converged,
             kuma_wait_s=self._kuma_wait_s,
             kuma_still_down=list(self._kuma_still_down),
+            upgrade_results=dict(self._upgrade_results),
         )
 
         log_path = self._window_log_path()
@@ -465,6 +567,10 @@ class WindowOrchestrator:
             )
 
         self.drain_queue()
+        # Upgrade sweep runs INSIDE the lock, before smoke, so the post-upgrade
+        # health probe + green-poll reflect the upgraded state (and nothing
+        # auto-heals an app mid-upgrade). Skipped in dry-run.
+        self.upgrade_sweep()
         self.smoke()
 
         # Hold the lock until Kuma confirms every manifest monitor is up,
@@ -491,11 +597,13 @@ class WindowOrchestrator:
             tail = f"kuma TIMEOUT after {summary.kuma_wait_s // 60}m, still down: {still}"
             level = "warning"
             icon = "⚠"
+        up_summ = summary.upgrade_results.get("summary", {}) if summary.upgrade_results else {}
+        up_seg = f" · upgraded {up_summ.get('upgraded', 0)}" if up_summ else ""
         notify.notify(
             f"{icon} window closed: "
             f"{summary.queue_processed}↑ {summary.queue_succeeded}✓ "
             f"{summary.queue_dropped_unknown + summary.queue_dropped_max_block}⊘ "
-            f"smoke={smoke_pass}/{smoke_total} · {tail}",
+            f"smoke={smoke_pass}/{smoke_total}{up_seg} · {tail}",
             level=level,
         )
 

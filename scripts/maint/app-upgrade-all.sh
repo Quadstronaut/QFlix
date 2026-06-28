@@ -23,7 +23,13 @@ set -u
 shopt -s nullglob
 
 PER_APP_TIMEOUT="8m"
-TOTAL_BUDGET_SECONDS=$(( 3 * 3600 + 30 * 60 ))   # 3h30m of a 4h window
+# Total sweep budget. Default 3h30m for a standalone run; the window orchestrator
+# overrides it (MANITOBA_UPGRADE_BUDGET_S, ~2h30m) so the sweep + green-poll fit
+# inside the 4h window. Bailed apps are recorded so the budget is observable.
+TOTAL_BUDGET_SECONDS="${MANITOBA_UPGRADE_BUDGET_S:-$(( 3 * 3600 + 30 * 60 ))}"
+# Structured results file (the newsletter's "what we tuned" data source). The
+# window orchestrator points this at ~/.opt/maint/last-upgrade.json.
+RESULTS_FILE="${MANITOBA_UPGRADE_RESULTS:-$HOME/.opt/maint/last-upgrade.json}"
 
 # Apps to never auto-upgrade by default — data risk, root-managed, or
 # operator-sensitive. Override with --include name1,name2.
@@ -89,6 +95,37 @@ n(sys.argv[2], level=sys.argv[1])
 PYEOF
 }
 
+# Emit a structured results file the newsletter reads ("what we tuned"). App
+# names are safe slugs (alnum + hyphen); result detail is collapsed to a fixed
+# category token so the JSON is always well-formed (no escaping of free-text
+# error messages). Written before every exit so a results file always exists.
+write_results_json() {
+    local out="$RESULTS_FILE"
+    local ts; ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    mkdir -p "$(dirname "$out")" 2>/dev/null || true
+    local apps_json="" up_json="" first=1 firstup=1 catv name
+    for name in "${TARGETS[@]}"; do
+        case "${RESULTS[$name]:-}" in
+            upgraded*)      catv="upgraded" ;;
+            timeout*)       catv="timeout" ;;
+            would_upgrade*) catv="would_upgrade" ;;
+            skipped*)       catv="skipped" ;;
+            "")             catv="unknown" ;;
+            *)              catv="error" ;;
+        esac
+        (( first )) && first=0 || apps_json+=","
+        apps_json+="\"${name}\":\"${catv}\""
+        if [[ "$catv" == "upgraded" ]]; then
+            (( firstup )) && firstup=0 || up_json+=","
+            up_json+="\"${name}\""
+        fi
+    done
+    local mode_l="live"; (( DRY_RUN )) && mode_l="dry-run"
+    printf '{"schema_version":1,"generated_at":"%s","mode":"%s","summary":{"upgraded":%d,"failed":%d,"bailed":%d,"total":%d,"skipped":%d},"apps":{%s},"upgraded":[%s]}\n' \
+        "$ts" "$mode_l" "${upgraded:-0}" "${failed:-0}" "${bailed:-0}" "${#TARGETS[@]}" "${#SKIPPED[@]}" "$apps_json" "$up_json" \
+        > "$out" 2>/dev/null || echo "WARN: could not write results to $out" >&2
+}
+
 # Discover installed apps
 mapfile -t INSTALLED < <(
     for d in "$HOME"/.apps/*/; do
@@ -125,6 +162,10 @@ for name in "${INSTALLED[@]}"; do
     TARGETS+=("$name")
 done
 
+# Declared before the early-exit so write_results_json always has them.
+declare -A RESULTS
+upgraded=0; failed=0; bailed=0
+
 mode="LIVE"; (( DRY_RUN )) && mode="DRY-RUN"
 echo "[$mode] app-upgrade-all sweep starting"
 echo "  installed=${#INSTALLED[@]} target=${#TARGETS[@]} skipped=${#SKIPPED[@]}"
@@ -133,6 +174,7 @@ echo "  skip_list=${SKIP[*]:-<empty>}"
 if (( ${#TARGETS[@]} == 0 )); then
     echo "no apps to upgrade"
     for s in "${SKIPPED[@]}"; do echo "  skip: $s"; done
+    write_results_json
     exit 0
 fi
 echo "  targets: ${TARGETS[*]}"
@@ -140,8 +182,6 @@ echo "  targets: ${TARGETS[*]}"
 upgrade_args=()
 (( NO_BACKUP )) && upgrade_args+=(--no-backup)
 
-declare -A RESULTS
-upgraded=0; failed=0; bailed=0
 start_epoch=$(date +%s)
 
 for name in "${TARGETS[@]}"; do
@@ -190,6 +230,8 @@ for s in "${SKIPPED[@]}"; do echo "  skip: $s"; done
 level="info"
 (( failed > 0 || bailed > 0 )) && level="warning"
 notify "$level" "${summary}"$'\n'"${detail}"
+
+write_results_json
 
 (( failed > 0 )) && exit 1
 exit 0
