@@ -365,6 +365,73 @@ class TestCanaryPushMissingToken:
         mock_get.assert_not_called()
 
 
+class TestCanaryPushDuringMaintenanceWindow:
+    """While the maintenance-window lock is present, a canary must push UP
+    [maint-window] and NOT run its (often heavyweight) script — apps are being
+    upgraded, so a normal canary run would false-alarm. Same treatment the
+    pusher gives apps during the window."""
+
+    def test_canary_push_skips_script_and_pushes_up_in_window(self, tmp_path, monkeypatch):
+        from lib import cli
+
+        manifest = _make_manifest_with_canary()
+        tokens_file = tmp_path / "tokens.json"
+        tokens_file.write_text('{"canary-movie": "tok-canary-movie"}')
+        (tmp_path / "lock").write_text("1\n2026-06-30T11:00:00Z\n")  # window lock present
+
+        monkeypatch.setenv("MANITOBA_KUMA_TOKENS", str(tokens_file))
+        monkeypatch.setenv("MANITOBA_KUMA_URL", "http://127.0.0.1:42005")
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+
+        mock_run = MagicMock()
+        mock_get = MagicMock()
+        resp = MagicMock(); resp.status_code = 200
+        mock_get.return_value = resp
+
+        with patch("lib.cli.subprocess.run", mock_run), \
+             patch("lib.cli.requests.get", mock_get):
+            rc = cli.main(["canary", "push", "movie"], manifest_path=None,
+                          _manifest=manifest)
+
+        assert rc == 0
+        mock_run.assert_not_called()  # script must NOT run during the window
+        assert mock_get.called
+        params = mock_get.call_args[1]["params"]
+        assert params["status"] == "up"
+        assert "maint-window" in params["msg"]
+
+    def test_canary_push_runs_normally_outside_window(self, tmp_path, monkeypatch):
+        """Sanity: with no lock, the canary script runs and its result is pushed."""
+        from lib import cli
+
+        manifest = _make_manifest_with_canary()
+        tokens_file = tmp_path / "tokens.json"
+        tokens_file.write_text('{"canary-movie": "tok-canary-movie"}')
+
+        monkeypatch.setenv("MANITOBA_KUMA_TOKENS", str(tokens_file))
+        monkeypatch.setenv("MANITOBA_KUMA_URL", "http://127.0.0.1:42005")
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))  # no lock file
+
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = "PASS: movie canary\n"
+        fake_result.stderr = ""
+        mock_get = MagicMock()
+        resp = MagicMock(); resp.status_code = 200
+        mock_get.return_value = resp
+
+        with patch("lib.cli.subprocess.run", return_value=fake_result) as mock_run, \
+             patch("lib.cli.requests.get", mock_get):
+            rc = cli.main(["canary", "push", "movie"], manifest_path=None,
+                          _manifest=manifest)
+
+        assert rc == 0
+        mock_run.assert_called_once()  # script DID run outside the window
+        params = mock_get.call_args[1]["params"]
+        assert params["status"] == "up"
+        assert "maint-window" not in params["msg"]
+
+
 # ---------------------------------------------------------------------------
 # Kuma audit includes canary monitors
 # ---------------------------------------------------------------------------
