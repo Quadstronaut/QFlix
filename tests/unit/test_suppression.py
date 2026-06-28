@@ -163,3 +163,37 @@ class TestPushSuppressed:
         app = _make_app("ucc", name="flaresolverr")
         with patch("lib.suppression.ucc_active", return_value=False):
             assert suppression.recovery_suppressed(app) is True
+
+
+# ---------------------------------------------------------------------------
+# in_maintenance_window — weekly maintenance-window lockfile predicate
+# ---------------------------------------------------------------------------
+
+class TestInMaintenanceWindow:
+    """The window orchestrator (lib/window.py) writes $STATE_DIR/lock for the
+    Monday window (which overlaps the 11:30 UTC cp-upgrade sweep). Both
+    recovery entry points must consult this so neither restarts an app that
+    the window / cp-upgrade is intentionally cycling. Mirrors lib/kuma.do_POST
+    (simple existence; the window-watchdog clears a stale lock)."""
+
+    def test_false_when_no_lockfile(self, tmp_path, monkeypatch):
+        from lib import suppression
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        assert suppression.in_maintenance_window() is False
+
+    def test_true_when_lockfile_present(self, tmp_path, monkeypatch):
+        from lib import suppression
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        (tmp_path / "lock").write_text("12345\n2026-06-30T11:00:00Z\n", encoding="utf-8")
+        assert suppression.in_maintenance_window() is True
+
+    def test_explicit_state_dir_overrides_env(self, tmp_path):
+        from lib import suppression
+        (tmp_path / "lock").write_text("1\n", encoding="utf-8")
+        assert suppression.in_maintenance_window(state_dir=tmp_path) is True
+
+    def test_false_on_error(self):
+        """Fail-open: any error resolving the path → False (recover as normal)."""
+        from lib import suppression
+        with patch("lib.suppression._state_dir", side_effect=OSError("boom")):
+            assert suppression.in_maintenance_window() is False
