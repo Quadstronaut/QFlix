@@ -549,6 +549,28 @@ def _cmd_canary_push(args: argparse.Namespace, manifest) -> int:
                 print(f"warn: suppressed-push failed for canary '{args.name}': {exc}", file=sys.stderr)
         return 0
 
+    # Maintenance-window suppression: the weekly window holds $STATE_DIR/lock
+    # while apps are stopped/upgraded/restarted on purpose. Running the (often
+    # heavyweight) canary script then would false-alarm — the very thing the
+    # pusher now skips. Push UP with a [maint-window] note and skip the run.
+    # The window-watchdog clears a stale lock at 15:00, so this can't mute a
+    # canary indefinitely.
+    if _suppression_mod.in_maintenance_window():
+        try:
+            with open(_tokens_path(), "r", encoding="utf-8") as fh:
+                token = json.load(fh).get(f"canary-{args.name}")
+        except Exception:
+            token = None
+        if token:
+            kuma_url = os.environ.get("MANITOBA_KUMA_URL", "http://127.0.0.1:42005")
+            try:
+                requests.get(f"{kuma_url}/api/push/{token}",
+                             params={"status": "up", "msg": "[maint-window: upgrades in progress]"},
+                             timeout=5)
+            except Exception as exc:
+                print(f"warn: maint-window push failed for canary '{args.name}': {exc}", file=sys.stderr)
+        return 0
+
     # Resolve script path relative to repo root (cli.py is at scripts/maint/lib/cli.py)
     lib_dir = Path(__file__).resolve().parent
     repo_root = lib_dir.parent.parent.parent
