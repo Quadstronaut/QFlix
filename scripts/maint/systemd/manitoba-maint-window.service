@@ -4,6 +4,10 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+# As of 2026-06-28 `window run` also runs the UCC app-upgrade sweep as a step
+# (open → drain → upgrade-sweep → smoke → green-poll → close), replacing the
+# retired Mon-11:30 cp-upgrade timer. Sweep budget is capped (≈2h30m via
+# MANITOBA_UPGRADE_BUDGET_S) so sweep + the ≤60m green-poll finish before 15:00.
 ExecStart=%h/scripts/maint/manitoba-maint window run
 # 4h hard ceiling per spec — window is Mon 11:00–15:00 UTC. Add 10 min slack
 # so systemd's TimeoutStartSec doesn't race the watchdog at 15:00.

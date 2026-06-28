@@ -1,6 +1,14 @@
 [Unit]
-Description=Manitoba maintenance — UCC `app-<name> upgrade` sweep
-After=network-online.target manitoba-maint-window.service
+# MANUAL-ONLY since 2026-06-28. The weekly UCC app-upgrade sweep now runs as a
+# step INSIDE the window orchestrator (manitoba-maint window run → upgrade_sweep),
+# under the maintenance-window lock, so the pusher + canaries suppress and nothing
+# auto-heals an app mid-upgrade. The Mon-11:30 timer was retired (the fold-in
+# removed the two-timers-assume-each-other coupling). This unit is kept only for
+# an operator-initiated ad-hoc sweep:  systemctl --user start manitoba-maint-cp-upgrade
+# NOTE: a manual run does NOT hold the window lock — run it during a window, or
+# accept that the pusher may probe a briefly-down app while it upgrades.
+Description=Manitoba maintenance — UCC app-upgrade sweep (MANUAL; routine path is inside the window)
+After=network-online.target
 
 [Service]
 Type=oneshot
