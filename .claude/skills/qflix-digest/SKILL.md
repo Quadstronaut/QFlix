@@ -47,12 +47,13 @@ or care about `GOMAXPROCS`, `*arr`, or `vlogs`.
 - **Never** mention deleting members' content, version numbers, file names,
   branch names, or jargon. No marketing fluff. 2–4 sentences or ≤4 short bullets.
 - Warm, a little playful, signed off lightly (a single emoji is fine).
-- **Don't mention app upgrades / maintenance.** The newsletter renders a separate
-  automatic "⚙️ This week's tune-ups" line (Plex, the request system, +N behind-the-
-  scenes apps) straight from the Monday maintenance window's `last-upgrade.json` —
-  so you don't need to, and shouldn't guess at, what was upgraded. Keep your blurb
-  about what members will *notice* in the catalog and experience; the tune-ups line
-  covers the upkeep. (Avoids duplicating it.)
+- **Upkeep/tune-ups: keep it generic, never specific.** A brief "a few reliability
+  tune-ups round things out" is fine and welcome. But do NOT name specific apps or
+  versions — the newsletter auto-renders a concrete "⚙️ This week's tune-ups" line
+  (Plex, the request system, +N behind-the-scenes apps) from the Monday window's
+  `last-upgrade.json`, and ONLY on weeks with no blurb (when your blurb is present
+  it's suppressed to avoid duplicating you). So you own the narrative; the
+  deterministic line is just the fallback. Focus on what members will *notice*.
 
 ## Procedure
 
