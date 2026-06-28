@@ -44,7 +44,7 @@
       <tr><td style="padding:20px 16px 24px 16px;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0e1d33;border:1px solid rgba(212,175,55,.4);border-radius:8px;overflow:hidden;position:relative;">
           <tr><td style="padding:0;position:relative;">
-            <div style="position:absolute;top:18px;left:-38px;background:linear-gradient(135deg,#e8c456,#b8941f);color:#0a1628;padding:4px 44px;transform:rotate(-30deg);font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;box-shadow:0 2px 8px rgba(0,0,0,.5);z-index:2;">Pick of the Week</div>
+            <div style="position:absolute;top:18px;right:-38px;background:linear-gradient(135deg,#e8c456,#b8941f);color:#0a1628;padding:4px 44px;transform:rotate(30deg);font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;box-shadow:0 2px 8px rgba(0,0,0,.5);z-index:2;">Pick of the Week</div>
           </td></tr>
           {% if ctx.pick.thumb_url %}
           <tr><td align="center" style="padding:24px 16px 8px 16px;">
@@ -210,9 +210,17 @@
       <tr><td style="padding:0 16px 16px 16px;">
         <div style="background:#05101f;border:1px solid rgba(125,211,252,.10);border-radius:6px;padding:14px 16px;">
           {% if bs.has_blurb %}
-          {# Trusted, Claude-authored inline HTML — intentionally not escaped. #}
+          {# Trusted, Claude-authored inline HTML — intentionally not escaped. The
+             blurb already narrates the week (incl. any tune-ups), so the
+             deterministic upgrade line is NOT shown here — it would duplicate. #}
           <div style="color:#cbd5e1;font-size:14px;line-height:1.6;">{{ bs.blurb_html | safe }}</div>
           {% else %}
+          {# No human blurb this week — lead the commit recap with the concrete
+             "what we tuned" upgrade line (the only place it renders). #}
+          {% if bs.has_upgrades %}
+          <div style="color:#7dd3fc;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">⚙️ This week's tune-ups</div>
+          <div style="color:#cbd5e1;font-size:13px;line-height:1.5;margin:4px 0 10px 0;">{{ bs.upgrade_phrase | e }}</div>
+          {% endif %}
           {% if bs.features %}
           <div style="color:#7dd3fc;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">✨ New</div>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:4px 0 10px 0;">
@@ -240,13 +248,6 @@
             · {{ bs.fix_count }} {{ 'fix' if bs.fix_count == 1 else 'fixes' }}
             {% if bs.generated_label %} · {{ bs.generated_label }}{% endif %}
           </div>
-          {% endif %}
-          {# "What we tuned" — the maintenance window's app-upgrade sweep. Renders
-             independently of the blurb/commit recap above (even on a blurb-less
-             week), so members always see the upkeep when it happened. #}
-          {% if bs.has_upgrades %}
-          <div style="color:#7dd3fc;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-top:12px;">⚙️ This week's tune-ups</div>
-          <div style="color:#cbd5e1;font-size:13px;line-height:1.5;margin-top:4px;">{{ bs.upgrade_phrase | e }}</div>
           {% endif %}
         </div>
       </td></tr>
