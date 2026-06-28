@@ -198,3 +198,84 @@ def test_commit_fetch_failure_hides_section(monkeypatch):
 
     monkeypatch.setattr(C.requests, "get", fake_get)
     assert C.fetch_behind_scenes("o/r", now=_now()) is None
+
+
+# --- fetch_upgrades ("what we tuned" — local last-upgrade.json) -----------
+
+import json as _json
+
+
+def _write_upgrade_file(tmp_path, *, upgraded, generated_at="2026-06-27T11:35:00Z", mode="live"):
+    p = tmp_path / "last-upgrade.json"
+    p.write_text(_json.dumps({
+        "schema_version": 1,
+        "generated_at": generated_at,
+        "mode": mode,
+        "summary": {"upgraded": len(upgraded), "failed": 0, "bailed": 0,
+                    "total": len(upgraded), "skipped": 0},
+        "apps": {a: "upgraded" for a in upgraded},
+        "upgraded": upgraded,
+    }), encoding="utf-8")
+    return p
+
+
+def test_fetch_upgrades_friendly_names_and_counts_rest(tmp_path):
+    p = _write_upgrade_file(tmp_path, upgraded=["plex", "sonarr", "radarr", "tautulli"])
+    recap = C.fetch_upgrades(p, now=_now())
+    assert recap is not None
+    # member-facing apps named; *arr plumbing bucketed into a count
+    assert recap.named == ["Plex", "viewing stats"]
+    assert recap.other_count == 2  # sonarr, radarr
+    assert recap.total == 4
+
+
+def test_fetch_upgrades_dedupes_friendly_collisions(tmp_path):
+    # overseerr + jellyseerr both map to "the request system" — show once
+    p = _write_upgrade_file(tmp_path, upgraded=["overseerr", "jellyseerr", "prowlarr"])
+    recap = C.fetch_upgrades(p, now=_now())
+    assert recap.named == ["the request system"]
+    assert recap.other_count == 1  # prowlarr
+
+
+def test_fetch_upgrades_stale_returns_none(tmp_path):
+    p = _write_upgrade_file(tmp_path, upgraded=["plex"], generated_at="2026-06-01T11:00:00Z")
+    assert C.fetch_upgrades(p, now=_now()) is None
+
+
+def test_fetch_upgrades_missing_file_returns_none(tmp_path):
+    assert C.fetch_upgrades(tmp_path / "nope.json", now=_now()) is None
+
+
+def test_fetch_upgrades_empty_list_returns_none(tmp_path):
+    p = _write_upgrade_file(tmp_path, upgraded=[])
+    assert C.fetch_upgrades(p, now=_now()) is None
+
+
+def test_fetch_upgrades_corrupt_file_returns_none(tmp_path):
+    p = tmp_path / "last-upgrade.json"
+    p.write_text("not json {{{", encoding="utf-8")
+    assert C.fetch_upgrades(p, now=_now()) is None
+
+
+# --- BehindScenes upgrade rendering --------------------------------------
+
+
+def test_upgrade_phrase_lists_named_then_count():
+    bs = C.BehindScenes(upgrade_named=["Plex", "the request system"],
+                        upgrade_other_count=4, upgrade_total=6)
+    assert bs.has_upgrades
+    phrase = bs.upgrade_phrase
+    assert "Plex" in phrase
+    assert "the request system" in phrase
+    assert "4 behind-the-scenes apps" in phrase
+
+
+def test_upgrade_phrase_single_count_singular():
+    bs = C.BehindScenes(upgrade_named=[], upgrade_other_count=1, upgrade_total=1)
+    assert "1 behind-the-scenes app" in bs.upgrade_phrase
+    assert "apps" not in bs.upgrade_phrase  # singular
+
+
+def test_has_items_true_with_only_upgrades():
+    bs = C.BehindScenes(upgrade_named=["Plex"], upgrade_other_count=0, upgrade_total=1)
+    assert bs.has_items  # upgrades alone are worth showing the card

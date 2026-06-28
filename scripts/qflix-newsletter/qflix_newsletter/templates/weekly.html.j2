@@ -241,6 +241,13 @@
             {% if bs.generated_label %} · {{ bs.generated_label }}{% endif %}
           </div>
           {% endif %}
+          {# "What we tuned" — the maintenance window's app-upgrade sweep. Renders
+             independently of the blurb/commit recap above (even on a blurb-less
+             week), so members always see the upkeep when it happened. #}
+          {% if bs.has_upgrades %}
+          <div style="color:#7dd3fc;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-top:12px;">⚙️ This week's tune-ups</div>
+          <div style="color:#cbd5e1;font-size:13px;line-height:1.5;margin-top:4px;">{{ bs.upgrade_phrase | e }}</div>
+          {% endif %}
         </div>
       </td></tr>
       {% endif %}
