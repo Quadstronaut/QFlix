@@ -139,7 +139,6 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.service \
     scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.timer \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.service \
-    scripts/maint/systemd/manitoba-maint-cp-upgrade.timer \
     scripts/maint/systemd/manitoba-maint-arr-audit.service \
     scripts/maint/systemd/manitoba-maint-arr-audit.timer \
     scripts/maint/systemd/manitoba-maint-ucc-detect.service \
@@ -352,7 +351,6 @@ for unit in \
     manitoba-maint-canary-tautulli-plex-link.service \
     manitoba-maint-canary-tautulli-plex-link.timer \
     manitoba-maint-cp-upgrade.service \
-    manitoba-maint-cp-upgrade.timer \
     manitoba-maint-arr-audit.service \
     manitoba-maint-arr-audit.timer \
     manitoba-maint-ucc-detect.service \
@@ -367,6 +365,12 @@ for unit in \
   fi
   cp -f ~/scripts/maint/systemd/$unit ~/.config/systemd/user/$unit
 done
+systemctl --user daemon-reload
+# Retire the cp-upgrade timer (folded into the window orchestrator 2026-06-28).
+# On boxes provisioned before the fold-in, disable + remove it so it can't fire a
+# second, UNLOCKED sweep at 11:30. The .service unit stays (manual sweeps only).
+systemctl --user disable --now manitoba-maint-cp-upgrade.timer 2>/dev/null || true
+rm -f ~/.config/systemd/user/manitoba-maint-cp-upgrade.timer
 systemctl --user daemon-reload
 # Enable everything that should auto-start.
 systemctl --user enable --now manitoba-maint-webhook.service
@@ -416,11 +420,8 @@ systemctl --user enable --now manitoba-maint-canary-quota.timer
 # IP" — the 2026-05-20 re-IP class the app monitor stayed green through.
 # Read-only probe; never restarts anything.
 systemctl --user enable --now manitoba-maint-canary-tautulli-plex-link.timer
-# UCC `app-<name> upgrade` sweep — Mon 11:30 UTC (30 min into the window).
-# --now activates the timer itself (schedules its next OnCalendar fire); it
-# does NOT trigger an immediate service run. Without --now the timer stays
-# inactive until reboot — which is what bit us on 2026-05-11.
-systemctl --user enable --now manitoba-maint-cp-upgrade.timer
+# (UCC app-upgrade sweep timer retired 2026-06-28 — now a step inside the window
+# orchestrator; see the disable/remove right after daemon-reload above.)
 # Weekly *arr stack audit — Sun 04:00 UTC. Read-only; writes markdown
 # reports to ~/.opt/maint/audit-reports/arr-audit-YYYY-MM-DD.md (90d
 # retention). Runs in loopback mode (no nginx hop).
