@@ -134,6 +134,18 @@ def push_once(
     # Built during the per-app loop for fleet storm detection (sub-project C).
     _probe_ok: dict[str, bool] = {}
 
+    # Weekly maintenance window: the orchestrator (lib/window.py) holds
+    # $STATE_DIR/lock for the Monday window AND the 11:30 UTC cp-upgrade sweep
+    # that overlaps it, during which apps are stopped/upgraded/restarted on
+    # purpose. While the lock is present, treat every app like push-suppression:
+    # push UP with a [maint-window] note and skip probe + recovery, so the
+    # pusher's auto-heal can't fight an in-progress `app-* upgrade`. The Kuma
+    # webhook already queues during the window (lib/kuma.do_POST); this closes
+    # the same gap on the pusher, the operative auto-heal path. Resolved once
+    # per cycle (cheap) rather than per-app. deep-check recovers anything still
+    # down at window close; the window-watchdog clears a stale lock at 15:00.
+    in_maint_window = suppression_mod.in_maintenance_window()
+
     for app in manifest.apps():
         if app.kuma_monitor is None:
             continue
@@ -180,6 +192,22 @@ def push_once(
             except Exception as exc:
                 results[app.name] = f"error: {exc}"
                 log.error("push (paused) %s failed: %s", app.name, exc)
+            continue
+
+        # Maintenance window active: app may be mid-upgrade. Push UP (Kuma stays
+        # green, clearly labelled), clear stale strikes, and skip probe +
+        # recovery — same treatment as the fair-use pause window above.
+        if in_maint_window:
+            _probe_ok[app.name] = True
+            _consecutive_failures.pop(app.name, None)
+            params = {"status": "up", "msg": "[maint-window: upgrades in progress]"}
+            try:
+                resp = _push_get(kuma_url, token, params)
+                results[app.name] = "ok" if resp.status_code == 200 else f"http_{resp.status_code}"
+                log.info("pushed %s → up [maint-window]", app.name)
+            except Exception as exc:
+                results[app.name] = f"error: {exc}"
+                log.error("push (maint-window) %s failed: %s", app.name, exc)
             continue
 
         result = health_mod.probe(app)
