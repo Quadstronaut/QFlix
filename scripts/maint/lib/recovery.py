@@ -57,30 +57,54 @@ _RECOVERY_SEMAPHORE = threading.BoundedSemaphore(5)
 _in_flight: set[str] = set()
 _in_flight_mutex = threading.Lock()
 
-# Apps whose 3-attempt loop has exhausted. trigger_async returns
-# "permanently_failed" for these until the caller (pusher) signals recovery
-# via clear_permanent_failure() — typically when the next probe succeeds.
-# Without this, the pusher would re-fire trigger_async every 60s forever
-# for any app that can't be auto-healed, eventually exhausting the semaphore.
-_permanently_failed: set[str] = set()
+# Apps whose 3-attempt loop has exhausted, mapped to the monotonic clock
+# reading when they were marked. trigger_async returns "permanently_failed"
+# for these — but only until _PERMANENT_FAILURE_REARM_S has elapsed, after
+# which the latch AUTO-RE-ARMS (the mark is dropped) so one more recovery
+# attempt fires. Without the re-arm, a transient root cause that clears just
+# after the 3-attempt window leaves the app dead until an operator intervenes:
+# the 2026-07-08 qBittorrent incident, where a boot-time squatter held the
+# WebUI port through all 3 attempts, released it minutes later, but the latch
+# never lifted (it only cleared on a successful probe — which could not happen
+# without a restart). A successful probe still clears the mark immediately via
+# the pusher's clear_permanent_failure(). The mark also stops the pusher from
+# re-firing trigger_async every 60s and exhausting the semaphore.
+_permanently_failed: dict[str, float] = {}
 _permanently_failed_mutex = threading.Lock()
+
+# How long a permanent-failure latch holds before auto-re-arming for one more
+# recovery attempt. Long enough to avoid restart-thrash on a genuinely dead app
+# (the pusher probes every ~60s), short enough that a cleared transient recovers
+# without operator action. Env-overridable for tuning and tests.
+_PERMANENT_FAILURE_REARM_S: float = float(
+    os.environ.get("MANITOBA_PERMANENT_FAILURE_REARM_S", "900")
+)
 
 
 def clear_permanent_failure(app_name: str) -> None:
-    """Remove `app_name` from the permanent-failure set so the pusher can
-    retry recovery on the next outage. Called by pusher on probe success."""
+    """Drop `app_name`'s permanent-failure mark so the pusher can retry
+    recovery on the next outage. Called by pusher on probe success."""
     with _permanently_failed_mutex:
-        _permanently_failed.discard(app_name)
+        _permanently_failed.pop(app_name, None)
 
 
 def is_permanently_failed(app_name: str) -> bool:
+    """True while `app_name` is latched permanently-failed. The latch auto-
+    re-arms after _PERMANENT_FAILURE_REARM_S: once that long has passed since
+    the mark, drop it and report False so the caller attempts recovery again."""
     with _permanently_failed_mutex:
-        return app_name in _permanently_failed
+        marked_at = _permanently_failed.get(app_name)
+        if marked_at is None:
+            return False
+        if (time.monotonic() - marked_at) >= _PERMANENT_FAILURE_REARM_S:
+            del _permanently_failed[app_name]
+            return False
+        return True
 
 
 def _mark_permanently_failed(app_name: str) -> None:
     with _permanently_failed_mutex:
-        _permanently_failed.add(app_name)
+        _permanently_failed[app_name] = time.monotonic()
 
 
 def _is_recoverable(app: App) -> bool:
@@ -225,7 +249,15 @@ def _recovery_loop(app: App) -> dict:
                                     app.defaults.get("kuma_recheck_delay_s", 90)))
 
     for attempt in range(1, attempts_max + 1):
-        lifecycle.start(app)
+        # restart, not start: an app whose process is alive but whose service
+        # is degraded (qBittorrent whose WebUI lost the boot-time port-bind
+        # race but whose process still runs) is a NO-OP under `start` — the
+        # ucc/systemd manager reports it "already running" and does nothing, so
+        # the health probe keeps failing through every attempt and the app is
+        # wrongly escalated to permanently-failed. restart stop→starts it,
+        # rebinding the port. For a genuinely-down app, restart == start.
+        # (2026-07-08 qBittorrent WebUI incident.)
+        lifecycle.restart(app)
 
         # Backoff before probing
         sleep_s = backoff[attempt - 1] if attempt - 1 < len(backoff) else backoff[-1]

@@ -101,7 +101,7 @@ class TestRecoverySuccess:
         app = _make_app(kuma_monitor="Sonarr")
         manifest = _FakeManifest({"sonarr": app})
 
-        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()) as mock_start, \
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()) as mock_restart, \
              patch("lib.recovery.health.probe", return_value=_ok_health()) as mock_probe, \
              patch("lib.recovery.kuma.monitor_status", return_value="up") as mock_kuma, \
              patch("lib.recovery.notify.notify") as mock_notify, \
@@ -112,7 +112,7 @@ class TestRecoverySuccess:
         assert result["event"] == "recovered"
         assert result["attempts"] == 1
         assert result["kuma_status"] == "up"
-        mock_start.assert_called_once()
+        mock_restart.assert_called_once()
         mock_notify.assert_called_once()
         assert "recovered" in mock_notify.call_args[0][0].lower() or \
                "✓" in mock_notify.call_args[0][0]
@@ -122,7 +122,7 @@ class TestRecoverySuccess:
         app = _make_app(kuma_monitor=None)
         manifest = _FakeManifest({"sonarr": app})
 
-        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_ok_health()), \
              patch("lib.recovery.kuma.monitor_status") as mock_kuma, \
              patch("lib.recovery.notify.notify"), \
@@ -137,7 +137,7 @@ class TestRecoverySuccess:
         app = _make_app(kuma_monitor=None)
         manifest = _FakeManifest({"sonarr": app})
 
-        with patch("lib.recovery.lifecycle.start", return_value=_fail_lifecycle()), \
+        with patch("lib.recovery.lifecycle.restart", return_value=_fail_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_ok_health()), \
              patch("lib.recovery.kuma.monitor_status") as mock_kuma, \
              patch("lib.recovery.notify.notify"), \
@@ -154,7 +154,7 @@ class TestRecoveryFailure:
         app = _make_app(kuma_monitor="Sonarr")
         manifest = _FakeManifest({"sonarr": app})
 
-        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()) as mock_start, \
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()) as mock_restart, \
              patch("lib.recovery.health.probe", return_value=_fail_health()) as mock_probe, \
              patch("lib.recovery.kuma.monitor_status") as mock_kuma, \
              patch("lib.recovery.notify.notify") as mock_notify, \
@@ -164,7 +164,7 @@ class TestRecoveryFailure:
 
         assert result["event"] == "failed"
         assert result["attempts"] == 3
-        assert mock_start.call_count == 3
+        assert mock_restart.call_count == 3
         mock_kuma.assert_not_called()
         notify_msg = mock_notify.call_args[0][0]
         assert "operator" in notify_msg.lower() or "✗" in notify_msg or "3" in notify_msg
@@ -173,7 +173,7 @@ class TestRecoveryFailure:
         app = _make_app(kuma_monitor="Sonarr")
         manifest = _FakeManifest({"sonarr": app})
 
-        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_ok_health()), \
              patch("lib.recovery.kuma.monitor_status", return_value="down"), \
              patch("lib.recovery.notify.notify") as mock_notify, \
@@ -190,7 +190,7 @@ class TestRecoveryFailure:
         app = _make_app(kuma_monitor="Sonarr")
         manifest = _FakeManifest({"sonarr": app})
 
-        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_ok_health()), \
              patch("lib.recovery.kuma.monitor_status", return_value="unknown"), \
              patch("lib.recovery.notify.notify") as mock_notify, \
@@ -200,6 +200,30 @@ class TestRecoveryFailure:
 
         assert result["event"] == "healthy_locally_kuma_down"
         assert result["kuma_status"] == "unknown"
+
+
+class TestRecoveryUsesRestart:
+    """Recovery must RESTART (stop→start), not START. A degraded-but-running
+    app — qBittorrent whose WebUI lost the boot-time port-bind race but whose
+    process is still alive — is a no-op under `start` (the ucc/systemd manager
+    reports "already running" and does nothing), so every attempt fails and the
+    app is wrongly escalated to permanently-failed. (2026-07-08 incident.)"""
+
+    def test_recovery_calls_restart_not_start(self, tmp_path):
+        app = _make_app(kuma_monitor=None)
+        manifest = _FakeManifest({"sonarr": app})
+
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()) as mock_restart, \
+             patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()) as mock_start, \
+             patch("lib.recovery.health.probe", return_value=_ok_health()), \
+             patch("lib.recovery.notify.notify"), \
+             patch("lib.recovery.state.record"), \
+             patch("lib.recovery.time.sleep"):
+            result = run("sonarr", manifest=manifest)
+
+        assert result["event"] == "recovered"
+        mock_restart.assert_called_once()
+        mock_start.assert_not_called()
 
 
 class TestRecoveryBackoff:
@@ -212,7 +236,7 @@ class TestRecoveryBackoff:
         def _fake_sleep(secs):
             sleep_calls.append(secs)
 
-        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_fail_health()), \
              patch("lib.recovery.notify.notify"), \
              patch("lib.recovery.state.record"), \
@@ -231,7 +255,7 @@ class TestRecoveryBackoff:
         def _fake_sleep(secs):
             sleep_calls.append(secs)
 
-        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_ok_health()), \
              patch("lib.recovery.kuma.monitor_status", return_value="up"), \
              patch("lib.recovery.notify.notify"), \
@@ -257,7 +281,7 @@ class TestRecoveryPerAppOverride:
         manifest = _FakeManifest({"sonarr": app})
 
         sleep_calls = []
-        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_fail_health()), \
              patch("lib.recovery.notify.notify"), \
              patch("lib.recovery.state.record"), \
@@ -272,7 +296,7 @@ class TestRecoveryPerAppOverride:
         app.raw["recovery_attempts"] = 5
         manifest = _FakeManifest({"sonarr": app})
 
-        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()) as mock_start, \
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()) as mock_restart, \
              patch("lib.recovery.health.probe", return_value=_fail_health()), \
              patch("lib.recovery.notify.notify"), \
              patch("lib.recovery.state.record"), \
@@ -281,7 +305,7 @@ class TestRecoveryPerAppOverride:
 
         assert result["event"] == "failed"
         assert result["attempts"] == 5
-        assert mock_start.call_count == 5
+        assert mock_restart.call_count == 5
 
     def test_falls_back_to_global_defaults_when_no_per_app_override(self, tmp_path):
         # raw has no recovery_* keys → global defaults still apply.
@@ -290,7 +314,7 @@ class TestRecoveryPerAppOverride:
         manifest = _FakeManifest({"sonarr": app})
 
         sleep_calls = []
-        with patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+        with patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_fail_health()), \
              patch("lib.recovery.notify.notify"), \
              patch("lib.recovery.state.record"), \
@@ -328,7 +352,7 @@ class TestRecoveryAutoDowngrade:
 
         ok_result = LifecycleResult(ok=True, duration_s=0.1, stdout="", stderr="", reason="rolled back")
         with patch.object(recovery_mod, "_STATE_PATH", state_file), \
-             patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+             patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_fail_health()), \
              patch("lib.recovery.lifecycle.downgrade", return_value=ok_result) as mock_dg, \
              patch("lib.recovery.notify.notify") as mock_notify, \
@@ -351,7 +375,7 @@ class TestRecoveryAutoDowngrade:
         manifest = _FakeManifest({"conjurr": app})
 
         with patch.object(recovery_mod, "_STATE_PATH", state_file), \
-             patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+             patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_fail_health()), \
              patch("lib.recovery.lifecycle.downgrade") as mock_dg, \
              patch("lib.recovery.notify.notify"), \
@@ -380,7 +404,7 @@ class TestRecoveryAutoDowngrade:
         manifest = _FakeManifest({"sonarr": app})
 
         with patch.object(recovery_mod, "_STATE_PATH", state_file), \
-             patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+             patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_fail_health()), \
              patch("lib.recovery.lifecycle.downgrade") as mock_dg, \
              patch("lib.recovery.notify.notify"), \
@@ -411,7 +435,7 @@ class TestRecoveryAutoDowngrade:
 
         fail_result = LifecycleResult(ok=False, duration_s=0.1, stdout="", stderr="", reason="git checkout failed")
         with patch.object(recovery_mod, "_STATE_PATH", state_file), \
-             patch("lib.recovery.lifecycle.start", return_value=_ok_lifecycle()), \
+             patch("lib.recovery.lifecycle.restart", return_value=_ok_lifecycle()), \
              patch("lib.recovery.health.probe", return_value=_fail_health()), \
              patch("lib.recovery.lifecycle.downgrade", return_value=fail_result) as mock_dg, \
              patch("lib.recovery.notify.notify") as mock_notify, \
@@ -430,13 +454,13 @@ class TestRecoveryUnknownApp:
     def test_recovery_unknown_app_records_and_returns(self, tmp_path):
         manifest = _FakeManifest({})
 
-        with patch("lib.recovery.lifecycle.start") as mock_start, \
+        with patch("lib.recovery.lifecycle.restart") as mock_restart, \
              patch("lib.recovery.notify.notify") as mock_notify, \
              patch("lib.recovery.state.record") as mock_state:
             result = run("nonexistent", manifest=manifest)
 
         assert result["event"] == "unknown_app"
-        mock_start.assert_not_called()
+        mock_restart.assert_not_called()
         mock_notify.assert_called_once()
         mock_state.assert_called_once()
 
@@ -464,7 +488,7 @@ class TestRecoveryLocking:
             orig = recovery_mod._LOCK_ACQUIRE_TIMEOUT_S
             recovery_mod._LOCK_ACQUIRE_TIMEOUT_S = 0.2
             try:
-                with patch("lib.recovery.lifecycle.start", side_effect=_slow_lifecycle), \
+                with patch("lib.recovery.lifecycle.restart", side_effect=_slow_lifecycle), \
                      patch("lib.recovery.health.probe", return_value=_ok_health()), \
                      patch("lib.recovery.notify.notify"), \
                      patch("lib.recovery.state.record"), \
@@ -474,7 +498,7 @@ class TestRecoveryLocking:
                 recovery_mod._LOCK_ACQUIRE_TIMEOUT_S = orig
 
         # Start first recovery in a thread; it will hold the lock at barrier
-        with patch("lib.recovery.lifecycle.start", side_effect=_slow_lifecycle), \
+        with patch("lib.recovery.lifecycle.restart", side_effect=_slow_lifecycle), \
              patch("lib.recovery.health.probe", return_value=_ok_health()), \
              patch("lib.recovery.notify.notify"), \
              patch("lib.recovery.state.record"), \
@@ -511,7 +535,7 @@ class TestRecoveryLocking:
         results = {}
 
         def _run_sonarr():
-            with patch("lib.recovery.lifecycle.start", side_effect=_sonarr_lifecycle), \
+            with patch("lib.recovery.lifecycle.restart", side_effect=_sonarr_lifecycle), \
                  patch("lib.recovery.health.probe", return_value=_ok_health()), \
                  patch("lib.recovery.notify.notify"), \
                  patch("lib.recovery.state.record"), \
@@ -520,7 +544,7 @@ class TestRecoveryLocking:
 
         def _run_radarr():
             sonarr_started.wait(timeout=3)
-            with patch("lib.recovery.lifecycle.start", side_effect=_radarr_lifecycle), \
+            with patch("lib.recovery.lifecycle.restart", side_effect=_radarr_lifecycle), \
                  patch("lib.recovery.health.probe", return_value=_ok_health()), \
                  patch("lib.recovery.notify.notify"), \
                  patch("lib.recovery.state.record"), \
@@ -651,3 +675,54 @@ class TestPermanentFailureMark:
             if app.name not in recovery_mod._in_flight:
                 break
         assert recovery_mod.is_permanently_failed(app.name) is False
+
+    # --- Auto-re-arm: the 2026-07-08 qBittorrent deadlock fix ---------------
+    # A transient root cause (boot-time port squatter) can clear just after the
+    # 3-attempt loop exhausts. The latch must not pin the app dead forever: it
+    # re-arms after _PERMANENT_FAILURE_REARM_S so one more recovery fires.
+
+    def test_latch_holds_within_rearm_window(self, monkeypatch):
+        app = _make_app("qbittorrent")
+        clock = {"t": 500.0}
+        monkeypatch.setattr(recovery_mod.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(recovery_mod, "_PERMANENT_FAILURE_REARM_S", 900.0)
+
+        recovery_mod._mark_permanently_failed(app.name)   # marked at t=500
+        clock["t"] = 500.0 + 300                          # 300s < 900s window
+        assert recovery_mod.is_permanently_failed(app.name) is True
+
+    def test_latch_rearms_after_window_elapses(self, monkeypatch):
+        app = _make_app("qbittorrent")
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(recovery_mod.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(recovery_mod, "_PERMANENT_FAILURE_REARM_S", 900.0)
+
+        recovery_mod._mark_permanently_failed(app.name)   # marked at t=1000
+        assert recovery_mod.is_permanently_failed(app.name) is True    # 0s
+        clock["t"] = 1000.0 + 901                          # past the window
+        assert recovery_mod.is_permanently_failed(app.name) is False   # re-armed
+        # Mark was dropped, so it stays re-armed on the next poll too.
+        assert recovery_mod.is_permanently_failed(app.name) is False
+
+    def test_rearm_lets_trigger_async_fire_again(self, monkeypatch):
+        app = _make_app("qbittorrent")
+        manifest = _FakeManifest({"qbittorrent": app})
+        clock = {"t": 0.0}
+        monkeypatch.setattr(recovery_mod.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(recovery_mod, "_PERMANENT_FAILURE_REARM_S", 900.0)
+
+        recovery_mod._mark_permanently_failed(app.name)
+        # Within the window, trigger_async short-circuits.
+        assert recovery_mod.trigger_async(app, manifest=manifest) == "permanently_failed"
+
+        # Past the window, the latch re-arms and a fresh recovery is spawned.
+        clock["t"] = 901.0
+        monkeypatch.setattr(recovery_mod, "run", lambda name, *, manifest=None: {
+            "app": name, "event": "recovered", "attempts": 1,
+            "final_health": "ok", "kuma_status": "up",
+        })
+        assert recovery_mod.trigger_async(app, manifest=manifest) == "started"
+        for _ in range(20):
+            time.sleep(0.02)
+            if app.name not in recovery_mod._in_flight:
+                break
