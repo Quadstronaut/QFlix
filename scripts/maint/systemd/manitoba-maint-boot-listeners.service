@@ -1,0 +1,15 @@
+[Unit]
+Description=Manitoba — boot-time TCP listener snapshot (identify port squatters after a reboot)
+# Start alongside the app stack so the sampler is running while qBittorrent et al
+# race for their ports. The script's own sampling loop spans the boot window.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/ops/boot-listeners-snapshot.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
