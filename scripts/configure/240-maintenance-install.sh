@@ -145,10 +145,12 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-ucc-detect.timer \
     scripts/maint/systemd/manitoba-maint-backup-prune.service \
     scripts/maint/systemd/manitoba-maint-backup-prune.timer \
+    scripts/maint/systemd/manitoba-maint-boot-listeners.service \
     scripts/maint/arr-audit.py \
     scripts/maint/arr-audit-run.sh \
     scripts/maint/app-upgrade-all.sh \
     scripts/ops/heartbeat-maint-webhook.sh \
+    scripts/ops/boot-listeners-snapshot.sh \
     scripts/lib/ssh.sh \
     scripts/canaries/anime.sh \
     scripts/canaries/kometa-deploy-drift.sh \
@@ -199,6 +201,8 @@ cp -rf  "$STG"/scripts/maint/lib                  ~/scripts/maint/
 cp -rf  "$STG"/scripts/maint/systemd              ~/scripts/maint/
 cp -f   "$STG"/scripts/ops/heartbeat-maint-webhook.sh ~/scripts/ops/
 chmod +x ~/scripts/ops/heartbeat-maint-webhook.sh
+cp -f   "$STG"/scripts/ops/boot-listeners-snapshot.sh ~/scripts/ops/
+chmod +x ~/scripts/ops/boot-listeners-snapshot.sh
 mkdir -p ~/scripts/lib ~/scripts/canaries ~/scripts/configure
 cp -f   "$STG"/scripts/lib/ssh.sh                ~/scripts/lib/ssh.sh
 cp -f   "$STG"/scripts/canaries/*.sh             ~/scripts/canaries/
@@ -356,7 +360,8 @@ for unit in \
     manitoba-maint-ucc-detect.service \
     manitoba-maint-ucc-detect.timer \
     manitoba-maint-backup-prune.service \
-    manitoba-maint-backup-prune.timer; do
+    manitoba-maint-backup-prune.timer \
+    manitoba-maint-boot-listeners.service; do
   # If the user unit is a symlink pointing back at the source, `cp -f` fails
   # with "are the same file" — the source already IS the live unit. Drop the
   # symlink first; cp then writes a real file.
@@ -441,6 +446,11 @@ systemctl --user enable --now manitoba-maint-ucc-detect.timer
 # app-manager backups per app in ~/.apps/backup; deletes the rest. --now
 # activates the timer's schedule (does not run an immediate prune).
 systemctl --user enable --now manitoba-maint-backup-prune.timer
+# Boot-time listener snapshot — pulled in by default.target, runs once per boot
+# to log TCP-listener occupancy (identifies a port squatter after a reboot; see
+# memory qbit-webui-boot-bind-race). Plain `enable` (NOT --now): it's a ~3min
+# sampling oneshot, so --now would block this installer; it fires on next boot.
+systemctl --user enable manitoba-maint-boot-listeners.service
 # Restart long-running services so they pick up code/manifest changes
 # (enable --now doesn't restart an already-running unit). Window timers
 # don't need a restart — next fire uses the latest code.
