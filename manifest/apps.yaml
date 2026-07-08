@@ -119,6 +119,15 @@ apps:
     class: ucc
     ucc_slug: qbittorrent
     kuma_monitor: "qBittorrent"
+    # qBit binds its WebUI (port 17041) exactly ONCE at startup and never
+    # retries; a boot-time port squatter can make it lose that race and run
+    # WebUI-less (2026-07-08 incident, see memory qbit-webui-boot-bind-race).
+    # Widen this app's recovery backoff so the 3-attempt loop spans the boot-
+    # settle window and its `restart` catches the freed port on the FIRST
+    # outage — instead of exhausting attempts while the port is still contended
+    # and falling back on the permanent-failure re-arm (~15min). Mirrors the
+    # victorialogs slow-boot fix. (lib/recovery.py reads raw before defaults.)
+    recovery_backoff_s: [30, 90, 180]
     health:
       kind: http_root
       port_secret: qbittorrent.port
