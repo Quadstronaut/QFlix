@@ -17,7 +17,7 @@ from pathlib import Path
 
 from plexapi.server import PlexServer
 
-DEFAULT_MAX_STREAMS_PER_USER = int(os.environ.get("KS_MAX_STREAMS_PER_USER", "2"))
+DEFAULT_MAX_STREAMS_PER_USER = int(os.environ.get("KS_MAX_STREAMS_PER_USER", "4"))
 KILL_MESSAGE = os.environ.get(
     "KS_MESSAGE",
     "Too many concurrent streams from this account. The oldest was stopped.",
