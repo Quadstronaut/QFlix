@@ -600,6 +600,31 @@ canaries:
     kuma_monitor: "Canary Plex Transcoder"
     script: "scripts/canaries/plex-transcoder.sh"
     schedule: "every-10min"
+  newsletter-digest:
+    # Detects a stale/absent "Behind the scenes" digest blurb at Monday
+    # send time — exactly the silent-fallback condition
+    # changelog.py's fetch_override()/_is_fresh() degrade through without
+    # ever raising (INFO-only log, always falls back to the deterministic
+    # commit recap). Nothing watched the newsletter-digest branch before
+    # this canary; the 2026-07-06 miss (routine fired per last_fired_at,
+    # produced no commit) went unnoticed until manually checked.
+    #
+    # The qflix-digest cloud routine (trig_01ARibSXarcy5ddQdDXiV3Dp) is
+    # DESIGNED to publish something every Monday 14:00 UTC (even a brief
+    # "quiet week" blurb per its SKILL.md) — so a missing/stale blurb at
+    # send time is a real failure worth surfacing, per operator intent.
+    #
+    # Freshness is enforced ONLY inside the Monday 14:15-24:00 UTC send
+    # window (script-internal gate; QFLIX_DIGEST_CANARY_FORCE_WINDOW=1
+    # overrides for tests) so the newsletter's own _is_fresh() +4.0-day
+    # upper bound — which makes a correctly-published Monday blurb read
+    # STALE by the following weekend — never produces a false alarm.
+    # schedule "weekly-mon-send" pairs with cli.py's
+    # _CANARY_INTERVAL_MIN["weekly-mon-send"]=10080 so `status --json`
+    # doesn't mislabel the between-Mondays idle period as stale.
+    kuma_monitor: "Canary Newsletter Digest"
+    script: "scripts/canaries/newsletter-digest-stale.sh"
+    schedule: "weekly-mon-send"
   # maintainerr-rule-sanity: RETIRED 2026-06-20 with Maintainerr. It guarded
   # against Maintainerr rule corruption (threshold/keepFor=0 mass-delete); with
   # Maintainerr gone the risk is gone. qflix-reaper's own safety caps (max-items

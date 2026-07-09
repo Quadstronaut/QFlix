@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-07-09 — Newsletter digest routine fix + never-silent detection
+
+**The weekly "Behind the scenes" cloud routine had silently stalled.** It fired
+every Monday but stopped publishing after 2026-06-29 (the 07-06 run produced no
+commit), so the newsletter quietly fell back to the deterministic commit recap
+with no alert. Root cause (council-v2 diagnosis): the routine's pinned model
+`claude-sonnet-4-6` — a prior generation — most likely went unavailable between
+the last success and the failure; the session fired but couldn't do the work.
+
+Fixed: the routine's model updated to `claude-sonnet-5`, and the `qflix-digest`
+skill hardened with VERIFY-AFTER-PUSH (re-fetch + assert `week_of`==today; a curl
+failure or mismatch is a run failure) + FAIL-LOUD (Gmail alert on any failure).
+
+**New detection canary `newsletter-digest-stale`** — the real fix, so it's never
+silent again: it checks the `newsletter-digest` branch's `week_of` against the
+newsletter's own `_is_fresh` rule at Monday send time (fires 14:20/14:50/15:20
+UTC) and pushes DOWN → Kuma + Discord when the blurb is stale/absent/malformed.
+Enforcement is gated to the Monday send window so the rule's +4-day freshness
+bound never false-alarms mid-week. Kuma monitor "Canary Newsletter Digest"
+bootstrapped (14th canary; 52 manitoba monitors). Monitor counts reconciled
+across README/inventory/wiki and the doc-counts test now counts the 3
+auto-injected monitors (pusher self-heartbeat, fleet aggregate, QFlix Reaper).
+
 ## 2026-07-08 — Self-healing hardening, stream cap, docs reconciled to live
 
 **qBittorrent WebUI auto-heal fixed (d8d82bf).** A host maintenance reboot left
