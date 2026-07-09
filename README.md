@@ -11,7 +11,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-51%2F51_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-35_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-49%2F49_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-51%2F51_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -41,7 +41,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 |---|---:|---|
 | Apps in manifest (`manifest/apps.yaml`) | **35** | 19 UCC · 6 systemd · 9 cron · 1 library |
 | End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **13** | movie · anime · mobile-ux · qbit-stall · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link · quota |
-| Kuma push monitors (manitoba-owned) | **49** | 35 manifest apps + 13 canaries + 1 daemon self-heartbeat, all reporting continuously (49/49 declared; SABnzbd added 2026-06-26). Plus the self-pushed "QFlix Reaper" monitor and 4 external (3 Quadstronix nodes + 1 workstation collector); external PUSH tokens self-heal across `bootstrap-kuma-monitors.py` runs as of 2026-05-22. |
+| Kuma push monitors (manitoba-owned) | **51** | 35 manifest apps + 13 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper", all reporting continuously (51/51 declared; `kuma audit` shows no drift as of 2026-07-08). Plus 4 external (3 Quadstronix nodes + 1 workstation collector); external PUSH tokens self-heal across `bootstrap-kuma-monitors.py` runs. |
 | Cron + systemd timers | **14+** | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **650+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -95,7 +95,7 @@ flowchart LR
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 49 push monitors)]:::kuma
+  kuma[(Uptime Kuma<br/>isolated netns · 51 push monitors)]:::kuma
   discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex
@@ -185,7 +185,7 @@ flowchart LR
   recovery -->|lifecycle.start ≤3 attempts| status
   recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>49 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>51 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
   C3[Canary plex-transcoder · 10min]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K
@@ -234,7 +234,7 @@ flowchart TB
   camp --> archive[server-rendered archive<br/>https://fqdn/listmonk/campaign/uuid]:::out
 ```
 
-Email sections: **Pick of Week → New Movies → New TV → New Anime → Coming Soon → Behind the scenes → Nerd Corner.** The "Behind the scenes" recap is written by a Mon-14:00-UTC cloud routine (`/qflix-digest`) that commits a friendly, non-technical blurb to the `newsletter-digest` branch an hour before send; if it's missing or stale the newsletter auto-builds the recap from that week's public commits. Failure modes are isolated — if GitHub is unreachable that section just goes silent; the rest of the email still ships. (Gemini "AI Picks" was retired 2026-06-27 — the free tier returned `429 limit:0` on every run, so it never rendered.) Posters are mirrored to `~/www/images/newsletter/<sha>.<ext>` at render time so delivered mail survives upstream TMDB CDN rot; cache is pruned daily by `qflix-poster-cache-prune.timer` (30-day retention). See `scripts/qflix-newsletter/qflix_newsletter/main.py` and `posters.py`.
+Email sections: **Pick of Week → New Movies → New TV → New Anime → Coming Soon → Behind the scenes → Nerd Corner.** The "Behind the scenes" recap is written by a Mon-14:00-UTC cloud routine (`/qflix-digest`) that commits a friendly, non-technical blurb to the `newsletter-digest` branch an hour before send; if it's missing or stale the newsletter auto-builds the recap from that week's public commits. On blurb-less weeks a separate **"This week's tune-ups"** sub-line is appended from the maintenance window's `~/.opt/maint/last-upgrade.json`. Failure modes are isolated — the section goes silent only if BOTH the blurb and the commit recap are empty; the rest of the email still ships. (Gemini "AI Picks" was retired 2026-06-27 — the free tier returned `429 limit:0` on every run, so it never rendered.) Posters are mirrored to `~/www/images/newsletter/<sha>.<ext>` at render time so delivered mail survives upstream TMDB CDN rot; cache is pruned daily by `qflix-poster-cache-prune.timer` (30-day retention). See `scripts/qflix-newsletter/qflix_newsletter/main.py` and `posters.py`.
 
 </details>
 
