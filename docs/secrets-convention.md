@@ -30,7 +30,6 @@ back-compat).
 | `sabnzbd.key` / `.port` | SABnzbd API + loopback port (17007; *arr reach it at `172.17.0.1:17007` over the Docker bridge) | 90-sabnzbd-usenet-install.sh scrapes sabnzbd.ini |
 | `nzbgeek.key` / `.url` | NZBgeek Newznab indexer (Usenet search), added directly to Sonarr | operator signup (https://nzbgeek.info); url `https://api.nzbgeek.info` |
 | `seerr.key` / `.port` / `.urlbase` | Seerr API | UI → Settings → General |
-| `maintainerr.key` | Maintainerr API | UI → Settings |
 | `plex.token` / `.host` / `.port` | Plex API | https://www.plex.tv/claim or X-Plex-Token from a web session |
 | `plex.direct_host` (optional) | Direct-access Plex hostname for the Homarr tile (Ultra.cc shared boxes route a dedicated direct-IP endpoint). Falls back to `<seedbox.host>/web/` if absent. |
 | `tautulli.key` / `.port` | Tautulli API | UI → Settings → Web Interface |
