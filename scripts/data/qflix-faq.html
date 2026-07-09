@@ -558,7 +558,7 @@
           <tbody>
             <tr><td>Watch movies / TV / anime</td><td>Plex apps or <code>app.plex.tv</code></td><td>Plex SSO</td></tr>
             <tr><td>Request a new title</td><td><a href="https://quadstronaut.seedbox.example.com/seerr/">/seerr/</a></td><td>Plex SSO</td></tr>
-            <tr><td>Browse the dashboard</td><td>the operator's Homarr (root URL)</td><td>none for the public board</td></tr>
+            <tr><td>Browse the dashboard</td><td>the operator's qflix-dash (root URL)</td><td>none for the public board</td></tr>
             <tr><td>See what's playing right now</td><td><a href="https://quadstronaut.seedbox.example.com/tautulli/">/tautulli/</a></td><td>none (read-only stats)</td></tr>
             <tr><td>Read ebooks</td><td><code>/calibre-web/</code> or Kavita</td><td>per-app login</td></tr>
             <tr><td>Read comics / manga</td><td>Komga or Kavita</td><td>per-app login</td></tr>
@@ -632,7 +632,7 @@
         <ul>
           <li><strong>Your connection.</strong> Test your download speed. 4K HEVC needs ~25 Mbps sustained; HD ~6 Mbps.</li>
           <li><strong>Transcoding tax.</strong> If your client can't direct-play the file (wrong codec, wrong container, subtitles burned in), Plex transcodes &mdash; and this server has a shared CPU. Try setting <em>Quality</em> to the original resolution but a lower bitrate, or use a client that direct-plays more formats (Plex desktop, Apple TV).</li>
-          <li><strong>Stream-cap.</strong> The operator caps total concurrent streams at <strong>2</strong> via a kill-stream cron (Plex Pass feature). The 3rd stream gets killed within 60 seconds.</li>
+          <li><strong>Stream-cap.</strong> Each member may run up to <strong>4</strong> concurrent streams; a kill-stream cron (Plex Pass feature) enforces it per-member, not as a server-wide total. Start a 5th stream yourself and one of your own streams gets killed within 60 seconds &mdash; other members are never affected.</li>
         </ul>
       </article>
 
@@ -646,10 +646,10 @@
         <div class="callout tip"><strong>Self-heal:</strong> if Plex is down, the manitoba-maint pusher tries up to 3 restarts (10s / 30s / 60s back-off) before paging the operator. Usually it's back inside 2 minutes.</div>
       </article>
 
-      <article class="card user" id="q-streamcap" data-tags="plex stream killed two streams cap">
+      <article class="card user" id="q-streamcap" data-tags="plex stream killed four streams cap per-member">
         <h3>My stream got cut off mid-show <a class="qhash" href="#q-streamcap">#</a></h3>
         <p>
-          The stack enforces a hard 2-concurrent-stream cap. If three people are streaming and you joined third, your stream gets terminated. Coordinate, or talk to the operator about who needs priority.
+          The stack enforces a hard 4-concurrent-stream cap <strong>per member</strong> &mdash; not a total across the whole server. If you personally opened a 5th stream at the same time, the kill-stream cron ends one of your own streams within 60 seconds; it never touches other members' streams. If your stream was cut and you weren't running 5 of your own, that's a different issue &mdash; talk to the operator.
         </p>
       </article>
     </section>
@@ -693,17 +693,17 @@
 
     <section class="deck" id="sec-newsletter">
       <h2><span class="num">5</span>Newsletter</h2>
-      <p class="deck-sub">The weekly AI-curated digest.</p>
+      <p class="deck-sub">The weekly Plex digest.</p>
 
       <article class="card user" id="q-newsletter" data-tags="newsletter listmonk qflix-newsletter weekly digest email subscribe">
         <h3>What is the Monday newsletter and how do I subscribe? <a class="qhash" href="#q-newsletter">#</a></h3>
         <p>
-          Every Monday at 08:00 America/Phoenix (15:00 UTC, right after the maintenance window closes) a Python job (<code>qflix-newsletter</code>) renders a digest of what's new in Plex, what's on deck for the next two weeks, and an AI section that says &ldquo;if you liked X, try Y&rdquo; &mdash; and emails it via Listmonk.
+          Every Monday at 08:00 America/Phoenix (15:00 UTC, right after the maintenance window closes) a Python job (<code>qflix-newsletter</code>) renders a digest of what's new in Plex, what's on deck for the next two weeks, and a &ldquo;Behind the scenes&rdquo; recap of what changed under the hood that week &mdash; and emails it via Listmonk.
         </p>
         <p>
           Subscribers are pulled from two places automatically: <strong>your Plex friends list</strong> and <strong>Seerr users</strong>. If you're in either, you're already subscribed. Unsubscribe link at the bottom of every email &mdash; that's standard Listmonk and works instantly.
         </p>
-        <p>Email sections: Pick of Week &rarr; New Movies &rarr; New TV &rarr; New Anime &rarr; Coming Soon &rarr; AI Picks &rarr; Nerd Corner.</p>
+        <p>Email sections: Pick of Week &rarr; New Movies &rarr; New TV &rarr; New Anime &rarr; Coming Soon &rarr; Behind the scenes &rarr; Nerd Corner.</p>
       </article>
 
       <article class="card user" id="q-newsletter-missing" data-tags="newsletter not received spam blocked listmonk">
@@ -711,7 +711,7 @@
         <ul>
           <li>Check spam &mdash; first send to a new address often lands there.</li>
           <li>Confirm the email on file. The operator can look you up in Listmonk.</li>
-          <li>If Gemini was rate-limited that week, the AI section just doesn't appear; the rest of the email still sends.</li>
+          <li>If GitHub was unreachable that week, the &ldquo;Behind the scenes&rdquo; section just doesn't appear; the rest of the email still sends.</li>
           <li>If the maintenance window over-ran, the Monday 08:00 trigger fires anyway &mdash; it doesn't wait.</li>
         </ul>
       </article>
@@ -793,7 +793,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
           <li>Posts &ldquo;window open&rdquo; to Discord.</li>
           <li>Grabs <code>~/.opt/maint/window.lock</code> (a watchdog at 17:00 CEST clears any stale lock).</li>
           <li>Runs Recyclarr (TRaSH-Guide sync), Kometa (collections / posters), Buildarr (declarative *arr config).</li>
-          <li>At 11:30 UTC, <code>app-upgrade-all.sh</code> runs <code>app-&lt;name&gt; upgrade</code> sequentially for every installed UCC app (replaces the previous Playwright clicker as of 2026-05-13). In-place tarball/zip swap for non-UCC systemd apps.</li>
+          <li>Runs the UCC app-upgrade sweep as a step inside the window: <code>app-&lt;name&gt; upgrade</code> sequentially for every installed UCC app (replaces the previous Playwright clicker as of 2026-05-13); in-place tarball/zip swap for non-UCC systemd apps. (The old fixed-11:30-UTC timer was retired 2026-06-28 and folded into this orchestrator run.)</li>
           <li>Restores prior service state from the discovery snapshot.</li>
           <li>Releases the lock + posts &ldquo;window closed&rdquo; with a summary.</li>
         </ol>
@@ -882,7 +882,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
             <tr><td><code>canary-movie</code></td><td>hourly</td><td>Seerr &rarr; Radarr &rarr; import &rarr; Plex movie path works end-to-end</td></tr>
             <tr><td><code>canary-anime</code></td><td>hourly</td><td>Seerr &rarr; Sonarr2 &rarr; import &rarr; Plex anime path works (the <em>second</em> server matters)</td></tr>
             <tr><td><code>canary-tautulli-plex-link</code></td><td>every 15 min</td><td>Tautulli's <em>configured</em> Plex address is a live <code>/identity</code> &mdash; catches &ldquo;Tautulli web up but pinned to a dead/old Plex&rdquo; (the 2026-05-20 re-IP class the app monitor stayed green through)</td></tr>
-            <tr><td><code>canary-mobile-ux</code></td><td>every 15 min</td><td>Public Homarr board still renders + the <code>/</code> &rarr; board redirect still works</td></tr>
+            <tr><td><code>canary-mobile-ux</code></td><td>every 15 min</td><td>Public qflix-dash board still renders + the <code>/</code> &rarr; board redirect still works</td></tr>
             <tr><td><code>canary-qbit-stall</code></td><td>every 15 min</td><td>qBittorrent dl_info_speed&ne;0 while a download queue exists for &gt;5 min (libtorrent wedge detector)</td></tr>
             <tr><td><code>canary-vlogs-stall</code></td><td>every 15 min</td><td>VictoriaLogs is up and ingesting; every managed *arr is logging within the freshness window</td></tr>
             <tr><td><code>canary-hardlink-integrity</code></td><td>every 30 min</td><td>Enumerate qBit-completed torrents; check every one has a library twin with the same (dev, inode). Detached &ge; threshold &rarr; fire. (Old design sampled library mtime &mdash; deprecated 2026-05-22 after firing 20/20 false-positive while *arr was at 100% coverage.)</td></tr>
@@ -1232,17 +1232,17 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
           <strong>Tautulli</strong> is Flask-based; it's the original community Plex stats dashboard, around since the PlexPy days. <strong>Kometa</strong> (formerly Plex Meta Manager) is a YAML-driven Python pipeline that turns config files into Plex collections + posters. <strong>Buildarr</strong> is &ldquo;Infrastructure-as-Code for *arrs&rdquo; &mdash; declarative YAML in, reconciled *arr settings out (think Terraform, but for Sonarr).
         </p>
         <p>
-          <strong>FlareSolverr</strong> drives a headless browser (Selenium / undetected-chromedriver) to solve Cloudflare challenges Prowlarr can't pass on its own. <strong>Calibre-Web</strong> is a Flask front-end on top of the canonical Calibre library DB. <strong>qflix-newsletter</strong> is bespoke &mdash; Python + Jinja2 templates + Google Gemini calls + the Listmonk REST API, ~600 LoC total.
+          <strong>FlareSolverr</strong> drives a headless browser (Selenium / undetected-chromedriver) to solve Cloudflare challenges Prowlarr can't pass on its own. <strong>Calibre-Web</strong> is a Flask front-end on top of the canonical Calibre library DB. <strong>qflix-newsletter</strong> is bespoke &mdash; Python + Jinja2 templates + the Listmonk REST API, ~600 LoC total.
         </p>
       </article>
 
       <article class="card tut" id="q-tech-node" data-tags="node nodejs javascript typescript nestjs nextjs uptimekuma maintainerr tdarr audiobookshelf seerr overseerr jellyseerr homarr vue react">
-        <h3>The Node.js wing &mdash; Uptime Kuma, Tdarr, Audiobookshelf, Seerr, Homarr <a class="qhash" href="#q-tech-node">#</a></h3>
+        <h3>The Node.js wing &mdash; Uptime Kuma, Tdarr, Audiobookshelf, Seerr, qflix-dash <a class="qhash" href="#q-tech-node">#</a></h3>
         <p>
           <strong>Uptime Kuma</strong> is by Louis Lam &mdash; started as a personal Hong Kong side-project and became the de-facto self-hosted status page (think open-source UptimeRobot). <strong>Maintainerr</strong> (NestJS + React) was the former 60-day retention engine &mdash; it stepped in after Deleterr was abandoned but was itself decommissioned 2026-06-20 after a Plex-ID resolution bug made its deletes unfixable. The 60-day retention rule is now handled by <strong>qflix-reaper</strong> (<code>scripts/maint/qflix-reaper.py</code>), a bespoke Python script on a daily systemd timer.
         </p>
         <p>
-          <strong>Tdarr</strong> wraps FFmpeg with a Node orchestrator and a worker-node model (&ldquo;servers&rdquo; + &ldquo;nodes&rdquo;). <strong>Audiobookshelf</strong> is Node + Vue with surprisingly good iOS / Android apps for a self-hosted project. <strong>Seerr</strong> (the Overseerr / Jellyseerr family) is Next.js + TypeScript. <strong>Homarr</strong> &mdash; also Next.js &mdash; is the dashboard you see at the QFlix root URL.
+          <strong>Tdarr</strong> wraps FFmpeg with a Node orchestrator and a worker-node model (&ldquo;servers&rdquo; + &ldquo;nodes&rdquo;). <strong>Audiobookshelf</strong> is Node + Vue with surprisingly good iOS / Android apps for a self-hosted project. <strong>Seerr</strong> (the Overseerr / Jellyseerr family) is Next.js + TypeScript. <strong>qflix-dash</strong> &mdash; SvelteKit on the Node adapter &mdash; is the dashboard you see at the QFlix root URL. (<strong>Homarr</strong>, also Next.js, is still installed but no longer serves the public board.)
         </p>
       </article>
 
@@ -1284,9 +1284,9 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
       </article>
 
       <article class="card tut" id="q-tech-ai" data-tags="ai gemini google llm tmdb api newsletter recommendation jinja2">
-        <h3>The AI bit &mdash; Google Gemini, TMDB <a class="qhash" href="#q-tech-ai">#</a></h3>
+        <h3>The AI bit that was &mdash; Google Gemini (retired), TMDB <a class="qhash" href="#q-tech-ai">#</a></h3>
         <p>
-          The Monday newsletter's <em>AI Picks</em> section calls <strong>Google Gemini</strong> with a prompt like &ldquo;here's what's in the library and what was recently added &mdash; recommend three under-watched titles in the &lsquo;if you liked X, try Y&rsquo; format.&rdquo; If Gemini rate-limits, the section is gracefully omitted; the rest of the email still ships.
+          The Monday newsletter used to run an <em>AI Picks</em> section that called <strong>Google Gemini</strong> with a prompt like &ldquo;here's what's in the library and what was recently added &mdash; recommend three under-watched titles in the &lsquo;if you liked X, try Y&rsquo; format.&rdquo; Gemini's free tier started returning <code>429 limit:0</code> on every run, so the section was retired 2026-06-27 and replaced by the &ldquo;Behind the scenes&rdquo; recap built from that week's GitHub commits (see &ldquo;What is the Monday newsletter&rdquo; above).
         </p>
         <p>
           <strong>TMDB</strong> (The Movie Database, community-driven, 2008) is the canonical metadata source for everything visual &mdash; Seerr searches against it, Sonarr / Radarr enrich grabs with it, the newsletter pulls thumbnails from its image CDN. Free for non-commercial use, and the data quality genuinely embarrasses some commercial alternatives.

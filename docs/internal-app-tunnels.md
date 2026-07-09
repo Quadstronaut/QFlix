@@ -18,7 +18,7 @@ individual commands below.
 |---------|-------------|-------------------------|
 | Plex | `https://<fqdn>/web/` (Plex's own SSO) | direct, no admin tunnel |
 | Seerr (user requests) | `https://<fqdn>/seerr/` (path) or `https://seerr-<user>.<fqdn>/` (subdomain) | n/a — users self-auth |
-| Homarr (public board) | `https://<fqdn>/` (root redirect) | `https://<fqdn>/board/private` (htpasswd) |
+| qflix-dash (public board) | `https://<fqdn>/` (root redirect) | `https://<fqdn>/board/private` (htpasswd) |
 | Tautulli (read-only stats) | `https://<fqdn>/tautulli/` | n/a |
 | Listmonk (campaign archive) | `https://<fqdn>/listmonk/campaign/<uuid>` | tunnel: `localhost:42014` |
 | Kuma (public status page) | `https://<fqdn>/status/manitoba` | `localhost:42005` |
@@ -47,7 +47,6 @@ Then open `http://localhost:<local>/` in a browser.
 | Bazarr 2 (anime; internal-only — no nginx proxy) | 17032 | `ssh -L 17032:127.0.0.1:17032 quadstronaut@<fqdn>` — bare-Python install under `~/.apps/bazarr2/` |
 | qBittorrent | 17041 | `ssh -L 17041:127.0.0.1:17041 quadstronaut@<fqdn>` |
 | SABnzbd (Usenet DL client) | 17007 | `ssh -L 17007:127.0.0.1:17007 quadstronaut@<fqdn>` — then `http://localhost:17007/sabnzbd/`. The *arr reach it at `172.17.0.1:17007` (Docker bridge), not loopback. |
-| Maintainerr | 42007 | `ssh -L 42007:127.0.0.1:42007 quadstronaut@<fqdn>` (start service first: `app-maintainerr start`) |
 | Tdarr | 42018 | `ssh -L 42018:127.0.0.1:42018 quadstronaut@<fqdn>` |
 | Uptime Kuma admin | 42005 | `ssh -L 42005:127.0.0.1:42005 quadstronaut@<fqdn>` |
 | Tautulli (also public) | 17014 | `ssh -L 17014:127.0.0.1:17014 quadstronaut@<fqdn>` |
@@ -65,18 +64,13 @@ casual remote-control use — it's behind htpasswd but its OWN auth is also
 required (qBit user/password). The tunnel form (`localhost:17041`) is the
 no-htpasswd path that the *arr stack uses internally for API calls.
 
-## Maintainerr caveat
+## Maintainerr caveat (retired)
 
-Maintainerr is **running** as a UCC-managed app (port 42007), reachable
-both via tunnel (`localhost:42007`) AND via the per-app UCC subdomain
-`https://maintainerr-quadstronaut.<fqdn>/` (htpasswd-gated). It's
-listed as INTERNAL in the audit because the right place for admin
-work is the tunnel — the per-app subdomain is an Ultra.cc artifact
-that's harder to lock down.
-
-(A stale comment in `manitoba-tunnel.ps1` claimed it was "stopped";
-that was inaccurate and has been corrected. Maintainerr has been
-running continuously.)
+Maintainerr was **uninstalled 2026-06-25** (its subdomain now 502s) and is
+no longer running, tunneled, or UCC-managed on port 42007. Retention
+duties passed to `scripts/maint/qflix-reaper.py`, a daily-timer script with
+no admin UI — nothing to tunnel to. The row and `app-maintainerr start`
+instruction that used to live here are gone; don't follow them.
 
 ## How the permanent tunnel daemon picks ports
 

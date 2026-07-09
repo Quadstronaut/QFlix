@@ -10,8 +10,8 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-51%2F51_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-34_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-48%2F48_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-35_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-49%2F49_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -39,9 +39,9 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 
 | Surface | Count | State |
 |---|---:|---|
-| Apps in manifest (`manifest/apps.yaml`) | **34** | 19 UCC · 5 systemd · 9 cron · 1 library |
+| Apps in manifest (`manifest/apps.yaml`) | **35** | 19 UCC · 6 systemd · 9 cron · 1 library |
 | End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **13** | movie · anime · mobile-ux · qbit-stall · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link · quota |
-| Kuma push monitors (manitoba-owned) | **48** | 34 manifest apps + 13 canaries + 1 daemon self-heartbeat, all reporting continuously (48/48 declared; SABnzbd added 2026-06-26). Plus the self-pushed "QFlix Reaper" monitor and 4 external (3 Quadstronix nodes + 1 workstation collector); external PUSH tokens self-heal across `bootstrap-kuma-monitors.py` runs as of 2026-05-22. |
+| Kuma push monitors (manitoba-owned) | **49** | 35 manifest apps + 13 canaries + 1 daemon self-heartbeat, all reporting continuously (49/49 declared; SABnzbd added 2026-06-26). Plus the self-pushed "QFlix Reaper" monitor and 4 external (3 Quadstronix nodes + 1 workstation collector); external PUSH tokens self-heal across `bootstrap-kuma-monitors.py` runs as of 2026-05-22. |
 | Cron + systemd timers | **14+** | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **650+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -95,7 +95,7 @@ flowchart LR
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 47 push monitors)]:::kuma
+  kuma[(Uptime Kuma<br/>isolated netns · 49 push monitors)]:::kuma
   discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex
@@ -185,7 +185,7 @@ flowchart LR
   recovery -->|lifecycle.start ≤3 attempts| status
   recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>47 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>49 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
   C3[Canary plex-transcoder · 10min]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K
@@ -196,7 +196,7 @@ flowchart LR
   K -->|status page| public[/HTTPS /status/manitoba/]
 ```
 
-Each canary asserts a whole pipeline, not just liveness. Mobile-UX renders the public Homarr board and checks HTML size + the `/` → board redirect. Levels `error` and `critical` add the operator user-id from `secrets/discord-operator.id` as a `<@id>` mention in the Discord payload so the operator gets a push notification, not just an embed.
+Each canary asserts a whole pipeline, not just liveness. Mobile-UX renders the public qflix-dash board and checks HTML size + the `/` → board redirect. Levels `error` and `critical` add the operator user-id from `secrets/discord-operator.id` as a `<@id>` mention in the Discord payload so the operator gets a push notification, not just an embed.
 
 > [!NOTE]
 > **Coverage is comprehensive** as of 2026-05-11 — every app in `manifest/apps.yaml` has a Kuma push monitor and reports continuously. `health.py` supports six probe kinds: `http_api`, `http_root` (both with optional `hostname` override for Docker-bridge-only services), `systemd_only`, `port_listen`, `import_check` (tilde-expanded), and `process_pattern` (pgrep-backed for raw processes like `unpackerr` and the Postgres `checkpointer` subprocess).
@@ -359,7 +359,7 @@ The pusher dispatches on `class` for both lifecycle ops and probe selection.
 ## Repo layout
 
 ```text
-manifest/apps.yaml           # 34 apps + 13 canaries — single source of truth
+manifest/apps.yaml           # 35 apps + 13 canaries — single source of truth
 versions.env                 # pinned versions (Tdarr only — pin policy lifted 2026-05-09)
 inventory.md                 # live snapshot of every artifact on the seedbox
 Tuesday.md                   # design doc — extending Mon window to systemd apps
@@ -432,7 +432,7 @@ QFlix runs unattended most of the week. The things worth knowing if you're readi
 | Plex | `https://<fqdn>/web/` | Plex SSO |
 | Seerr (requests) | `https://<fqdn>/seerr/` | Plex SSO |
 | FAQ + tutorial | `https://<fqdn>/faq/` | none |
-| Homarr (public board) | `https://<fqdn>/` | none |
+| qflix-dash (public board) | `https://<fqdn>/` | none |
 | Tautulli (read-only stats) | `https://<fqdn>/tautulli/` | none |
 | Audiobookshelf | `https://audiobookshelf-<user>.<domain>/` | htpasswd |
 | Calibre-Web · Kavita · Komga · Listmonk archive | `https://<fqdn>/<slug>/` | per-app login or none |
