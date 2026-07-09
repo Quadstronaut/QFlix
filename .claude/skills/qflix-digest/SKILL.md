@@ -84,16 +84,62 @@ or care about `GOMAXPROCS`, `*arr`, or `vlogs`.
    If `newsletter-digest` does not exist yet (first ever run), create it as an
    **orphan** branch containing only `digest/latest.json`, then push it.
 
-4. **Verify** the push succeeded and the raw URL serves the new JSON:
+4. **VERIFY-AFTER-PUSH (mandatory).** After the `git push origin
+   newsletter-digest` above, re-fetch the raw URL and assert `week_of`
+   equals today (UTC):
    ```bash
-   curl -fsS "https://raw.githubusercontent.com/Quadstronaut/QFlix/newsletter-digest/digest/latest.json" | head
+   TODAY=$(date -u +%Y-%m-%d)
+   LIVE=$(curl -fsS "https://raw.githubusercontent.com/Quadstronaut/QFlix/newsletter-digest/digest/latest.json")
+   LIVE_WEEK_OF=$(printf '%s' "$LIVE" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("week_of",""))')
+   if [ "$LIVE_WEEK_OF" != "$TODAY" ]; then
+     echo "VERIFY-AFTER-PUSH FAILED: live week_of='$LIVE_WEEK_OF' expected '$TODAY'" >&2
+     exit 1   # see FAIL-LOUD below — this IS a run failure, not a soft warning
+   fi
    ```
-   Confirm `week_of` is today. Done — the newsletter will pick it up at 15:00 UTC.
+   A `curl` failure (network/CDN, branch didn't actually update, GitHub raw
+   caching lag) is **equally** a VERIFY-AFTER-PUSH failure — treat any
+   non-zero `curl` exit or a `week_of` mismatch as a RUN FAILURE, not
+   something to shrug off. This closes the gap the pre-hardening version of
+   this step only soft-confirmed ("Confirm `week_of` is today. Done.") —
+   the 2026-07-06 miss (routine fired per `last_fired_at`, produced no
+   commit) went undetected specifically because nothing asserted this step
+   actually succeeded.
+
+5. **FAIL-LOUD (mandatory).** On ANY failure in this run — session/model
+   couldn't initialize, `git push` auth/permission error, or the
+   VERIFY-AFTER-PUSH mismatch/failure above — send an operator alert via
+   the routine's Gmail MCP:
+   - Subject: `QFlix digest publish FAILED <YYYY-MM-DD>` (today, UTC)
+   - Body: the captured error (git/curl output, exception text, or
+     "session could not initialize" if the failure is that early)
+
+   This exists because every prior failure mode here was **silent**: a
+   cloud-session failure produces no commit and (before this hardening) no
+   signal anywhere. The box-side canary
+   (`scripts/canaries/newsletter-digest-stale.sh`) is the durable backstop
+   that catches a miss regardless of whether this step itself ran — it
+   independently re-checks freshness at Monday send time — but this
+   Gmail alert gets the failure to the operator ~40min-1h earlier, while
+   there's still time to manually re-run this skill before the 15:00 UTC
+   send.
+
+Done — the newsletter will pick up the fresh blurb at 15:00 UTC.
 
 ## Notes
 
 - The repo is public; reading commits needs no token. **Pushing** the branch
   needs write access — the scheduled cloud routine must run with the repo
-  connected for write. If push fails, the newsletter still sends (fallback).
+  connected for write. If push fails (or VERIFY-AFTER-PUSH fails), the
+  newsletter still sends via its deterministic fallback — see FAIL-LOUD
+  above for how the operator finds out this happened.
 - Keep `digest/latest.json` to a single current week. History lives in the
   branch's git log; the newsletter only ever reads the latest.
+- Cloud-vs-box: blurb generation stays HERE, in the cloud routine — the
+  seedbox has no Claude access, and the box is designed to run with the
+  operator's PC off. What moved to the box is OBSERVABILITY: the canary
+  above watches the *outcome* (is the branch fresh at send time?)
+  independent of whether this routine ran, fired-but-failed, or was never
+  invoked at all — the two are complementary, not redundant: this
+  step's Gmail alert is faster when it fires; the canary is the guarantee
+  that catches every failure mode, including ones where this routine
+  didn't run far enough to send its own alert.
