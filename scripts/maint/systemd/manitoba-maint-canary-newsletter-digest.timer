@@ -1,0 +1,25 @@
+[Unit]
+Description=Manitoba canary — newsletter digest freshness (Mon 14:20/14:50/15:20 UTC)
+
+[Timer]
+# Three passes bracketing the Monday 15:00 UTC newsletter send. The
+# script's own Monday-14:15-24:00 UTC window gate is what actually
+# enforces freshness (STAGE=digest-stale/-missing/etc only fire inside
+# that window); firing 3x just varies how much runway is left to react:
+#   14:20 — pre-send early warning: ~40min before send, enough time for
+#           the operator to manually re-run the qflix-digest routine if
+#           the 14:00 UTC firing was dark.
+#   14:50 — pre-send last call.
+#   15:20 — post-send confirmation (digest should be fresh by now
+#           regardless of the earlier two firings).
+# Persistent=true is safe here specifically because of the script's
+# window gate: a missed firing that catches up outside Mon 14:15-24:00
+# UTC is a silent no-op (not-in-eval-window), never a stale false alarm.
+OnCalendar=Mon *-*-* 14:20:00 UTC
+OnCalendar=Mon *-*-* 14:50:00 UTC
+OnCalendar=Mon *-*-* 15:20:00 UTC
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
