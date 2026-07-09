@@ -21,10 +21,14 @@ APPS_YAML = os.path.join(REPO_ROOT, "manifest", "apps.yaml")
 README = os.path.join(REPO_ROOT, "README.md")
 INVENTORY = os.path.join(REPO_ROOT, "inventory.md")
 
-# The pusher's own "Manitoba Pusher" self-heartbeat is a real Kuma monitor that
-# lives outside the manifest's app/canary sets (it has nothing to probe but
-# itself). Counted in every "manitoba monitors" total in the docs.
-HEARTBEAT_MONITORS = 1
+# Real Kuma monitors that live OUTSIDE the manifest's app/canary sets but are
+# manitoba-owned and counted in every "manitoba monitors" total in the docs.
+# bootstrap-kuma-monitors.py auto-injects all three; `manitoba-maint kuma audit`
+# counts them (matched), so the docs must too to reflect the LIVE monitor set:
+#   - "Manitoba Pusher"  — the pusher's own self-heartbeat (step 0b)
+#   - "QFlix Fleet"      — the fleet-aggregate storm monitor (step 0c)
+#   - "QFlix Reaper"     — the reaper's self-pushed daily monitor
+NON_MANIFEST_MONITORS = 3
 
 
 def _read(path):
@@ -36,7 +40,7 @@ def _expected():
     m = load(APPS_YAML)
     apps = list(m.apps())
     canaries = list(m.canaries())
-    manitoba = len(m.all_kuma_monitor_names()) + HEARTBEAT_MONITORS
+    manitoba = len(m.all_kuma_monitor_names()) + NON_MANIFEST_MONITORS
     total = manitoba + len(m.external_monitors())
     return {
         "apps": len(apps),

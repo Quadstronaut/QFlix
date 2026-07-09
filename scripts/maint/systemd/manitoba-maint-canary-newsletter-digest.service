@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — newsletter digest freshness (Monday send-window)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push newsletter-digest
+StandardOutput=journal
+StandardError=journal
