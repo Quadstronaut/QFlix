@@ -6,10 +6,10 @@
 repo manifest. Where the manifest, docs, and live seedbox disagree, the
 live seedbox wins and this file records both.
 
-**Counts (re-verified live 2026-06-24 full-stack audit; prior baseline 2026-05-16):**
-- **35 apps in `manifest/apps.yaml`** + 13 canaries (movie, anime, mobile-ux, vlogs-stall, qbit-stall, kometa-libraries, stale-log-watchdog, kometa-deploy-drift, prowlarr-indexer-health, hardlink-integrity, plex-transcoder, tautulli-plex-link, quota). 2026-06-24: **33/33 apps UP, 13/13 canaries green** (prowlarr-indexer-health cleared by disabling the dead "TorrentDownload" indexer).
-- **53 Kuma monitors** total: **49 manitoba** (35 manifest-app monitors + 13 canary monitors + 1 `Manitoba Pusher` daemon-self-heartbeat) + 4 external (`Quadstronix`, `Quadstronix Node 1`, `Quadstronix Node 2`, `QFlix Collect (workstation)`). Plus the self-pushed **`QFlix Reaper`** monitor (orphan to the manifest — `manitoba-maint kuma audit` flags it; add to manifest or external list to clear). Every app + all canaries report continuously; `Qflix Quality Fallback` is live (bootstrapped, ok as of 2026-06-24).
-- All 49 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
+**Counts (re-verified live 2026-07-08 against the seedbox — `manifest/apps.yaml`, `manitoba-maint status`, `manitoba-maint kuma audit`, crontab; prior full-stack audit 2026-06-24):**
+- **35 apps in `manifest/apps.yaml`** (19 UCC · 6 systemd · 9 cron · 1 library) + 13 canaries (movie, anime, mobile-ux, vlogs-stall, qbit-stall, kometa-libraries, stale-log-watchdog, kometa-deploy-drift, prowlarr-indexer-health, hardlink-integrity, plex-transcoder, tautulli-plex-link, quota). 2026-07-08: **35/35 apps UP, 13/13 canaries green**.
+- **55 Kuma monitors** total: **51 manitoba** (35 app monitors + 13 canary monitors + 1 `Manitoba Pusher` self-heartbeat + 1 fleet-aggregate + 1 `QFlix Reaper`) + 4 external (`Quadstronix`, `Quadstronix Node 1`, `Quadstronix Node 2`, `QFlix Collect (workstation)`). `manitoba-maint kuma audit` shows **no drift** as of 2026-07-08 (manifest 51 = matched 51; `Canary Kometa Deploy-Drift` + `QFlix Reaper` were bootstrapped into Kuma, closing the prior 2-monitor gap). Every app + all canaries report continuously.
+- All 51 manitoba monitors wired to both notification channels (`Mission Control - QFlix` Discord + `Manitoba auto-heal webhook`). No silent-failure drift.
 - Notification channel: single Discord webhook + operator @ping (user-id read from `secrets/discord-operator.id`) on `error` / `critical` levels via `scripts/maint/lib/notify.py`.
 - Last full smoke (2026-06-24): **51 pass / 4 fail / 1 skip** of 56 — all 4 fails are non-faults: the prowlarr canary that was mid-clear, a stale `Canary Deletion` monitor check (fixed in smoke-test.sh this audit), an external-monitor drift false-positive, and the >30-day release-tag-age nag.
 
@@ -52,6 +52,7 @@ live seedbox wins and this file records both.
 | listmonk.service | systemd | yes | Newsletter / mailing list manager | NO | Public archive + Internal admin | public `https://…/listmonk/campaign/<uuid>` · admin tunnel `localhost:42014` (canonical probe port) | yes | yes (heartbeat-listmonk cron + pusher) | 2 |  |
 | tdarr-server.service | systemd | yes | Transcoding orchestrator | NO | Internal | tunnel `http://localhost:42018/` | yes | yes (heartbeat-tdarr-server cron + pusher) | 2 | Pinned to v2.17.01 (GLIBC). Transcoding LIVE: 3 libraries (Movies/TV/Anime) `processLibrary=True` running the `qflix-direct-play-fix` flow (Phase 30 go-live, PR #65). |
 | tdarr-node.service | systemd | yes | Transcoding worker | NO | Internal | no UI | yes | yes (heartbeat-tdarr-node cron + pusher) | 2 | `kuma_monitor: "Tdarr Node"` — systemd_only probe. Monitor added 2026-05-11. |
+| qflix-dash.service | systemd | yes | Public dashboard (SvelteKit board — the QFlix homepage) | NO | Public | root `https://quadstronaut.seedbox.example.com/` · loopback `127.0.0.1:42020` | yes | yes (pusher) | 2 | `kuma_monitor: "QFlix Dashboard"` — http_root probe on `/healthz`. **Replaced Homarr as the public root** (cutover live 2026-07-08; Homarr still installed but demoted — see row A/homarr). adapter-node; requires `NODE_OPTIONS=--disable-wasm-trap-handler` (node-ultracc-wasm-fix). Installed by `scripts/configure/90-qflix-dash-install.sh`. |
 
 ## C. Manifest — cron/timer-driven apps
 
@@ -113,8 +114,8 @@ All three prior drift entries (unpackerr, upgradinatorr, postgres) added to `man
 | listmonk-sync.py | cron 04:00 daily | scheduled | Plex friends + Seerr → Listmonk subscribers | NO | n/a | n/a | yes | n/a (idempotent) | (silent) | Logs to `~/.apps/listmonk/logs/sync.log`. |
 | arr-housekeeping.py --missing | cron 04:00 mostdays | scheduled | Find/grab missing episodes | NO | n/a | n/a | yes | n/a | (silent) | Excludes Mondays (maint window). |
 | arr-housekeeping.py --unstick | cron :15 hourly | scheduled | Bump stuck-on-import queue items | NO | n/a | n/a | n/a | n/a | (silent) |  |
-| kill_stream.sh --max 4 | cron every-minute | yes | Cap concurrent Plex streams at 4 per user | NO | n/a | n/a | n/a | n/a | (silent) | Pairs with stream_stats.sh. |
-| stream_stats.sh | cron every-minute | yes | Log Plex stream stats → JSON | NO | n/a | `~/.apps/stream-stats/state.json` | n/a | n/a | (silent) | Smoke #13h checks freshness <180s. |
+| kill_stream.sh --max 4 | cron every-minute | yes | Cap concurrent Plex streams at 4 per user | NO | n/a | n/a | n/a | n/a | (silent) | Pairs with stream_stats.sh. Cron provisioned (idempotent) by `scripts/configure/59a-plex-stream-crons-install.sh`; cap = `KS_MAX` (default 4). |
+| stream_stats.sh | cron every-minute | yes | Log Plex stream stats → JSON | NO | n/a | `~/.apps/stream-stats/state.json` | n/a | n/a | (silent) | Smoke #13h checks freshness <180s. Cron provisioned by `scripts/configure/59a-plex-stream-crons-install.sh`. |
 | prune-text-libraries.sh | cron 04:00 daily | scheduled | Prune ebook/manga/audiobook >365d | NO | n/a | n/a | yes | n/a | references Notifiarr in comment (stale); actual action is delete+rescan |  |
 | post-import/upgradinatorr.sh | systemd-triggered (oneshot) | invoked weekly | called by upgradinatorr.timer (Section E) | NO | n/a | n/a | yes | n/a | (silent) |  |
 | post-import/library-rescan-*.sh | manual | invoked by *arr custom scripts | rescan Komga/Kavita/Calibre/AudioBS/Comics | NO | n/a | n/a | n/a | n/a | n/a |  |

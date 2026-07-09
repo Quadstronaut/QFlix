@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-07-08 — Self-healing hardening, stream cap, docs reconciled to live
+
+**qBittorrent WebUI auto-heal fixed (d8d82bf).** A host maintenance reboot left
+qBit's WebUI unable to bind its port; auto-heal couldn't recover it because
+recovery ran `start` (a no-op on a running-but-degraded app) instead of
+`restart`, and the permanent-failure latch never re-armed. Recovery now
+restarts, and the latch auto-re-arms after a cooldown so a cleared transient
+self-heals. Added a boot-time TCP-listener snapshot (`boot-listeners-snapshot.sh`)
+to identify a port squatter next reboot, and widened qBittorrent's recovery
+backoff (5c5d4de).
+
+**Stream cap raised to 4 per member (4865aba).** The `kill_stream` and
+`stream_stats` every-minute crons are now reproducibly provisioned by
+`scripts/configure/59a-plex-stream-crons-install.sh` (previously manual crontab
+entries the repo couldn't rebuild).
+
+**Documentation reconciled against the live environment** (council-v2 audit +
+follow-up). Homarr → qflix-dash (public dashboard cutover is live), Maintainerr →
+qflix-reaper, Gemini "AI Picks" retired (the "Behind the scenes" blurb is written
+by a scheduled Claude cloud routine, with a deterministic commit-recap fallback;
+a "This week's tune-ups" line reads `last-upgrade.json` on blurb-less weeks).
+Counts corrected across wiki/FAQ/README/inventory (35 apps, 13 canaries, 51
+manitoba Kuma monitors), the FAQ stream-cap prose fixed (per-member, not a global
+total), and the deployed newsletter systemd unit's description de-Gemini'd.
+
 ## 2026-06-27 — Newsletter "Behind the scenes" + autonomous digest; Gemini retired; repo public
 
 **Newsletter gains a "Behind the scenes" section.** The weekly digest
