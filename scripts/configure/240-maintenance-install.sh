@@ -138,6 +138,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-quota.timer \
     scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.service \
     scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.timer \
+    scripts/maint/systemd/manitoba-maint-canary-newsletter-digest.service \
+    scripts/maint/systemd/manitoba-maint-canary-newsletter-digest.timer \
     scripts/maint/systemd/manitoba-maint-cp-upgrade.service \
     scripts/maint/systemd/manitoba-maint-arr-audit.service \
     scripts/maint/systemd/manitoba-maint-arr-audit.timer \
@@ -165,6 +167,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/plex-transcoder.sh \
     scripts/canaries/quota.sh \
     scripts/canaries/tautulli-plex-link.sh \
+    scripts/canaries/newsletter-digest-stale.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
@@ -354,6 +357,8 @@ for unit in \
     manitoba-maint-canary-quota.timer \
     manitoba-maint-canary-tautulli-plex-link.service \
     manitoba-maint-canary-tautulli-plex-link.timer \
+    manitoba-maint-canary-newsletter-digest.service \
+    manitoba-maint-canary-newsletter-digest.timer \
     manitoba-maint-cp-upgrade.service \
     manitoba-maint-arr-audit.service \
     manitoba-maint-arr-audit.timer \
@@ -425,6 +430,13 @@ systemctl --user enable --now manitoba-maint-canary-quota.timer
 # IP" — the 2026-05-20 re-IP class the app monitor stayed green through.
 # Read-only probe; never restarts anything.
 systemctl --user enable --now manitoba-maint-canary-tautulli-plex-link.timer
+# newsletter-digest: fires 3x Monday 14:20/14:50/15:20 UTC bracketing the
+# 15:00 UTC send. Freshness is enforced only inside the script's own
+# Mon-14:15-24:00 UTC window (Persistent=true is safe: a catch-up firing
+# outside that window is a silent not-in-eval-window no-op). Detects a
+# stale/absent digest.json — the silent-fallback condition changelog.py
+# degrades through without ever raising.
+systemctl --user enable --now manitoba-maint-canary-newsletter-digest.timer
 # (UCC app-upgrade sweep timer retired 2026-06-28 — now a step inside the window
 # orchestrator; see the disable/remove right after daemon-reload above.)
 # Weekly *arr stack audit — Sun 04:00 UTC. Read-only; writes markdown
@@ -565,7 +577,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"

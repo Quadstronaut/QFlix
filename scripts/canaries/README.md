@@ -35,6 +35,7 @@ request id and skips the cleanup step.
 - `hardlink-integrity.sh` — 20 most-recently-modified library files have linkcount ≥ 2 (= *arr import used hardlink mode; protects against silent storage-doubling regression)
 - `plex-transcoder.sh`   — Plex `/transcode/sessions` + `/:/prefs` respond <10s with 2xx (catches transcoder daemon stall while main `/identity` still says 200)
 - `tautulli-plex-link.sh` — Tautulli's CONFIGURED `pms_ip:port` is a live Plex `/identity` (catches "Tautulli web up but pinned to a dead/old Plex address" — the 2026-05-20 re-IP class the app monitor stayed green through)
+- `newsletter-digest-stale.sh` — the weekly "Behind the scenes" digest (`digest/latest.json` on the `newsletter-digest` branch) is fresh per the newsletter's own `_is_fresh()` rule, checked ONLY inside the Monday 14:15-24:00 UTC send window (fires 3x: 14:20/14:50/15:20 UTC). Detects the silent override→fallback degradation the newsletter itself never surfaces. Test overrides: `QFLIX_DIGEST_CANARY_NOW` / `_URL` / `_FORCE_WINDOW` (see the script header for the full env var table).
 
 ## Stage labels (failure messages on stderr → Kuma `msg=`)
 
@@ -52,8 +53,9 @@ request id and skips the cleanup step.
 - `log-stale` / `log-missing-<app>` — stale-log-watchdog: a timer-driven app's log file mtime exceeds its expected cadence, or the log is missing entirely
 - `library-empty` / `hardlink-regression` — hardlink-integrity: no sampleable files, or ≥50% of recent imports have linkcount=1
 - `plex-up-fail` / `transcode-api-fail` / `prefs-api-fail` — plex-transcoder: Plex /identity non-200, or transcode/prefs endpoint hung or non-200
+- `digest-stale` / `digest-missing` / `digest-malformed` / `digest-empty` — newsletter-digest-stale: the digest branch's `week_of` isn't fresh at Monday send time, the file/branch 404s or is absent, the JSON fails to parse (or `week_of` is missing/non-string), or `html` is blank. Only evaluated inside the Monday 14:15-24:00 UTC send window — outside it, and on a pure transport failure after 3 retries, the canary passes (`not-in-eval-window` / `digest-check-inconclusive`) rather than alerting.
 
 ## Exit codes
 
-- 0 — pass; stdout has the `PASS: ...` line that Kuma stores as `msg=`
+- 0 — pass; stdout has the `PASS: ...` line (or, for newsletter-digest-stale, `digest-fresh ...` / `not-in-eval-window ...` / `digest-check-inconclusive ...`) that Kuma stores as `msg=`
 - non-zero — fail; stderr's `STAGE=... msg=...` line becomes Kuma `msg=`
