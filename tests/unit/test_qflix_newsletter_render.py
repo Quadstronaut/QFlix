@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from qflix_newsletter.ai import AiPick
 from qflix_newsletter.render import (
     build_email_context,
     build_subject,
@@ -130,12 +129,10 @@ def test_build_email_context_smoke():
             episode=1,
         ),
     ]
-    ai = [AiPick(if_you_liked="Dune", try_this="Foundation", blurb="Sweeping sci-fi.")]
-
     ctx = build_email_context(
         recent=items,
         coming=coming,
-        ai_picks=ai,
+        behind_scenes=None,
         library_stats={"total_items": 5000, "sections": [{"name": "Movies", "count": 3000}]},
         public_host="seedbox.example.com",
         kuma_public_host="kuma.seedbox.example.com",
@@ -148,7 +145,6 @@ def test_build_email_context_smoke():
     assert {m.title for m in ctx.anime_movies} == {"Spirited Away"}
     assert {s.show_title for s in ctx.anime_shows} == {"Frieren"}
     assert len(ctx.coming_soon) == 2
-    assert len(ctx.ai_picks) == 1
     assert ctx.subject.startswith("Qflix · this week: Dune: Part Two")
     assert ctx.week_label == "May 10, 2026"
 
@@ -157,7 +153,7 @@ def test_render_html_produces_a_full_email():
     ctx = build_email_context(
         recent=[_movie("Dune: Part Two", rating=8.7)],
         coming=[],
-        ai_picks=[],
+        behind_scenes=None,
         library_stats={"total_items": 1, "sections": []},
         public_host="seedbox.example.com",
         kuma_public_host="kuma.seedbox.example.com",
@@ -176,7 +172,7 @@ def test_render_handles_empty_inputs_without_crashing():
     ctx = build_email_context(
         recent=[],
         coming=[],
-        ai_picks=[],
+        behind_scenes=None,
         library_stats={"total_items": 0, "sections": []},
         public_host="seedbox.example.com",
         kuma_public_host="kuma.seedbox.example.com",
@@ -215,7 +211,8 @@ def test_render_pipeline_rewrites_images_to_local_cache(tmp_path):
     ]), patch("qflix_newsletter.main.enrich_with_tmdb", side_effect=lambda cfg, items: items), \
          patch("qflix_newsletter.main.fetch_all_calendars", return_value=[]), \
          patch("qflix_newsletter.main.fetch_libraries_table", return_value=[]), \
-         patch("qflix_newsletter.main.fetch_ai_picks", return_value=[]), \
+         patch("qflix_newsletter.main.fetch_behind_scenes", return_value=None), \
+         patch("qflix_newsletter.main.fetch_upgrades", return_value=None), \
          patch("qflix_newsletter.posters.requests.Session") as mock_sess_cls, \
          patch.dict("os.environ", {"QFLIX_POSTER_CACHE_DIR": str(cache_dir)}):
 
