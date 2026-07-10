@@ -1,0 +1,16 @@
+[Unit]
+Description=QFlix hourly farm collector — snapshot + stale-detect + autonomous unstick + Kuma heartbeat (migrated off the workstation 2026-07-09)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/scripts/maint/qflix-collect.py
+Environment=PYTHONUNBUFFERED=1
+# collect.py + logs.py can run long against a busy qBit/*arr set; give the
+# oneshot headroom so systemd doesn't TERM it mid-collect.
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

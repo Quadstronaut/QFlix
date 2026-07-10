@@ -1,4 +1,15 @@
 <#
+.SUPERSEDED
+  RETIRED 2026-07-09 — migrated to the always-on seedbox as
+  scripts/maint/qflix-collect.py (systemd-user `qflix-collect.timer`, hourly).
+  The Windows Task `\QFlix\Hourly Collect` that ran this is DISABLED. Reason:
+  workstation-resident collection false-redded the customer-facing Kuma monitor
+  "QFlix Collect (workstation)" whenever the PC was off, and silently stopped
+  the autonomous unstick loop — the same autonomy-mandate violation that moved
+  VLogs ingest to the box on 2026-05-14. Kept in-tree for history / reference;
+  do not re-enable the task without also stopping the box timer (double-push +
+  double-unstick otherwise).
+
 .SYNOPSIS
   Hourly QFlix farm snapshot collector. Run by Windows Task Scheduler.
 
