@@ -23,7 +23,7 @@ def _config_stub(tmp_path) -> Config:
         radarr=ArrEndpoint("http://127.0.0.1:42011/radarr", "r-key"),
         radarr_anime=None,
         tmdb_read_token=None,
-        gemini_api_key=None,
+        github_repo="Quadstronaut/QFlix",
         listmonk_base_url="http://127.0.0.1:42014",
         listmonk_api_user="u",
         listmonk_api_token="tok",
