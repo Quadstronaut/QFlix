@@ -21,7 +21,7 @@ def _config(tmp_path: Path) -> Config:
         tautulli_url="http://127.0.0.1/", tautulli_key="t",
         sonarr=ArrEndpoint("http://127.0.0.1/", "s"), sonarr_anime=None,
         radarr=ArrEndpoint("http://127.0.0.1/", "r"), radarr_anime=None,
-        tmdb_read_token=None, gemini_api_key=None,
+        tmdb_read_token=None, github_repo="Quadstronaut/QFlix",
         listmonk_base_url="http://127.0.0.1:42014",
         listmonk_api_user="u", listmonk_api_token="tok",
         listmonk_list_id=1, listmonk_template_id=None,
