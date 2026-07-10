@@ -103,6 +103,9 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/ucc_incident.py \
     scripts/maint/lib/ucc_response.py \
     scripts/maint/prune-app-backups.sh \
+    scripts/maint/qflix-collect.py \
+    scripts/maint/systemd/qflix-collect.service \
+    scripts/maint/systemd/qflix-collect.timer \
     scripts/maint/systemd/manitoba-maint-webhook.service \
     scripts/maint/systemd/manitoba-maint-window.service \
     scripts/maint/systemd/manitoba-maint-window.timer \
@@ -191,6 +194,11 @@ cp -f "$STG"/scripts/maint/flaresolverr-canary.py ~/scripts/maint/flaresolverr-c
 chmod +x ~/scripts/maint/flaresolverr-canary.py
 cp -f "$STG"/scripts/maint/prune-app-backups.sh ~/scripts/maint/prune-app-backups.sh
 chmod +x ~/scripts/maint/prune-app-backups.sh
+# QFlix hourly collector — migrated off the workstation 2026-07-09 so the
+# "QFlix Collect" Kuma dead-man + autonomous unstick loop no longer depend on
+# the operator PC being on (was a customer-visible false red on the status page).
+cp -f "$STG"/scripts/maint/qflix-collect.py ~/scripts/maint/qflix-collect.py
+chmod +x ~/scripts/maint/qflix-collect.py
 # Remove the retired Playwright clicker if a prior install put it in place.
 rm -f ~/scripts/maint/cp_upgrade_clicker.py
 # Remove maint/lib/__init__.py if a prior install put it in place. The 2026-
@@ -366,6 +374,8 @@ for unit in \
     manitoba-maint-ucc-detect.timer \
     manitoba-maint-backup-prune.service \
     manitoba-maint-backup-prune.timer \
+    qflix-collect.service \
+    qflix-collect.timer \
     manitoba-maint-boot-listeners.service; do
   # If the user unit is a symlink pointing back at the source, `cp -f` fails
   # with "are the same file" — the source already IS the live unit. Drop the
@@ -458,6 +468,12 @@ systemctl --user enable --now manitoba-maint-ucc-detect.timer
 # app-manager backups per app in ~/.apps/backup; deletes the rest. --now
 # activates the timer's schedule (does not run an immediate prune).
 systemctl --user enable --now manitoba-maint-backup-prune.timer
+# QFlix hourly collector — snapshot + stale-detect + autonomous unstick + Kuma
+# heartbeat. Migrated off the workstation 2026-07-09 (was Windows Task
+# \QFlix\Hourly Collect, now disabled). Feeds the "QFlix Collect (workstation)"
+# push monitor from the always-on box so a PC-off no longer false-reds the
+# public status page. --now activates the hourly schedule.
+systemctl --user enable --now qflix-collect.timer
 # Boot-time listener snapshot — pulled in by default.target, runs once per boot
 # to log TCP-listener occupancy (identifies a port squatter after a reboot; see
 # memory qbit-webui-boot-bind-race). Plain `enable` (NOT --now): it's a ~3min
