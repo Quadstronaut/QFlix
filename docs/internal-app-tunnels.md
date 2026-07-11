@@ -8,7 +8,7 @@ without subpath rewriting (this is why we couldn't host Listmonk admin
 publicly under `/listmonk/`; same logic applies to most modern admin UIs).
 
 The recommended pattern is the operator's permanent tunnel daemon at
-`~/Documents/GIT/QFlix/scripts/manitoba-tunnel.ps1` — it forwards every
+`~/Documents/GIT/Ultra.cc/QFlix/scripts/manitoba-tunnel.ps1` — it forwards every
 INTERNAL admin port at startup. For ad-hoc single-app tunnels, use the
 individual commands below.
 

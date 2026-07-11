@@ -220,7 +220,7 @@ def test_classify_returns_none_for_healthy_item():
 - [ ] **Step 2: Run failing tests**
 
 ```bash
-cd G:/Documents/GIT/QFlix
+cd G:/Documents/GIT/Ultra.cc/QFlix
 pytest tests/unit/test_arr_housekeeping.py -v
 ```
 
