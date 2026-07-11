@@ -255,7 +255,7 @@ Task properties:
 - **Path:** `\Archangel\QFlix-LLM\`
 - **Name:** `QFlix Random Error Audit`
 - **Trigger:** AtLogOn for current user
-- **Action:** `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "P:\Documents\GIT\QFlix\scripts\local-llm\qflix-rea.ps1"`
+- **Action:** `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "G:\Documents\GIT\Ultra.cc\QFlix\scripts\local-llm\qflix-rea.ps1"`
 - **Settings:**
   - `StartWhenAvailable = $true` (catches missed logons)
   - `MultipleInstancesPolicy = IgnoreNew` (file lock is a belt; this is the suspenders)

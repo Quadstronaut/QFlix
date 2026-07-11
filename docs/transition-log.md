@@ -10,7 +10,7 @@ entry captures: when, what, why, how to reverse. New entries on top.
 **Action:** wrote `docs/internal-app-tunnels.md` cataloguing the
 public/internal split per the kickoff and giving exact `ssh -L` commands
 for every INTERNAL app's admin port. Updated the operator's permanent
-tunnel daemon at `~/Documents/GIT/QFlix/scripts/manitoba-tunnel.ps1`:
+tunnel daemon at `~/Documents/GIT/Ultra.cc/QFlix/scripts/manitoba-tunnel.ps1`:
 removed the now-decom'd conjurr (42015) + newsletterr (42016) +
 jellystat (42008) entries; added qbittorrent (17041) for fast remote
 control; bumped `$CanonicalProbePort` from `42015` (conjurr — gone)
