@@ -24,7 +24,7 @@ The session-launching engineer ran these on 2026-05-11 06:51 CEST. If any fail t
 Deploy the rollback script to the seedbox before launching:
 
 ```bash
-scp /p/Documents/GIT/QFlix/scripts/maint/rollback-buildarr-patches.sh \
+scp /g/Documents/GIT/Ultra.cc/QFlix/scripts/maint/rollback-buildarr-patches.sh \
     quadstronaut@seedbox.example.com:~/scripts/maint/
 ssh quadstronaut@seedbox.example.com 'chmod +x ~/scripts/maint/rollback-buildarr-patches.sh'
 ```
