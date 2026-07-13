@@ -27,7 +27,7 @@ HOME = Path.home()
 
 # slug → routing plan
 # Paths verified against seedbox (manitoba) state — keep in sync when apps move
-# or rotate. homarr has no file log in this layout and is intentionally absent.
+# or rotate. (Homarr was decommissioned 2026-07-13 — replaced by qflix-dash.)
 _FILE_LOGS = {
     "sonarr":          str(HOME / ".apps/sonarr/logs/sonarr.txt"),
     "sonarr2":         str(HOME / ".apps/sonarr2/logs/sonarr.txt"),

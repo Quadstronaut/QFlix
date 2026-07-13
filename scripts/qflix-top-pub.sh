@@ -78,7 +78,6 @@ classify() {
     *listmonk*)                   CL_LABEL=Listmonk; CL_ROLE=Comms;;
     *manitoba-maint*)             CL_LABEL=manitoba-maint; CL_ROLE=Maint;;
     *qflix-dash/build*)           CL_LABEL="QFlix Dash"; CL_ROLE=Web;;
-    *next-server*)                CL_LABEL=Homarr; CL_ROLE=Web;;  # legacy board, being decommissioned
     *dist/index.js*)              CL_LABEL=Seerr; CL_ROLE=Requests;;
     *postgres*)                   CL_LABEL=Postgres; CL_ROLE=Data;;
     *"node index.js"*)            CL_LABEL=Audiobookshelf; CL_ROLE=Books;;  # entry=index.js, CONFIG_PATH=/config

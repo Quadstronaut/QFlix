@@ -21,7 +21,7 @@ back-compat).
 
 | File | Purpose | Source |
 |---|---|---|
-| `htpasswd.password` | Shared admin password (outer Ultra.cc htpasswd + Listmonk + Calibre-Web rotated to match) | Ultra.cc panel (outer htpasswd), operator-captured; consumed by 34-nginx-root-to-homarr.sh + 43-listmonk-install.sh |
+| `htpasswd.password` | Shared admin password (outer Ultra.cc htpasswd + Listmonk + Calibre-Web rotated to match) | Ultra.cc panel (outer htpasswd), operator-captured; consumed by 91-nginx-root-to-dash.sh + 43-listmonk-install.sh |
 | `prowlarr.key` / `.port` / `.urlbase` | Prowlarr API | `~/.apps/prowlarr/config.xml` ApiKey + bootstrap-discover.sh |
 | `sonarr.key` / `sonarr2.key` / `radarr.key` / `radarr2.key` (+ `.port` + `.urlbase` each) | *arr API + listener | bootstrap-discover.sh scrapes config.xml + nginx upstream port |
 | `bazarr.key` / `bazarr2.key` (+ `.port`, `.urlbase`) | Subtitles API | UI / 06-bazarr2.sh |
@@ -31,7 +31,7 @@ back-compat).
 | `nzbgeek.key` / `.url` | NZBgeek Newznab indexer (Usenet search), added directly to Sonarr | operator signup (https://nzbgeek.info); url `https://api.nzbgeek.info` |
 | `seerr.key` / `.port` / `.urlbase` | Seerr API | UI → Settings → General |
 | `plex.token` / `.host` / `.port` | Plex API | https://www.plex.tv/claim or X-Plex-Token from a web session |
-| `plex.direct_host` (optional) | Direct-access Plex hostname for the Homarr tile (Ultra.cc shared boxes route a dedicated direct-IP endpoint). Falls back to `<seedbox.host>/web/` if absent. |
+| `plex.direct_host` (optional) | Direct-access Plex hostname for the dashboard's Plex tile (Ultra.cc shared boxes route a dedicated direct-IP endpoint). Falls back to `<seedbox.host>/web/` if absent. |
 | `tautulli.key` / `.port` | Tautulli API | UI → Settings → Web Interface |
 | `komga.key` / `kavita.key` / `audiobookshelf.key` / `calibre-web.key` (+ `.port` each) | Book/comic stack APIs | Per-app UI |
 | `tmdb.read_token` | TMDB API v4 read token | https://themoviedb.org → API |
