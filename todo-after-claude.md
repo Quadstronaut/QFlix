@@ -8,5 +8,5 @@
 
 ### Other
 * Nothing else outstanding as of 2026-05-16. See `docs/operator-deferred.md`
-  for items that still need human judgment (Homarr TRPCClientError,
-  Notifiarr client daemon, the post-Phase-16 uninstalls).
+  for items that still need human judgment (Notifiarr client daemon,
+  the post-Phase-16 uninstalls). (Homarr decommissioned 2026-07-13.)

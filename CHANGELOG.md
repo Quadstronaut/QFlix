@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-07-13 — Homarr fully decommissioned (killed a 31-alert restart-storm)
+
+**Homarr is gone.** It was superseded as the public root by the qflix-dash
+SvelteKit board on 2026-06-27 and left running only to serve a "QFlix has moved"
+notice. On 2026-07-13 its container died and stayed down; the pusher's auto-heal
+exhausted its 3 `app-homarr restart` attempts and then paged Discord on every
+permanent-failure re-arm — **31 alerts** for an already-retired app.
+
+Full decommission (Maintainerr-decom pattern): Kuma monitor **#39 "Homarr"**
+deleted (off the public status page + no more down-notify); `homarr` removed from
+`manifest/apps.yaml` and the deployed `~/.opt/maint/apps.yaml`, pusher + webhook
+restarted (auto-heal loop stopped); both UCC slots uninstalled (`app-homarr` +
+`app-homarr-upstream`, config backed up to `~/.apps/backup/`); `homarr.{host,port}`
+secrets and the push token purged. Retired the Homarr-only configure scripts
+(`34-nginx-root-to-homarr.sh`, `35-homarr-seed-boards.py`, `46-homarr-add-comms.py`,
+`61-homarr-qflix-theme.py`) and `scripts/qflix-dash/homarr-moved-notice.py`. The
+`mobile-ux` canary was **kept** — it was repointed to the dashboard on 2026-06-27
+and now guards the live homepage. Counts: **34 apps / 51 manitoba Kuma monitors**
+(was 35 / 52). The old `homarr-upstream-<host>` subdomain is now dead (expected —
+uninstall tears down the outer-nginx route).
+
 ## 2026-07-09 — Newsletter digest routine fix + never-silent detection
 
 **The weekly "Behind the scenes" cloud routine had silently stalled.** It fired

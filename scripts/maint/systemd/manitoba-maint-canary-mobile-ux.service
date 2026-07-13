@@ -1,5 +1,5 @@
 [Unit]
-Description=Manitoba canary — mobile-UX (Homarr public board reachability)
+Description=Manitoba canary — mobile-UX (QFlix Dashboard public root reachability)
 After=network-online.target
 
 [Service]
