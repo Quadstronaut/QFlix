@@ -207,19 +207,16 @@ apps:
       port_secret: calibre-web.port
       expect_status: 200
 
-  homarr:
-    class: ucc
-    ucc_slug: homarr
-    kuma_monitor: "Homarr"
-    # Decommissioned as the public board 2026-06-27 (replaced by qflix-dash at root).
-    # Kept installed + running: its public board now serves a "QFlix has moved"
-    # notice (scripts/qflix-dash/homarr-moved-notice.py) — a true 301 off its
-    # subdomain is impossible (rootless container holds the port; uninstall kills
-    # the outer-nginx route).
-    health:
-      kind: http_root
-      port_secret: homarr.port
-      expect_status: 200
+  # homarr: DECOMMISSIONED 2026-07-13 — fully uninstalled (app-homarr +
+  # app-homarr-upstream), replaced as the public root by qflix-dash on
+  # 2026-06-27. Kept limping as a "QFlix has moved" notice board until it
+  # started a 31-alert restart-storm (auto-heal exhausted 3 restarts, paged on
+  # every permanent-failure re-arm). Removed from manifest + Kuma monitor #39
+  # deleted + both UCC slots uninstalled + homarr.{host,port} secrets purged.
+  # Retired scripts: scripts/configure/{34-nginx-root-to-homarr.sh,
+  # 35-homarr-seed-boards.py,46-homarr-add-comms.py,61-homarr-qflix-theme.py},
+  # scripts/qflix-dash/homarr-moved-notice.py. The old homarr-upstream-<host>
+  # subdomain is now dead (uninstall kills the outer-nginx route — expected).
 
   qflix-dash:
     class: systemd

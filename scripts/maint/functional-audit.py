@@ -240,7 +240,7 @@ def main():
     # (replaced by scripts/maint/qflix-reaper.py). The reaper self-pushes the
     # "QFlix Reaper" Kuma monitor; there is no HTTP feature surface to probe.
 
-    section("PLEX-ADJACENT (Tautulli / Seerr / Audiobookshelf / Kavita / Komga / Calibre-Web / Homarr / FlareSolverr)")
+    section("PLEX-ADJACENT (Tautulli / Seerr / Audiobookshelf / Kavita / Komga / Calibre-Web / FlareSolverr)")
     # Tautulli — api_v2 with api_key
     tp = _read("tautulli.port")
     if not tp:
@@ -331,11 +331,7 @@ def main():
         code, body = _get(f"http://127.0.0.1:{cwp}/")
         row("calibre-web /", code, "(login page)" if "login" in body.lower() else body[:40])
 
-    # Homarr
-    hp = _read("homarr.port")
-    if hp:
-        code, body = _get(f"http://127.0.0.1:{hp}/api/health")
-        row("homarr api/health", code, body[:60])
+    # Homarr — DECOMMISSIONED 2026-07-13 (uninstalled, replaced by qflix-dash).
 
     # FlareSolverr — hostname is 172.17.0.1 not 127.0.0.1
     fp = _read("flaresolverr.port")
