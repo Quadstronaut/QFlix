@@ -71,7 +71,7 @@ tautulli_port="$(discover_port_via_nginx tautulli)"
 # canonical requester now — captured below.
 
 # Seerr / Maintainerr / etc — may not be installed; capture port if nginx has it
-for app in seerr maintainerr flaresolverr unpackerr uptimekuma komga kavita calibre-web audiobookshelf homarr-upstream homarr; do
+for app in seerr flaresolverr unpackerr uptimekuma komga kavita calibre-web audiobookshelf; do
   port="$(discover_port_via_nginx "$app")"
   [ -n "$port" ] && secret_write "$app.port" "$port"
 done
