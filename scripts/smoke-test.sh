@@ -111,23 +111,17 @@ echo "6. Disk usage"
 USAGE=$(sshm "df -h ~ | tail -1 | awk '{print \$3 \" / \" \$2 \" (\" \$5 \" used)\"}'")
 record "disk-usage" pass "$USAGE"
 
-# 7. Landing page (skip if no homarr port configured yet — Phase 13)
+# 7. Landing page — the public root serves the QFlix Dashboard directly (200 +
+# the `data-qflix-dash` marker, no htpasswd). Homarr was decommissioned
+# 2026-07-13; the mobile-ux canary guards this same surface every 15 min.
 echo "7. Landing page"
 PUBLIC_HOST=$(secret_read seedbox.host 2>/dev/null || echo "quadstronaut.seedbox.example.com")
-if secret_exists homarr.port; then
-  HTPW=$(secret_read htpasswd.password 2>/dev/null || echo "")
-  if [ -n "$HTPW" ]; then
-    HITS=$(curl -sk -L -m 15 -u "quadstronaut:$HTPW" "https://${PUBLIC_HOST}/" 2>/dev/null | grep -c -i homarr || echo 0)
-    if [ "${HITS:-0}" -ge 1 ]; then
-      record "landing-page" pass "/ -> Homarr public board ($HITS hits)"
-    else
-      record "landing-page" fail "no Homarr in response"
-    fi
-  else
-    record "landing-page" skip "no htpasswd.password"
-  fi
+ROOT_CODE=$(curl -sk -L -m 15 -o /dev/null -w "%{http_code}" "https://${PUBLIC_HOST}/" 2>/dev/null || echo 000)
+HITS=$(curl -sk -L -m 15 "https://${PUBLIC_HOST}/" 2>/dev/null | grep -c "data-qflix-dash" || echo 0)
+if [ "${ROOT_CODE}" = "200" ] && [ "${HITS:-0}" -ge 1 ]; then
+  record "landing-page" pass "/ -> QFlix Dashboard (200, $HITS marker hits)"
 else
-  record "landing-page" skip "Phase 13 Homarr not deployed yet"
+  record "landing-page" fail "root not serving QFlix Dashboard (code=$ROOT_CODE marker=$HITS)"
 fi
 
 # 8. Unpackerr daemon

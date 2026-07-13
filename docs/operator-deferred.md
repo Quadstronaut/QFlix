@@ -27,20 +27,11 @@ deserves a sweep (some apps' `app-<x> uninstall` doesn't clean up
 nginx fragments / cron entries — the 2026-05-11 audit-sweep already
 caught most of those).
 
-### Homarr `mediaReleases` widget — TRPCClientError (decorative)
+### ~~Homarr `mediaReleases` widget — TRPCClientError~~ — MOOT 2026-07-13
 
-The Plex Recently-Added widget renders a TRPCClientError visible to
-users. Likely cause: widget options shape mismatch with Homarr v1's
-zod schema or a missing required field on the `integrationSecret`
-row. Inspect:
-
-- `homarr-labs/homarr` repo, `packages/widgets/src/media-releases/`
-- `journalctl --user-unit homarr-upstream.service -f` while the
-  board loads
-- DB: `item` (kind=mediaReleases), `integration` (kind=plex),
-  `integrationSecret` (kind=apiKey)
-
-Decorative — does not block any user-facing flow.
+Homarr was fully decommissioned 2026-07-13 (uninstalled; replaced by the
+qflix-dash SvelteKit board at root). The decorative widget error no longer
+exists because the app is gone.
 
 ### Notifiarr CLIENT daemon — Plex push notifications
 
@@ -55,7 +46,7 @@ operator wants the duplicate path.
 
 After all CLI/API smoke turns green, run a one-link-at-a-time UI
 walkthrough with the operator covering:
-- Homarr public board renders, all tiles clickable
+- QFlix Dashboard (qflix-dash) renders at root, all tiles clickable
 - Seerr request flow end-to-end
 - Plex streaming a recently-added title
 - Calibre-Web admin login (rotated password)

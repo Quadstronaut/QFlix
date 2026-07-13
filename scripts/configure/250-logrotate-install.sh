@@ -130,7 +130,7 @@ nomail
   missingok
 }
 
-# --- Stream-stats / qflix-newsletter / homarr / listmonk ---
+# --- Stream-stats / qflix-newsletter / listmonk ---
 "/home/quadstronaut/.apps/stream-stats/logs/*.log" {
   size 50M
   missingok
