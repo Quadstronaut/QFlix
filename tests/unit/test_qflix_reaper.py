@@ -530,6 +530,66 @@ def test_seerr_reconcile_deletes_only_orphans(reaper, monkeypatch):
     assert all(r[1] == "42011" for r in seen["requests"])
 
 
+def test_seerr_reconcile_paginates_past_page_cap(reaper, monkeypatch):
+    # Availability spanning multiple pages must ALL be reconciled — no silent cap.
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    import urllib.parse as _up
+    page = reaper._SEERR_MEDIA_PAGE
+    total = page * 2 + 5                      # spans 3 pages (last one short)
+    rows = [{"id": i, "mediaType": "movie", "tmdbId": 900000 + i} for i in range(total)]
+    seen_skips = []
+    deletes = []
+
+    def fake_req(method, port, key, path, query="", timeout=30):
+        if method == "GET" and path == "/api/v1/media":
+            q = dict(_up.parse_qsl(query))
+            skip = int(q.get("skip", 0))
+            take = int(q.get("take", page))
+            seen_skips.append(skip)
+            return 200, {"results": rows[skip:skip + take], "pageInfo": {"results": total}}
+        if method == "DELETE":
+            deletes.append(path)
+            return 200, ""
+        return 404, None
+
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    # empty arr index -> every available row is an orphan -> all get deleted
+    monkeypatch.setattr(reaper, "_arr_client",
+                        lambda slug: FakeArr(slug, movies=[], series=[]))
+
+    deleted, failed = reaper.reconcile_seerr(execute=True)
+    assert deleted == total and failed == 0           # ALL rows, not just page 1
+    assert seen_skips == [0, page, page * 2]           # walked every page
+    assert len(deletes) == total
+
+
+def test_seerr_reconcile_midpagination_failure_reconciles_partial(reaper, monkeypatch):
+    # A page failure mid-walk must reconcile what was fetched, not abort to zero.
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    import urllib.parse as _up
+    page = reaper._SEERR_MEDIA_PAGE
+
+    def fake_req(method, port, key, path, query="", timeout=30):
+        if method == "GET" and path == "/api/v1/media":
+            q = dict(_up.parse_qsl(query))
+            skip = int(q.get("skip", 0))
+            if skip == 0:
+                rows = [{"id": i, "mediaType": "movie", "tmdbId": 900000 + i}
+                        for i in range(page)]           # full first page
+                return 200, {"results": rows, "pageInfo": {"results": page * 3}}
+            return 503, "upstream error"                # second page fails
+        if method == "DELETE":
+            return 200, ""
+        return 404, None
+
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    monkeypatch.setattr(reaper, "_arr_client",
+                        lambda slug: FakeArr(slug, movies=[], series=[]))
+
+    deleted, failed = reaper.reconcile_seerr(execute=True)
+    assert deleted == page and failed == 0             # first page still reconciled
+
+
 def test_seerr_unreachable_tolerated(reaper, monkeypatch):
     monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
     monkeypatch.setattr(reaper, "_seerr_req",
