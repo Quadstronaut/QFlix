@@ -40,7 +40,7 @@ request id and skips the cleanup step.
 ## Stage labels (failure messages on stderr → Kuma `msg=`)
 
 - `seerr-up-fail` / `radarr-up-fail` / `sonarr2-up-fail` — the named API didn't return 200
-- `seed-pick-fail` — *arr has zero movies/series to seed the probe
+- `seed-pick-fail` — a seed exists but its tmdb id couldn't be resolved. NOTE: an **empty but reachable** library (0 movies/series — e.g. the reaper aged out the last title) is treated as an **inconclusive SKIP → PASS** (`PASS: … SKIP: … up but 0 …`), not a failure — it's a content state, not a Seerr→*arr path fault. A genuine *arr outage still trips `*-up-fail` earlier.
 - `seerr-push-fail` — POST /api/v1/request returned non-2xx/409 (or 409 with no recoverable id)
 - `arr-not-populated` — externalServiceId stayed null after 30s of polling
 - `verify-fail` — externalServiceId did not match the *arr's id for the seed
