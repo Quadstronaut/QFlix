@@ -32,10 +32,16 @@ The operator edits ExecStart (or a drop-in) on manitoba-maint-reaper.service to
 add --execute once they trust the dry-run plan.
 
 CAPS (both default-on, both overridable with --force):
-  --max-items N   absolute cap on total candidates across the whole run (default 50)
-  --max-pct  P    per-library cap: if candidates in any one library exceed P% of
-                  that library's total item count, abort (default 30)
-A cap trip aborts BEFORE any mutation with exit code 2 and pages the operator.
+  --max-items N   per-run RATE LIMIT on deletions (default 50). A backlog larger
+                  than N does NOT abort — the reaper deletes the OLDEST N this run
+                  (addedAt ascending) and DEFERS the rest to the next run, so a
+                  space-constrained box always makes forward progress. The runaway
+                  guard (never delete > N in one run) still holds.
+  --max-pct  P    per-library TRIPWIRE: if candidates in any one library exceed P%
+                  of that library's total item count, abort the WHOLE run before
+                  any mutation (default 30). Prod disables it with --max-pct 100.
+A max-pct trip aborts BEFORE any mutation with exit code 2 and pages the operator.
+A max-items overflow just defers the excess (logged WARNING, exit unaffected).
 --force overrides BOTH caps (logged WARNING) but does NOT imply --execute.
 
 EXCLUSIONS: --exclude-file (default scripts/maint/qflix-reaper.exclude next to
@@ -52,7 +58,8 @@ EXIT CODES:
   1  partial failure (a per-item resolve/delete/plex/seerr step failed; run
      still completed — re-running self-heals because candidates are re-derived
      from live Plex+arr each time)
-  2  cap trip (max-items or max-pct exceeded without --force) — aborted, no mutation
+  2  cap trip (max-pct exceeded without --force) — aborted, no mutation
+     (max-items overflow does NOT cause exit 2 — it defers the excess and proceeds)
   3  fatal (could not read Plex creds / talk to Plex at all)
 
 Notify + Kuma are best-effort and never raise into the main flow. lib.notify is
@@ -831,6 +838,31 @@ def run(args) -> int:
     all_cands = [c for cands in per_lib_candidates.values() for c in cands]
     total_count = len(all_cands)
     total_gb = round(sum((c.get("sizeGB", 0) or 0) for c in all_cands), 2)
+
+    # ---- max-items rate cap: DEFER the excess, process the OLDEST N ----
+    # max-items is a per-run RATE LIMIT (runaway guard), NOT a tripwire. A backlog
+    # larger than the cap must still make forward progress each run — aborting the
+    # whole run to zero (the 2026-07-13 failure: >50 aged items after --max-pct was
+    # disabled -> whole-run abort -> 0 GB freed while the box was space-constrained)
+    # is the worst outcome. Delete the oldest max_items this run; the remainder ages
+    # into the next run and self-heals. --force bypasses the cap entirely. (max-pct
+    # keeps its whole-run-abort semantics via check_caps below; prod disables it
+    # with --max-pct 100.)
+    deferred_count = 0
+    if not args.force and total_count > args.max_items:
+        oldest_first = sorted(all_cands, key=lambda c: c.get("addedAt", 0))
+        keep_ids = set(id(c) for c in oldest_first[:args.max_items])
+        deferred_count = total_count - args.max_items
+        for _title in list(per_lib_candidates.keys()):
+            per_lib_candidates[_title] = [
+                c for c in per_lib_candidates[_title] if id(c) in keep_ids
+            ]
+        all_cands = [c for cands in per_lib_candidates.values() for c in cands]
+        total_count = len(all_cands)
+        total_gb = round(sum((c.get("sizeGB", 0) or 0) for c in all_cands), 2)
+        warn("max-items cap: deferring " + str(deferred_count) +
+             " candidate(s) to a future run; processing the oldest " +
+             str(total_count) + " (" + str(total_gb) + " GB) this run")
 
     # ---- Plan printout (always) ----
     log("PLAN: " + str(total_count) + " candidate(s), " + str(total_gb) + " GB reclaimable")

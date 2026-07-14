@@ -272,9 +272,15 @@ def test_missing_exclude_file_warns_and_proceeds(reaper, monkeypatch):
 # ===========================================================================
 # 5. Caps: max-items and max-pct trip -> exit 2 BEFORE mutation; --force overrides
 # ===========================================================================
-def test_max_items_cap_trips_exit_2_no_mutation(reaper, tmpdir, monkeypatch):
+def test_max_items_cap_defers_excess_processes_oldest(reaper, tmpdir, monkeypatch):
+    # max-items is a per-run RATE LIMIT, not a tripwire: a backlog larger than the
+    # cap must DELETE the oldest max_items and DEFER the rest to the next run —
+    # never abort the whole run to zero (the 2026-07-13 abort-to-zero failure on a
+    # space-constrained box). Ages are distinct so "oldest 3" is deterministic:
+    # ratingKey i has addedAt = base + i, so i=0 is the oldest.
+    base = _old(reaper, days_over=100)
     items = [{"ratingKey": str(i), "title": "M%d" % i, "year": 2000,
-              "addedAt": _old(reaper), "sizeGB": 1.0} for i in range(5)]
+              "addedAt": base + i, "sizeGB": 1.0} for i in range(5)]
     ids = {str(i): {"tmdbId": 600 + i, "tvdbId": None} for i in range(5)}
     _install_plex(reaper, monkeypatch, {"QFlix - Movies": items}, ids)
     _silence_side_effects(reaper, monkeypatch)
@@ -284,9 +290,31 @@ def test_max_items_cap_trips_exit_2_no_mutation(reaper, tmpdir, monkeypatch):
 
     rc = reaper.run(_args(reaper, execute=True, max_items=3, max_pct=100,
                           manifest_dir=str(tmpdir)))
-    assert rc == reaper.EXIT_CAP
-    assert fake.deletes == []                       # aborted before any delete
-    assert list(Path(str(tmpdir)).glob("qflix-reaper-*.json")) == []  # no manifest
+    assert rc == reaper.EXIT_OK
+    # oldest 3 (ratingKeys 0,1,2 -> tmdbId 600,601,602 -> arrId 100,101,102) deleted
+    assert len(fake.deletes) == 3
+    assert sorted(int(p.rsplit("/", 1)[-1]) for p, _ in fake.deletes) == [100, 101, 102]
+    # manifest records exactly the 3 processed (the deferred 2 are not in it)
+    manifests = list(Path(str(tmpdir)).glob("qflix-reaper-*.json"))
+    assert len(manifests) == 1
+    assert json.loads(manifests[0].read_text())["total_count"] == 3
+
+
+def test_max_items_cap_no_defer_when_at_or_below(reaper, tmpdir, monkeypatch):
+    # Exactly at the cap: no deferral, all deleted, clean exit.
+    items = [{"ratingKey": str(i), "title": "M%d" % i, "year": 2000,
+              "addedAt": _old(reaper) - i, "sizeGB": 1.0} for i in range(3)]
+    ids = {str(i): {"tmdbId": 600 + i, "tvdbId": None} for i in range(3)}
+    _install_plex(reaper, monkeypatch, {"QFlix - Movies": items}, ids)
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("radarr", movies=[{"id": 100 + i, "tmdbId": 600 + i, "hasFile": True}
+                                     for i in range(3)])
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    rc = reaper.run(_args(reaper, execute=True, max_items=3, max_pct=100,
+                          manifest_dir=str(tmpdir)))
+    assert rc == reaper.EXIT_OK
+    assert len(fake.deletes) == 3
 
 
 def test_max_pct_cap_trips_exit_2(reaper, tmpdir, monkeypatch):
