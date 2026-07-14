@@ -116,6 +116,7 @@ def _args(reaper, **over):
         execute=False, threshold_days=60, exclude_file="/nonexistent-on-purpose",
         max_items=50, max_pct=100, force=False, manifest_dir=None,
         library=None, emit_json=False,
+        orphan_grace_hours=24.0, orphan_remind_days=7.0, orphan_state=None,
     )
     base.update(over)
     return type("A", (), base)()
@@ -752,3 +753,284 @@ def test_file_logging_absent_dir_degrades_silently(reaper, tmpdir, monkeypatch):
     reaper._setup_file_log()
     assert reaper._LOG_FH is None
     reaper.log("still-works")   # must not raise
+
+
+# ===========================================================================
+# 8. Orphan grace window — un-resolvable items no longer red the run forever.
+#    (spec: docs/superpowers/specs/2026-07-14-reaper-orphan-grace-design.md)
+# ===========================================================================
+import datetime as _dt
+
+
+def _iso(dt):
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_orphan_state(tmp_path, monkeypatch):
+    """Every test gets a private orphan-state file so none touch the real
+    ~/.opt/maint/reaper/. Harmless to tests that never enumerate orphans."""
+    monkeypatch.setenv("QFLIX_REAPER_ORPHAN_STATE",
+                       str(tmp_path / "orphan-state.json"))
+
+
+# ---- _orphan_key: stable identity preferring external ids ------------------
+def test_orphan_key_series_prefers_tvdb(reaper):
+    it = {"kind": "series", "tvdbId": 424536, "tmdbId": 209867, "ratingKey": "6692"}
+    assert reaper._orphan_key(it) == "tvdb:424536"
+
+
+def test_orphan_key_movie_prefers_tmdb(reaper):
+    it = {"kind": "movie", "tvdbId": None, "tmdbId": 603, "ratingKey": "1"}
+    assert reaper._orphan_key(it) == "tmdb:603"
+
+
+def test_orphan_key_falls_back_to_plex_rating_key(reaper):
+    it = {"kind": "series", "tvdbId": None, "tmdbId": None, "ratingKey": "6692"}
+    assert reaper._orphan_key(it) == "plex:6692"
+
+
+# ---- reconcile_orphans: the grace clock -----------------------------------
+_UTC = _dt.timezone.utc
+
+
+def _seed_state(path, orphans):
+    Path(path).write_text(json.dumps({"version": 1, "orphans": orphans}),
+                          encoding="utf-8")
+
+
+def _read_state(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _cur(key, title="T", library="L"):
+    return {"key": key, "title": title, "library": library}
+
+
+def test_reconcile_new_orphan_is_fresh_and_persisted(reaper, tmp_path):
+    sp = tmp_path / "st.json"
+    now = _dt.datetime(2026, 7, 14, 5, 0, 0, tzinfo=_UTC)
+    fresh, known, warn_due = reaper.reconcile_orphans(
+        [_cur("tvdb:1")], now, grace_hours=24, remind_days=7, state_path=str(sp))
+    assert [o["key"] for o in fresh] == ["tvdb:1"]
+    assert known == [] and warn_due == []
+    st = _read_state(sp)["orphans"]["tvdb:1"]
+    assert st["first_seen"] == st["last_seen"] == "2026-07-14T05:00:00Z"
+
+
+def test_reconcile_aged_orphan_is_known_not_fresh(reaper, tmp_path):
+    sp = tmp_path / "st.json"
+    now = _dt.datetime(2026, 7, 14, 5, 0, 0, tzinfo=_UTC)
+    _seed_state(sp, {"tvdb:1": {"title": "T", "library": "L",
+                                "first_seen": "2026-07-13T04:00:00Z",   # 25h ago
+                                "last_seen": "2026-07-13T04:00:00Z"}})
+    fresh, known, warn_due = reaper.reconcile_orphans(
+        [_cur("tvdb:1")], now, grace_hours=24, remind_days=7, state_path=str(sp))
+    assert fresh == []
+    assert [o["key"] for o in known] == ["tvdb:1"]
+
+
+def test_reconcile_resolved_orphan_dropped_from_state(reaper, tmp_path):
+    sp = tmp_path / "st.json"
+    now = _dt.datetime(2026, 7, 14, 5, 0, 0, tzinfo=_UTC)
+    _seed_state(sp, {"tvdb:GONE": {"title": "T", "library": "L",
+                                   "first_seen": "2026-07-01T00:00:00Z",
+                                   "last_seen": "2026-07-13T00:00:00Z"}})
+    reaper.reconcile_orphans([_cur("tvdb:NEW")], now,
+                             grace_hours=24, remind_days=7, state_path=str(sp))
+    keys = _read_state(sp)["orphans"].keys()
+    assert "tvdb:GONE" not in keys and "tvdb:NEW" in keys
+
+
+def test_reconcile_weekly_reminder_due(reaper, tmp_path):
+    sp = tmp_path / "st.json"
+    now = _dt.datetime(2026, 7, 14, 5, 0, 0, tzinfo=_UTC)
+    _seed_state(sp, {"tvdb:1": {"title": "T", "library": "L",
+                                "first_seen": "2026-06-01T00:00:00Z",
+                                "last_seen": "2026-07-13T00:00:00Z",
+                                "last_warned": "2026-07-06T00:00:00Z"}})  # 8d ago
+    fresh, known, warn_due = reaper.reconcile_orphans(
+        [_cur("tvdb:1")], now, grace_hours=24, remind_days=7, state_path=str(sp))
+    assert [o["key"] for o in warn_due] == ["tvdb:1"]
+    assert _read_state(sp)["orphans"]["tvdb:1"]["last_warned"] == "2026-07-14T05:00:00Z"
+
+
+def test_reconcile_weekly_reminder_not_due(reaper, tmp_path):
+    sp = tmp_path / "st.json"
+    now = _dt.datetime(2026, 7, 14, 5, 0, 0, tzinfo=_UTC)
+    _seed_state(sp, {"tvdb:1": {"title": "T", "library": "L",
+                                "first_seen": "2026-06-01T00:00:00Z",
+                                "last_seen": "2026-07-13T00:00:00Z",
+                                "last_warned": "2026-07-13T00:00:00Z"}})  # 1d ago
+    fresh, known, warn_due = reaper.reconcile_orphans(
+        [_cur("tvdb:1")], now, grace_hours=24, remind_days=7, state_path=str(sp))
+    assert warn_due == []
+    assert _read_state(sp)["orphans"]["tvdb:1"]["last_warned"] == "2026-07-13T00:00:00Z"
+
+
+def test_reconcile_corrupt_state_treats_all_as_fresh(reaper, tmp_path):
+    sp = tmp_path / "st.json"
+    Path(sp).write_text("{ this is not json", encoding="utf-8")
+    now = _dt.datetime(2026, 7, 14, 5, 0, 0, tzinfo=_UTC)
+    fresh, known, warn_due = reaper.reconcile_orphans(
+        [_cur("tvdb:1")], now, grace_hours=24, remind_days=7, state_path=str(sp))
+    assert [o["key"] for o in fresh] == ["tvdb:1"]     # fail TOWARD alerting
+    assert known == []
+
+
+# ---- classify_run: the red/green decision ---------------------------------
+def _info(key="tvdb:1", title="Frieren", library="QFlix - Anime", age=30.0):
+    return {"key": key, "title": title, "library": library,
+            "first_seen": "2026-07-13T00:00:00Z", "age_hours": age}
+
+
+def test_classify_operational_partial_is_error(reaper):
+    rc, sev, note = reaper.classify_run(True, [], [], [])
+    assert (rc, sev) == (reaper.EXIT_PARTIAL, "error")
+
+
+def test_classify_fresh_orphan_is_error(reaper):
+    o = _info(age=2.0)
+    rc, sev, note = reaper.classify_run(False, [o], [], [])
+    assert rc == reaper.EXIT_PARTIAL and sev == "error"
+    assert "Frieren" in note
+
+
+def test_classify_known_orphan_reminder_due_is_warning_green(reaper):
+    o = _info(age=200.0)
+    rc, sev, note = reaper.classify_run(False, [], [o], [o])
+    assert rc == reaper.EXIT_OK and sev == "warning"
+    assert "Frieren" in note
+
+
+def test_classify_known_orphan_not_due_is_ok_green(reaper):
+    o = _info(age=200.0)
+    rc, sev, note = reaper.classify_run(False, [], [o], [])
+    assert rc == reaper.EXIT_OK and sev == "ok"
+    assert "Frieren" in note        # still surfaced in the note text
+
+
+def test_classify_clean_run_is_ok(reaper):
+    rc, sev, note = reaper.classify_run(False, [], [], [])
+    assert (rc, sev, note) == (reaper.EXIT_OK, "ok", "")
+
+
+def test_reconcile_no_emit_reminders_does_not_consume_warn_slot(reaper, tmp_path):
+    # Dry-run observes orphans (updates the grace clock) but must NOT fire or
+    # consume the weekly WARN — otherwise the later execute run finds it "not due"
+    # and the reminder is silently swallowed.
+    sp = tmp_path / "st.json"
+    now = _dt.datetime(2026, 7, 14, 5, 0, 0, tzinfo=_UTC)
+    _seed_state(sp, {"tvdb:1": {"title": "T", "library": "L",
+                                "first_seen": "2026-06-01T00:00:00Z",
+                                "last_seen": "2026-07-13T00:00:00Z",
+                                "last_warned": "2026-07-06T00:00:00Z"}})  # 8d -> due
+    fresh, known, warn_due = reaper.reconcile_orphans(
+        [_cur("tvdb:1")], now, grace_hours=24, remind_days=7,
+        state_path=str(sp), emit_reminders=False)
+    assert [o["key"] for o in known] == ["tvdb:1"]
+    assert warn_due == []                                     # not emitted
+    # last_warned untouched, so the execute run can still fire it.
+    assert _read_state(sp)["orphans"]["tvdb:1"]["last_warned"] == "2026-07-06T00:00:00Z"
+    # ...but last_seen IS advanced (dry-run still observed it).
+    assert _read_state(sp)["orphans"]["tvdb:1"]["last_seen"] == "2026-07-14T05:00:00Z"
+
+
+# ---- run()-level integration: grace changes the run color -----------------
+import os as _os
+
+
+def _capture_notify(reaper, monkeypatch):
+    calls = []
+    monkeypatch.setattr(reaper, "_notify",
+                        lambda msg, level="info": calls.append((level, msg)))
+    monkeypatch.setattr(reaper, "_push_kuma", lambda *a, **k: None)
+    monkeypatch.setattr(reaper, "reconcile_seerr", lambda execute: (0, 0))
+    return calls
+
+
+def _seed_env_state(orphans):
+    _seed_state(_os.environ["QFLIX_REAPER_ORPHAN_STATE"], orphans)
+
+
+def test_known_orphan_only_execute_is_green_no_deletes(reaper, tmpdir, monkeypatch):
+    # An orphan that has persisted past the grace window must NOT red the run.
+    aged = reaper._fmt_stamp(_dt.datetime.now(_UTC) - _dt.timedelta(hours=25))
+    _seed_env_state({"tmdb:999": {"title": "Ghost", "library": "QFlix - Movies",
+                                  "first_seen": aged, "last_seen": aged}})
+    movie = {"ratingKey": "1", "title": "Ghost", "year": 1999,
+             "addedAt": _old(reaper), "sizeGB": 5.0}
+    _install_plex(reaper, monkeypatch, {"QFlix - Movies": [movie]},
+                  {"1": {"tmdbId": 999, "tvdbId": None}})   # 999 not in Radarr -> orphan
+    calls = _capture_notify(reaper, monkeypatch)
+    fake = FakeArr("radarr", movies=[{"id": 42, "tmdbId": 603, "hasFile": True}])
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+
+    assert rc == reaper.EXIT_OK                     # GREEN, not the old EXIT_PARTIAL
+    assert fake.deletes == []                       # still never deleted
+    assert not any(lvl == "error" for lvl, _ in calls)   # no ERROR page
+
+
+def test_known_orphan_reminder_due_emits_warning(reaper, tmpdir, monkeypatch):
+    # last_warned absent -> weekly reminder due -> WARN-level notify, run stays green.
+    aged = reaper._fmt_stamp(_dt.datetime.now(_UTC) - _dt.timedelta(hours=48))
+    _seed_env_state({"tmdb:999": {"title": "Ghost", "library": "QFlix - Movies",
+                                  "first_seen": aged, "last_seen": aged}})
+    movie = {"ratingKey": "1", "title": "Ghost", "year": 1999,
+             "addedAt": _old(reaper), "sizeGB": 5.0}
+    _install_plex(reaper, monkeypatch, {"QFlix - Movies": [movie]},
+                  {"1": {"tmdbId": 999, "tvdbId": None}})
+    calls = _capture_notify(reaper, monkeypatch)
+    fake = FakeArr("radarr", movies=[])
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+
+    assert rc == reaper.EXIT_OK
+    assert any(lvl == "warning" for lvl, _ in calls)      # weekly reminder fired
+    assert not any(lvl == "error" for lvl, _ in calls)
+
+
+def test_fresh_orphan_still_reds_execute(reaper, tmpdir, monkeypatch):
+    # Empty state -> orphan is brand new -> still ERROR/exit 1 (operator learns).
+    movie = {"ratingKey": "1", "title": "NewGhost", "year": 1999,
+             "addedAt": _old(reaper), "sizeGB": 5.0}
+    _install_plex(reaper, monkeypatch, {"QFlix - Movies": [movie]},
+                  {"1": {"tmdbId": 999, "tvdbId": None}})
+    calls = _capture_notify(reaper, monkeypatch)
+    fake = FakeArr("radarr", movies=[])
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+
+    assert rc == reaper.EXIT_PARTIAL
+    assert any(lvl == "error" for lvl, _ in calls)
+
+
+def test_cap_abort_does_not_consume_weekly_reminder(reaper, tmpdir, monkeypatch):
+    # An execute run that aborts at a cap trip must NOT stamp last_warned — else
+    # the weekly reminder is swallowed and never actually sent. The warn slot is
+    # only consumed at the guaranteed emit point (the summary).
+    aged = reaper._fmt_stamp(_dt.datetime.now(_UTC) - _dt.timedelta(hours=48))
+    _seed_env_state({"tvdb:1": {"title": "Orphan", "library": "QFlix - Anime",
+                                "first_seen": aged, "last_seen": aged}})  # no last_warned -> due
+    # A resolvable movie that is 100% of a 1-item library trips max_pct=50 -> EXIT_CAP.
+    movie = {"ratingKey": "5", "title": "Cap Movie", "year": 2001,
+             "addedAt": _old(reaper), "sizeGB": 5.0}
+    orphan = {"ratingKey": "9", "title": "Orphan", "year": 2010,
+              "addedAt": _old(reaper), "sizeGB": 30.0}
+    _install_plex(reaper, monkeypatch,
+                  {"QFlix - Movies": [movie], "QFlix - Anime": [orphan]},
+                  {"5": {"tmdbId": 603, "tvdbId": None},
+                   "9": {"tmdbId": None, "tvdbId": 1}})   # tvdb 1 not in sonarr2 -> orphan
+    _capture_notify(reaper, monkeypatch)
+    fake = FakeArr("radarr", movies=[{"id": 42, "tmdbId": 603, "hasFile": True}])
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    rc = reaper.run(_args(reaper, execute=True, max_pct=50, manifest_dir=str(tmpdir)))
+
+    assert rc == reaper.EXIT_CAP
+    st = _read_state(_os.environ["QFLIX_REAPER_ORPHAN_STATE"])["orphans"]["tvdb:1"]
+    assert "last_warned" not in st          # reminder NOT consumed on abort
