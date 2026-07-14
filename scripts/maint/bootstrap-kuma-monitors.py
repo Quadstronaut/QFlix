@@ -152,6 +152,13 @@ CANARY_HEARTBEAT_S_BY_SCHEDULE = {
     "every-30min": 2400,   # 30min + jitter + margin
     "hourly": 4200,        # 1h + RandomizedDelaySec (<=240s) + margin
     "daily-0430": 90000,   # 24h + buffer
+    # weekly-mon-send: the newsletter-digest canary pushes only on Mondays (3x:
+    # 14:20/14:50/15:20 UTC). The gap between the last push of one Monday and the
+    # first of the next is ~6d23h (601140s), so a 4200s default flips Kuma to a
+    # false "No heartbeat in the time window" DOWN every non-Monday (the 2026-07-13
+    # finding). 8 days (691200s) clears the weekly gap with a 1-day margin while
+    # still surfacing a genuinely-missed Monday within ~1 day.
+    "weekly-mon-send": 691200,  # 7d gap + 1d buffer
 }
 
 
