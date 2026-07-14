@@ -112,6 +112,10 @@ DEFAULT_THRESHOLD_DAYS = 60
 DEFAULT_MAX_ITEMS = 50
 DEFAULT_MAX_PCT = 30
 DAY_SECONDS = 86400
+# Seerr /api/v1/media page size for reconciliation. The list is paged; a single
+# take=N would silently skip rows past N, leaving deleted titles stuck
+# "Available" (not re-requestable). reconcile_seerr() loops until exhausted.
+_SEERR_MEDIA_PAGE = 100
 
 # Kuma push (bazarr2-sync model, reused verbatim in shape).
 KUMA_BASE = os.environ.get("KUMA_BASE", "http://127.0.0.1:42005")
@@ -599,15 +603,44 @@ def reconcile_seerr(execute: bool):
         warn("seerr creds empty — skipping Seerr reconciliation")
         return deleted, failed
 
-    status, body = _seerr_req("GET", port, key, "/api/v1/media",
-                              query="take=400&filter=available")
-    if status != 200 or not isinstance(body, dict):
-        warn("Seerr media list unreachable/empty (HTTP " + str(status) + ") — skipping")
-        return deleted, failed
-    results = body.get("results") or []
+    # Page through ALL available media. A single take=N would silently skip
+    # rows past the cap, leaving deleted titles stuck "Available" (members
+    # couldn't re-request them). Loop skip+=PAGE until a short page arrives or
+    # pageInfo.results is exhausted; a hard ceiling guards a misbehaving API.
+    results = []
+    skip = 0
+    while True:
+        status, body = _seerr_req(
+            "GET", port, key, "/api/v1/media",
+            query="take=" + str(_SEERR_MEDIA_PAGE) + "&skip=" + str(skip) +
+            "&filter=available",
+        )
+        if status != 200 or not isinstance(body, dict):
+            if skip == 0:
+                warn("Seerr media list unreachable/empty (HTTP " + str(status) +
+                     ") — skipping")
+                return deleted, failed
+            # Mid-pagination failure: reconcile what we already fetched rather
+            # than abort — a partial pass beats none, and it's logged.
+            warn("Seerr media page at skip=" + str(skip) + " failed (HTTP " +
+                 str(status) + ") — reconciling the " + str(len(results)) +
+                 " row(s) fetched so far")
+            break
+        page = body.get("results") or []
+        results.extend(page)
+        total = (body.get("pageInfo") or {}).get("results")
+        if len(page) < _SEERR_MEDIA_PAGE:
+            break
+        skip += _SEERR_MEDIA_PAGE
+        if isinstance(total, int) and skip >= total:
+            break
+        if skip > 100000:   # safety valve: never loop unbounded
+            warn("Seerr pagination exceeded 100000 rows — stopping")
+            break
     if not results:
         log("Seerr: no available media rows to reconcile")
         return deleted, failed
+    log("Seerr: reconciling " + str(len(results)) + " available media row(s)")
 
     # Build the live arr index once: movie tmdbIds with files, and series tvdbIds.
     radarr_with_file = set()
