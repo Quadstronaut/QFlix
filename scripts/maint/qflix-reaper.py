@@ -17,10 +17,19 @@ WHAT IT DELETES: items in the four QFlix Plex libraries
 whose Plex addedAt is STRICTLY older than --threshold-days (default 60), that are
 not excluded, and that POSITIVELY resolve to exactly one *arr id. Resolution is
 mandatory: an item that does not map to a single Radarr movie / Sonarr series is
-NEVER deleted — it is skipped, logged UNRESOLVED, and colors the run a partial
-failure (exit 1). The *arr delete is the authority; Plex is then refreshed and
-its trash emptied; finally Seerr is reconciled so deleted media becomes
-re-requestable.
+NEVER deleted — it is skipped and logged UNRESOLVED. Such an item is an "orphan"
+(no backing *arr record, or missing external guids). The *arr delete is the
+authority; Plex is then refreshed and its trash emptied; finally Seerr is
+reconciled so deleted media becomes re-requestable.
+
+ORPHAN GRACE (so one stuck item can't red the run forever — the 2026-07-14
+Frieren incident): an orphan is tracked in a durable state file and put on a
+time-grace. A FRESH orphan (first seen <= --orphan-grace-hours ago, default 24)
+reds the run (exit 1) so the operator learns of newly-stranded media. A KNOWN
+orphan (older) no longer reds — the run goes green and the orphan is surfaced via
+--json, the durable log, and a throttled --orphan-remind-days WARN (default 7).
+The safety rail (an orphan is NEVER deleted) is absolute either way. See
+docs/superpowers/specs/2026-07-14-reaper-orphan-grace-design.md.
 
 DRY-RUN IS THE DEFAULT. With no flags the reaper enumerates, resolves,
 classifies, prints the plan + totals, and MUTATES NOTHING — no DELETE, no Plex
@@ -323,6 +332,178 @@ def is_excluded(item: dict, rules) -> bool:
     if title and ("title:" + str(title).strip().lower()) in rules:
         return True
     return False
+
+
+# ===========================================================================
+# Orphan grace tracking — an item that ages past the threshold but resolves to
+# NO unique *arr id is an "orphan" (no backing *arr record, or missing guids).
+# The safety rail (never delete an orphan) is absolute. The ALERTING, however,
+# is graced: a fresh orphan reds the run like today so the operator learns of
+# newly-stranded media; an orphan that has persisted past the grace window is
+# reported green with a throttled weekly WARN reminder — so one stuck item can
+# no longer red the reaper twice daily forever (the 2026-07-14 Frieren incident).
+# See docs/superpowers/specs/2026-07-14-reaper-orphan-grace-design.md.
+# ===========================================================================
+def _orphan_key(item: dict) -> str:
+    """Stable identity for an orphan, preferring external ids so it survives Plex
+    ratingKey churn. series -> tvdb:<id>, movie -> tmdb:<id>, else plex:<rk>
+    (the fallback covers items whose Plex metadata lacks external guids — a
+    distinct UNRESOLVED cause that must still be tracked across runs)."""
+    kind = item.get("kind")
+    tvdb = item.get("tvdbId")
+    tmdb = item.get("tmdbId")
+    if kind == "series" and tvdb is not None:
+        return "tvdb:" + str(tvdb)
+    if kind == "movie" and tmdb is not None:
+        return "tmdb:" + str(tmdb)
+    return "plex:" + str(item.get("ratingKey"))
+
+
+_ORPHAN_STATE_VERSION = 1
+
+
+def _orphan_state_path(explicit=None) -> Path:
+    """Resolve the orphan-state file: explicit flag > env > default beside the
+    durable per-day logs."""
+    if explicit:
+        return Path(explicit)
+    env = os.environ.get("QFLIX_REAPER_ORPHAN_STATE")
+    if env:
+        return Path(env)
+    return Path.home() / ".opt" / "maint" / "reaper" / "orphan-state.json"
+
+
+def _fmt_stamp(dt) -> str:
+    """UTC, second precision — same shape as the durable-log timestamps."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_stamp(s):
+    """Parse a _fmt_stamp string to an aware UTC datetime; None on anything odd."""
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _load_orphan_state(path: Path) -> dict:
+    """Best-effort read -> {key: record}. ANY failure (missing / corrupt /
+    unreadable) returns {} so every current orphan looks NEW and reds — we fail
+    TOWARD alerting, never toward silence."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        orphans = data.get("orphans")
+        return orphans if isinstance(orphans, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_orphan_state(path: Path, orphans: dict) -> None:
+    """Best-effort write. Never raises — mirrors the durable-log philosophy; a
+    write failure just means next run re-observes and re-grades from scratch."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"version": _ORPHAN_STATE_VERSION, "orphans": orphans},
+                       indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def reconcile_orphans(current, now, grace_hours, remind_days, state_path=None,
+                      emit_reminders=True):
+    """Update the durable orphan-state and classify this run's orphans against a
+    time-based grace clock.
+
+    current: list of {key, title, library} observed this run.
+    now:     aware UTC datetime.
+    emit_reminders: True on the run that actually sends the WARN (execute). When
+        False (dry-run) the grace clock still advances (first_seen/last_seen) but
+        warn_due is always empty and last_warned is NOT stamped — so a dry-run
+        can't silently swallow the reminder the execute run should fire.
+    Returns (fresh, known, warn_due) — lists of info dicts
+    {key, title, library, first_seen, age_hours}. warn_due is a subset of known
+    (the ones whose weekly reminder came due this run). Orphans in prior state
+    but absent from `current` are dropped (resolved -> forgotten, so a later
+    re-appearance restarts the grace + alert cycle)."""
+    path = _orphan_state_path(state_path)
+    prior = _load_orphan_state(path)
+    now_s = _fmt_stamp(now)
+    grace_secs = grace_hours * 3600.0
+    remind_secs = remind_days * DAY_SECONDS
+
+    new_state = {}
+    fresh, known, warn_due = [], [], []
+    for o in current:
+        key = o["key"]
+        rec = dict(prior.get(key) or {})
+        rec.setdefault("first_seen", now_s)   # stamped ONCE; never moved
+        rec["last_seen"] = now_s
+        rec["title"] = o.get("title")
+        rec["library"] = o.get("library")
+
+        first = _parse_stamp(rec["first_seen"]) or now
+        age_secs = max(0.0, (now - first).total_seconds())
+        info = {"key": key, "title": rec["title"], "library": rec["library"],
+                "first_seen": rec["first_seen"],
+                "age_hours": round(age_secs / 3600.0, 2)}
+
+        if age_secs <= grace_secs:
+            fresh.append(info)
+        else:
+            known.append(info)
+            if emit_reminders:
+                last_warned = _parse_stamp(rec.get("last_warned") or "")
+                if last_warned is None or (now - last_warned).total_seconds() >= remind_secs:
+                    warn_due.append(info)
+                    rec["last_warned"] = now_s
+        new_state[key] = rec
+
+    _save_orphan_state(path, new_state)
+    return fresh, known, warn_due
+
+
+def _orphan_list(items, cap: int = 8) -> str:
+    """Human-readable one-liner: "'Title' <Library> (aged Nh); ..." capped so a
+    large backlog doesn't blow the notify/Kuma length budget."""
+    parts = [repr(o.get("title")) + " <" + str(o.get("library")) + "> (aged " +
+             str(int(o.get("age_hours", 0))) + "h)" for o in items[:cap]]
+    if len(items) > cap:
+        parts.append("+" + str(len(items) - cap) + " more")
+    return "; ".join(parts)
+
+
+def classify_run(operational_partial, fresh, known, warn_due):
+    """Decide a run's outcome from operational failures + orphan classification.
+    Returns (rc, severity, note):
+      'error'   -> an operational failure OR a FRESH orphan (reds; EXIT_PARTIAL)
+      'warning' -> only KNOWN orphans and the weekly reminder is DUE (green)
+      'ok'      -> clean, or only known orphans not yet due (green)
+    `note` is orphan-context text ('' when there are no orphans) for the operator
+    message / Kuma / log. Operational-failure wording is owned by the caller
+    (it already builds the deleted/failed summary)."""
+    if fresh:
+        note = str(len(fresh)) + " newly-stranded orphan(s): " + _orphan_list(fresh)
+    elif known:
+        note = str(len(known)) + " known orphan(s) still stranded: " + _orphan_list(known)
+    else:
+        note = ""
+    if operational_partial or fresh:
+        return EXIT_PARTIAL, "error", note
+    if warn_due:
+        return EXIT_OK, "warning", note
+    return EXIT_OK, "ok", note
+
+
+def _orphan_json(fresh, known):
+    """Flatten the fresh/known orphan info dicts into a --json array, tagging each
+    with its grace state so the dashboard/ops can surface stranded media."""
+    return ([dict(o, state="fresh") for o in fresh] +
+            [dict(o, state="known") for o in known])
 
 
 # ===========================================================================
@@ -801,6 +982,16 @@ def parse_args(argv=None):
                     help="repeatable: restrict to these Plex library names. Default = all 4.")
     ap.add_argument("--json", dest="emit_json", action="store_true",
                     help="also emit a machine-readable plan/result summary to stdout.")
+    ap.add_argument("--orphan-grace-hours", type=float, default=24.0,
+                    help="hours a NEW un-resolvable orphan reds the run before it "
+                         "downgrades to a green weekly-reminder. Default 24.")
+    ap.add_argument("--orphan-remind-days", type=float, default=7.0,
+                    help="cadence of the WARN reminder for a KNOWN (aged-out) "
+                         "orphan. Default 7.")
+    ap.add_argument("--orphan-state", default=None,
+                    help="orphan grace-state file (default env "
+                         "QFLIX_REAPER_ORPHAN_STATE, else ~/.opt/maint/reaper/"
+                         "orphan-state.json).")
     return ap.parse_args(argv)
 
 
@@ -845,7 +1036,10 @@ def run(args) -> int:
     per_lib_candidates = {}   # plex_title -> [candidate dicts]
     per_lib_totals = {}       # plex_title -> total item count
     per_lib_section = {}      # plex_title -> section key
-    partial = False           # any per-item resolve/delete/plex/seerr failure
+    partial = False           # OPERATIONAL failure only (delete/plex/seerr/arr);
+                              # orphans are tracked separately (grace window).
+    orphans_seen = []         # [{key,title,library}] aged items that resolve to
+                              # NO unique *arr id — graced, not an instant red.
     now = int(datetime.now(timezone.utc).timestamp())
     threshold_secs = args.threshold_days * DAY_SECONDS
 
@@ -907,7 +1101,10 @@ def run(args) -> int:
             if arr_id is None:
                 warn("UNRESOLVED " + repr(it.get("title")) + " in '" + title +
                      "' (no unique *arr match) — SKIP, will not delete")
-                partial = True
+                # Not an instant partial: an orphan is graced (see reconcile_orphans).
+                # A FRESH orphan still reds the run; a KNOWN one goes green.
+                orphans_seen.append({"key": _orphan_key(it),
+                                     "title": it.get("title"), "library": title})
                 continue
             it["arrId"] = arr_id
             cands.append(it)
@@ -946,6 +1143,26 @@ def run(args) -> int:
              " candidate(s) to a future run; processing the oldest " +
              str(total_count) + " (" + str(total_gb) + " GB) this run")
 
+    # ---- Orphan grace reconciliation (independent of caps + deletes: orphans
+    # are never resolved, so never candidates and never deleted). This early pass
+    # grades fresh/known + persists first_seen/last_seen + drops resolved orphans,
+    # so --json and the dry-run exit code can use it. It is emit_reminders=FALSE:
+    # it must NOT stamp last_warned here, because a cap-trip / lock-held abort
+    # could return before the summary and silently swallow the weekly WARN. The
+    # execute path re-reconciles at the summary (the guaranteed emit point) to
+    # actually consume + fire reminders. ----
+    now_dt = datetime.now(timezone.utc)
+    fresh_orphans, known_orphans, warn_orphans = reconcile_orphans(
+        orphans_seen, now_dt,
+        grace_hours=args.orphan_grace_hours,
+        remind_days=args.orphan_remind_days,
+        state_path=args.orphan_state,
+        emit_reminders=False,
+    )
+    for o in known_orphans:
+        log("KNOWN ORPHAN (graced) " + repr(o.get("title")) + " <" +
+            str(o.get("library")) + "> aged " + str(int(o.get("age_hours", 0))) + "h")
+
     # ---- Plan printout (always) ----
     log("PLAN: " + str(total_count) + " candidate(s), " + str(total_gb) + " GB reclaimable")
     for c in all_cands:
@@ -965,6 +1182,8 @@ def run(args) -> int:
                 "ratingKey": c.get("ratingKey"), "tmdbId": c.get("tmdbId"),
                 "tvdbId": c.get("tvdbId"), "arrId": c.get("arrId"),
             } for c in all_cands],
+            "orphans": _orphan_json(fresh_orphans, known_orphans),
+            "orphan_counts": {"fresh": len(fresh_orphans), "known": len(known_orphans)},
         }
         print(json.dumps(plan, indent=2), flush=True)
 
@@ -985,12 +1204,17 @@ def run(args) -> int:
     # ---- DRY-RUN: stop here. No manifest, no mutation. ----
     if not execute:
         log("DRY-RUN complete — no mutations performed, no manifest written.")
-        # Dry-run is not an incident: never page; minimal optional heartbeat only.
-        _push_kuma("up", "dry-run: " + str(total_count) + " candidate(s), " +
-                   str(total_gb) + " GB")
-        # A dry-run that hit per-item resolve failures still reports partial so the
-        # operator sees UNRESOLVED items need attention before arming --execute.
-        return EXIT_PARTIAL if partial else EXIT_OK
+        # Dry-run is not an incident: never page, heartbeat stays UP. The EXIT CODE
+        # is graced though — a FRESH orphan (or operational issue) still returns
+        # EXIT_PARTIAL so an operator running a dry-run sees it needs attention
+        # before arming --execute; a KNOWN (aged-out) orphan returns EXIT_OK.
+        rc, _sev, note = classify_run(partial, fresh_orphans, known_orphans, warn_orphans)
+        kmsg = "dry-run: " + str(total_count) + " candidate(s), " + str(total_gb) + " GB"
+        if note:
+            kmsg += " | " + note
+            log(note)
+        _push_kuma("up", kmsg)
+        return rc
 
     # ---- EXECUTE ----
     # Run-lock: refuse to overlap another live --execute (double DELETE -> 404 ->
@@ -1051,27 +1275,59 @@ def run(args) -> int:
         partial = True
     log("Seerr reconciliation: " + str(s_deleted) + " deleted, " + str(s_failed) + " failed")
 
-    # ---- Summary + notify ----
+    # ---- Summary + notify (grace-aware) ----
+    # `partial` is now OPERATIONAL-only (delete/plex/seerr/arr). Orphans are graded
+    # by classify_run against the grace clock: a fresh orphan reds like today, a
+    # known one goes green with a throttled weekly WARN reminder.
     summary = (str(deleted) + " deleted, " + str(total_gb) + " GB reclaimed across " +
                str(len(libraries_touched)) + " libraries")
-    if partial:
-        msg = "completed WITH partial failures — " + summary + " (see journal for UNRESOLVED/failed items)"
+    # Re-reconcile at the guaranteed emit point (emit_reminders=True) so the weekly
+    # WARN slot is consumed ONLY when we're about to actually send it — not on an
+    # early cap/lock abort. first_seen/last_seen are idempotent under the same now.
+    fresh_orphans, known_orphans, warn_orphans = reconcile_orphans(
+        orphans_seen, now_dt,
+        grace_hours=args.orphan_grace_hours,
+        remind_days=args.orphan_remind_days,
+        state_path=args.orphan_state,
+        emit_reminders=True,
+    )
+    rc, severity, orphan_note = classify_run(partial, fresh_orphans,
+                                             known_orphans, warn_orphans)
+    if severity == "error":
+        reasons = []
+        if partial:
+            reasons.append("partial failures")
+        if fresh_orphans:
+            reasons.append(orphan_note)
+        msg = ("completed WITH " + "; ".join(reasons) + " — " + summary +
+               " (see journal for details)")
         warn(msg)
         _notify(msg, level="error")
         _push_kuma("down", msg)
-        rc = EXIT_PARTIAL
+    elif severity == "warning":
+        # Green run; the weekly orphan reminder came due this run.
+        msg = "SUCCESS — " + summary + " | weekly orphan reminder: " + orphan_note
+        log(msg)
+        _notify(msg, level="warning")
+        _push_kuma("up", msg)
     else:
-        log("SUCCESS — " + summary)
-        _notify(summary, level="info")
-        _push_kuma("up", summary)
-        rc = EXIT_OK
+        # Clean, or known orphans not yet due (surfaced, not paged).
+        msg = "SUCCESS — " + summary
+        if orphan_note:
+            msg += " | " + orphan_note
+        log(msg)
+        _notify(msg, level="info")
+        _push_kuma("up", msg)
 
     if args.emit_json:
         print(json.dumps({
             "mode": mode, "deleted": deleted, "total_reclaim_gb": total_gb,
             "libraries_touched": sorted(libraries_touched),
             "seerr_deleted": s_deleted, "seerr_failed": s_failed,
-            "partial": partial, "exit": rc, "manifest": str(manifest_path),
+            "partial": partial, "severity": severity,
+            "orphans": _orphan_json(fresh_orphans, known_orphans),
+            "orphan_counts": {"fresh": len(fresh_orphans), "known": len(known_orphans)},
+            "exit": rc, "manifest": str(manifest_path),
         }, indent=2), flush=True)
     _release_run_lock(lock)
     return rc
