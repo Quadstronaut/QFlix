@@ -17,7 +17,8 @@
 # Stage labels (printed to stderr on failure → Kuma `msg=`):
 #   seerr-up-fail        — Seerr API unreachable
 #   radarr-up-fail       — Radarr API unreachable
-#   seed-pick-fail       — Radarr has zero movies; can't pick a seed
+#   seed-pick-fail       — a seed exists but couldn't resolve its tmdb id
+#                          (an EMPTY but reachable library SKIPs green instead)
 #   seerr-push-fail      — POST /api/v1/request returned non-2xx/409
 #   arr-not-populated    — externalServiceId stayed null after timeout
 #   verify-fail          — externalServiceId did not match Radarr movie id
@@ -50,7 +51,14 @@ SEED=$(curl -sf -m 8 -H "X-Api-Key: $RADARR_KEY" "${RR}/movie" \
   | python3 -c "import sys, json
 ms = sorted(json.load(sys.stdin), key=lambda x: x[\"id\"])
 print(ms[0][\"tmdbId\"], ms[0][\"id\"]) if ms else exit(2)")
-[ -n "$SEED" ] || { printf "STAGE=seed-pick-fail msg=no-radarr-movies\n" >&2; exit 1; }
+# Empty-but-reachable library is a legitimate content state, NOT a Seerr->Radarr
+# path failure. Radarr already passed its up-check above, so 0 movies = nothing
+# to seed = inconclusive: pass with an explicit SKIP message rather than
+# false-red the pipeline. A genuine Radarr outage trips radarr-up-fail earlier.
+if [ -z "$SEED" ]; then
+  printf "PASS: movie canary — SKIP: Radarr up but 0 movies (empty movie library); Seerr->Radarr path not exercised\n"
+  exit 0
+fi
 TMDB_ID=$(printf "%s" "$SEED" | cut -d" " -f1)
 RR_MID=$(printf "%s" "$SEED" | cut -d" " -f2)
 
