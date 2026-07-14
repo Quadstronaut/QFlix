@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-07-14 — Reaper orphan grace (one stuck item no longer reds forever)
+
+**A single un-resolvable orphan used to page the reaper twice daily forever.** An
+"orphan" is a Plex item aged past the 60-day threshold that resolves to no unique
+*arr id (no backing *arr record, or missing external guids) — by design never
+deleted. But it set the same `partial` flag as a transient operational failure,
+so it fired an ERROR notify + Kuma-down on **every** run until a human cleared it.
+Triggered by "Frieren: Beyond Journey's End" (anime series, files removed
+out-of-band, `sonarr2` empty → UNRESOLVED) on 2026-07-14.
+
+Fix (`scripts/maint/qflix-reaper.py`): split operational failures from orphans and
+put orphans on a **24h time-grace**, tracked in a durable state file
+(`~/.opt/maint/reaper/orphan-state.json`). A **fresh** orphan (first seen ≤24h)
+still reds the run so you notice newly-stranded media; a **known** orphan (older)
+goes **green** and is surfaced via `--json`, the durable log, and a throttled
+**weekly WARN** reminder — no more forever-red. Operational failures
+(DELETE/Seerr/Plex/arr) page exactly as before. The safety rail (an orphan is
+NEVER deleted) is untouched. New flags `--orphan-grace-hours` (24),
+`--orphan-remind-days` (7), `--orphan-state` are defaulted so the systemd units
+need no edit. The reminder slot is consumed only at the guaranteed emit point, so
+a cap-trip / lock-held abort can't silently swallow it. 19 new unit tests (52
+total green). Spec:
+[`docs/superpowers/specs/2026-07-14-reaper-orphan-grace-design.md`](docs/superpowers/specs/2026-07-14-reaper-orphan-grace-design.md).
+
 ## 2026-07-13 — Homarr fully decommissioned (killed a 31-alert restart-storm)
 
 **Homarr is gone.** It was superseded as the public root by the qflix-dash
