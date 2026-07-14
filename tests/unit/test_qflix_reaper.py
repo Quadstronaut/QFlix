@@ -661,3 +661,34 @@ def test_manifest_filename_has_pid_uniquifier(reaper, tmpdir, monkeypatch):
     manifests = list(Path(str(tmpdir)).glob("qflix-reaper-*.json"))
     assert len(manifests) == 1
     assert ("-" + str(os.getpid()) + ".json") in manifests[0].name
+
+
+# ===========================================================================
+# 7. Durable file logging (observability — journal is restricted on the box)
+# ===========================================================================
+def test_file_logging_writes_durable_log(reaper, tmpdir, monkeypatch):
+    monkeypatch.setenv("QFLIX_REAPER_LOG_DIR", str(tmpdir))
+    reaper._setup_file_log()
+    try:
+        reaper.log("hello-line")
+        reaper.warn("warn-line")
+        logs = list(Path(str(tmpdir)).glob("reaper-*.log"))
+        assert len(logs) == 1
+        text = logs[0].read_text(encoding="utf-8")
+        assert "[qflix-reaper] hello-line" in text
+        assert "WARNING: warn-line" in text
+    finally:
+        if reaper._LOG_FH is not None:
+            reaper._LOG_FH.close()
+
+
+def test_file_logging_absent_dir_degrades_silently(reaper, tmpdir, monkeypatch):
+    # An unwritable log dir must NOT break the reaper — file logging is best-effort.
+    # Force mkdir to fail (OS-independent) and assert the reaper degrades cleanly.
+    import pathlib
+    monkeypatch.setenv("QFLIX_REAPER_LOG_DIR", str(tmpdir))
+    monkeypatch.setattr(pathlib.Path, "mkdir",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("no mkdir")))
+    reaper._setup_file_log()
+    assert reaper._LOG_FH is None
+    reaper.log("still-works")   # must not raise
