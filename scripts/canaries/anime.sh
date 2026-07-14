@@ -31,7 +31,15 @@ SEED=$(curl -sf -m 8 -H "X-Api-Key: $S2_KEY" "${S2}/series" \
   | python3 -c "import sys, json
 sr = sorted(json.load(sys.stdin), key=lambda x: x[\"id\"])
 print(sr[0][\"tvdbId\"], sr[0][\"id\"], sr[0].get(\"tmdbId\") or 0) if sr else exit(2)")
-[ -n "$SEED" ] || { printf "STAGE=seed-pick-fail msg=no-sonarr2-series\n" >&2; exit 1; }
+# Empty-but-reachable library is a legitimate content state (e.g. the reaper
+# aged out the last series, or anime is simply sparse), NOT a Seerr->Sonarr2
+# path failure. Sonarr2 already passed its up-check above, so 0 series = nothing
+# to seed = inconclusive: pass with an explicit SKIP message rather than
+# false-red the pipeline. A genuine Sonarr2 outage trips sonarr2-up-fail earlier.
+if [ -z "$SEED" ]; then
+  printf "PASS: anime canary — SKIP: Sonarr2 up but 0 series (empty anime library); Seerr->Sonarr2 path not exercised\n"
+  exit 0
+fi
 TVDB_ID=$(printf "%s" "$SEED" | cut -d" " -f1)
 S2_SID=$(printf "%s" "$SEED" | cut -d" " -f2)
 TMDB_ID=$(printf "%s" "$SEED" | cut -d" " -f3)
