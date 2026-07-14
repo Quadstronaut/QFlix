@@ -33,6 +33,35 @@ Homarr was fully decommissioned 2026-07-13 (uninstalled; replaced by the
 qflix-dash SvelteKit board at root). The decorative widget error no longer
 exists because the app is gone.
 
+### Bounced system mail — `root: usbx` unrouteable alias (human-in-the-loop)
+
+Queued from the 2026-07-14 health audit. `/var/spool/mail/quadstronaut` held one
+bounce (`Mail delivery failed: returning message to sender`).
+
+**Scoped findings (2026-07-14):**
+- **Not a QFlix delivery problem, and NOT customer-facing.** Member newsletters go
+  out via the **Listmonk API/SMTP**, never the local MTA — unaffected.
+- The bounce is host-internal: a one-off `sudo` **SECURITY** notice (`quadstronaut :
+  a password is required ... COMMAND=/bin/cat /etc/seedbox/appmanager/app-manager.py`,
+  **May 25 2026**) auto-mailed to `root`. The shared box aliases **`root: usbx`**
+  (`/etc/aliases`), and `support@seedbox-provider.example.com` is **Unrouteable** → permanent
+  bounce back into our spool.
+- **Non-recurring:** exactly **1** message in the entire spool, ~7 weeks old. No
+  `MAILTO` in our crontab (cron mails the local user, stays local). No QFlix
+  script/unit uses `sendmail`/`mail`/`smtplib`.
+- The `root → usbx` alias is **root-owned Ultra.cc host config** — we can't change
+  it without root.
+
+**Decision for the operator (why human-in-the-loop):**
+1. **Do nothing** (recommended) — cosmetic, single stale message, no customer impact.
+   Optionally clear the spool: `ssh manitoba 'cat /dev/null > /var/spool/mail/quadstronaut'`.
+2. **Redirect our own user mail** to a real inbox if you want to *see* future
+   system/cron notices: set `~/.forward` to your address (or `MAILTO=` in crontab).
+   Note: that forwards *quadstronaut* mail; the *root* SECURITY bounce is separate.
+3. **Ultra.cc support ticket** if root-addressed system mail matters to you — ask
+   them to point the `root` alias at a routable address. Low value; the sudo event
+   was a one-time manual `cat` of a root-owned file, not an ongoing signal.
+
 ### Notifiarr CLIENT daemon — Plex push notifications
 
 Plex push events (play / pause / scrobble) require the Notifiarr
