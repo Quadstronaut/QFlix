@@ -125,14 +125,63 @@ EXIT_FATAL = 3
 
 
 # ===========================================================================
-# Logging — print to stdout/stderr; systemd routes both to journal.
+# Logging — print to stdout/stderr (systemd routes both to journal) AND append
+# to a durable per-day logfile. The journal on this shared seedbox is
+# permission-restricted + rotation-prone ("No entries" when debugging the
+# 2026-07-13 failure), so a self-owned logfile is the only reliable record of
+# why a run failed. File logging is BEST-EFFORT: any error degrades to
+# journal-only and never breaks the delete job.
 # ===========================================================================
+_LOG_FH = None
+_LOG_RETENTION_DAYS = 30
+
+
+def _setup_file_log() -> None:
+    """Open (append) today's reaper logfile and prune logs older than the
+    retention window. Called once from main(); never raises."""
+    global _LOG_FH
+    try:
+        log_dir = Path(os.environ.get(
+            "QFLIX_REAPER_LOG_DIR",
+            str(Path.home() / ".opt" / "maint" / "reaper"),
+        ))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        _LOG_FH = open(log_dir / ("reaper-" + day + ".log"), "a", encoding="utf-8")
+        # Retention prune (best-effort): drop logfiles past the window.
+        cutoff = datetime.now(timezone.utc).timestamp() - _LOG_RETENTION_DAYS * DAY_SECONDS
+        for old in log_dir.glob("reaper-*.log"):
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
+    except Exception:
+        _LOG_FH = None
+
+
+def _file_log(line: str) -> None:
+    """Append one timestamped line to the logfile if open. Never raises."""
+    if _LOG_FH is None:
+        return
+    try:
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _LOG_FH.write(stamp + " " + line + "\n")
+        _LOG_FH.flush()
+    except Exception:
+        pass
+
+
 def log(msg: str) -> None:
-    print("[qflix-reaper] " + msg, flush=True)
+    line = "[qflix-reaper] " + msg
+    print(line, flush=True)
+    _file_log(line)
 
 
 def warn(msg: str) -> None:
-    print("[qflix-reaper] WARNING: " + msg, file=sys.stderr, flush=True)
+    line = "[qflix-reaper] WARNING: " + msg
+    print(line, file=sys.stderr, flush=True)
+    _file_log(line)
 
 
 # ===========================================================================
@@ -997,8 +1046,11 @@ def run(args) -> int:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    _setup_file_log()
+    rc = EXIT_FATAL
     try:
-        return run(args)
+        rc = run(args)
+        return rc
     except Exception as exc:
         # Last-resort guard: an unexpected fatal must still page + color the exit,
         # not crash with an opaque traceback into journald.
@@ -1006,7 +1058,16 @@ def main(argv=None) -> int:
         warn(msg)
         _notify(msg, level="error")
         _push_kuma("down", msg)
-        return EXIT_FATAL
+        rc = EXIT_FATAL
+        return rc
+    finally:
+        # Record the outcome in the durable logfile, then close it.
+        log("exit code " + str(rc))
+        if _LOG_FH is not None:
+            try:
+                _LOG_FH.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
