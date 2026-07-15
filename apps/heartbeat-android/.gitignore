@@ -1,0 +1,11 @@
+build/
+.gradle/
+local.properties
+*.keystore
+
+# IDE / OS cruft
+.idea/
+*.iml
+.DS_Store
+.cxx/
+captures/
