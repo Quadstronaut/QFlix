@@ -1,0 +1,742 @@
+"""Tests for scripts/mcp/app_status.py — Heartbeat v2 server aggregator.
+
+Fixtures below are built to reproduce the plan's own worked example numbers
+(docs/superpowers/plans/2026-07-15-heartbeat-android.md) wherever possible,
+so a passing test is also a direct check against the documented contract:
+  - quota -s: used=2073G quota=2794G -> pct 74.2
+  - app-traffic info: available 96.58% -> used_pct 3.42
+  - Tautulli get_activity: stream_count=3, 2 distinct user_id, 1 transcode,
+    wan_bandwidth=12000 -> streams:3 users:2 transcodes:1 wan_kbps:12000
+  - Tautulli get_home_stats: BAsylum total_duration=281520s -> hours 78.2
+  - stale-state.json hash f0a3658d... -> hash8 "f0a3658d"
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+from pathlib import Path
+import sqlite3
+import sys
+
+HERE = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(HERE / "scripts" / "mcp"))
+
+import app_status  # noqa: E402
+
+
+UTC = dt.timezone.utc
+
+
+def _now():
+    return dt.datetime(2026, 7, 15, 20, 0, 0, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# parse_quota
+# ---------------------------------------------------------------------------
+
+QUOTA_TEXT_INLINE = """\
+Disk quotas for user quadstronaut (uid 1013):
+     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
+  /dev/mapper/data-vg-data 2073G   2794G   2794G           184213       0       0
+"""
+
+QUOTA_TEXT_WRAPPED = """\
+Disk quotas for user quadstronaut (uid 1013):
+     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
+  /dev/mapper/data-vg-data
+                2073G   2794G   2794G           184213       0       0
+"""
+
+QUOTA_TEXT_NO_ROW = "quota: no limits found for user quadstronaut\n"
+
+
+def test_parse_quota_inline_layout():
+    out = app_status.parse_quota(QUOTA_TEXT_INLINE)
+    assert out == {"used_gb": 2073, "total_gb": 2794, "pct": 74.2}
+
+
+def test_parse_quota_wrapped_layout():
+    """Long device paths push the numeric columns to the next line."""
+    out = app_status.parse_quota(QUOTA_TEXT_WRAPPED)
+    assert out == {"used_gb": 2073, "total_gb": 2794, "pct": 74.2}
+
+
+def test_parse_quota_no_row_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        app_status.parse_quota(QUOTA_TEXT_NO_ROW)
+
+
+# ---------------------------------------------------------------------------
+# parse_traffic
+# ---------------------------------------------------------------------------
+
+TRAFFIC_TEXT = """\
+Traffic information for quadstronaut
+-------------------------------------
+Traffic available: 96.58%
+Last traffic reset: 2026-06-28 00:00:00
+Next traffic reset: 2026-07-28 00:00:00
+"""
+
+TRAFFIC_TEXT_NO_MATCH = "app-traffic: command not found\n"
+
+
+def test_parse_traffic():
+    out = app_status.parse_traffic(TRAFFIC_TEXT)
+    assert out == {
+        "used_pct": 3.42,
+        "available_pct": 96.58,
+        "last_reset": "2026-06-28T00:00:00",
+        "next_reset": "2026-07-28T00:00:00",
+    }
+
+
+def test_parse_traffic_no_match_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        app_status.parse_traffic(TRAFFIC_TEXT_NO_MATCH)
+
+
+# ---------------------------------------------------------------------------
+# classify_qbit — state vocabulary incl. qBit5 stoppedDL rename
+# ---------------------------------------------------------------------------
+
+def _t(state, **overrides):
+    base = {"hash": "h", "name": "n", "state": state}
+    base.update(overrides)
+    return base
+
+
+def test_classify_qbit_all_buckets():
+    torrents = [
+        _t("downloading"), _t("forcedDL"),         # active x2
+        _t("stalledDL"),                            # stalled_dl x1
+        _t("error"), _t("missingFiles"),            # errored x2
+        _t("stoppedDL"), _t("pausedDL"),             # stopped_dl x2 (see below)
+        _t("uploading"),                             # seeding x1
+        _t("checkingDL"),                            # unclassified — counts to total only
+    ]
+    out = app_status.classify_qbit(torrents)
+    assert out["total"] == 9
+    assert out["active"] == 2
+    assert out["stalled_dl"] == 1
+    assert out["errored"] == 2
+    assert out["stopped_dl"] == 2
+    assert out["seeding"] == 1
+
+
+def test_classify_qbit_stoppedDL_rename_equivalence():
+    """qBit 5.x renamed pausedDL -> stoppedDL. Both spellings must land in
+    the same bucket so the classifier works unchanged across the upgrade."""
+    legacy = app_status.classify_qbit([_t("pausedDL"), _t("pausedDL")])
+    renamed = app_status.classify_qbit([_t("stoppedDL"), _t("stoppedDL")])
+    assert legacy["stopped_dl"] == renamed["stopped_dl"] == 2
+
+
+def test_classify_qbit_empty():
+    out = app_status.classify_qbit([])
+    assert out == {"total": 0, "active": 0, "stalled_dl": 0, "errored": 0,
+                    "stopped_dl": 0, "seeding": 0}
+
+
+# ---------------------------------------------------------------------------
+# top5_requests — Seerr 30d window filter + displayName fallback
+# ---------------------------------------------------------------------------
+
+def _seerr_request(rid, days_ago, requested_by):
+    created = (_now() - dt.timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return {"id": rid, "createdAt": created, "requestedBy": requested_by}
+
+
+SEERR_REQUESTS_JSON = {
+    "pageInfo": {"pages": 1, "pageSize": 200, "results": 15, "page": 1},
+    "results": (
+        # sarahvanpelt: 12 requests within 30d window
+        [_seerr_request(i, 5, {"id": 5, "displayName": "sarahvanpelt",
+                                "plexUsername": "sarah_vp"})
+         for i in range(12)]
+        # one request just outside the 30d window — excluded
+        + [_seerr_request(100, 31, {"id": 5, "displayName": "sarahvanpelt",
+                                     "plexUsername": "sarah_vp"})]
+        # a user with no displayName set — falls back to plexUsername
+        + [_seerr_request(101, 2, {"id": 9, "displayName": None,
+                                    "plexUsername": "BAsylum"})]
+        # a user missing requestedBy entirely — falls back to "unknown"
+        + [dict(id=102, createdAt=(_now() - dt.timedelta(days=1))
+                .strftime("%Y-%m-%dT%H:%M:%S.000Z"))]
+    ),
+}
+
+
+def test_top5_requests_30d_window_and_count():
+    out = app_status.top5_requests(SEERR_REQUESTS_JSON, _now())
+    sarah = next(e for e in out if e["user"] == "sarahvanpelt")
+    assert sarah["count"] == 12  # the 31-days-ago one is excluded
+
+
+def test_top5_requests_displayname_fallback_to_plexusername():
+    out = app_status.top5_requests(SEERR_REQUESTS_JSON, _now())
+    basylum = next(e for e in out if e["user"] == "BAsylum")
+    assert basylum["count"] == 1
+
+
+def test_top5_requests_missing_requestedby_falls_back_to_unknown():
+    out = app_status.top5_requests(SEERR_REQUESTS_JSON, _now())
+    unknown = next(e for e in out if e["user"] == "unknown")
+    assert unknown["count"] == 1
+
+
+def test_top5_requests_excludes_outside_window_entirely():
+    """A user whose ONLY request is >30d old must not appear at all."""
+    payload = {"results": [_seerr_request(1, 45, {"id": 1, "displayName": "ghost"})]}
+    out = app_status.top5_requests(payload, _now())
+    assert out == []
+
+
+def test_top5_requests_caps_at_five():
+    payload = {"results": [
+        _seerr_request(i, 1, {"id": i, "displayName": "user{}".format(i)})
+        for i in range(8)
+    ]}
+    out = app_status.top5_requests(payload, _now())
+    assert len(out) == 5
+
+
+# ---------------------------------------------------------------------------
+# top5_watch
+# ---------------------------------------------------------------------------
+
+TAUTULLI_TOP_USERS_ROWS = [
+    {"friendly_name": "BAsylum", "total_plays": 105, "total_duration": 281520},
+    {"friendly_name": "sarahvanpelt", "total_plays": 40, "total_duration": 90000},
+    {"friendly_name": "quiet_user", "total_plays": 1, "total_duration": 300},
+]
+
+
+def test_top5_watch_hours_conversion_matches_contract_example():
+    out = app_status.top5_watch(TAUTULLI_TOP_USERS_ROWS)
+    top = out[0]
+    assert top == {"user": "BAsylum", "hours": 78.2, "plays": 105}
+
+
+def test_top5_watch_sorted_desc_by_hours():
+    out = app_status.top5_watch(TAUTULLI_TOP_USERS_ROWS)
+    hours = [e["hours"] for e in out]
+    assert hours == sorted(hours, reverse=True)
+
+
+def test_top5_watch_caps_at_five():
+    rows = [{"friendly_name": "u{}".format(i), "total_plays": 1,
+              "total_duration": i * 100} for i in range(9)]
+    out = app_status.top5_watch(rows)
+    assert len(out) == 5
+
+
+def test_top5_watch_empty():
+    assert app_status.top5_watch([]) == []
+
+
+# ---------------------------------------------------------------------------
+# parse_streams — distinct users, matches contract example numbers exactly
+# ---------------------------------------------------------------------------
+
+TAUTULLI_ACTIVITY_JSON = {
+    "response": {
+        "result": "success",
+        "message": None,
+        "data": {
+            "stream_count": "3",
+            "stream_count_direct_play": "1",
+            "stream_count_direct_stream": "1",
+            "stream_count_transcode": "1",
+            "total_bandwidth": "15000",
+            "lan_bandwidth": "3000",
+            "wan_bandwidth": "12000",
+            "sessions": [
+                {"user_id": 101, "user": "sarahvanpelt", "transcode_decision": "direct play"},
+                {"user_id": 202, "user": "BAsylum", "transcode_decision": "transcode"},
+                {"user_id": 202, "user": "BAsylum", "transcode_decision": "direct play"},
+            ],
+        },
+    }
+}
+
+
+def test_parse_streams_matches_contract_example():
+    out = app_status.parse_streams(TAUTULLI_ACTIVITY_JSON)
+    assert out == {"streams": 3, "users": 2, "transcodes": 1, "wan_kbps": 12000}
+
+
+def test_parse_streams_distinct_user_count():
+    """3 sessions, 2 distinct user_id -> users=2 (BAsylum multi-streaming),
+    proving this is a set() over user_id, not len(sessions)."""
+    out = app_status.parse_streams(TAUTULLI_ACTIVITY_JSON)
+    assert out["streams"] == 3
+    assert out["users"] == 2
+    assert out["streams"] != out["users"]
+
+
+def test_parse_streams_stream_count_is_stringly_typed_in_source():
+    """Guard against a regression to int(str) being skipped — Tautulli's
+    stream_count really is a JSON string, not a number."""
+    assert isinstance(TAUTULLI_ACTIVITY_JSON["response"]["data"]["stream_count"], str)
+    out = app_status.parse_streams(TAUTULLI_ACTIVITY_JSON)
+    assert out["streams"] == 3
+
+
+def test_parse_streams_empty_activity():
+    out = app_status.parse_streams({"response": {"data": {}}})
+    assert out == {"streams": 0, "users": 0, "transcodes": 0, "wan_kbps": 0}
+
+
+# ---------------------------------------------------------------------------
+# parse_kuma_rows (+ live sqlite integration through _collect_kuma)
+# ---------------------------------------------------------------------------
+
+def test_parse_kuma_rows_counts_and_red_list():
+    rows = (
+        [{"name": "App{}".format(i), "status": 1, "msg": "", "time": "t"} for i in range(51)]
+        + [{"name": "QFlix Reaper", "status": 0,
+            "msg": "No heartbeat in the time window", "time": "2026-07-15 18:02:11"}]
+        + [{"name": "Sonarr", "status": 0, "msg": "Connection refused", "time": "2026-07-15 19:00:00"}]
+        + [{"name": "Pending Thing", "status": 2, "msg": "", "time": "t"}]
+        + [{"name": "Maint Thing", "status": 3, "msg": "", "time": "t"}]
+    )
+    out = app_status.parse_kuma_rows(rows)
+    assert out["total"] == 55
+    assert out["up"] == 51
+    assert out["down"] == 2
+    names = {r["name"] for r in out["red"]}
+    assert names == {"QFlix Reaper", "Sonarr"}
+    reaper = next(r for r in out["red"] if r["name"] == "QFlix Reaper")
+    assert reaper["msg"] == "No heartbeat in the time window"
+    assert reaper["since"] == "2026-07-15 18:02:11"
+
+
+def _make_kuma_db(tmp_path, monitors):
+    """monitors: list of (name, active, [(status, msg, time), ...heartbeats-oldest-first])."""
+    db_path = tmp_path / "kuma.db"
+    con = sqlite3.connect(str(db_path))
+    con.execute("CREATE TABLE monitor (id INTEGER PRIMARY KEY, name TEXT, active INTEGER)")
+    con.execute("CREATE TABLE heartbeat (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "monitor_id INTEGER, status INTEGER, msg TEXT, time TEXT)")
+    for mid, (name, active, heartbeats) in enumerate(monitors, start=1):
+        con.execute("INSERT INTO monitor (id, name, active) VALUES (?, ?, ?)",
+                    (mid, name, active))
+        for status, msg, time_ in heartbeats:
+            con.execute(
+                "INSERT INTO heartbeat (monitor_id, status, msg, time) VALUES (?, ?, ?, ?)",
+                (mid, status, msg, time_))
+    con.commit()
+    con.close()
+    return db_path
+
+
+def test_collect_kuma_live_sqlite_read_only_uri(tmp_path):
+    """Exercises the real python sqlite3 read-only URI path end-to-end
+    (not mocked) — proves the JOIN-on-latest-heartbeat query the plan
+    specifies actually picks the LATEST heartbeat per monitor, not just
+    any row."""
+    db_path = _make_kuma_db(tmp_path, [
+        ("Sonarr", 1, [(1, "", "2026-07-15 10:00:00"), (0, "down now", "2026-07-15 20:00:00")]),
+        ("Radarr", 1, [(1, "", "2026-07-15 20:00:00")]),
+        ("Inactive App", 0, [(0, "should be excluded", "2026-07-15 20:00:00")]),
+    ])
+    section = app_status._collect_kuma(db_path=db_path)
+    assert section["ok"] is True
+    assert section["error"] is None
+    assert section["total"] == 2  # Inactive App excluded by m.active=1
+    assert section["up"] == 1
+    assert section["down"] == 1
+    assert section["red"] == [{"name": "Sonarr", "msg": "down now", "since": "2026-07-15 20:00:00"}]
+
+
+def test_collect_kuma_missing_db_isolates_failure(tmp_path):
+    section = app_status._collect_kuma(db_path=tmp_path / "does-not-exist.db")
+    assert section["ok"] is False
+    assert section["error"]
+    assert section["total"] == 0
+    assert section["red"] == []
+
+
+# ---------------------------------------------------------------------------
+# parse_sab_queue — matches contract example numbers exactly
+# ---------------------------------------------------------------------------
+
+SAB_QUEUE_JSON = {
+    "queue": {
+        "paused": False,
+        "noofslots": 1,
+        "mbleft": "4203.90",
+        "mb": "4801.70",
+        "kbpersec": "0.00",
+    }
+}
+
+
+def test_parse_sab_queue_matches_contract_example():
+    out = app_status.parse_sab_queue(SAB_QUEUE_JSON)
+    assert out == {"queued": 1, "paused": False, "mb_left": 4203.9,
+                    "mb_total": 4801.7, "kbps": 0}
+
+
+def test_parse_sab_queue_paused_true():
+    payload = {"queue": {"paused": True, "noofslots": 0, "mbleft": "0",
+                          "mb": "0", "kbpersec": "0"}}
+    out = app_status.parse_sab_queue(payload)
+    assert out["paused"] is True
+
+
+def test_parse_sab_queue_empty_payload():
+    out = app_status.parse_sab_queue({})
+    assert out == {"queued": 0, "paused": False, "mb_left": 0.0,
+                    "mb_total": 0.0, "kbps": 0}
+
+
+# ---------------------------------------------------------------------------
+# build_stuck_list — stale-state.json shape (verbatim from qflix-collect.py)
+# ---------------------------------------------------------------------------
+
+STUCK_HASH = "f0a3658d" + "0" * 32  # 40-char hex-shaped hash
+
+STALE_STATE_JSON = {
+    "hashes": {
+        STUCK_HASH: {
+            "first_zero_movement_at": "2026-07-15T16:00:00Z",
+            "consecutive_zero_hours": 3,
+            "last_progress": 0.62,
+            "rule_matched": "stalledDL",
+            "candidate_for_unstick": True,
+            "acted_on_at": "2026-07-15T19:00:39Z",
+        },
+        "deadbeef" + "0" * 32: {
+            "first_zero_movement_at": "2026-07-15T19:30:00Z",
+            "consecutive_zero_hours": 0,
+            "last_progress": 0.10,
+            "rule_matched": "dead-slow",
+            "candidate_for_unstick": False,  # not yet promoted — excluded
+            "acted_on_at": None,
+        },
+    },
+    "updated_at": "2026-07-15T19:00:00Z",
+}
+
+QBIT_TORRENTS_FOR_STUCK = [
+    {"hash": STUCK_HASH, "name": "Some.Movie.2026.1080p"},
+]
+
+
+def test_build_stuck_list_matches_contract_example():
+    out = app_status.build_stuck_list(STALE_STATE_JSON, QBIT_TORRENTS_FOR_STUCK)
+    assert out == [{
+        "hash8": "f0a3658d",
+        "name": "Some.Movie.2026.1080p",
+        "hours": 3,
+        "rule": "stalledDL",
+        "acted": True,
+    }]
+
+
+def test_build_stuck_list_excludes_non_candidates():
+    """Only the candidate_for_unstick=True hash is included; the other
+    tracked hash (candidate_for_unstick=False, still cooling down) must
+    not appear."""
+    out = app_status.build_stuck_list(STALE_STATE_JSON, [])
+    assert len(out) == 1
+    assert out[0]["hash8"] == "f0a3658d"
+
+
+def test_build_stuck_list_unknown_hash_name_fallback():
+    out = app_status.build_stuck_list(STALE_STATE_JSON, [])
+    assert out[0]["name"] == "?"
+
+
+def test_build_stuck_list_empty_state():
+    assert app_status.build_stuck_list({}, []) == []
+
+
+# ---------------------------------------------------------------------------
+# recent_unsticks_from_lines — events/<date>.jsonl shape (verbatim from
+# unstick.py's _record_event)
+# ---------------------------------------------------------------------------
+
+def _event_line(**overrides):
+    base = {
+        "ts": "2026-07-15T19:00:39Z", "action": "unstick", "slug": "sonarr",
+        "queue_id": 42, "hash": STUCK_HASH, "title": "Some.Movie.2026.1080p",
+        "reason": "stale", "result": "qbit-orphan-removed", "post_action": None,
+    }
+    base.update(overrides)
+    return json.dumps(base)
+
+
+def test_recent_unsticks_matches_contract_example():
+    lines = [_event_line()]
+    out = app_status.recent_unsticks_from_lines(lines)
+    assert out == [{"ts": "2026-07-15T19:00:39Z", "hash8": "f0a3658d",
+                     "result": "qbit-orphan-removed"}]
+
+
+def test_recent_unsticks_filters_non_unstick_actions():
+    lines = [_event_line(action="refused-cap-hit")]
+    assert app_status.recent_unsticks_from_lines(lines) == []
+
+
+def test_recent_unsticks_skips_malformed_and_blank_lines():
+    lines = ["", "not json", _event_line()]
+    out = app_status.recent_unsticks_from_lines(lines)
+    assert len(out) == 1
+
+
+def test_recent_unsticks_sorted_newest_first():
+    lines = [
+        _event_line(ts="2026-07-15T10:00:00Z", hash="1111" + "0" * 36),
+        _event_line(ts="2026-07-15T19:00:39Z", hash="2222" + "0" * 36),
+    ]
+    out = app_status.recent_unsticks_from_lines(lines)
+    assert out[0]["hash8"] == "22220000"
+
+
+# ---------------------------------------------------------------------------
+# derive_alerts — exact thresholds from the plan
+# ---------------------------------------------------------------------------
+
+def _base_doc(**overrides):
+    doc = {
+        "kuma": {"red": []},
+        "quota": {"disk": {"pct": 10.0}, "bandwidth": {"available_pct": 90.0}},
+        "downloads": {"stuck": [], "sab": {"paused": False}},
+        "maint": {"apps": {}},
+        "_now": _now(),
+    }
+    doc.update(overrides)
+    return doc
+
+
+def test_derive_alerts_all_clear_is_empty():
+    assert app_status.derive_alerts(_base_doc()) == []
+
+
+def test_derive_alerts_kuma_red_is_crit():
+    doc = _base_doc(kuma={"red": [{"name": "QFlix Reaper",
+                                    "msg": "No heartbeat in the time window",
+                                    "since": "2026-07-15 18:02:11"}]})
+    out = app_status.derive_alerts(doc)
+    assert out == [{"level": "crit",
+                     "text": "Kuma down: QFlix Reaper — No heartbeat in the time window"}]
+
+
+def test_derive_alerts_quadstronix_trio_rolls_into_one_line():
+    doc = _base_doc(kuma={"red": [
+        {"name": "Sonarr", "msg": "down", "since": "t"},
+        {"name": "Quadstronix", "msg": "parent down", "since": "t"},
+        {"name": "Quadstronix Node 1", "msg": "node1 down", "since": "t"},
+        {"name": "Quadstronix Node 2", "msg": "node2 down", "since": "t"},
+    ]})
+    out = app_status.derive_alerts(doc)
+    assert len(out) == 2  # Sonarr line + one combined Quadstronix line
+    texts = [a["text"] for a in out]
+    assert any("Sonarr" in t for t in texts)
+    combined = next(t for t in texts if "Quadstronix" in t)
+    assert "Quadstronix Node 1" in combined
+    assert "Quadstronix Node 2" in combined
+    assert all(a["level"] == "crit" for a in out)
+
+
+def test_derive_alerts_disk_crit_at_90():
+    doc = _base_doc(quota={"disk": {"pct": 90.0}, "bandwidth": {"available_pct": 90.0}})
+    out = app_status.derive_alerts(doc)
+    assert out == [{"level": "crit", "text": "Disk quota 90.0% used"}]
+
+
+def test_derive_alerts_disk_warn_at_80():
+    doc = _base_doc(quota={"disk": {"pct": 80.0}, "bandwidth": {"available_pct": 90.0}})
+    out = app_status.derive_alerts(doc)
+    assert out == [{"level": "warn", "text": "Disk quota 80.0% used"}]
+
+
+def test_derive_alerts_disk_below_80_is_clean():
+    doc = _base_doc(quota={"disk": {"pct": 79.9}, "bandwidth": {"available_pct": 90.0}})
+    assert app_status.derive_alerts(doc) == []
+
+
+def test_derive_alerts_bandwidth_crit_below_10():
+    doc = _base_doc(quota={"disk": {"pct": 10.0}, "bandwidth": {"available_pct": 9.99}})
+    out = app_status.derive_alerts(doc)
+    assert out == [{"level": "crit", "text": "Bandwidth available 9.99%"}]
+
+
+def test_derive_alerts_bandwidth_warn_below_20():
+    doc = _base_doc(quota={"disk": {"pct": 10.0}, "bandwidth": {"available_pct": 19.99}})
+    out = app_status.derive_alerts(doc)
+    assert out == [{"level": "warn", "text": "Bandwidth available 19.99%"}]
+
+
+def test_derive_alerts_bandwidth_at_exactly_20_is_clean():
+    doc = _base_doc(quota={"disk": {"pct": 10.0}, "bandwidth": {"available_pct": 20.0}})
+    assert app_status.derive_alerts(doc) == []
+
+
+def test_derive_alerts_maint_failed_within_48h_is_crit():
+    doc = _base_doc(maint={"apps": {"sonarr": {
+        "event": "failed", "final_health": "down",
+        "updated_at": (_now() - dt.timedelta(hours=47)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }}})
+    out = app_status.derive_alerts(doc)
+    assert out == [{"level": "crit", "text": "Auto-heal failed: sonarr"}]
+
+
+def test_derive_alerts_maint_failed_beyond_48h_is_excluded():
+    doc = _base_doc(maint={"apps": {"sonarr": {
+        "event": "failed", "final_health": "down",
+        "updated_at": (_now() - dt.timedelta(hours=49)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }}})
+    assert app_status.derive_alerts(doc) == []
+
+
+def test_derive_alerts_maint_non_failed_event_ignored():
+    doc = _base_doc(maint={"apps": {"sonarr": {
+        "event": "recovered", "final_health": "up",
+        "updated_at": _now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }}})
+    assert app_status.derive_alerts(doc) == []
+
+
+def test_derive_alerts_stuck_nonzero_is_warn():
+    doc = _base_doc(downloads={"stuck": [{"hash8": "f0a3658d", "name": "x", "hours": 3,
+                                           "rule": "stalledDL", "acted": True}],
+                                "sab": {"paused": False}})
+    out = app_status.derive_alerts(doc)
+    assert out == [{"level": "warn", "text": "1 download(s) stuck, pending unstick"}]
+
+
+def test_derive_alerts_sab_paused_is_warn():
+    doc = _base_doc(downloads={"stuck": [], "sab": {"paused": True}})
+    out = app_status.derive_alerts(doc)
+    assert out == [{"level": "warn", "text": "SABnzbd queue paused"}]
+
+
+def test_derive_alerts_ordered_crit_before_warn():
+    doc = _base_doc(
+        kuma={"red": [{"name": "Sonarr", "msg": "down", "since": "t"}]},
+        quota={"disk": {"pct": 10.0}, "bandwidth": {"available_pct": 90.0}},
+        downloads={"stuck": [{"hash8": "a", "name": "x", "hours": 1,
+                               "rule": "stalledDL", "acted": False}],
+                   "sab": {"paused": True}},
+    )
+    out = app_status.derive_alerts(doc)
+    levels = [a["level"] for a in out]
+    # all crit entries precede all warn entries
+    assert levels == sorted(levels, key=lambda lv: {"crit": 0, "warn": 1}[lv])
+    assert levels[0] == "crit"
+    assert levels[-1] == "warn"
+
+
+# ---------------------------------------------------------------------------
+# run() — section-failure isolation + restricted `sections` + doc shape
+# ---------------------------------------------------------------------------
+
+def _mock_all_sections(monkeypatch, *, streams_ok=True):
+    monkeypatch.setattr(app_status, "_collect_quota", lambda: {
+        "ok": True, "error": None,
+        "disk": {"used_gb": 2073, "total_gb": 2794, "pct": 74.2},
+        "bandwidth": {"used_pct": 3.42, "available_pct": 96.58,
+                       "last_reset": "2026-06-28T00:00:00",
+                       "next_reset": "2026-07-28T00:00:00"},
+    })
+    monkeypatch.setattr(app_status, "_collect_kuma", lambda: {
+        "ok": True, "error": None, "total": 55, "up": 55, "down": 0, "red": [],
+    })
+    if streams_ok:
+        monkeypatch.setattr(app_status, "_collect_streams", lambda: {
+            "ok": True, "error": None, "streams": 3, "users": 2,
+            "transcodes": 1, "wan_kbps": 12000,
+        })
+    else:
+        def _dead_streams():
+            raise RuntimeError("connection refused")
+        monkeypatch.setattr(app_status, "_collect_streams", _dead_streams)
+    monkeypatch.setattr(app_status, "_collect_top5", lambda now: {
+        "ok": True, "error": None, "requests_30d": [], "watch_30d": [],
+    })
+    monkeypatch.setattr(app_status, "_collect_downloads", lambda: {
+        "ok": True, "error": None,
+        "qbit": {"total": 12, "active": 1, "stalled_dl": 0, "errored": 0, "seeding": 10},
+        "sab": {"queued": 1, "paused": False, "mb_left": 4203.9, "mb_total": 4801.7, "kbps": 0},
+        "stuck": [], "recent_unsticks": [],
+    })
+    monkeypatch.setattr(app_status, "_collect_maint", lambda: {"apps": {}})
+
+
+CONTRACT_TOP_KEYS = {"meta", "quota", "kuma", "streams", "top5", "downloads", "alerts"}
+
+
+def test_run_full_doc_shape_matches_contract_keys(monkeypatch):
+    _mock_all_sections(monkeypatch)
+    doc = app_status.run()
+    assert set(doc.keys()) == CONTRACT_TOP_KEYS
+    assert doc["meta"]["version"] == 1
+    assert "generated_at" in doc["meta"]
+    assert "elapsed_ms" in doc["meta"]
+    assert "host" in doc["meta"]
+    assert doc["alerts"] == []  # every mocked section is healthy
+
+
+def test_run_dead_tautulli_isolates_to_streams_section(monkeypatch):
+    """Section-failure isolation: a dead tautulli must only degrade
+    streams.ok — every other section and the doc's top-level shape must
+    remain intact."""
+    _mock_all_sections(monkeypatch, streams_ok=False)
+    doc = app_status.run()
+    assert set(doc.keys()) == CONTRACT_TOP_KEYS
+    assert doc["streams"]["ok"] is False
+    assert doc["streams"]["error"]
+    assert doc["quota"]["ok"] is True
+    assert doc["kuma"]["ok"] is True
+    assert doc["top5"]["ok"] is True
+    assert doc["downloads"]["ok"] is True
+
+
+def test_run_restricted_sections_still_returns_complete_doc(monkeypatch):
+    _mock_all_sections(monkeypatch)
+    doc = app_status.run(sections=["quota"])
+    assert set(doc.keys()) == CONTRACT_TOP_KEYS
+    assert doc["quota"]["ok"] is True
+    # unrequested sections are still present, marked not-fetched
+    assert doc["kuma"]["ok"] is False
+    assert doc["streams"]["ok"] is False
+    assert doc["top5"]["ok"] is False
+    assert doc["downloads"]["ok"] is False
+
+
+def test_run_section_raising_exception_is_isolated(monkeypatch):
+    """Even an uncaught exception inside a collector (not just a returned
+    ok:false) must not take down the rest of the doc."""
+    _mock_all_sections(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("kaboom")
+    monkeypatch.setattr(app_status, "_collect_kuma", _boom)
+    doc = app_status.run()
+    assert doc["kuma"]["ok"] is False
+    assert "kaboom" in doc["kuma"]["error"]
+    assert doc["quota"]["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# main() — emits JSON to stdout with no args (forced-command channel)
+# ---------------------------------------------------------------------------
+
+def test_main_emits_json_with_no_args(monkeypatch, capsys):
+    fixed = {"meta": {"generated_at": "x", "elapsed_ms": 1, "host": "manitoba", "version": 1},
+             "quota": {}, "kuma": {}, "streams": {}, "top5": {}, "downloads": {}, "alerts": []}
+    monkeypatch.setattr(app_status, "run", lambda sections=None: fixed)
+    monkeypatch.setattr(sys, "argv", ["app_status.py"])
+    rc = app_status.main()
+    assert rc == 0
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.out)
+    assert parsed == fixed
+    assert parsed["meta"]["version"] == 1
