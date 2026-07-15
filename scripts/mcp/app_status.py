@@ -1,0 +1,711 @@
+#!/usr/bin/env python3
+"""scripts/mcp/app_status.py — Heartbeat v2 seedbox aggregator.
+
+Single read-only aggregator invoked over a forced-command SSH key by the
+Android Heartbeat app. Emits one JSON doc to stdout, stdlib only, target
+<5s wall. Per-section failure isolation: a dead source degrades that one
+section (ok=false) without killing the rest of the doc.
+
+Spec:  docs/superpowers/specs/2026-07-15-heartbeat-android-design.md
+Plan:  docs/superpowers/plans/2026-07-15-heartbeat-android.md
+
+Box python is 3.9.2 -- no 3.10+ syntax (match, X | Y unions at runtime).
+`from __future__ import annotations` defers annotation evaluation so
+lowercase generics (list[dict], etc.) are safe to write in signatures.
+"""
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import datetime as dt
+import json
+import os
+import re
+import socket
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Optional
+
+# Self-locate scripts/mcp/lib + scripts/maint/lib on sys.path (identical
+# bootstrap to collect.py:30-35 -- both `lib/` dirs merge into one
+# namespace package, see tests/conftest.py's comment on the same trick).
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))                   # for lib.qbit_client
+sys.path.insert(0, str(HERE.parent / "maint"))  # for lib.secrets
+
+from lib.qbit_client import QbitClient  # noqa: E402
+from lib.secrets import read_secret     # noqa: E402
+
+VERSION = 1
+ALL_SECTIONS = ("quota", "kuma", "streams", "top5", "downloads")
+
+# --- Config / paths (env-overridable, mirrors collect.py / qflix-collect.py) -
+KUMA_DB = Path(os.environ.get(
+    "QFLIX_KUMA_DB", str(Path.home() / ".apps" / "uptimekuma" / "kuma.db")))
+MAINT_STATE_FILE = Path(os.environ.get(
+    "MANITOBA_MAINT_STATE", str(Path.home() / ".opt" / "maint" / "state.json")))
+QFLIX_COLLECT_DATA = Path(os.environ.get(
+    "QFLIX_COLLECT_DATA", str(Path.home() / ".opt" / "qflix-collect")))
+
+# The shared Kuma instance also carries another operator's monitors. A red
+# "Quadstronix Node *" is that project's outage, not ours -- still worth a
+# line in the alert feed, but the two nodes + their parent group monitor
+# collapse into ONE line so one external blip doesn't spam three.
+QUADSTRONIX_NAMES = frozenset({"Quadstronix", "Quadstronix Node 1", "Quadstronix Node 2"})
+
+DISK_CRIT_PCT = 90.0
+DISK_WARN_PCT = 80.0
+BW_CRIT_AVAIL_PCT = 10.0
+BW_WARN_AVAIL_PCT = 20.0
+MAINT_FAILED_WINDOW_HOURS = 48
+
+
+# =============================================================================
+# Pure parsers -- network-free, unit tested directly with fixtures lifted
+# from the plan's recon samples. Each one takes already-fetched text/JSON
+# and returns a plain dict/list; all I/O lives in the _collect_* functions
+# below.
+# =============================================================================
+
+_SIZE_TOKEN = re.compile(r'^(\d+(?:\.\d+)?)([KMGT])?B?$', re.IGNORECASE)
+_UNIT_TO_GB = {"K": 1.0 / 1024 / 1024, "M": 1.0 / 1024, "G": 1.0, "T": 1024.0}
+
+
+def _size_to_gb(token: str) -> Optional[float]:
+    m = _SIZE_TOKEN.match(token.strip())
+    if not m:
+        return None
+    num = float(m.group(1))
+    unit = (m.group(2) or "G").upper()
+    return num * _UNIT_TO_GB[unit]
+
+
+def _first_two_sizes(tokens) -> Optional[list]:
+    out = []
+    for tok in tokens:
+        v = _size_to_gb(tok)
+        if v is not None:
+            out.append(v)
+        if len(out) == 2:
+            return out
+    return None
+
+
+def parse_quota(text: str) -> dict:
+    """Parse `quota -s` output -> {"used_gb", "total_gb", "pct"}.
+
+    Finds the row starting with a `/dev/...` filesystem path and reads its
+    first two size columns (used, quota-limit). Handles both layouts quota
+    -s can emit: numbers on the same line as the path, or wrapped to the
+    next line when the device path is long.
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if "/dev/" not in line:
+            continue
+        rest_tokens = [t for t in line.split() if not t.startswith("/dev/")]
+        pair = _first_two_sizes(rest_tokens)
+        if pair is None and i + 1 < len(lines):
+            pair = _first_two_sizes(lines[i + 1].split())
+        if pair is None:
+            continue
+        used_gb, total_gb = pair
+        pct = round(used_gb / total_gb * 100, 1) if total_gb else 0.0
+        return {
+            "used_gb": int(round(used_gb)),
+            "total_gb": int(round(total_gb)),
+            "pct": pct,
+        }
+    raise ValueError("quota -s: no /dev/ row found")
+
+
+_TRAFFIC_AVAIL_RE = re.compile(r'Traffic available:\s*([\d.]+)\s*%', re.IGNORECASE)
+_LAST_RESET_RE = re.compile(r'Last traffic reset:\s*(.+)', re.IGNORECASE)
+_NEXT_RESET_RE = re.compile(r'Next traffic reset:\s*(.+)', re.IGNORECASE)
+_DATE_RE = re.compile(r'(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})')
+
+
+def _traffic_date_to_iso(raw: str) -> Optional[str]:
+    m = _DATE_RE.search(raw)
+    if not m:
+        return None
+    return "{}T{}".format(m.group(1), m.group(2))
+
+
+def parse_traffic(text: str) -> dict:
+    """Parse `app-traffic info` output.
+
+    Ultra.cc user accounts expose no GB numbers for bandwidth -- only a
+    percentage-available figure and reset dates (verified live recon,
+    2026-07-15) -- so that's all this returns. used_pct is the complement
+    of available_pct.
+    """
+    m = _TRAFFIC_AVAIL_RE.search(text)
+    if not m:
+        raise ValueError("app-traffic info: no 'Traffic available' line found")
+    available_pct = round(float(m.group(1)), 2)
+    used_pct = round(100.0 - available_pct, 2)
+    last_m = _LAST_RESET_RE.search(text)
+    next_m = _NEXT_RESET_RE.search(text)
+    return {
+        "used_pct": used_pct,
+        "available_pct": available_pct,
+        "last_reset": _traffic_date_to_iso(last_m.group(1)) if last_m else None,
+        "next_reset": _traffic_date_to_iso(next_m.group(1)) if next_m else None,
+    }
+
+
+# qBit state vocabulary. qBit 5.x renamed pausedDL/pausedUP -> stoppedDL/
+# stoppedUP (same rename collect.py's matches_stale_rule() already
+# accounts for) -- both spellings map to the same bucket here so this
+# classifier works unchanged across a 4.x -> 5.x qBit upgrade.
+_QBIT_ACTIVE = frozenset({"downloading", "forcedDL"})
+_QBIT_STALLED = frozenset({"stalledDL"})
+_QBIT_ERRORED = frozenset({"error", "missingFiles"})
+_QBIT_STOPPED_DL = frozenset({"stoppedDL", "pausedDL"})
+_QBIT_SEEDING = frozenset({"uploading", "stalledUP", "forcedUP", "queuedUP", "checkingUP"})
+
+
+def classify_qbit(torrents: list) -> dict:
+    """Bucket qBit torrents by state.
+
+    Returns a superset of what the contract's "downloads.qbit" section
+    surfaces: total/active/stalled_dl/errored/seeding go straight into the
+    doc; stopped_dl is tracked here (for classification-vocabulary
+    coverage, incl. the qBit5 stoppedDL rename) but is represented in the
+    final doc via the itemized "stuck" list instead of this summary --
+    stopped_dl torrents are exactly the ones stale-state.json is tracking.
+    """
+    counts = {"total": len(torrents), "active": 0, "stalled_dl": 0,
+              "errored": 0, "stopped_dl": 0, "seeding": 0}
+    for t in torrents:
+        state = t.get("state", "")
+        if state in _QBIT_ACTIVE:
+            counts["active"] += 1
+        elif state in _QBIT_STALLED:
+            counts["stalled_dl"] += 1
+        elif state in _QBIT_ERRORED:
+            counts["errored"] += 1
+        elif state in _QBIT_STOPPED_DL:
+            counts["stopped_dl"] += 1
+        elif state in _QBIT_SEEDING:
+            counts["seeding"] += 1
+    return counts
+
+
+def _parse_iso(raw) -> Optional[dt.datetime]:
+    """Parse an ISO8601 timestamp (with or without trailing Z) to an
+    aware UTC datetime. Returns None on anything unparsable rather than
+    raising -- callers treat that as 'exclude from window'."""
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        d = dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=dt.timezone.utc)
+    return d
+
+
+def top5_requests(requests_json: dict, now: dt.datetime) -> list:
+    """Seerr /api/v1/request results -> top 5 requesters in the last 30d.
+
+    Filters to createdAt >= now-30d, groups by requestedBy.id, labels with
+    displayName (falling back to plexUsername when Seerr has no display
+    name set for that user), ranks by count desc (ties broken by name).
+    """
+    cutoff = now - dt.timedelta(days=30)
+    results = (requests_json or {}).get("results") or []
+    by_user = {}
+    for r in results:
+        created = _parse_iso(r.get("createdAt"))
+        if created is None or created < cutoff:
+            continue
+        rb = r.get("requestedBy") or {}
+        label = rb.get("displayName") or rb.get("plexUsername") or "unknown"
+        key = rb.get("id", label)
+        entry = by_user.setdefault(key, {"user": label, "count": 0})
+        entry["count"] += 1
+    ranked = sorted(by_user.values(), key=lambda e: (-e["count"], e["user"]))
+    return ranked[:5]
+
+
+def top5_watch(rows: list) -> list:
+    """Tautulli get_home_stats(top_users, duration) rows -> top 5 by watch
+    time. `rows` is the already-unwrapped `response.data.rows` list."""
+    out = []
+    for r in rows or []:
+        secs = r.get("total_duration") or 0
+        out.append({
+            "user": r.get("friendly_name") or "unknown",
+            "hours": round(secs / 3600.0, 1),
+            "plays": r.get("total_plays") or 0,
+        })
+    out.sort(key=lambda e: e["hours"], reverse=True)
+    return out[:5]
+
+
+def parse_streams(activity_json: dict) -> dict:
+    """Tautulli get_activity -> stream fraction + transcode/bandwidth.
+
+    stream_count comes back as a STRING from Tautulli (verified recon) --
+    must be int()'d. Distinct users = set of sessions[].user_id (a
+    fractional streams/users, e.g. 3/2, means someone is multi-streaming).
+    """
+    data = ((activity_json or {}).get("response") or {}).get("data") or {}
+    sessions = data.get("sessions") or []
+    streams = int(data.get("stream_count") or 0)
+    users = len({s.get("user_id") for s in sessions if s.get("user_id") is not None})
+    transcodes = int(data.get("stream_count_transcode") or 0)
+    wan_kbps = int(float(data.get("wan_bandwidth") or 0))
+    return {"streams": streams, "users": users, "transcodes": transcodes,
+            "wan_kbps": wan_kbps}
+
+
+def parse_kuma_rows(rows: list) -> dict:
+    """rows: list of {"name","status","msg","time"} dicts -- one latest
+    heartbeat per active monitor. status: 0=down 1=up 2=pending
+    3=maintenance (per recon; only 0/1 are counted, matching the box's
+    live monitor mix)."""
+    total = len(rows)
+    up = sum(1 for r in rows if r.get("status") == 1)
+    down_rows = [r for r in rows if r.get("status") == 0]
+    red = [{"name": r.get("name"), "msg": r.get("msg") or "", "since": r.get("time")}
+           for r in down_rows]
+    return {"total": total, "up": up, "down": len(down_rows), "red": red}
+
+
+def parse_sab_queue(payload: dict) -> dict:
+    """SABnzbd `?mode=queue&output=json` -> the fields the doc needs.
+    mbleft/mb/kbpersec/noofslots arrive as strings from the SAB API."""
+    q = (payload or {}).get("queue") or {}
+    return {
+        "queued": int(q.get("noofslots") or 0),
+        "paused": bool(q.get("paused")),
+        "mb_left": round(float(q.get("mbleft") or 0), 1),
+        "mb_total": round(float(q.get("mb") or 0), 1),
+        "kbps": int(float(q.get("kbpersec") or 0)),
+    }
+
+
+def build_stuck_list(stale_state: dict, torrents: list) -> list:
+    """Join stale-state.json's `hashes` map (candidates only) to qBit
+    torrent names. `acted` reflects whether the autonomous unstick loop
+    already dispatched an action for this hash (acted_on_at set)."""
+    names = {(t.get("hash") or "").lower(): t.get("name", "?") for t in (torrents or [])}
+    out = []
+    for h, entry in ((stale_state or {}).get("hashes") or {}).items():
+        if not entry.get("candidate_for_unstick"):
+            continue
+        out.append({
+            "hash8": h[:8],
+            "name": names.get(h.lower(), "?"),
+            "hours": int(entry.get("consecutive_zero_hours") or 0),
+            "rule": entry.get("rule_matched"),
+            "acted": bool(entry.get("acted_on_at")),
+        })
+    return out
+
+
+def recent_unsticks_from_lines(lines: list) -> list:
+    """events/<date>.jsonl lines (unstick.py's _record_event schema) ->
+    recent-unsticks list, newest first. Non-"unstick"-action lines
+    (refusals, other event types) and malformed lines are skipped."""
+    out = []
+    for raw in lines:
+        raw = (raw or "").strip()
+        if not raw:
+            continue
+        try:
+            ev = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("action") != "unstick":
+            continue
+        h = ev.get("hash") or ""
+        out.append({"ts": ev.get("ts"), "hash8": h[:8] if h else None,
+                     "result": ev.get("result")})
+    out.sort(key=lambda e: e.get("ts") or "", reverse=True)
+    return out
+
+
+def derive_alerts(doc: dict) -> list:
+    """Derive the flat, ordered (crit before warn) alert list from an
+    assembled doc.
+
+    `doc` carries the 5 contract sections (quota/kuma/streams/top5/
+    downloads) plus two internal-only keys this function needs that never
+    reach the final JSON: "maint" (raw ~/.opt/maint/state.json apps map,
+    for the auto-heal-failed rule) and "_now" (the aware UTC datetime run()
+    anchored generated_at to, for deterministic window math in tests).
+
+    Rules (exact thresholds from the plan):
+      - each Kuma red = crit, EXCEPT the Quadstronix trio which rolls into
+        one combined crit line
+      - disk pct >=90 crit / >=80 warn
+      - bandwidth available_pct <10 crit / <20 warn
+      - maint apps[*].event == "failed" within 48h = crit
+      - any stuck entries = warn
+      - SAB paused = warn
+    Empty list = all clear.
+    """
+    crit = []
+    warn = []
+
+    kuma = doc.get("kuma") or {}
+    red = kuma.get("red") or []
+    quad = [r for r in red if r.get("name") in QUADSTRONIX_NAMES]
+    other = [r for r in red if r.get("name") not in QUADSTRONIX_NAMES]
+    for r in other:
+        crit.append({"level": "crit",
+                      "text": "Kuma down: {} — {}".format(r.get("name"), r.get("msg") or "")})
+    if quad:
+        names = ", ".join(sorted(r.get("name") for r in quad))
+        crit.append({"level": "crit", "text": "Kuma down (external): {}".format(names)})
+
+    quota = doc.get("quota") or {}
+    disk = quota.get("disk") or {}
+    pct = disk.get("pct")
+    if isinstance(pct, (int, float)):
+        if pct >= DISK_CRIT_PCT:
+            crit.append({"level": "crit", "text": "Disk quota {}% used".format(pct)})
+        elif pct >= DISK_WARN_PCT:
+            warn.append({"level": "warn", "text": "Disk quota {}% used".format(pct)})
+
+    bandwidth = quota.get("bandwidth") or {}
+    avail = bandwidth.get("available_pct")
+    if isinstance(avail, (int, float)):
+        if avail < BW_CRIT_AVAIL_PCT:
+            crit.append({"level": "crit", "text": "Bandwidth available {}%".format(avail)})
+        elif avail < BW_WARN_AVAIL_PCT:
+            warn.append({"level": "warn", "text": "Bandwidth available {}%".format(avail)})
+
+    maint = doc.get("maint") or {}
+    now = doc.get("_now") or dt.datetime.now(dt.timezone.utc)
+    for slug, entry in (maint.get("apps") or {}).items():
+        if not isinstance(entry, dict) or entry.get("event") != "failed":
+            continue
+        ts = _parse_iso(entry.get("updated_at"))
+        if ts is not None and (now - ts) <= dt.timedelta(hours=MAINT_FAILED_WINDOW_HOURS):
+            crit.append({"level": "crit", "text": "Auto-heal failed: {}".format(slug)})
+
+    downloads = doc.get("downloads") or {}
+    stuck = downloads.get("stuck") or []
+    if len(stuck) > 0:
+        warn.append({"level": "warn",
+                      "text": "{} download(s) stuck, pending unstick".format(len(stuck))})
+
+    sab = downloads.get("sab") or {}
+    if sab.get("paused"):
+        warn.append({"level": "warn", "text": "SABnzbd queue paused"})
+
+    return crit + warn
+
+
+# =============================================================================
+# I/O collectors -- one per section, each catches its own exceptions and
+# returns a full-shape dict so a dead source never breaks doc structure.
+# =============================================================================
+
+def _collect_quota() -> dict:
+    try:
+        q = subprocess.run(["quota", "-s"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "error": "quota_subprocess: {}".format(e),
+                "disk": None, "bandwidth": None}
+    try:
+        t = subprocess.run(["app-traffic", "info"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "error": "traffic_subprocess: {}".format(e),
+                "disk": None, "bandwidth": None}
+    try:
+        disk = parse_quota(q.stdout)
+    except ValueError as e:
+        return {"ok": False, "error": "quota_parse: {}".format(e),
+                "disk": None, "bandwidth": None}
+    try:
+        bandwidth = parse_traffic(t.stdout)
+    except ValueError as e:
+        return {"ok": False, "error": "traffic_parse: {}".format(e),
+                "disk": disk, "bandwidth": None}
+    return {"ok": True, "error": None, "disk": disk, "bandwidth": bandwidth}
+
+
+def _sqlite_ro_uri(path: Path) -> str:
+    """Build a `file:...?mode=ro` URI sqlite3 accepts cross-platform (the
+    box is POSIX; dev/test may run on Windows -- both need a leading '/'
+    before the resolved path per SQLite's URI filename rules)."""
+    p = Path(path).resolve().as_posix()
+    if not p.startswith("/"):
+        p = "/" + p
+    return "file:{}?mode=ro".format(p)
+
+
+def _collect_kuma(db_path: Optional[Path] = None) -> dict:
+    db_path = Path(db_path) if db_path else KUMA_DB
+    try:
+        con = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True, timeout=5)
+        try:
+            cur = con.execute(
+                "SELECT m.name, h.status, h.msg, h.time FROM monitor m "
+                "JOIN heartbeat h ON h.id = ("
+                "  SELECT id FROM heartbeat WHERE monitor_id = m.id "
+                "  ORDER BY time DESC LIMIT 1"
+                ") WHERE m.active = 1"
+            )
+            rows = [{"name": n, "status": s, "msg": m, "time": tm}
+                    for (n, s, m, tm) in cur.fetchall()]
+        finally:
+            con.close()
+    except Exception as e:
+        return {"ok": False, "error": "kuma_db: {}".format(e),
+                "total": 0, "up": 0, "down": 0, "red": []}
+    section = parse_kuma_rows(rows)
+    section["ok"] = True
+    section["error"] = None
+    return section
+
+
+def _tautulli_get(cmd: str, extra: str = "") -> dict:
+    port = read_secret("tautulli.port")
+    key = read_secret("tautulli.key")
+    url = "http://127.0.0.1:{}/tautulli/api/v2?apikey={}&cmd={}".format(port, key, cmd)
+    if extra:
+        url += "&" + extra
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _collect_streams() -> dict:
+    try:
+        activity = _tautulli_get("get_activity")
+        section = parse_streams(activity)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200],
+                "streams": 0, "users": 0, "transcodes": 0, "wan_kbps": 0}
+    section["ok"] = True
+    section["error"] = None
+    return section
+
+
+def _collect_seerr_requests() -> dict:
+    """Fetch all Seerr requests, paginating via pageInfo when the total
+    exceeds one page's `take`."""
+    port = read_secret("seerr.port")
+    key = read_secret("seerr.key")
+    take = 200
+    skip = 0
+    all_results = []
+    page_info = {}
+    while True:
+        url = ("http://127.0.0.1:{}/api/v1/request"
+               "?take={}&skip={}&sort=added").format(port, take, skip)
+        req = urllib.request.Request(url, headers={"X-Api-Key": key, "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode())
+        results = payload.get("results") or []
+        all_results.extend(results)
+        page_info = payload.get("pageInfo") or {}
+        total = page_info.get("results", len(all_results))
+        if len(all_results) >= total or not results:
+            break
+        skip += take
+    return {"pageInfo": page_info, "results": all_results}
+
+
+def _collect_top5(now: dt.datetime) -> dict:
+    errors = []
+    requests_30d = []
+    watch_30d = []
+    try:
+        req_json = _collect_seerr_requests()
+        requests_30d = top5_requests(req_json, now)
+    except Exception as e:
+        errors.append("seerr: {}".format(e))
+    try:
+        payload = _tautulli_get(
+            "get_home_stats", "time_range=30&stats_type=duration&stat_id=top_users")
+        data = (payload.get("response") or {}).get("data") or {}
+        watch_30d = top5_watch(data.get("rows") or [])
+    except Exception as e:
+        errors.append("tautulli: {}".format(e))
+    ok = len(errors) == 0
+    return {"ok": ok, "error": "; ".join(errors) if errors else None,
+            "requests_30d": requests_30d, "watch_30d": watch_30d}
+
+
+def _collect_sab_queue() -> dict:
+    port = read_secret("sabnzbd.port")
+    key = read_secret("sabnzbd.key")
+    url = "http://127.0.0.1:{}/api?mode=queue&output=json&apikey={}".format(port, key)
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _read_recent_event_lines() -> list:
+    """Today + yesterday's events/<date>.jsonl lines (UTC dates)."""
+    events_dir = QFLIX_COLLECT_DATA / "events"
+    lines = []
+    today = dt.datetime.now(dt.timezone.utc).date()
+    for delta in (0, 1):
+        day = today - dt.timedelta(days=delta)
+        fp = events_dir / "{}.jsonl".format(day.isoformat())
+        try:
+            lines.extend(fp.read_text(encoding="utf-8").splitlines())
+        except FileNotFoundError:
+            continue
+    return lines
+
+
+def _collect_downloads() -> dict:
+    errors = []
+
+    qbit_summary = {"total": 0, "active": 0, "stalled_dl": 0, "errored": 0, "seeding": 0}
+    torrents = []
+    try:
+        c = QbitClient()
+        if not c.login():
+            raise RuntimeError("qbit_login_failed")
+        torrents = c.list_torrents()
+        classified = classify_qbit(torrents)
+        qbit_summary = {k: classified[k]
+                         for k in ("total", "active", "stalled_dl", "errored", "seeding")}
+    except Exception as e:
+        errors.append("qbit: {}".format(e))
+
+    sab_summary = {"queued": 0, "paused": False, "mb_left": 0.0, "mb_total": 0.0, "kbps": 0}
+    try:
+        sab_summary = parse_sab_queue(_collect_sab_queue())
+    except Exception as e:
+        errors.append("sab: {}".format(e))
+
+    stuck = []
+    try:
+        stale_state = json.loads(
+            (QFLIX_COLLECT_DATA / "stale-state.json").read_text(encoding="utf-8"))
+        stuck = build_stuck_list(stale_state, torrents)
+    except FileNotFoundError:
+        pass  # no stale-state.json yet is a legitimate empty-doc state
+    except Exception as e:
+        errors.append("stuck: {}".format(e))
+
+    recent = []
+    try:
+        recent = recent_unsticks_from_lines(_read_recent_event_lines())
+    except Exception as e:
+        errors.append("events: {}".format(e))
+
+    ok = len(errors) == 0
+    return {"ok": ok, "error": "; ".join(errors) if errors else None,
+            "qbit": qbit_summary, "sab": sab_summary,
+            "stuck": stuck, "recent_unsticks": recent}
+
+
+def _collect_maint() -> dict:
+    """Internal-only: ~/.opt/maint/state.json apps map, feeding the
+    auto-heal-failed alert rule. Never surfaced as its own doc section --
+    fails silently (empty apps map) so a missing/corrupt state file just
+    means "no auto-heal alerts", never a broken doc."""
+    try:
+        state = json.loads(MAINT_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"apps": {}}
+    return {"apps": state.get("apps") or {}}
+
+
+# =============================================================================
+# Aggregation entry point
+# =============================================================================
+
+def run(sections: Optional[list] = None) -> dict:
+    """Fetch requested sections concurrently, isolate per-section failures,
+    derive alerts, and return the contract dict. sections=None -> all 5.
+    A restricted `sections` list still returns a doc with every contract
+    key present -- unrequested sections come back as an explicit
+    not-fetched stub rather than being omitted."""
+    started = time.time()
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    want = set(sections) if sections else set(ALL_SECTIONS)
+
+    jobs = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+        if "quota" in want:
+            jobs["quota"] = ex.submit(_collect_quota)
+        if "kuma" in want:
+            jobs["kuma"] = ex.submit(_collect_kuma)
+        if "streams" in want:
+            jobs["streams"] = ex.submit(_collect_streams)
+        if "top5" in want:
+            jobs["top5"] = ex.submit(_collect_top5, now)
+        if "downloads" in want:
+            jobs["downloads"] = ex.submit(_collect_downloads)
+        jobs["maint"] = ex.submit(_collect_maint)  # always: feeds alerts only
+
+        results = {}
+        for key, fut in jobs.items():
+            try:
+                results[key] = fut.result()
+            except Exception as e:
+                results[key] = {"ok": False, "error": "collect_failed: {}".format(e)}
+
+    doc = {name: results.get(name, {"ok": False, "error": "not_requested"})
+           for name in ALL_SECTIONS}
+    doc["maint"] = results.get("maint") or {"apps": {}}
+    doc["_now"] = now
+
+    alerts = derive_alerts(doc)
+    elapsed_ms = int(round((time.time() - started) * 1000))
+
+    return {
+        "meta": {
+            "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "elapsed_ms": elapsed_ms,
+            "host": socket.gethostname(),
+            "version": VERSION,
+        },
+        "quota": doc["quota"],
+        "kuma": doc["kuma"],
+        "streams": doc["streams"],
+        "top5": doc["top5"],
+        "downloads": doc["downloads"],
+        "alerts": alerts,
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--emit-json", action="store_true",
+                     help="write JSON to stdout (also the default with no "
+                          "args -- the forced-command SSH channel invokes "
+                          "this bare)")
+    ap.add_argument("--sections", default=None,
+                     help="comma list to restrict collection, e.g. "
+                          "quota,kuma (default: all)")
+    args = ap.parse_args()
+    sections = ([s.strip() for s in args.sections.split(",") if s.strip()]
+                if args.sections else None)
+    try:
+        result = run(sections=sections)
+    except Exception as e:
+        print("error: {}".format(e), file=sys.stderr)
+        return 1
+    json.dump(result, sys.stdout, default=str)
+    sys.stdout.write("\n")
+    print("app_status.py: ok in {}ms".format(result["meta"]["elapsed_ms"]),
+          file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
