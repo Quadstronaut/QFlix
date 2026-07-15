@@ -69,8 +69,12 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.coroutines.core)
 
-    // Pulled in now for A3 (SSH fetcher); unused until then but must resolve.
+    // A3: SSH fetcher + provisioning.
     implementation(libs.sshj)
     implementation(libs.bcprov.jdk18on)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }
