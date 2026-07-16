@@ -8,6 +8,7 @@ import com.qflix.heartbeat.model.StatusDoc
 import com.qflix.heartbeat.model.ViewState
 import com.qflix.heartbeat.net.StatusTransport
 import java.time.Instant
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -47,17 +48,32 @@ class StatusViewModel(private val transport: StatusTransport) : ViewModel() {
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    // Tracks the single in-flight fetch (initial load, retry, or refresh) so
+    // a double-tap on the refresh icon / a fast double pull-to-refresh can't
+    // launch two concurrent transport.fetch() calls. Without this, whichever
+    // SSH session finishes second wins the final _uiState write - which can
+    // silently regress the dashboard to older data if it happens to be the
+    // earlier-triggered (slower) one. Only one fetch may be in flight at a
+    // time, full stop - "in flight" includes the very first load() too.
+    private var fetchJob: Job? = null
+
     init {
         load()
     }
 
     /** Pull-to-refresh entry point, and what [StatusUiState.Error.retry] calls too. */
     fun refresh() {
+        if (fetchJob?.isActive == true) {
+            return
+        }
         if (_uiState.value is StatusUiState.Ready) {
-            viewModelScope.launch {
+            fetchJob = viewModelScope.launch {
                 _isRefreshing.value = true
-                fetchAndPublish()
-                _isRefreshing.value = false
+                try {
+                    fetchAndPublish()
+                } finally {
+                    _isRefreshing.value = false
+                }
             }
         } else {
             load()
@@ -65,7 +81,10 @@ class StatusViewModel(private val transport: StatusTransport) : ViewModel() {
     }
 
     private fun load() {
-        viewModelScope.launch {
+        if (fetchJob?.isActive == true) {
+            return
+        }
+        fetchJob = viewModelScope.launch {
             _uiState.value = StatusUiState.Loading
             fetchAndPublish()
         }
