@@ -427,17 +427,28 @@ def _collect_quota() -> dict:
     except (OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "error": "traffic_subprocess: {}".format(e),
                 "disk": None, "bandwidth": None}
+    # Both already-fetched outputs are parsed independently below -- a
+    # failure in one parser must not discard a successful parse of the
+    # other (they're unrelated data: disk quota vs bandwidth). ok=false iff
+    # either parser failed; the error string names which one(s) did, mirroring
+    # the errors-list pattern the other multi-source collectors use (e.g.
+    # _collect_top5, _collect_downloads).
+    errors = []
+    disk = None
     try:
         disk = parse_quota(q.stdout)
     except ValueError as e:
-        return {"ok": False, "error": "quota_parse: {}".format(e),
-                "disk": None, "bandwidth": None}
+        errors.append("quota_parse: {}".format(e))
+
+    bandwidth = None
     try:
         bandwidth = parse_traffic(t.stdout)
     except ValueError as e:
-        return {"ok": False, "error": "traffic_parse: {}".format(e),
-                "disk": disk, "bandwidth": None}
-    return {"ok": True, "error": None, "disk": disk, "bandwidth": bandwidth}
+        errors.append("traffic_parse: {}".format(e))
+
+    ok = len(errors) == 0
+    return {"ok": ok, "error": "; ".join(errors) if errors else None,
+            "disk": disk, "bandwidth": bandwidth}
 
 
 def _sqlite_ro_uri(path: Path) -> str:
