@@ -192,14 +192,21 @@ try {
     & adb shell rm -rf /data/local/tmp/hb-prov 2>$null | Out-Null
     & adb shell mkdir -p /data/local/tmp/hb-prov
     if ($LASTEXITCODE -ne 0) { Fail "adb shell mkdir failed." }
-    & adb push $localKeyPath /data/local/tmp/hb-prov/phone_key
-    & adb push $localKnownHostPath /data/local/tmp/hb-prov/known_host
-    & adb push $localConfigPath /data/local/tmp/hb-prov/config.json
-    if ($LASTEXITCODE -ne 0) { Fail "adb push failed." }
+    # adb push reports success on stderr; under PS5.1 strict mode that becomes a
+    # terminating NativeCommandError. Merge streams inside cmd.exe instead.
+    foreach ($pair in @(
+        @($localKeyPath,       "phone_key"),
+        @($localKnownHostPath, "known_host"),
+        @($localConfigPath,    "config.json"))) {
+        cmd /c "adb push `"$($pair[0])`" /data/local/tmp/hb-prov/$($pair[1]) 2>&1" | Out-Null
+        if ($LASTEXITCODE -ne 0) { Fail "adb push $($pair[1]) failed." }
+    }
     Write-Ok "Bundle pushed to device staging area."
 
     Write-Step "Moving the bundle into app-private storage ($AppId)"
-    & adb shell run-as $AppId sh -c "mkdir -p files/provision && cp /data/local/tmp/hb-prov/* files/provision/ && chmod 600 files/provision/phone_key"
+    # Whole remote command as ONE argument, sh -c payload single-quoted, so the
+    # && chain executes inside run-as (not in the outer adb shell).
+    & adb shell "run-as $AppId sh -c 'mkdir -p files/provision && cp /data/local/tmp/hb-prov/* files/provision/ && chmod 600 files/provision/phone_key'"
     if ($LASTEXITCODE -ne 0) {
         Fail "adb shell run-as copy failed. Is $AppId installed as a debug build on this device?"
     }
