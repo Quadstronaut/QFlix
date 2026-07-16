@@ -58,9 +58,13 @@ fi
 
 # ── Step 3: authorized_keys patch — SAFETY CRITICAL ──────────────────────────
 # Dated backup first (only if none taken today), then append-only with a
-# grep -qF guard on the raw pubkey material. NEVER rewrite/sort/dedupe the
-# file — a stray sort/rewrite here can lock the operator's own admin key
-# out of the box.
+# grep -qF guard on the FULL restricted entry (command="...",restrict
+# <keytype> <base64> — not just the raw pubkey material). Guarding on bare
+# key material would treat a stray unrestricted line for the same phone key
+# (e.g. left over from manual debugging) as "already present" and skip the
+# append, silently leaving that unrestricted line as the only usable entry.
+# NEVER rewrite/sort/dedupe the file — a stray sort/rewrite here can lock
+# the operator's own admin key out of the box.
 log_info "patching authorized_keys (backup + append-only, guarded)"
 AK_OUT=$(sshm 'bash -s' <<AKSCRIPT
 set -euo pipefail
@@ -76,7 +80,7 @@ fi
 PUBLINE=\$(cat ${PHONE_KEY_PATH}.pub)
 PUBKEY=\$(awk '{print \$1, \$2}' <<<"\$PUBLINE")
 ENTRY="command=\"${FORCED_CMD}\",restrict \${PUBKEY}"
-if grep -qF "\$PUBKEY" ~/.ssh/authorized_keys; then
+if grep -qF "\$ENTRY" ~/.ssh/authorized_keys; then
   echo "ENTRY_APPENDED=0"
 else
   printf '%s\n' "\$ENTRY" >> ~/.ssh/authorized_keys
@@ -147,12 +151,33 @@ else
   gate "app-status-live-json" fail "exit=${APP_STATUS_EXIT} json_valid=${JSON_VALID} version=${VERSION} err='${ERRDETAIL}'"
 fi
 
-# Gate (b): authorized_keys contains exactly one heartbeat entry.
-AK_COUNT=$(sshm "PUB=\$(cat ${PHONE_KEY_PATH}.pub | awk '{print \$2}'); grep -cF \"\$PUB\" ~/.ssh/authorized_keys" </dev/null 2>/dev/null || echo "?")
-if [ "$AK_COUNT" = "1" ]; then
-  gate "authorized-keys-single-entry" pass "count=${AK_COUNT}"
+# Gate (b): authorized_keys contains exactly one heartbeat entry, AND it is
+# the fully restricted form. Counting bare key-material matches only (as a
+# prior version of this gate did) would pass even if an unrestricted
+# duplicate of the same phone pubkey were sitting in the file alongside the
+# restricted one -- the phone key would then have unrestricted shell access
+# via that second line while this gate reported all-clear. So this checks
+# two independent counts: lines that have the key material AND the full
+# command=...,restrict prefix (want exactly 1), and lines that have the key
+# material WITHOUT that prefix (want exactly 0). Read-only: counts only,
+# never rewrites authorized_keys (see Step 3's append-only comment).
+GATE_B_OUT=$(sshm 'bash -s' <<GATEBSCRIPT
+set -uo pipefail
+PUBLINE=\$(cat ${PHONE_KEY_PATH}.pub)
+PUBKEY=\$(awk '{print \$1, \$2}' <<<"\$PUBLINE")
+RESTRICTED_LINE="command=\"${FORCED_CMD}\",restrict \${PUBKEY}"
+RESTRICTED_COUNT=\$(grep -cF "\$RESTRICTED_LINE" ~/.ssh/authorized_keys)
+UNRESTRICTED_COUNT=\$(grep -F "\$PUBKEY" ~/.ssh/authorized_keys | grep -vcF "\$RESTRICTED_LINE")
+echo "RESTRICTED_COUNT=\${RESTRICTED_COUNT:-0}"
+echo "UNRESTRICTED_COUNT=\${UNRESTRICTED_COUNT:-0}"
+GATEBSCRIPT
+)
+RESTRICTED_COUNT=$(echo "$GATE_B_OUT" | grep '^RESTRICTED_COUNT=' | cut -d= -f2)
+UNRESTRICTED_COUNT=$(echo "$GATE_B_OUT" | grep '^UNRESTRICTED_COUNT=' | cut -d= -f2)
+if [ "$RESTRICTED_COUNT" = "1" ] && [ "$UNRESTRICTED_COUNT" = "0" ]; then
+  gate "authorized-keys-single-entry" pass "restricted=${RESTRICTED_COUNT} unrestricted=${UNRESTRICTED_COUNT}"
 else
-  gate "authorized-keys-single-entry" fail "count=${AK_COUNT} (expected exactly 1)"
+  gate "authorized-keys-single-entry" fail "restricted=${RESTRICTED_COUNT:-?} (want 1) unrestricted=${UNRESTRICTED_COUNT:-?} (want 0) -- if unrestricted>0, an unrestricted duplicate of the phone key exists in ~/.ssh/authorized_keys; hand-remove it (this script never rewrites authorized_keys)"
 fi
 
 # Gate (c): plain admin channel still works — proves authorized_keys wasn't
