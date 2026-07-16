@@ -1,5 +1,10 @@
 # QFlix Heartbeat v2 Implementation Plan
 
+> **COMPLETED 2026-07-16.** All tasks S1–S2, A1–A5, R executed and verified live.
+> Deltas vs plan: installer landed as `74-heartbeat-status-install.sh` (71–73 taken);
+> 5 review findings fixed post-build (c8b974e); provision.ps1 gained two PS5.1
+> runtime fixes found during live E2E (a0763c2).
+
 > **For agentic workers:** executed via ultracode Workflow orchestration (operator-approved this session); each task below = one subagent with this plan + spec as context. Steps use checkbox syntax.
 
 **Goal:** Read-only Android health dashboard fetching one JSON doc from the seedbox over a forced-command SSH key.
