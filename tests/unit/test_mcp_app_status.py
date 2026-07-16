@@ -100,6 +100,70 @@ def test_parse_traffic_no_match_raises():
 
 
 # ---------------------------------------------------------------------------
+# _collect_quota — disk/bandwidth parsers are independent: a failure in one
+# must not discard an already-fetched, successfully-parsed reading from the
+# other (regression for the asymmetry where a disk parse failure used to
+# blank bandwidth too, even though `app-traffic info` had already run).
+# ---------------------------------------------------------------------------
+
+class _FakeCompleted:
+    def __init__(self, stdout):
+        self.stdout = stdout
+
+
+def _fake_subprocess_run(quota_stdout, traffic_stdout):
+    def _run(cmd, **kwargs):
+        if cmd[0] == "quota":
+            return _FakeCompleted(quota_stdout)
+        if cmd[0] == "app-traffic":
+            return _FakeCompleted(traffic_stdout)
+        raise AssertionError("unexpected subprocess.run call: {}".format(cmd))
+    return _run
+
+
+def test_collect_quota_disk_parse_failure_preserves_bandwidth(monkeypatch):
+    """A malformed `quota -s` output must not discard the already-fetched,
+    successfully-parsed `app-traffic info` reading."""
+    monkeypatch.setattr(app_status.subprocess, "run",
+                         _fake_subprocess_run(QUOTA_TEXT_NO_ROW, TRAFFIC_TEXT))
+    section = app_status._collect_quota()
+    assert section["ok"] is False
+    assert "quota_parse" in section["error"]
+    assert "traffic_parse" not in section["error"]
+    assert section["disk"] is None
+    assert section["bandwidth"] == {
+        "used_pct": 3.42,
+        "available_pct": 96.58,
+        "last_reset": "2026-06-28T00:00:00",
+        "next_reset": "2026-07-28T00:00:00",
+    }
+
+
+def test_collect_quota_bandwidth_parse_failure_preserves_disk(monkeypatch):
+    """Symmetric case: a malformed `app-traffic info` output must not
+    discard the already-parsed disk reading."""
+    monkeypatch.setattr(app_status.subprocess, "run",
+                         _fake_subprocess_run(QUOTA_TEXT_INLINE, TRAFFIC_TEXT_NO_MATCH))
+    section = app_status._collect_quota()
+    assert section["ok"] is False
+    assert "traffic_parse" in section["error"]
+    assert "quota_parse" not in section["error"]
+    assert section["disk"] == {"used_gb": 2073, "total_gb": 2794, "pct": 74.2}
+    assert section["bandwidth"] is None
+
+
+def test_collect_quota_both_parsers_fail_reports_both(monkeypatch):
+    monkeypatch.setattr(app_status.subprocess, "run",
+                         _fake_subprocess_run(QUOTA_TEXT_NO_ROW, TRAFFIC_TEXT_NO_MATCH))
+    section = app_status._collect_quota()
+    assert section["ok"] is False
+    assert "quota_parse" in section["error"]
+    assert "traffic_parse" in section["error"]
+    assert section["disk"] is None
+    assert section["bandwidth"] is None
+
+
+# ---------------------------------------------------------------------------
 # classify_qbit — state vocabulary incl. qBit5 stoppedDL rename
 # ---------------------------------------------------------------------------
 
@@ -577,6 +641,23 @@ def test_derive_alerts_bandwidth_warn_below_20():
 def test_derive_alerts_bandwidth_at_exactly_20_is_clean():
     doc = _base_doc(quota={"disk": {"pct": 10.0}, "bandwidth": {"available_pct": 20.0}})
     assert app_status.derive_alerts(doc) == []
+
+
+def test_derive_alerts_disk_none_still_alerts_on_low_bandwidth():
+    """quota["disk"] can be None (the disk parser failed in _collect_quota
+    while the bandwidth parser succeeded) -- derive_alerts must not choke on
+    that and must still fire off the preserved bandwidth reading."""
+    doc = _base_doc(quota={"disk": None, "bandwidth": {"available_pct": 5.0}})
+    out = app_status.derive_alerts(doc)
+    assert out == [{"level": "crit", "text": "Bandwidth available 5.0%"}]
+
+
+def test_derive_alerts_bandwidth_none_still_alerts_on_high_disk():
+    """Symmetric case: quota["bandwidth"] can be None without suppressing
+    the disk alert derived from the preserved disk reading."""
+    doc = _base_doc(quota={"disk": {"pct": 95.0}, "bandwidth": None})
+    out = app_status.derive_alerts(doc)
+    assert out == [{"level": "crit", "text": "Disk quota 95.0% used"}]
 
 
 def test_derive_alerts_maint_failed_within_48h_is_crit():

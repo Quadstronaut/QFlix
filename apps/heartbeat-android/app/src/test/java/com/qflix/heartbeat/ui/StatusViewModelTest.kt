@@ -3,6 +3,7 @@ package com.qflix.heartbeat.ui
 import com.qflix.heartbeat.model.SectionState
 import com.qflix.heartbeat.net.FakeTransport
 import com.qflix.heartbeat.net.StatusTransport
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -36,6 +37,29 @@ class StatusViewModelTest {
     /** Returns queued results in order, one per [fetch] call - lets a test simulate retry-after-failure sequences. */
     private class QueueTransport(private val results: MutableList<Result<String>>) : StatusTransport {
         override suspend fun fetch(): Result<String> = results.removeAt(0)
+    }
+
+    /**
+     * A [StatusTransport] whose [fetch] suspends until [release] is called,
+     * counting how many times it was actually invoked. Used to prove
+     * [StatusViewModel]'s re-entrancy guard collapses rapid-fire refresh()
+     * calls into at most one in-flight transport call, instead of racing two
+     * concurrent SSH sessions.
+     */
+    private class GatedTransport(private val result: Result<String>) : StatusTransport {
+        var callCount: Int = 0
+            private set
+        private val gate = CompletableDeferred<Unit>()
+
+        fun release() {
+            gate.complete(Unit)
+        }
+
+        override suspend fun fetch(): Result<String> {
+            callCount++
+            gate.await()
+            return result
+        }
     }
 
     @Before
@@ -126,5 +150,27 @@ class StatusViewModelTest {
         vm.refresh()
 
         assertTrue(vm.uiState.value is StatusUiState.Ready)
+    }
+
+    @Test
+    fun `two rapid refresh calls collapse into a single in-flight transport fetch`() = runTest {
+        // The transport gates on the very first fetch (init's own load()) so
+        // this also proves the guard covers "initial load included", not
+        // just refresh-after-Ready.
+        val transport = GatedTransport(Result.success(readFixture()))
+        val vm = StatusViewModel(transport)
+        assertEquals(1, transport.callCount)
+        assertTrue("still loading until the gate is released", vm.uiState.value is StatusUiState.Loading)
+
+        // Two rapid refresh() calls while a fetch is already in flight - both
+        // must be no-ops; neither should launch a second concurrent fetch.
+        vm.refresh()
+        vm.refresh()
+        assertEquals(1, transport.callCount)
+
+        transport.release()
+
+        assertTrue(vm.uiState.value is StatusUiState.Ready)
+        assertEquals(1, transport.callCount)
     }
 }

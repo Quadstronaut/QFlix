@@ -20,9 +20,11 @@
 
 .NOTES
     Run this from the app root: apps/heartbeat-android/provision.ps1
-    Requires: ssh, scp, ssh-keyscan on PATH (Git for Windows / OpenSSH
-    client feature), adb on PATH, phone connected with USB debugging on,
-    debug build of com.qflix.heartbeat already installed.
+    Requires: ssh, scp, ssh-keygen on PATH (Git for Windows / OpenSSH
+    client feature - NOT ssh-keyscan; the box's host key is pinned via an
+    authenticated ssh channel, not unauthenticated TOFU), adb on PATH,
+    phone connected with USB debugging on, debug build of
+    com.qflix.heartbeat already installed.
 #>
 
 param(
@@ -66,8 +68,14 @@ Write-Ok "Device attached ($($devices.Count) device(s))."
 
 Write-Step "Checking whether the phone is already provisioned"
 # run-as fails loudly (non-zero exit) if the app isn't installed/debuggable
-# or the file is absent - either way, "not provisioned" from our side.
-& adb shell run-as $AppId sh -c "test -f files/provision/phone_key" 2>$null
+# or any file is absent - either way, "not provisioned" from our side. All
+# three files must be present, matching Provisioning.kt's isProvisioned()
+# exactly (net/Provisioning.kt: keyFile && configFile && knownHostFile) -
+# checking phone_key alone would report "already provisioned" on a partial
+# bundle (e.g. an earlier run whose adb push of known_host or config.json
+# failed) and skip re-pushing, leaving the app permanently stuck on
+# "Device not provisioned" with no automated recovery path.
+& adb shell run-as $AppId sh -c "test -f files/provision/phone_key -a -f files/provision/known_host -a -f files/provision/config.json" 2>$null
 $alreadyOnPhone = ($LASTEXITCODE -eq 0)
 
 Write-Step "Checking whether the private key still exists on the box"
@@ -105,18 +113,71 @@ try {
     if ($LASTEXITCODE -ne 0) { Fail "scp of the private key failed." }
     Write-Ok "phone_key staged."
 
-    Write-Step "Pinning the box's host key (ssh-keyscan)"
-    $hostKeyLine = & ssh-keyscan -t ed25519 -p $BoxPort $BoxHost 2>$null | Where-Object { $_ -notmatch "^#" }
-    if (-not $hostKeyLine) {
-        Fail "ssh-keyscan returned no ed25519 host key for $BoxHost - is the box reachable?"
+    Write-Step "Pinning the box's host key (authenticated fetch, NOT ssh-keyscan)"
+    # ssh-keyscan is unauthenticated TOFU - it accepts whatever key answers
+    # on the wire with no cross-check against anything the operator already
+    # trusts. This pin becomes the phone's PERMANENT, no-prompt-no-fallback
+    # trust anchor (see net/SshFetcher.kt's OpenSSHKnownHosts strict-pin
+    # docstring), so a MITM during this one-time provisioning step could
+    # otherwise plant a forged key that every future connection silently
+    # trusts. Instead, read the box's own host key file over the same
+    # authenticated ssh channel already used for the scp/ssh calls above and
+    # below (operator's own known_hosts enforces THAT channel's trust).
+    $hostKeyLine = $null
+
+    $pubKeyRaw = & ssh -p $BoxPort "$BoxUser@$BoxHost" "cat /etc/ssh/ssh_host_ed25519_key.pub" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $pubKeyRaw) {
+        # ssh_host_ed25519_key.pub is "<type> <base64> [comment]"; the
+        # known_host format sshj's OpenSSHKnownHosts expects is
+        # "<host> <type> <base64>" - drop any comment field.
+        $firstLine = @($pubKeyRaw)[0]
+        $parts = $firstLine -split '\s+'
+        if ($parts.Count -ge 2) {
+            $hostKeyLine = "$BoxHost $($parts[0]) $($parts[1])"
+        }
     }
-    # ssh-keyscan prefixes the host with [host]:port when a non-default port
-    # is used; the app's known_host pin must match whatever host string the
-    # app connects with (see net/SshFetcher.kt), which is the bare hostname
-    # from config.json. Normalize to that form.
-    $hostKeyLine = $hostKeyLine -replace "^\[$([regex]::Escape($BoxHost))\]:\d+", $BoxHost
+
+    if (-not $hostKeyLine) {
+        # Read-only diagnostic (still the authenticated channel) to tell a
+        # genuinely-missing file apart from some other 'cat' failure, so the
+        # operator gets a precise reason rather than a silent fallback.
+        & ssh -p $BoxPort "$BoxUser@$BoxHost" "ls /etc/ssh/ssh_host_ed25519_key.pub" 2>$null | Out-Null
+        $pathExists = ($LASTEXITCODE -eq 0)
+        if ($pathExists) {
+            Fail ("/etc/ssh/ssh_host_ed25519_key.pub exists on the box but 'cat' of it over SSH did not return a " + `
+                  "usable key line - investigate manually (refusing to fall back silently past a readable-but-unparseable key).")
+        }
+        Write-Host "    /etc/ssh/ssh_host_ed25519_key.pub not found on the box - falling back to the operator's own known_hosts (ssh-keygen -F)." -ForegroundColor Yellow
+
+        # Fallback: the fingerprint the operator's own OpenSSH client already
+        # trusts for this host, from prior interactive/manual use - still
+        # the operator's own established trust, never a fresh unauthenticated
+        # probe of the wire.
+        $fallbackLines = & ssh-keygen -F $BoxHost
+        if ($LASTEXITCODE -eq 0 -and $fallbackLines) {
+            foreach ($line in @($fallbackLines)) {
+                if ($line -match '^#') { continue }
+                $fields = $line -split '\s+'
+                # ssh-keygen -F prints "<host> <type> <base64> [comment]"
+                # (host may be hashed if HashKnownHosts is on - doesn't
+                # matter, we rewrite it to the bare hostname below anyway).
+                if ($fields.Count -ge 3 -and $fields[1] -eq "ssh-ed25519") {
+                    $hostKeyLine = "$BoxHost $($fields[1]) $($fields[2])"
+                    break
+                }
+            }
+        }
+    }
+
+    if (-not $hostKeyLine) {
+        Fail ("Could not obtain the box's ed25519 host key via either the authenticated " + `
+              "'cat /etc/ssh/ssh_host_ed25519_key.pub' channel or the operator's own known_hosts " + `
+              "(ssh-keygen -F $BoxHost). Refusing to fall back to unauthenticated ssh-keyscan - verify the " + `
+              "box's host key manually, fix whichever path is broken, then re-run.")
+    }
+
     Set-Content -Path $localKnownHostPath -Value $hostKeyLine -NoNewline
-    Write-Ok "known_host pinned: $hostKeyLine"
+    Write-Ok "known_host pinned (authenticated): $hostKeyLine"
 
     Write-Step "Writing config.json"
     $config = [ordered]@{

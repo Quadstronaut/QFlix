@@ -82,7 +82,11 @@ fun DashboardScreen(viewModel: StatusViewModel) {
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.refresh() }) {
+                    // Disabled while a fetch is already in flight - belt-and-
+                    // suspenders alongside StatusViewModel's own re-entrancy
+                    // guard, which is what actually prevents a second
+                    // concurrent transport.fetch() if this slips through.
+                    IconButton(onClick = { viewModel.refresh() }, enabled = !isRefreshing) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                     }
                 },
