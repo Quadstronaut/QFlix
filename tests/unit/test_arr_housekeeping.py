@@ -31,6 +31,16 @@ def _load(name: str) -> list[dict]:
     return data["records"]
 
 
+def _with_future_eta(records: list[dict], days: float = 45) -> list[dict]:
+    """cluster.json's hardcoded ETA (2026-08-13) rotted on 2026-07-15 when
+    now+CLUSTER_ETA_DAYS crossed it; inject a now-relative far-future ETA so
+    the slow-cluster predicate stays testable regardless of wall-clock date."""
+    eta = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + days * 86400))
+    for r in records:
+        r["estimatedCompletionTime"] = eta
+    return records
+
+
 def _by_downloadId(records: list[dict]) -> dict[str, list[dict]]:
     """Group queue records by downloadId (uppercased)."""
     out: dict[str, list[dict]] = {}
@@ -67,7 +77,7 @@ def test_classify_metadata_stuck():
 def test_classify_slow_cluster_eta_only_not_enough():
     """3-item cluster + far-future ETA but no sizeleft history yet — must NOT
     classify as cluster (we need 7d of stable sizeleft first)."""
-    records = _load("cluster.json")
+    records = _with_future_eta(_load("cluster.json"))
     # No prior sizeleft history attached — caller hasn't seen this hash before
     for r in records:
         r["_sizeleft_history"] = []
@@ -77,7 +87,7 @@ def test_classify_slow_cluster_eta_only_not_enough():
 
 def test_classify_slow_cluster_stable_sizeleft_7d():
     """Same cluster, but with 7+ days of identical sizeleft → classify."""
-    records = _load("cluster.json")
+    records = _with_future_eta(_load("cluster.json"))
     now = time.time()
     week_ago = now - (7.5 * 86400)
     for r in records:
@@ -173,7 +183,7 @@ def test_cmd_unstick_history_retains_full_no_progress_window(tmp_path, monkeypat
     monkeypatch.setattr(arrhk, "STATE_DIR", tmp_path)
     monkeypatch.setattr(arrhk, "STUCK_STATE_FILE", state_file)
 
-    cluster_records = _load("cluster.json")
+    cluster_records = _with_future_eta(_load("cluster.json"))
 
     # Pre-populate state with 9 days of hourly samples (216 entries) at the
     # same sizeleft. After cmd_unstick's trim+append, the oldest retained
