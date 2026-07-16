@@ -1,6 +1,46 @@
 # Changelog
 
-## 2026-07-14 — Reaper orphan grace (one stuck item no longer reds forever)
+## 2026-07-16 — QFlix Heartbeat v2 phone app · reaper token restore · CI time-bomb
+
+**New: QFlix Heartbeat v2** — personal read-only Android dashboard
+(`apps/heartbeat-android/`, Kotlin/Compose) fetching one JSON doc from a new
+seedbox aggregator (`scripts/mcp/app_status.py`) over a dedicated ed25519 key
+locked to `command="python3 …/app_status.py",restrict` in authorized_keys — the
+key can only emit health JSON. Sections: quota bars (disk GB+% / bandwidth
+%-only — Ultra.cc hides GB from user accounts), Kuma up/down + reds, live
+streams/users fraction, top-5 requests + watch time (30 d), downloads/stuck/
+unsticks, derived alerts. Installer `scripts/configure/74-heartbeat-status-install.sh`
+(idempotent; gate detects unrestricted key duplicates); one-shot
+`apps/heartbeat-android/provision.ps1` moves the key to app-private storage and
+deletes the box copy. 5 adversarial-review fixes applied (incl. authenticated
+host-key pinning — no TOFU). Old `com.qflix.heartbeat.debug` uninstalled; its
+source was never retained. Spec + plan under `docs/superpowers/`, both stamped
+as-built.
+
+**Reaper Kuma red (07-15 → 07-16) root-caused: missing push token, not a reaper
+fault.** The `qflix-reaper` entry had vanished from `secrets/kuma-push-tokens.json`;
+`_push_kuma()` silently no-ops on an empty token, so monitor #97 starved while
+the daily 05:00 UTC `--execute` runs kept succeeding (07-16 run deleted
+"The Pacific" correctly). Token restored from kuma.db (backup
+`kuma-push-tokens.json.bak-2026-07-16`). Confidence work: new
+`tests/unit/test_reaper_e2e.py` (11 tests driving the real `run()`/`main()` —
+age boundary, cap ordering, exclusion rail, dry-run vs execute exact call
+lists, manifest-before-delete, Kuma up/down/empty-token regression) + a live
+box dry-run with independent before/after API counts across 9 surfaces proving
+zero mutation. Known live posture: `--max-pct 100` drop-in disables the
+%-tripwire (operator decision 2026-07-13, documented in the on-box drop-in);
+exclude file has zero active rules.
+
+**CI red since 07-15 was a fixture time-bomb** — `tests/fixtures/arr-queue/cluster.json`
+hardcodes ETA `2026-08-13`; the slow-cluster predicate needs ETA > now+30 d,
+which the calendar crossed on 07-15, breaking 2 `test_arr_housekeeping.py` tests
+on every push. Tests now inject now-relative ETAs. Suite 862 green.
+
+**Kuma pruned by operator:** `Quadstronix` + `Node 1` + `Node 2` externals
+removed (stale DNS, both nodes resolved to one dead IP) — 55 → **52 monitors**.
+
+**Heads-up:** disk quota crossed **80%** (2242/2794 GB) on 2026-07-16 — the new
+app's amber warn fired for it.
 
 **A single un-resolvable orphan used to page the reaper twice daily forever.** An
 "orphan" is a Plex item aged past the 60-day threshold that resolves to no unique

@@ -1,7 +1,15 @@
 # QFlix Heartbeat v2 — Android health dashboard (design)
 
-**Date:** 2026-07-15 · **Status:** approved (operator, this session)
+**Date:** 2026-07-15 · **Status:** SHIPPED 2026-07-16 (as-built deltas below)
 **Replaces:** `com.qflix.heartbeat.debug` (old app, source not retained; uninstalled from phone)
+
+> **As-built deltas (2026-07-16):** server script is `scripts/mcp/app_status.py`
+> (underscore — pytest-importable); installer is `scripts/configure/74-heartbeat-status-install.sh`
+> (71–73 were taken); bandwidth quota renders **% used + reset dates only** —
+> `app-traffic info` is the only source Ultra.cc exposes to user accounts and it
+> carries no GB figures. Host-key pin is fetched over the operator's authenticated
+> SSH channel (not ssh-keyscan). Five adversarial-review fixes applied post-build
+> (commit c8b974e). Live E2E verified on Pixel 6 2026-07-16.
 
 ## Purpose
 
