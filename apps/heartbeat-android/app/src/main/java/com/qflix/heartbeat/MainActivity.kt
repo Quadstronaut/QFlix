@@ -4,21 +4,23 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.activity.viewModels
+import com.qflix.heartbeat.net.SshFetcher
+import com.qflix.heartbeat.ui.DashboardScreen
+import com.qflix.heartbeat.ui.StatusViewModel
 import com.qflix.heartbeat.ui.theme.HeartbeatTheme
 import java.security.Security
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 
 class MainActivity : ComponentActivity() {
+
+    // SshFetcher is the only production StatusTransport - filesDir is where
+    // provision.ps1 (A3) drops the key bundle. Swapped for FakeTransport in
+    // tests/previews via the same StatusViewModel.factory() seam.
+    private val viewModel: StatusViewModel by viewModels {
+        StatusViewModel.factory(SshFetcher(filesDir))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -31,34 +33,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             HeartbeatTheme {
-                PlaceholderScreen()
+                DashboardScreen(viewModel = viewModel)
             }
         }
-    }
-}
-
-/** A2+ replaces this with the real dashboard fed by [StatusViewModel]. */
-@Composable
-fun PlaceholderScreen() {
-    Scaffold { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = "QFlix Heartbeat",
-                style = MaterialTheme.typography.headlineMedium,
-            )
-        }
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-private fun PlaceholderScreenPreview() {
-    HeartbeatTheme {
-        PlaceholderScreen()
     }
 }
