@@ -156,6 +156,53 @@ def test_failed_series_list_surfaces():
     assert res["per_arr"]["sonarr"]["status"] == "failed-series-list"
 
 
+def test_episode_fetch_failure_surfaces_and_skips_writes():
+    # D1: a GET /episode failure must NOT clear the season flag blind (we can't
+    # see the episodes) and MUST surface a non-ok status so --cron exits 1.
+    class EpFail(FakeClient):
+        def get(self, path, *, query="", **kw):
+            if path.startswith("/episode"):
+                return (500, {"error": "boom"})
+            return super().get(path, query=query, **kw)
+
+    series = [mk_series(10, "Ted Lasso", s0_monitored=True, s0_total=9)]
+    client = EpFail(series, {10: [mk_ep(101, 10, 0, 1, True)]})
+    empty = FakeClient([])
+    res = sp.run(client_factory=lambda s: client if s == "sonarr" else empty,
+                 dry_run=False, slug="sonarr")
+    r = res["per_arr"]["sonarr"]
+    assert r["status"] != "ok"                    # failure surfaced -> exit 1
+    assert client.writes == []                    # no blind flag-clear / unmonitor
+
+
+def test_per_instance_exception_is_isolated():
+    # D5: a malformed series (missing 'id') must not crash the whole run and
+    # take sonarr2 down with it.
+    bad = [{"title": "NoId", "seasons": [{"seasonNumber": 0, "monitored": True,
+                                          "statistics": {"totalEpisodeCount": 1}}]}]
+    s1 = FakeClient(bad, {})
+    s2 = FakeClient([mk_series(20, "B", s0_monitored=True, s0_total=1)],
+                    {20: [mk_ep(201, 20, 0, 1, True)]})
+    clients = {"sonarr": s1, "sonarr2": s2}
+    res = sp.run(client_factory=lambda s: clients[s], dry_run=False)
+    assert res["per_arr"]["sonarr"]["status"].startswith("failed")   # isolated
+    assert res["per_arr"]["sonarr2"]["episodes_unmonitored"] == 1     # ran anyway
+
+
+def test_non_s0_season_without_monitored_key_preserved_verbatim():
+    # D7: rebuilding seasons must not inject monitored=None on a season that
+    # arrived without the key.
+    series = {"id": 10, "title": "X", "seasons": [
+        {"seasonNumber": 0, "monitored": True},
+        {"seasonNumber": 1},                       # no 'monitored' key
+    ]}
+    out = sp._with_season0_unmonitored(series)
+    s0 = next(s for s in out["seasons"] if s["seasonNumber"] == 0)
+    s1 = next(s for s in out["seasons"] if s["seasonNumber"] == 1)
+    assert s0["monitored"] is False
+    assert "monitored" not in s1                    # verbatim — no None injected
+
+
 def test_run_covers_both_tv_instances():
     s1 = FakeClient([mk_series(10, "A", s0_monitored=True, s0_total=1)],
                     {10: [mk_ep(101, 10, 0, 1, True)]})
