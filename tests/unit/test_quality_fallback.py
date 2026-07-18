@@ -496,6 +496,39 @@ def test_run_tv_parks_and_unmonitors(tmp_path, monkeypatch):
     assert qf.load_state(state_path)["tv"]["sonarr:1"]["parked"] is True
 
 
+def test_run_tv_park_rolls_back_on_failed_unmonitor(tmp_path, monkeypatch):
+    # D2: if the unmonitor PUT fails, parked must roll back so the next run
+    # retries — never persist parked=True on a write that did not land.
+    _isolate_notify(monkeypatch, tmp_path)
+    e = mk_episode(eid=1, series_id=10, season=1, ep=3, title="Ep3")
+    routes = _tv_routes([e], series=[{"id": 10, "title": "Show"}])
+    routes[("PUT", "/episode/monitor")] = (500, {"error": "boom"})
+    clients = {"radarr": FakeClient(_radarr_routes([], [])),
+               "radarr2": FakeClient(_radarr_routes([], [])),
+               "sonarr": FakeClient(routes),
+               "sonarr2": FakeClient(_empty_tv_routes())}
+    state_path = tmp_path / "state.json"
+    state = {"movies": {},
+             "tv": {"sonarr:1": {"days": 14, "last_counted": "2026-06-05",
+                                 "alerted": True, "parked": False}}}
+    qf.save_state(state_path, state)
+    res = qf.run(client_factory=lambda slug: clients[slug],
+                 state_path=state_path, now=NOW, dry_run=False)
+    assert res["tv_parks"][0]["ok"] is False
+    assert qf.load_state(state_path)["tv"]["sonarr:1"]["parked"] is False
+
+
+def test_run_had_failures_flags_failed_tv_park():
+    # D3: a failed TV park must drive the process exit code (Kuma/systemd red),
+    # not just movies.
+    assert qf._run_had_failures(
+        {"per_arr": {"radarr": {"status": "ok", "actions": []}},
+         "tv_parks": [{"episode_id": 1, "ok": False}]}) is True
+    assert qf._run_had_failures(
+        {"per_arr": {"radarr": {"status": "ok", "actions": []}},
+         "tv_parks": [{"episode_id": 1, "ok": True}]}) is False
+
+
 def test_run_tv_dry_run_no_unmonitor(tmp_path, monkeypatch):
     _isolate_notify(monkeypatch, tmp_path)
     e = mk_episode(eid=1, series_id=10, season=1, ep=3, title="Ep3")
