@@ -473,7 +473,16 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
         plan = plan_tv(s, missing, state["tv"], today, now)
         digest_all.extend(plan["digest"])
         for p in plan["parks"]:
-            p["ok"] = _apply_tv_park(client, p["episode_id"])
+            ok = _apply_tv_park(client, p["episode_id"])
+            p["ok"] = ok
+            if not ok:
+                # The unmonitor did not land — roll back the optimistic parked
+                # flag plan_tv set in state, so the NEXT run retries instead of
+                # recording a park that never happened (the episode would
+                # otherwise stay monitored/unfindable, permanently, unretried).
+                rec = state["tv"].get(f"{p['slug']}:{p['episode_id']}")
+                if rec is not None:
+                    rec["parked"] = False
             parks_all.append(p)
     out["tv_digest"] = digest_all
     out["tv_parks"] = parks_all
@@ -515,6 +524,18 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
 # CLI
 # ---------------------------------------------------------------------------
 
+def _run_had_failures(res: dict) -> bool:
+    """True if any planned live write failed — a movie action OR a TV park.
+    Drives the --cron exit code so a failed unmonitor turns the
+    systemd_oneshot / Kuma monitor red instead of exiting 0 (green)."""
+    movie_bad = any(
+        r.get("status") not in ("ok",)
+        or any(not a.get("ok", True) for a in r.get("actions", []))
+        for r in res.get("per_arr", {}).values())
+    tv_bad = any(not p.get("ok", True) for p in res.get("tv_parks", []))
+    return movie_bad or tv_bad
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     g = ap.add_mutually_exclusive_group(required=True)
@@ -541,11 +562,14 @@ def main() -> int:
         json.dump(res, sys.stdout, default=str)
         sys.stdout.write("\n")
         return 0
-    bad = [s for s, r in res["per_arr"].items()
-           if r.get("status") not in ("ok",)
-           or any(not a.get("ok", True) for a in r.get("actions", []))]
-    if bad:
-        _notify(f"quality_fallback: failures on {bad}", "error")
+    if _run_had_failures(res):
+        bad = [s for s, r in res["per_arr"].items()
+               if r.get("status") not in ("ok",)
+               or any(not a.get("ok", True) for a in r.get("actions", []))]
+        tv_bad = [p["episode_id"] for p in res.get("tv_parks", [])
+                  if not p.get("ok", True)]
+        _notify(f"quality_fallback: failures — movies={bad} tv_park_eps={tv_bad}",
+                "error")
         return 1
     return 0
 
