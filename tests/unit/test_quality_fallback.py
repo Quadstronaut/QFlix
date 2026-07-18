@@ -273,7 +273,7 @@ def test_cap_blocks_26th_promotion():
 
 
 # ---------------------------------------------------------------------------
-# TV planner (alert-only)
+# TV planner (park-only v2 — day-5 digest, day-15 unmonitor)
 # ---------------------------------------------------------------------------
 
 def mk_episode(eid=1, series_id=10, aired_days_ago=30, monitored=True,
@@ -287,28 +287,69 @@ def mk_episode(eid=1, series_id=10, aired_days_ago=30, monitored=True,
 
 def test_tv_digest_fires_once_at_threshold():
     e = mk_episode()
-    state = {"sonarr:1": {"days": 4, "last_counted": "2026-06-05", "alerted": False}}
-    digest = qf.plan_tv("sonarr", [e], state, TODAY, NOW)
-    assert len(digest) == 1
-    assert digest[0]["series_id"] == 10 and digest[0]["episode_id"] == 1
+    state = {"sonarr:1": {"days": 4, "last_counted": "2026-06-05",
+                          "alerted": False, "parked": False}}
+    plan = qf.plan_tv("sonarr", [e], state, TODAY, NOW)
+    assert len(plan["digest"]) == 1
+    assert plan["digest"][0]["series_id"] == 10 and plan["digest"][0]["episode_id"] == 1
     assert state["sonarr:1"]["alerted"] is True
     # next day: no repeat
-    digest2 = qf.plan_tv("sonarr", [e], state, "2026-06-07", NOW + timedelta(days=1))
-    assert digest2 == []
+    plan2 = qf.plan_tv("sonarr", [e], state, "2026-06-07", NOW + timedelta(days=1))
+    assert plan2["digest"] == []
 
 
 def test_tv_unaired_and_unmonitored_skipped():
     state = {}
-    digest = qf.plan_tv("sonarr", [mk_episode(eid=1, aired_days_ago=-2),
-                                   mk_episode(eid=2, monitored=False)],
-                        state, TODAY, NOW)
-    assert digest == [] and state == {}
+    plan = qf.plan_tv("sonarr", [mk_episode(eid=1, aired_days_ago=-2),
+                                 mk_episode(eid=2, monitored=False)],
+                      state, TODAY, NOW)
+    assert plan["digest"] == [] and plan["parks"] == [] and state == {}
 
 
 def test_tv_grabbed_episode_pruned():
-    state = {"sonarr:1": {"days": 6, "last_counted": "2026-06-05", "alerted": True}}
+    state = {"sonarr:1": {"days": 6, "last_counted": "2026-06-05",
+                          "alerted": True, "parked": False}}
     qf.plan_tv("sonarr", [], state, TODAY, NOW)
     assert state == {}
+
+
+def test_tv_parks_at_day_15_and_sets_flag():
+    e = mk_episode()
+    state = {"sonarr:1": {"days": 14, "last_counted": "2026-06-05",
+                          "alerted": True, "parked": False}}
+    plan = qf.plan_tv("sonarr", [e], state, TODAY, NOW)
+    assert len(plan["parks"]) == 1
+    p = plan["parks"][0]
+    assert p["episode_id"] == 1 and p["days"] == 15
+    assert state["sonarr:1"]["parked"] is True
+
+
+def test_tv_park_fires_once_never_repeats():
+    e = mk_episode()
+    state = {"sonarr:1": {"days": 20, "last_counted": "2026-06-05",
+                          "alerted": True, "parked": True}}
+    plan = qf.plan_tv("sonarr", [e], state, TODAY, NOW)
+    assert plan["parks"] == []
+
+
+def test_tv_season0_never_counted_digested_or_parked():
+    e = mk_episode(season=0)          # a special that slipped past the janitor
+    state = {}
+    plan = qf.plan_tv("sonarr", [e], state, TODAY, NOW)
+    assert plan["digest"] == [] and plan["parks"] == []
+    assert state == {}               # never even accrues a day
+
+
+def test_tv_park_blast_cap_defers_overflow():
+    missing, state = [], {}
+    for i in range(1, qf.MAX_TV_PARKS_PER_RUN + 3):
+        missing.append(mk_episode(eid=i, ep=i))
+        state[f"sonarr:{i}"] = {"days": 14, "last_counted": "2026-06-05",
+                                "alerted": True, "parked": False}
+    plan = qf.plan_tv("sonarr", missing, state, TODAY, NOW)
+    assert len(plan["parks"]) == qf.MAX_TV_PARKS_PER_RUN
+    parked = sum(1 for r in state.values() if r["parked"])
+    assert parked == qf.MAX_TV_PARKS_PER_RUN     # overflow still parked=False
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +398,15 @@ def _radarr_routes(missing, movies, profiles=None):
 
 def _empty_tv_routes():
     return {("GET", "/wanted/missing"): (200, {"records": [], "totalRecords": 0})}
+
+
+def _tv_routes(missing, series=None):
+    return {
+        ("GET", "/wanted/missing"): (200, {"records": missing,
+                                           "totalRecords": len(missing)}),
+        ("GET", "/series"): (200, series if series is not None else []),
+        ("PUT", "/episode/monitor"): (202, []),
+    }
 
 
 def _mk_clients(radarr_routes):
@@ -423,6 +473,46 @@ def test_run_skips_instance_missing_fallback_profiles(tmp_path, monkeypatch):
                  state_path=state_path, now=NOW, dry_run=False)
     assert res["per_arr"]["radarr"]["status"] == "skipped-no-fallback-profiles"
     assert clients["radarr"].writes == []
+
+
+def test_run_tv_parks_and_unmonitors(tmp_path, monkeypatch):
+    _isolate_notify(monkeypatch, tmp_path)
+    e = mk_episode(eid=1, series_id=10, season=1, ep=3, title="Ep3")
+    clients = {"radarr": FakeClient(_radarr_routes([], [])),
+               "radarr2": FakeClient(_radarr_routes([], [])),
+               "sonarr": FakeClient(_tv_routes([e], series=[{"id": 10,
+                                                             "title": "Show"}])),
+               "sonarr2": FakeClient(_empty_tv_routes())}
+    state_path = tmp_path / "state.json"
+    state = {"movies": {},
+             "tv": {"sonarr:1": {"days": 14, "last_counted": "2026-06-05",
+                                 "alerted": True, "parked": False}}}
+    qf.save_state(state_path, state)
+    res = qf.run(client_factory=lambda slug: clients[slug],
+                 state_path=state_path, now=NOW, dry_run=False)
+    assert ("PUT", "/episode/monitor",
+            {"episodeIds": [1], "monitored": False}) in clients["sonarr"].writes
+    assert len(res["tv_parks"]) == 1 and res["tv_parks"][0]["ok"] is True
+    assert qf.load_state(state_path)["tv"]["sonarr:1"]["parked"] is True
+
+
+def test_run_tv_dry_run_no_unmonitor(tmp_path, monkeypatch):
+    _isolate_notify(monkeypatch, tmp_path)
+    e = mk_episode(eid=1, series_id=10, season=1, ep=3, title="Ep3")
+    clients = {"radarr": FakeClient(_radarr_routes([], [])),
+               "radarr2": FakeClient(_radarr_routes([], [])),
+               "sonarr": FakeClient(_tv_routes([e], series=[{"id": 10,
+                                                             "title": "Show"}])),
+               "sonarr2": FakeClient(_empty_tv_routes())}
+    state_path = tmp_path / "state.json"
+    state = {"movies": {},
+             "tv": {"sonarr:1": {"days": 14, "last_counted": "2026-06-05",
+                                 "alerted": True, "parked": False}}}
+    qf.save_state(state_path, state)
+    qf.run(client_factory=lambda slug: clients[slug],
+           state_path=state_path, now=NOW, dry_run=True)
+    assert clients["sonarr"].writes == []
+    assert qf.load_state(state_path)["tv"]["sonarr:1"]["parked"] is False
 
 
 def test_bootstrap_creates_and_updates():
