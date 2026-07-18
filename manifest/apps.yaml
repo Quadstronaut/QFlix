@@ -9,9 +9,11 @@ defaults:
 # projects. They count toward live_count but never toward drift, and the
 # smoke test excludes them from the all-up count.
 kuma_external_monitors:
-  - "Quadstronix"
-  - "Quadstronix Node 1"
-  - "Quadstronix Node 2"
+  # Quadstronix / Quadstronix Node 1 / Quadstronix Node 2 were REMOVED from Kuma
+  # by the operator 2026-07-16 (both node DNS names had gone stale — resolved to
+  # the same unreachable IP, 100% packet loss). Dropped from this list 2026-07-18
+  # to match live reality (the 2026-07-16 doc sync updated inventory.md's prose
+  # but missed this manifest list, leaving test_doc_counts red since then).
   # Workstation-side hourly collector. The seedbox manifest cannot self-heal
   # a Windows scheduled task, so it stays outside the audit scope.
   - "QFlix Collect (workstation)"
@@ -459,13 +461,30 @@ apps:
   qflix-quality-fallback:
     # Two-stage quality loosening for movies stuck in the missing sweep
     # (day 5 -> HDTV tier, day 10 -> SD retail, day 15 -> park + alert).
-    # Daily 07:30 UTC, 30 min after qflix-missing-search.
+    # TV is park-only in v2 (day-15 unmonitor; no loosen — Sonarr profiles are
+    # per-series). Daily 07:30 UTC, 30 min after qflix-missing-search.
     class: cron
     unit: qflix-quality-fallback.service
     kuma_monitor: "Qflix Quality Fallback"
     health:
       kind: systemd_oneshot
       unit: qflix-quality-fallback.service
+
+  qflix-specials-policy:
+    # Standalone Season-0 specials janitor: keeps S00 unmonitored across
+    # sonarr/sonarr2 (specials rarely have standalone releases -> perpetual
+    # false-missing that burns indexer queries + alert noise). Deliberately NOT
+    # folded into qflix-quality-fallback — own module/timer/monitor so it stays
+    # compartmentalized + independently tunable as QFlix migrates to larger
+    # servers (spec 2026-07-18-tv-fallback-v2-design.md). Daily 06:00 UTC, ahead
+    # of the 07:00 missing sweep so specials are unmonitored before any search
+    # wastes queries on them.
+    class: cron
+    unit: qflix-specials-policy.service
+    kuma_monitor: "Qflix Specials Policy"
+    health:
+      kind: systemd_oneshot
+      unit: qflix-specials-policy.service
 
   victorialogs:
     # Log aggregator. Single static Go binary (VictoriaLogs), on-disk index

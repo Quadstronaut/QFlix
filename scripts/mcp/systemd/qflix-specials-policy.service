@@ -1,0 +1,11 @@
+[Unit]
+Description=QFlix specials-policy janitor — keep Season 0 unmonitored (sonarr, sonarr2)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/scripts/mcp/specials_policy.py --cron
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
