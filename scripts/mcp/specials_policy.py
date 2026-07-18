@@ -67,12 +67,13 @@ def _monitored_s0_ids(episodes: list) -> list:
 
 
 def _with_season0_unmonitored(series: dict) -> dict:
-    """Return a copy of the series with only its Season-0 flag flipped off;
-    every other season's flag is preserved verbatim."""
+    """Return a copy of the series with ONLY its Season-0 flag flipped off.
+    Every other season dict is passed through verbatim (the same object) — never
+    rebuilt — so a season that arrived without a 'monitored' key is preserved
+    as-is rather than getting monitored=None injected."""
     out = dict(series)
     out["seasons"] = [
-        dict(s, monitored=(False if s.get("seasonNumber") == 0
-                           else s.get("monitored")))
+        (dict(s, monitored=False) if s.get("seasonNumber") == 0 else s)
         for s in series.get("seasons", [])
     ]
     return out
@@ -89,16 +90,25 @@ def enforce_instance(client, dry_run: bool) -> dict:
 
     changes: list = []
     eps_unmonitored = 0
+    fetch_failures: list = []
     for s in series:
         if not _needs_scan(s):
             continue
         code_e, eps = client.get("/episode", query=f"seriesId={s['id']}")
-        eps = eps if (code_e == 200 and isinstance(eps, list)) else []
+        if code_e != 200 or not isinstance(eps, list):
+            # We cannot see this series' episodes, so we must NOT write anything
+            # for it: clearing the season flag here would be decoupled from the
+            # (unseen) episode unmonitors and could leave S0 episodes monitored
+            # under a cleared flag. Skip and surface the failure — convergent
+            # (next run retries), and a PERSISTENT failure stays red via a
+            # non-ok status instead of silently exiting 0 / Kuma green.
+            fetch_failures.append(s.get("id"))
+            continue
         mon_ids = _monitored_s0_ids(eps)
         flag_on = bool((_season0(s) or {}).get("monitored"))
         if not mon_ids and not flag_on:
             continue                       # nothing to converge on this series
-        changes.append({"series_id": s["id"], "title": s.get("title", "?"),
+        changes.append({"series_id": s.get("id"), "title": s.get("title", "?"),
                         "episodes": mon_ids, "cleared_flag": flag_on})
         eps_unmonitored += len(mon_ids)
         if not dry_run:
@@ -109,8 +119,12 @@ def enforce_instance(client, dry_run: bool) -> dict:
                 client.put(f"/series/{s['id']}",
                            body=_with_season0_unmonitored(s))
 
-    return {"status": "ok", "series_changed": len(changes),
-            "episodes_unmonitored": eps_unmonitored, "changes": changes}
+    status = "ok" if not fetch_failures else "partial-episode-fetch-failure"
+    out = {"status": status, "series_changed": len(changes),
+           "episodes_unmonitored": eps_unmonitored, "changes": changes}
+    if fetch_failures:
+        out["episode_fetch_failures"] = fetch_failures
+    return out
 
 
 def run(*, client_factory=None, dry_run: bool = False,
@@ -120,7 +134,13 @@ def run(*, client_factory=None, dry_run: bool = False,
     for s in TV_ARRS:
         if slug and s != slug:
             continue
-        out["per_arr"][s] = enforce_instance(client_factory(s), dry_run)
+        try:
+            out["per_arr"][s] = enforce_instance(client_factory(s), dry_run)
+        except Exception as e:
+            # Per-instance isolation: a malformed payload or transport error on
+            # one *arr must not sink the others. Non-ok status -> --cron exit 1.
+            out["per_arr"][s] = {"status": "failed-exception",
+                                 "error": str(e)[:300]}
     return out
 
 
