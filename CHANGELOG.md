@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-07-18 — TV fallback v2: Season-0 specials janitor + TV park-only
+
+**New: standalone specials-policy janitor** (`scripts/mcp/specials_policy.py` +
+`qflix-specials-policy.{service,timer}`, daily 06:00 UTC, own Kuma monitor
+"Qflix Specials Policy"). Enforces **"Season 0 is never monitored"** across
+sonarr/sonarr2: unmonitors any monitored S0 episode and clears the Season-0
+season flag (the flag clear is what makes it durable — a series refresh
+otherwise re-monitors episodes to match the flag). Deliberately a separate unit,
+not folded into quality-fallback, so it stays compartmentalized / independently
+tunable as QFlix migrates to larger servers. Motivated by a 2026-07-18 stuck-TV
+investigation: the `quality_fallback` TV digest was almost entirely Season-0
+specials (Ted Lasso promo featurettes, Chainsaw Man recap/chibi shorts) with
+**zero obtainable releases at any quality**, plus one queue stall (Graham Norton
+S33E12, unstuck). Live remediation swept the specials the same day.
+
+**TV fallback goes park-only** (`quality_fallback.py`): a real (non-specials)
+aired+searched episode still missing at day 15 is unmonitored + Discord-warned
+(day 5 stays an info heads-up), blast-capped 10/run. No quality-loosening ramp
+for TV — Sonarr profiles are per-series, so loosening one stuck episode would
+drop the whole series, and release-less items grab nothing at any quality.
+Resolves the "TV alert-only, v2 decided from data" deferral from the 2026-06-06
+design.
+
+**Confidence: two-round Council (v2) adversarial review.** Round 1 routed back 3
+major masked-live-write-failure defects (swallowed episode-fetch failure left S0
+monitored under a cleared flag with Kuma green; park recorded before the
+unmonitor was confirmed, no retry; exit code ignored TV-park failures) + 2
+hardening items; all fixed TDD. Round 2 returned COMMIT (20/20 lens verdicts
+pass, each with an executable artifact). The conditional D8 deploy gate was
+cleared with a live `PUT /series` round-trip proving Sonarr 4.0.17 accepts the
+full-object body with non-S0 flags preserved and no fields dropped. Suite 881
+green. Ledger: `.claude/council-ledger.jsonl`.
+
+**Manifest/docs reconciled:** the 3 stale `Quadstronix` externals (removed from
+Kuma 2026-07-16 but left in `kuma_external_monitors`) dropped from the manifest,
+fixing a `test_doc_counts` red since 07-16. Counts across README / inventory /
+wiki / FAQ now match live: **35 apps · 52 manitoba · 53 total Kuma monitors ·
+14 canaries**.
+
 ## 2026-07-16 — QFlix Heartbeat v2 phone app · reaper token restore · CI time-bomb
 
 **New: QFlix Heartbeat v2** — personal read-only Android dashboard
