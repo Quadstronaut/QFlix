@@ -4,6 +4,12 @@
 **Status:** Implemented + deployed 2026-06-06 (PR #66)
 **Scope:** Movies only (radarr, radarr2) for v1. TV is alert-only; v2 decided from v1 data.
 
+> **v2 RESOLVED (2026-07-18):** the TV-alert-only deferral is superseded by
+> `docs/superpowers/specs/2026-07-18-tv-fallback-v2-design.md` — TV is now
+> park-only (day-15 unmonitor; no loosen ramp, since Sonarr profiles are
+> per-series and release-less specials grab nothing at any quality), and a
+> standalone `specials_policy.py` janitor keeps Season 0 unmonitored.
+
 ## Problem
 
 The daily MissingSearch sweep (`scripts/mcp/missing.py`, 07:00 UTC) re-searches the same

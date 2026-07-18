@@ -7,10 +7,15 @@ PARK_DAYS -> restore original profile, unmonitor, alert. Grab at any fallback
 stage -> restore original profile (file sits below cutoff; upgradinatorr/RSS
 upgrade it later where the original profile allows upgrades).
 
-TV (sonarr/sonarr2) is ALERT-ONLY in v1: a once-per-episode Discord digest
-when an aired episode crosses PROMOTE_DAYS. Zero sonarr writes.
+TV (sonarr/sonarr2) is PARK-ONLY in v2 (no quality loosening — Sonarr profiles
+are per-series, so loosening one stuck episode would drop the whole series;
+and release-less specials grab nothing at any quality anyway). An aired+searched
+real episode (Season 0 excluded — that's the standalone specials_policy janitor's
+job) gets a day-5 Discord heads-up, then at PARK_DAYS is unmonitored + alerted.
+The ONLY sonarr write is that unmonitor, blast-capped at MAX_TV_PARKS_PER_RUN.
 
-Spec: docs/superpowers/specs/2026-06-06-quality-fallback-design.md
+Spec: docs/superpowers/specs/2026-07-18-tv-fallback-v2-design.md
+      (v1 movie design: docs/superpowers/specs/2026-06-06-quality-fallback-design.md)
 API ground truth: deployed Radarr 6.1.1.10360 / Sonarr 4.0.17.2952 (see the
 implementation plan's "RTFM ground truth" section).
 
@@ -51,10 +56,11 @@ STAGE2_ALLOW = STAGE1_ALLOW | {"SDTV", "DVD", "WEB 480p", "Bluray-480p", "REGION
 # re-checked on every bootstrap write.
 BANNED = {"WORKPRINT", "CAM", "TELESYNC", "TELECINE", "DVDSCR"}
 
-PROMOTE_DAYS = 5      # stage 0 -> 1 (Fallback HDTV)
+PROMOTE_DAYS = 5      # stage 0 -> 1 (Fallback HDTV) / TV day-5 heads-up
 DEEPEN_DAYS = 10      # stage 1 -> 2 (Fallback SD)
-PARK_DAYS = 15        # stage 2 -> parked (restore + unmonitor + alert)
-MAX_IN_FALLBACK = 25  # per instance, stage >= 1, blast-radius cap
+PARK_DAYS = 15        # movies: restore + unmonitor + alert / TV: unmonitor + alert
+MAX_IN_FALLBACK = 25  # per instance, stage >= 1, blast-radius cap (movies)
+MAX_TV_PARKS_PER_RUN = 10  # per instance, TV unmonitors per run; overflow defers
 SEARCH_FRESH_HOURS = 48  # a day only counts if the sweep actually searched
 
 STATE_PATH = Path.home() / ".apps" / "qflix-fallback" / "state.json"
@@ -230,40 +236,59 @@ def plan_movies(slug: str, missing: list, movies_by_id: dict, fb_ids: dict,
 
 
 # ---------------------------------------------------------------------------
-# TV planner — PURE, alert-only (v1 makes zero sonarr writes)
+# TV planner — PURE, park-only (v2). The ONLY write it plans is an unmonitor.
 # ---------------------------------------------------------------------------
 
 def plan_tv(slug: str, missing: list, state: dict, today: str,
-            now: datetime) -> list:
-    """Day-count aired+searched missing episodes; emit one digest entry per
-    episode when it crosses PROMOTE_DAYS. Mutates `state` (this slug's keys).
-    Returns [{slug, series_id, episode_id, season, episode, title, days}]."""
+            now: datetime) -> dict:
+    """Day-count aired+searched missing REAL episodes and mutate `state` (this
+    slug's keys). Season 0 is excluded — the standalone specials_policy janitor
+    keeps S00 unmonitored; excluding it here decouples the two so the park stays
+    correct even if that janitor is lagging or disabled.
+
+    Returns {"digest": [...], "parks": [...]}, both lists of
+    {slug, series_id, episode_id, season, episode, title, days}:
+      - digest: crossed PROMOTE_DAYS, once per episode (day-5 heads-up)
+      - parks:  crossed PARK_DAYS, once per episode, capped MAX_TV_PARKS_PER_RUN
+                (the caller unmonitors these episodes)
+    """
     prefix = f"{slug}:"
     seen = set()
     digest: list = []
+    parks: list = []
+    parked_this_run = 0
 
     for e in missing:
+        if e.get("seasonNumber") == 0:
+            continue                        # specials are never counted/parked
         aired = parse_arr_ts(e.get("airDateUtc"))
         if not (e.get("monitored") and aired and aired <= now
                 and _fresh_search(e, now)):
             continue
         key = f"{prefix}{e['id']}"
         seen.add(key)
-        rec = state.setdefault(key, {"days": 0, "last_counted": "", "alerted": False})
+        rec = state.setdefault(key, {"days": 0, "last_counted": "",
+                                     "alerted": False, "parked": False})
+        rec.setdefault("parked", False)     # migrate v1 records in place
         if rec["last_counted"] != today:
             rec["days"] += 1
             rec["last_counted"] = today
+        entry = {"slug": slug, "series_id": e["seriesId"], "episode_id": e["id"],
+                 "season": e["seasonNumber"], "episode": e["episodeNumber"],
+                 "title": e.get("title", "?"), "days": rec["days"]}
         if rec["days"] >= PROMOTE_DAYS and not rec["alerted"]:
             rec["alerted"] = True
-            digest.append({"slug": slug, "series_id": e["seriesId"],
-                           "episode_id": e["id"], "season": e["seasonNumber"],
-                           "episode": e["episodeNumber"],
-                           "title": e.get("title", "?"), "days": rec["days"]})
+            digest.append(dict(entry))
+        if (rec["days"] >= PARK_DAYS and not rec["parked"]
+                and parked_this_run < MAX_TV_PARKS_PER_RUN):
+            rec["parked"] = True
+            parked_this_run += 1
+            parks.append(dict(entry))
 
     # prune entries no longer missing (grabbed or unmonitored)
     for key in [k for k in state if k.startswith(prefix) and k not in seen]:
         del state[key]
-    return digest
+    return {"digest": digest, "parks": parks}
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +394,14 @@ def _apply_movie_action(client, act: dict) -> bool:
     return True
 
 
+def _apply_tv_park(client, episode_id: int) -> bool:
+    """The ONLY TV write: unmonitor a genuinely-unfindable episode. Never
+    touches quality profiles or anything else."""
+    code, _ = client.put("/episode/monitor",
+                         body={"episodeIds": [episode_id], "monitored": False})
+    return code in (200, 202)
+
+
 def run(*, client_factory=None, state_path: Path = STATE_PATH,
         now: Optional[datetime] = None, dry_run: bool = False,
         slug: Optional[str] = None) -> dict:
@@ -423,8 +456,9 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
                                  if k.startswith(f"{s}:") and r["stage"] >= 1
                                  and not r["parked"])}
 
-    # ---- TV alert-only digest --------------------------------------------
-    digest_all = []
+    # ---- TV: day-5 digest + day-15 park (unmonitor) ----------------------
+    digest_all: list = []
+    parks_all: list = []
     for s in TV_ARRS:
         if slug and s != slug:
             continue
@@ -432,22 +466,45 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
         missing = _fetch_paged(client, "/wanted/missing")
         if dry_run:
             scratch = copy.deepcopy(state["tv"])
-            digest_all.extend(plan_tv(s, missing, scratch, today, now))
+            plan = plan_tv(s, missing, scratch, today, now)
+            digest_all.extend(plan["digest"])
+            parks_all.extend(plan["parks"])
             continue
-        digest_all.extend(plan_tv(s, missing, state["tv"], today, now))
+        plan = plan_tv(s, missing, state["tv"], today, now)
+        digest_all.extend(plan["digest"])
+        for p in plan["parks"]:
+            p["ok"] = _apply_tv_park(client, p["episode_id"])
+            parks_all.append(p)
     out["tv_digest"] = digest_all
-    if digest_all and not dry_run:
-        # map series ids -> titles, once per slug present in the digest
-        titles = {}
-        for s in {d["slug"] for d in digest_all}:
+    out["tv_parks"] = parks_all
+
+    if (digest_all or parks_all) and not dry_run:
+        # map (slug, series_id) -> series title, once per slug touched
+        titles: dict = {}
+        for s in {d["slug"] for d in digest_all} | {p["slug"] for p in parks_all}:
             code, series = client_factory(s).get("/series")
             if code == 200 and isinstance(series, list):
                 titles.update({(s, x["id"]): x.get("title", "?") for x in series})
-        lines = [f"- {titles.get((d['slug'], d['series_id']), d['slug'])} "
-                 f"S{d['season']:02d}E{d['episode']:02d} {d['title']!r} "
-                 f"— {d['days']}d missing" for d in digest_all]
-        _notify("TV fallback candidates (alert-only, v2 decision data):\n"
-                + "\n".join(lines), "warning")
+
+        def _label(d: dict) -> str:
+            return (f"{titles.get((d['slug'], d['series_id']), d['slug'])} "
+                    f"S{d['season']:02d}E{d['episode']:02d} {d['title']!r}")
+
+        if digest_all:
+            lines = [f"- {_label(d)} — {d['days']}d missing" for d in digest_all]
+            _notify("TV still missing >5d (auto-parks at day 15 if unfound):\n"
+                    + "\n".join(lines), "info")
+        ok_parks = [p for p in parks_all if p.get("ok")]
+        bad_parks = [p for p in parks_all if not p.get("ok")]
+        if ok_parks:
+            lines = [f"- {_label(p)} — unfindable after {p['days']}d, unmonitored"
+                     for p in ok_parks]
+            _notify("TV parked (unfindable — unmonitored, manual intervention "
+                    "needed):\n" + "\n".join(lines), "warning")
+        if bad_parks:
+            lines = [f"- {_label(p)}" for p in bad_parks]
+            _notify("TV park FAILED to unmonitor (still monitored):\n"
+                    + "\n".join(lines), "error")
 
     if not dry_run:
         save_state(state_path, state)
