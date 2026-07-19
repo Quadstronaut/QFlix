@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — SABnzbd Usenet stall detector
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push sab-stall
+StandardOutput=journal
+StandardError=journal
