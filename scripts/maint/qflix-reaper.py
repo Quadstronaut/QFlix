@@ -234,6 +234,12 @@ def _push_kuma(status: str, msg: str) -> None:
     'up' or 'down'. Best-effort; swallows all errors."""
     token = _read_kuma_token()
     if not token:
+        # Loud skip: a missing token means the monitor goes red on Kuma's
+        # 25h watchdog with zero local trace — this exact silent gap red-
+        # looped the monitor 3x (2026-07-13..15, 2026-07-19) before the
+        # token was durably persisted into kuma-push-tokens.json.
+        warn("no Kuma push token under '" + KUMA_PUSH_KEY
+             + "' — heartbeat NOT pushed")
         return
     qs = urllib.parse.urlencode({"status": status, "msg": msg[:200]})
     url = KUMA_BASE + "/api/push/" + token + "?" + qs
