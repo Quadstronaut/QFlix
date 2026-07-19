@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-19 (later) — Usenet monitoring parity: SAB stall canary + failure alerts
+
+The stack went usenet-live 2026-06-22 but monitoring stayed torrent-shaped.
+Proven the hard way tonight: **2 SAB jobs sat slot-Paused since 07-16**
+(wedged SAB queue objects — resume API silently no-oped, app restart no
+help) with every surface green. Cleared via the designed unstick path
+(delete + blocklist + auto re-search) → replacements at 215 MB/s.
+
+New: `sab-stall` canary (15th canary, every-15min, Kuma **"Canary SAB
+Stall"** #103) with two predicates — queue speed ~0 ≥10 min with active
+slots (dead provider/creds) and slot-Paused job pinned ≥24 h (tonight's
+class) — plus `downloads.sab.failed_24h` in the heartbeat doc with a
+"N Usenet download(s) failed (24h)" warn alert (reaches the phone with no
+app rebuild). Counts synced: 15 canaries / 54 manitoba / 55 total.
+
 ## 2026-07-19 — Phantom stuck downloads + silent reaper heartbeat, both fixed
 
 **Heartbeat app showed 5 stuck downloads vs 0 real.** Root cause: acted-on
