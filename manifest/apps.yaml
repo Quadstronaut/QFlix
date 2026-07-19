@@ -550,6 +550,17 @@ canaries:
     kuma_monitor: "Canary qBit Stall"
     script: "scripts/canaries/qbit-stall.sh"
     schedule: "every-15min"
+  sab-stall:
+    # Usenet twin of qbit-stall (gap closed 2026-07-19): SABnzbd's process +
+    # web UI stay up (app monitor green) while every queued job sits at
+    # 0 KB/s — expired Frugal block account, dead server creds, provider
+    # outage. Fires when queue speed ~0 for ≥10min with active slots
+    # waiting, or when a slot-level Paused job is pinned ≥24h (wedged SAB
+    # queue object — the 2026-07-19 class; queue-level paused is NOT a
+    # stall, the status doc already warns on that).
+    kuma_monitor: "Canary SAB Stall"
+    script: "scripts/canaries/sab-stall.sh"
+    schedule: "every-15min"
   kometa-libraries:
     # Config-drift detector: every kometa-configured library must exist on
     # the live Plex server. Catches the May-2026 incident class where Plex

@@ -11,7 +11,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-51%2F51_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-35_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-52%2F52_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-54%2F54_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -40,8 +40,8 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 | Surface | Count | State |
 |---|---:|---|
 | Apps in manifest (`manifest/apps.yaml`) | **35** | 19 UCC · 6 systemd · 9 cron · 1 library |
-| End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **14** | movie · anime · mobile-ux · qbit-stall · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link · quota · newsletter-digest |
-| Kuma push monitors (manitoba-owned) | **52** | 35 manifest apps + 14 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper", all reporting continuously (52/52 declared; `kuma audit` shows no drift). Plus 1 external (1 workstation collector); external PUSH tokens self-heal across `bootstrap-kuma-monitors.py` runs. |
+| End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **15** | movie · anime · mobile-ux · qbit-stall · sab-stall · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link · quota · newsletter-digest |
+| Kuma push monitors (manitoba-owned) | **54** | 35 manifest apps + 15 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper" + 1 "QFlix Audio Disposition", all reporting continuously (54/54 declared; `kuma audit` shows no drift). Plus 1 external (1 workstation collector); external PUSH tokens self-heal across `bootstrap-kuma-monitors.py` runs. |
 | Cron + systemd timers | **14+** | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **650+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -65,7 +65,7 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 | 🟠 Subtitles | **Bazarr** + **Bazarr 2** (anime branch) | One per arr-pair — Bazarr is hard-capped at one Sonarr + one Radarr each, so the second anime instance is a bare-Python install pinned to Bazarr-1's version (`bazarr2-sync.timer`) |
 | 🟠 Retention | **qflix-reaper** | 60-day "watched + nobody else cared" deletion engine — script-driven (`scripts/maint/qflix-reaper.py`, daily timer, cap 50 items/run, audit manifest written before any delete, re-requestable; the 30%-per-library tripwire is disabled live via the on-box `--max-pct 100` drop-in — operator decision 2026-07-13). Media that can't resolve to a single *arr id is an **orphan** — never deleted, and now graced: a fresh orphan reds the run for 24h so you notice it, then downgrades to green with a weekly WARN reminder instead of paging forever ([2026-07-14 spec](docs/superpowers/specs/2026-07-14-reaper-orphan-grace-design.md)). Replaced Maintainerr 2026-06-20 after its Plex-ID resolution bug made deletes unfixable. |
 
-Surrounding cast (qBittorrent, SABnzbd, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, qflix-dash, Kuma, manitoba-maint, 14 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Download clients are now dual-stack: **torrent** (qBittorrent) and **Usenet** (SABnzbd + NZBgeek indexer + Frugal block account). Full breakdown in [`inventory.md`](inventory.md).
+Surrounding cast (qBittorrent, SABnzbd, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, qflix-dash, Kuma, manitoba-maint, 15 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Download clients are now dual-stack: **torrent** (qBittorrent) and **Usenet** (SABnzbd + NZBgeek indexer + Frugal block account). Full breakdown in [`inventory.md`](inventory.md).
 
 ---
 
@@ -359,7 +359,7 @@ The pusher dispatches on `class` for both lifecycle ops and probe selection.
 ## Repo layout
 
 ```text
-manifest/apps.yaml           # 35 apps + 14 canaries — single source of truth
+manifest/apps.yaml           # 35 apps + 15 canaries — single source of truth
 versions.env                 # pinned versions (Tdarr only — pin policy lifted 2026-05-09)
 inventory.md                 # live snapshot of every artifact on the seedbox
 Tuesday.md                   # design doc — extending Mon window to systemd apps
