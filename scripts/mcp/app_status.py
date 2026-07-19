@@ -300,15 +300,25 @@ def parse_sab_queue(payload: dict) -> dict:
 def build_stuck_list(stale_state: dict, torrents: list) -> list:
     """Join stale-state.json's `hashes` map (candidates only) to qBit
     torrent names. `acted` reflects whether the autonomous unstick loop
-    already dispatched an action for this hash (acted_on_at set)."""
+    already dispatched an action for this hash (acted_on_at set).
+
+    Ghost guard: a candidate whose hash is no longer in qBit is already
+    resolved (unstick deleted it / it was cleaned up out-of-band) — skip
+    it rather than report a phantom stuck row. The collector prunes these
+    from stale-state.json hourly, but this keeps the doc honest in the
+    gap between removal and the next collect (2026-07-19: heartbeat app
+    showed 5 phantom stuck vs 0 real)."""
     names = {(t.get("hash") or "").lower(): t.get("name", "?") for t in (torrents or [])}
     out = []
     for h, entry in ((stale_state or {}).get("hashes") or {}).items():
         if not entry.get("candidate_for_unstick"):
             continue
+        name = names.get(h.lower())
+        if name is None:
+            continue  # ghost — hash gone from qBit
         out.append({
             "hash8": h[:8],
-            "name": names.get(h.lower(), "?"),
+            "name": name,
             "hours": int(entry.get("consecutive_zero_hours") or 0),
             "rule": entry.get("rule_matched"),
             "acted": bool(entry.get("acted_on_at")),

@@ -489,6 +489,7 @@ STALE_STATE_JSON = {
 
 QBIT_TORRENTS_FOR_STUCK = [
     {"hash": STUCK_HASH, "name": "Some.Movie.2026.1080p"},
+    {"hash": "deadbeef" + "0" * 32, "name": "Cooling.Down.2026"},
 ]
 
 
@@ -506,15 +507,17 @@ def test_build_stuck_list_matches_contract_example():
 def test_build_stuck_list_excludes_non_candidates():
     """Only the candidate_for_unstick=True hash is included; the other
     tracked hash (candidate_for_unstick=False, still cooling down) must
-    not appear."""
-    out = app_status.build_stuck_list(STALE_STATE_JSON, [])
+    not appear even though its torrent is live in qBit."""
+    out = app_status.build_stuck_list(STALE_STATE_JSON, QBIT_TORRENTS_FOR_STUCK)
     assert len(out) == 1
     assert out[0]["hash8"] == "f0a3658d"
 
 
-def test_build_stuck_list_unknown_hash_name_fallback():
-    out = app_status.build_stuck_list(STALE_STATE_JSON, [])
-    assert out[0]["name"] == "?"
+def test_build_stuck_list_filters_ghost_hashes():
+    """A candidate whose hash is no longer in qBit was already resolved
+    (unstick removed it) — it must NOT surface as a phantom stuck row.
+    Regression: 2026-07-19, heartbeat app showed 5 stuck vs 0 real."""
+    assert app_status.build_stuck_list(STALE_STATE_JSON, []) == []
 
 
 def test_build_stuck_list_empty_state():
