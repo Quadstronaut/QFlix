@@ -295,6 +295,17 @@ def update_stale_state() -> list[str]:
     latest_snap = snaps[-1]
     latest_torrents = (latest_snap.get("qbit", {}) or {}).get("torrents", []) or []
 
+    # Ghost prune: a tracked hash no longer in qBit is resolved — unstick
+    # removed it, or it completed and was cleaned up out-of-band. Without
+    # this, acted-on entries linger in stale-state.json forever and
+    # app_status.py keeps surfacing them as stuck (2026-07-19: heartbeat
+    # showed 5 phantom stuck vs 0 real). Skipped when the qBit section
+    # errored — its empty torrent list would mass-prune legitimate state.
+    if not (latest_snap.get("qbit", {}) or {}).get("error"):
+        live = {t.get("hash") for t in latest_torrents}
+        for h in [h for h in hashes if h not in live]:
+            del hashes[h]
+
     # Rule 3 (bad grab): completed torrent flagged bad — act now, no 3h wait.
     for t in latest_torrents:
         bg = t.get("bad_grab_signals") or {}
