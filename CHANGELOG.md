@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-07-19 — Phantom stuck downloads + silent reaper heartbeat, both fixed
+
+**Heartbeat app showed 5 stuck downloads vs 0 real.** Root cause: acted-on
+unstick candidates whose torrents were long gone from qBit lingered in
+`stale-state.json` forever — the delta-based prune needs 3 snapshot samples,
+which a gone torrent never produces. Fixed in two layers: the collector
+(`qflix-collect.py`) now prunes tracked hashes absent from the latest
+snapshot's torrent list (guarded against a failed qBit collect mass-pruning
+legitimate state), and `app_status.py`'s `build_stuck_list` skips candidates
+not present in live qBit, keeping the doc honest between hourly collects.
+Deployed + verified live: stale-state 5 ghosts → 0, phantom warn alert gone.
+
+**"QFlix Reaper" Kuma monitor red despite clean reaper runs.** The
+`qflix-reaper` key had **never** existed in `~/secrets/kuma-push-tokens.json`
+(absent from every backup back to 2026-05-22), and `_push_kuma()`'s
+missing-token early-return was silent — no journal or logfile trace — so the
+monitor red-looped on Kuma's 25h watchdog (3rd recurrence: 07-13..15 were
+"fixed" with un-persisted manual pushes). Fixed durably: token persisted into
+the secrets file (from the monitor's own DB row), missing-token path now
+`warn()`s into the durable logfile, monitor pushed green same day.
+
+**Deploy parity swept** (box vs repo, 58 files): 1 drift closed
+(`functional-audit.py` picked up the 07-13 Homarr-decommission edit), rest
+match; `bazarr2-sync.py` confirmed in parity at its `~/.opt/maint/` home.
+
+**Known issue (investigated, fix pending):** Tdarr's ensure-AAC flow step
+leaves BOTH audio tracks flagged `default` (original EAC3 + added AAC), so
+Plex tie-breaks to the EAC3 track and live-transcodes audio despite the
+compatible AAC track sitting right there — confirmed by ffprobe on two files,
+likely library-wide. Video HEVC→H264 transcodes on Plex Web are by design
+(browsers can't decode HEVC; the flow only targets VC-1/MPEG-2).
+
 ## 2026-07-18 — TV fallback v2: Season-0 specials janitor + TV park-only
 
 **New: standalone specials-policy janitor** (`scripts/mcp/specials_policy.py` +
