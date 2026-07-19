@@ -1,0 +1,13 @@
+[Unit]
+Description=Manitoba maint — audio-disposition janitor (daily, 04:30 UTC off-peak, before the 05:00 reaper)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+# Spread off the exact minute; avoid colliding with other maint jobs.
+RandomizedDelaySec=10min
+# Catch up if the box was down at the scheduled time.
+Persistent=true
+Unit=manitoba-maint-audio-disposition.service
+
+[Install]
+WantedBy=timers.target

@@ -25,12 +25,23 @@ the secrets file (from the monitor's own DB row), missing-token path now
 (`functional-audit.py` picked up the 07-13 Homarr-decommission edit), rest
 match; `bazarr2-sync.py` confirmed in parity at its `~/.opt/maint/` home.
 
-**Known issue (investigated, fix pending):** Tdarr's ensure-AAC flow step
-leaves BOTH audio tracks flagged `default` (original EAC3 + added AAC), so
-Plex tie-breaks to the EAC3 track and live-transcodes audio despite the
-compatible AAC track sitting right there — confirmed by ffprobe on two files,
-likely library-wide. Video HEVC→H264 transcodes on Plex Web are by design
-(browsers can't decode HEVC; the flow only targets VC-1/MPEG-2).
+**Tdarr dual-default audio bug — FIXED via new audio-disposition janitor.**
+Tdarr's ensure-AAC flow step leaves BOTH audio tracks flagged `default`
+(original EAC3 + added AAC — ffmpeg copies the disposition from the source
+stream), so Plex tie-breaks to the EAC3 track and live-transcodes audio
+despite the compatible AAC track sitting right there. Dry-run showed
+**318 of 424** library files affected. The installed
+`ffmpegCommandEnsureAudioStream` 1.0.0 plugin has no disposition control, so
+the fix is a new standalone janitor (compartmentalization law; portable
+as-is to qflix2): `scripts/maint/audio-disposition-janitor.py` +
+`manitoba-maint-audio-disposition.{service,timer}` (daily 04:30 UTC, Kuma
+push monitor "QFlix Audio Disposition"). Narrow predicate — only the exact
+dual-default-with-AAC-compat pattern — disposition-only stream-copy remux,
+ffprobe post-verify, mtime preserved, atomic replace, Tautulli
+active-session skip, 50/night cap (backlog converges in ~7 nights). First
+supervised batch verified live: EAC3 `default=0`, AAC sole default. Video
+HEVC→H264 transcodes on Plex Web remain by design (browsers can't decode
+HEVC; the flow only targets VC-1/MPEG-2).
 
 ## 2026-07-18 — TV fallback v2: Season-0 specials janitor + TV park-only
 

@@ -1,7 +1,7 @@
 {
   "_id": "qflix-direct-play-fix",
   "name": "QFlix Direct-Play Fix",
-  "description": "Surgical re-encode for browser direct-play. vc1 + mpeg2video video streams -> h264. Non-AAC primary audio (including EAC3) -> add aac/en/2ch stream alongside (original audio preserved). Files that are already direct-play-safe pass through untouched.",
+  "description": "Surgical re-encode for browser direct-play. vc1 + mpeg2video video streams -> h264. Non-AAC primary audio (including EAC3) -> add aac/en/2ch stream alongside (original audio preserved). Files that are already direct-play-safe pass through untouched. KNOWN LIMIT: ffmpeg copies the default disposition from the source stream, so this flow emits BOTH the original and the added AAC track flagged default (Plex then tie-breaks to the original and live-transcodes anyway). Disposition normalization is owned by scripts/maint/audio-disposition-janitor.py (daily timer manitoba-maint-audio-disposition) - the installed ffmpegCommandEnsureAudioStream 1.0.0 plugin has no disposition control to fix it in-flow.",
   "tags": "qflix",
   "flowPlugins": [
     {
