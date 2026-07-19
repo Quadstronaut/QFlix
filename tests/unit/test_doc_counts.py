@@ -23,12 +23,14 @@ INVENTORY = os.path.join(REPO_ROOT, "inventory.md")
 
 # Real Kuma monitors that live OUTSIDE the manifest's app/canary sets but are
 # manitoba-owned and counted in every "manitoba monitors" total in the docs.
-# bootstrap-kuma-monitors.py auto-injects all three; `manitoba-maint kuma audit`
-# counts them (matched), so the docs must too to reflect the LIVE monitor set:
-#   - "Manitoba Pusher"  — the pusher's own self-heartbeat (step 0b)
-#   - "QFlix Fleet"      — the fleet-aggregate storm monitor (step 0c)
-#   - "QFlix Reaper"     — the reaper's self-pushed daily monitor
-NON_MANIFEST_MONITORS = 3
+# `manitoba-maint kuma audit` counts them (matched), so the docs must too to
+# reflect the LIVE monitor set:
+#   - "Manitoba Pusher"           — the pusher's own self-heartbeat (step 0b)
+#   - "QFlix Fleet"               — the fleet-aggregate storm monitor (step 0c)
+#   - "QFlix Reaper"              — the reaper's self-pushed daily monitor
+#   - "QFlix Audio Disposition"   — the audio-disposition janitor's self-pushed
+#                                   daily monitor (#102, added 2026-07-19)
+NON_MANIFEST_MONITORS = 4
 
 
 def _read(path):

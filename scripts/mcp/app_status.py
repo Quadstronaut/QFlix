@@ -297,6 +297,27 @@ def parse_sab_queue(payload: dict) -> dict:
     }
 
 
+def count_sab_failed(history_payload: dict, now_epoch: float,
+                     window_hours: int = 24) -> int:
+    """SABnzbd `?mode=history` -> count of jobs that FAILED inside the
+    window. A failed Usenet job (missing articles, unpack/par2 failure) was
+    previously invisible in the doc — the *arr re-searches, but repeated
+    failures mean a dead indexer/provider and deserve an alert line.
+    `completed` is a unix epoch per slot; malformed slots are skipped."""
+    slots = ((history_payload or {}).get("history") or {}).get("slots") or []
+    cutoff = now_epoch - window_hours * 3600
+    n = 0
+    for s in slots:
+        if (s.get("status") or "").lower() != "failed":
+            continue
+        try:
+            if float(s.get("completed") or 0) >= cutoff:
+                n += 1
+        except (TypeError, ValueError):
+            continue
+    return n
+
+
 def build_stuck_list(stale_state: dict, torrents: list) -> list:
     """Join stale-state.json's `hashes` map (candidates only) to qBit
     torrent names. `acted` reflects whether the autonomous unstick loop
@@ -417,6 +438,10 @@ def derive_alerts(doc: dict) -> list:
     sab = downloads.get("sab") or {}
     if sab.get("paused"):
         warn.append({"level": "warn", "text": "SABnzbd queue paused"})
+    failed = sab.get("failed_24h")
+    if isinstance(failed, int) and failed > 0:
+        warn.append({"level": "warn",
+                      "text": "{} Usenet download(s) failed (24h)".format(failed)})
 
     return crit + warn
 
@@ -574,6 +599,18 @@ def _collect_sab_queue() -> dict:
         return json.loads(resp.read().decode())
 
 
+def _collect_sab_history() -> dict:
+    """Last 60 history slots — enough to cover a day's completions; the
+    failed_24h count filters by the per-slot `completed` epoch anyway."""
+    port = read_secret("sabnzbd.port")
+    key = read_secret("sabnzbd.key")
+    url = ("http://127.0.0.1:{}/api?mode=history&start=0&limit=60"
+           "&output=json&apikey={}").format(port, key)
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+
 def _read_recent_event_lines() -> list:
     """Today + yesterday's events/<date>.jsonl lines (UTC dates)."""
     events_dir = QFLIX_COLLECT_DATA / "events"
@@ -610,6 +647,14 @@ def _collect_downloads() -> dict:
         sab_summary = parse_sab_queue(_collect_sab_queue())
     except Exception as e:
         errors.append("sab: {}".format(e))
+    # failed_24h rides the same summary dict (additive; the Android app's
+    # parser ignores unknown keys). Best-effort: a history fetch failure
+    # keeps the queue numbers and just logs the error.
+    try:
+        now_epoch = dt.datetime.now(dt.timezone.utc).timestamp()
+        sab_summary["failed_24h"] = count_sab_failed(_collect_sab_history(), now_epoch)
+    except Exception as e:
+        errors.append("sab_history: {}".format(e))
 
     stuck = []
     try:

@@ -460,6 +460,49 @@ def test_parse_sab_queue_empty_payload():
 
 
 # ---------------------------------------------------------------------------
+# count_sab_failed — SAB history slots -> failed-in-window count
+# ---------------------------------------------------------------------------
+
+_NOW = 1_700_000_000.0
+
+
+def _sab_history(slots):
+    return {"history": {"slots": slots}}
+
+
+def test_count_sab_failed_in_window():
+    slots = [
+        {"status": "Failed", "completed": _NOW - 3600},        # 1h ago
+        {"status": "Failed", "completed": _NOW - 23 * 3600},   # 23h ago
+        {"status": "Completed", "completed": _NOW - 3600},     # success
+    ]
+    assert app_status.count_sab_failed(_sab_history(slots), _NOW) == 2
+
+
+def test_count_sab_failed_outside_window_excluded():
+    slots = [{"status": "Failed", "completed": _NOW - 25 * 3600}]  # 25h ago
+    assert app_status.count_sab_failed(_sab_history(slots), _NOW) == 0
+
+
+def test_count_sab_failed_malformed_and_empty():
+    slots = [{"status": "Failed", "completed": "not-a-number"},
+             {"status": "Failed"}]  # completed missing -> 0 -> outside window
+    assert app_status.count_sab_failed(_sab_history(slots), _NOW) == 0
+    assert app_status.count_sab_failed({}, _NOW) == 0
+
+
+def test_alert_on_sab_failures():
+    doc = {"downloads": {"sab": {"paused": False, "failed_24h": 3}}}
+    alerts = app_status.derive_alerts(doc)
+    assert {"level": "warn", "text": "3 Usenet download(s) failed (24h)"} in alerts
+
+
+def test_no_alert_on_zero_sab_failures():
+    doc = {"downloads": {"sab": {"paused": False, "failed_24h": 0}}}
+    assert app_status.derive_alerts(doc) == []
+
+
+# ---------------------------------------------------------------------------
 # build_stuck_list — stale-state.json shape (verbatim from qflix-collect.py)
 # ---------------------------------------------------------------------------
 
