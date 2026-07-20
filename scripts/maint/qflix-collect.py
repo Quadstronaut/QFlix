@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -54,6 +55,30 @@ MAX_ACTIONS_PER_DAY = int(os.environ.get("QFLIX_COLLECT_MAX_ACTIONS", "10"))
 DEAD_SLOW_BYTES = 10000        # dl_speed below this on a downloading torrent = dead-slow
 ZERO_MOVEMENT_HOURS = 3        # snapshots of zero downloaded-delta before acting
 META_STUCK_AGE_S = 86400       # metaDL + size 0 must be >=24h old to act
+
+# --- C3/C4: SAB (Usenet) stuck-handling parity (2026-07-19 spec) -----------
+# SAB `Status` strings verbatim, per spec C2/C3. Duplicated here rather than
+# imported from scripts/mcp/collect.py: this script only ever shells out to
+# sibling MCP scripts via _run_mcp(), it never imports their modules --
+# keeping that boundary means this file and collect.py stay independently
+# editable (both are mid-flight in the same parallel build).
+SAB_PAUSED_STATE = "Paused"
+SAB_DOWNLOADISH_STATES = frozenset({
+    "Downloading", "Queued", "Grabbing", "Fetching", "Propagating",
+})
+SAB_PP_STATES = frozenset({
+    "Verifying", "Repairing", "Extracting", "Moving", "Running",
+    "QuickCheck", "Checking",
+})
+
+# C4 escalation circuit-breaker knobs (env-overridable per spec).
+PP_HUNG_ESCALATE_HOURS = int(os.environ.get("PP_HUNG_ESCALATE_HOURS", "4"))
+SAB_REPAIR_COOLDOWN_H = int(os.environ.get("SAB_REPAIR_COOLDOWN_H", "24"))
+# Delay before re-polling queue_meta() to verify a fired restart_repair (SAB
+# restarts mid-response and needs time to come back up). Tests monkeypatch
+# this to 0 rather than block on a real 60s sleep.
+SAB_REPAIR_VERIFY_DELAY_S = int(
+    os.environ.get("QFLIX_COLLECT_SAB_VERIFY_DELAY_S", "60"))
 
 
 # --- Logging (systemd routes stdout/stderr to journald) -------------------
@@ -165,7 +190,7 @@ def _write_json_atomic(path: Path, obj) -> None:
 # --- Step 2: snapshot -----------------------------------------------------
 def collect_snapshot() -> Path:
     r = _run_mcp("collect.py",
-                 ["--emit-json", "--include", "qbit,arrs,seerr,plex"], timeout=90)
+                 ["--emit-json", "--include", "qbit,arrs,seerr,plex,sab"], timeout=90)
     if r.returncode != 0:
         raise RuntimeError(f"collect.py exit={r.returncode}: {r.stderr.strip()[:300]}")
     now = utc_now()
@@ -220,9 +245,33 @@ def _load_snapshots(last_n: int = 3) -> list[dict]:
     return out
 
 
+def _matches_stale_sab_rule(state: str | None, queue_paused: bool) -> str | None:
+    """Local port of the C2 `matches_stale_sab_rule` rule table (state name
+    -> rule, or None if not stale-eligible). Used both by the per-snapshot
+    dispatch in update_stale_state() and by escalate_sab_if_pinned()'s
+    "still rule-matching" strike check. See the module-level note above on
+    why this is duplicated rather than imported from scripts/mcp/collect.py.
+    """
+    if state == SAB_PAUSED_STATE:
+        # object.py wedge: SAB force-pauses the WHOLE job when a post-restart
+        # file re-import fails, with no auto-resume path. Only a wedge if the
+        # queue itself isn't paused -- an operator-paused queue is normal and
+        # must not be flagged.
+        return "sab-paused-pinned" if not queue_paused else None
+    if state in SAB_DOWNLOADISH_STATES:
+        return "sab-zero-movement"
+    if state in SAB_PP_STATES:
+        # Hung post-processing (par2/unrar/move) -- unstick's *arr-side
+        # DELETE can't touch this at all; the caller sets
+        # candidate_for_unstick=False and routes it to C4 escalation instead.
+        return "sab-pp-hung"
+    return None
+
+
 def update_stale_state() -> list[str]:
-    """Port of Update-StaleState. State is a plain dict persisted to
-    stale-state.json. Returns hashes that are fresh unstick candidates."""
+    """Port of Update-StaleState, extended for SAB per spec C3. State is a
+    plain dict persisted to stale-state.json. Returns keys (qBit hashes OR
+    SAB nzo_ids) that are fresh unstick candidates."""
     state_file = DATA_ROOT / "stale-state.json"
     hashes: dict = {}
     if state_file.exists():
@@ -231,13 +280,19 @@ def update_stale_state() -> list[str]:
             hashes = dict(loaded.get("hashes", {}))
         except Exception:
             hashes = {}
+    # Every tracked entry must carry a kind. A loaded legacy entry (written
+    # before SAB support existed) has none -- it was always a qBit hash.
+    for entry in hashes.values():
+        entry.setdefault("kind", "qbit")
 
     snaps = _load_snapshots(3)
     if len(snaps) < 3:
         _write_json_atomic(state_file, {"hashes": hashes, "updated_at": iso()})
         return []
 
-    # hash -> [samples] across the 3 snapshots
+    # key -> [samples] across the 3 snapshots. qBit keyed by hash (40-char
+    # hex), SAB keyed by nzo_id ("SABnzbd_nzo_..." strings) -- disjoint
+    # namespaces that safely share one dict.
     samples: dict[str, list[dict]] = {}
     for s in snaps:
         for t in (s.get("qbit", {}) or {}).get("torrents", []) or []:
@@ -246,10 +301,23 @@ def update_stale_state() -> list[str]:
                 "state": t.get("state"),
                 "progress": t.get("progress"),
                 "dlspeed": t.get("dl_speed_bytes_s"),
+                "kind": "qbit",
+            })
+        for sl in (s.get("sab", {}) or {}).get("slots", []) or []:
+            samples.setdefault(sl.get("id"), []).append({
+                "downloaded": sl.get("downloaded_bytes"),
+                "state": sl.get("state"),
+                "progress": sl.get("progress"),
+                "dlspeed": sl.get("dl_speed_bytes_s"),
+                "kind": "sab",
             })
 
+    latest_snap = snaps[-1]
+    sab_queue_paused = bool(
+        ((latest_snap.get("sab") or {}).get("queue") or {}).get("paused"))
+
     candidates: list[str] = []
-    for h, sm in list(samples.items()):
+    for k, sm in list(samples.items()):
         if len(sm) < 3:
             continue
         try:
@@ -257,54 +325,95 @@ def update_stale_state() -> list[str]:
         except TypeError:
             continue
         if delta != 0:
-            hashes.pop(h, None)   # made progress — no longer stale
+            hashes.pop(k, None)   # made progress — no longer stale
             continue
         latest = sm[-1]
-        if (latest.get("progress") or 0) >= 1.0:
-            continue
+        kind = latest.get("kind", "qbit")
         state = latest.get("state")
-        if state == "stalledDL":
-            rule = "stalledDL"
-        elif state == "downloading" and (latest.get("dlspeed") or 0) < DEAD_SLOW_BYTES:
-            rule = "dead-slow"
-        elif state in ("stoppedDL", "pausedDL"):
-            rule = "stopped-incomplete"
-        else:
-            continue
 
-        if h not in hashes:
-            hashes[h] = {
+        if kind == "qbit":
+            if (latest.get("progress") or 0) >= 1.0:
+                continue
+            if state == "stalledDL":
+                rule = "stalledDL"
+            elif state == "downloading" and (latest.get("dlspeed") or 0) < DEAD_SLOW_BYTES:
+                rule = "dead-slow"
+            elif state in ("stoppedDL", "pausedDL"):
+                rule = "stopped-incomplete"
+            else:
+                continue
+            candidate_for_unstick = True
+        else:  # kind == "sab" -- same 3-snapshot zero-delta requirement (C3)
+            rule = _matches_stale_sab_rule(state, sab_queue_paused)
+            if rule is None:
+                continue
+            # unstick's *arr-side DELETE flow can't fix a hung par2/unrar
+            # step; these are tracked (feed the stuck list + C4 escalation)
+            # but never handed to the per-hour unstick dispatch.
+            candidate_for_unstick = rule != "sab-pp-hung"
+
+        if k not in hashes:
+            hashes[k] = {
                 "first_zero_movement_at": iso(),
                 "consecutive_zero_hours": ZERO_MOVEMENT_HOURS,
                 "last_progress": latest.get("progress"),
                 "rule_matched": rule,
-                "candidate_for_unstick": True,
+                "candidate_for_unstick": candidate_for_unstick,
                 "acted_on_at": None,
+                "kind": kind,
             }
         else:
-            prev = int(hashes[h].get("consecutive_zero_hours") or 0)
+            prev = int(hashes[k].get("consecutive_zero_hours") or 0)
             if prev < ZERO_MOVEMENT_HOURS:
                 prev = ZERO_MOVEMENT_HOURS
-            hashes[h]["consecutive_zero_hours"] = prev + 1
-            hashes[h]["rule_matched"] = rule
-            hashes[h]["candidate_for_unstick"] = True
-            hashes[h]["last_progress"] = latest.get("progress")
-        if not hashes[h].get("acted_on_at"):
-            candidates.append(h)
+            hashes[k]["consecutive_zero_hours"] = prev + 1
+            hashes[k]["rule_matched"] = rule
+            hashes[k]["candidate_for_unstick"] = candidate_for_unstick
+            hashes[k]["last_progress"] = latest.get("progress")
+            hashes[k]["kind"] = kind
+        if candidate_for_unstick and not hashes[k].get("acted_on_at"):
+            candidates.append(k)
 
-    latest_snap = snaps[-1]
     latest_torrents = (latest_snap.get("qbit", {}) or {}).get("torrents", []) or []
 
-    # Ghost prune: a tracked hash no longer in qBit is resolved — unstick
-    # removed it, or it completed and was cleaned up out-of-band. Without
-    # this, acted-on entries linger in stale-state.json forever and
+    # Ghost prune: a tracked key no longer live is resolved — unstick (or the
+    # C4 escalation) removed it, or it completed/was cleaned up out-of-band.
+    # Without this, acted-on entries linger in stale-state.json forever and
     # app_status.py keeps surfacing them as stuck (2026-07-19: heartbeat
-    # showed 5 phantom stuck vs 0 real). Skipped when the qBit section
-    # errored — its empty torrent list would mass-prune legitimate state.
-    if not (latest_snap.get("qbit", {}) or {}).get("error"):
-        live = {t.get("hash") for t in latest_torrents}
-        for h in [h for h in hashes if h not in live]:
-            del hashes[h]
+    # showed 5 phantom stuck vs 0 real).
+    #
+    # Two independent guards (2026-07-19 SAB parity extension):
+    #  1. If EITHER section errored this cycle, skip pruning ENTIRELY. A
+    #     naive per-kind live-set built off an errored section's empty
+    #     torrents/slots list would look like "nothing of this kind is
+    #     live" and wrongly mass-prune that kind's legitimate, still-
+    #     tracked entries.
+    #  2. A `sab` key entirely ABSENT from the snapshot (legacy pre-SAB
+    #     snapshot, or a collect run with --include lacking sab) is NOT an
+    #     error -- it's just no evidence either way. qBit-kind entries still
+    #     prune normally in that case, but SAB-kind entries are left alone:
+    #     there is no SAB live-set to judge them against this cycle.
+    qbit_section = latest_snap.get("qbit") or {}
+    sab_section = latest_snap.get("sab")   # None => key absent entirely
+    qbit_errored = bool(qbit_section.get("error"))
+    sab_errored = bool((sab_section or {}).get("error")) if sab_section is not None else False
+
+    if not (qbit_errored or sab_errored):
+        qbit_live = {t.get("hash") for t in latest_torrents}
+        sab_live = (
+            {sl.get("id") for sl in sab_section.get("slots", []) or []}
+            if sab_section is not None else None    # None = no SAB data this cycle
+        )
+        for k in list(hashes.keys()):
+            entry_kind = hashes[k].get("kind", "qbit")
+            if entry_kind == "qbit":
+                if k not in qbit_live:
+                    del hashes[k]
+            elif entry_kind == "sab":
+                if sab_live is None:
+                    continue   # sab section missing entirely -- can't judge, keep
+                if k not in sab_live:
+                    del hashes[k]
 
     # Rule 3 (bad grab): completed torrent flagged bad — act now, no 3h wait.
     for t in latest_torrents:
@@ -323,6 +432,7 @@ def update_stale_state() -> list[str]:
                 "rule_matched": rule,
                 "candidate_for_unstick": True,
                 "acted_on_at": None,
+                "kind": "qbit",
             }
             candidates.append(h)
 
@@ -351,6 +461,7 @@ def update_stale_state() -> list[str]:
             "rule_matched": "meta-stuck",
             "candidate_for_unstick": True,
             "acted_on_at": None,
+            "kind": "qbit",
         }
         candidates.append(h)
 
@@ -359,8 +470,10 @@ def update_stale_state() -> list[str]:
 
 
 # --- Step 5: act ----------------------------------------------------------
-_EFFECTIVE_RESULTS = ("deleted+blocklisted", "qbit-orphan-removed")
-_TERMINAL_STATUSES = ("deleted+blocklisted", "qbit-orphan-removed", "already-fully-removed")
+# "sab-orphan-removed" is the usenet twin of "qbit-orphan-removed" (C5, SAB
+# stuck-parity spec 2026-07-19) -- mirrors unstick.py's _EFFECTIVE_STATUSES.
+_EFFECTIVE_RESULTS = ("deleted+blocklisted", "qbit-orphan-removed", "sab-orphan-removed")
+_TERMINAL_STATUSES = ("deleted+blocklisted", "qbit-orphan-removed", "sab-orphan-removed", "already-fully-removed")
 
 
 def count_todays_actions() -> int:
@@ -433,6 +546,191 @@ def act_on_candidates(candidates: list[str]) -> list[str]:
     return acted
 
 
+# --- Step 5b: SAB escalation circuit-breaker (C4) --------------------------
+# unstick.py's *arr-side DELETE flow is the ecosystem-standard remedy, but
+# research (GH #802/#1104/#3106, reproduced live 2026-07-19) shows SAB can
+# no-op it against a wedged queue object -- and a hung par2/unrar step isn't
+# reachable by DELETE at all. `mode=restart_repair` (SAB restart + queue
+# rebuild from disk) is the only documented remedy for either wedge class.
+# It's a bigger hammer than unstick, so it's rate-limited hard: a persistent
+# on-disk latch, max one fire per SAB_REPAIR_COOLDOWN_H.
+
+def _sab_repair_latch_path() -> Path:
+    return DATA_ROOT / "sab-repair-latch.epoch"
+
+
+def _sab_repair_cooldown_active() -> bool:
+    """True if a restart_repair fired within the cooldown window. Fails
+    OPEN (cooldown NOT active) on a missing/corrupt latch file -- the worst
+    case there is one extra fire, not a permanently-stuck queue."""
+    p = _sab_repair_latch_path()
+    if not p.exists():
+        return False
+    try:
+        last = float(p.read_text(encoding="utf-8").strip())
+    except Exception:
+        return False
+    return (utc_now().timestamp() - last) < (SAB_REPAIR_COOLDOWN_H * 3600)
+
+
+def _stamp_sab_repair_latch() -> None:
+    p = _sab_repair_latch_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(str(int(utc_now().timestamp())), encoding="utf-8")
+
+
+def _sab_api(mode: str) -> dict:
+    """Minimal stdlib SAB API GET helper -- SELF-CONTAINED in this file.
+
+    Deviation from the C4 spec text (which names `SabClient.restart_repair`):
+    qflix-collect.py never imports scripts/mcp modules, only shells out to
+    them via _run_mcp() -- that boundary is what lets this file and
+    scripts/mcp/lib/sab_client.py be built concurrently by separate agents
+    without either one's import graph depending on the other mid-edit.
+    Mirrors _read_kuma_token's secrets-reading pattern (~/secrets/
+    sabnzbd.{port,key}) and qbit_client's stdlib-urllib request shape.
+
+    Raises FileNotFoundError if secrets are missing, or a urllib/json error
+    on transport failure -- callers decide what "success" means (see
+    _sab_restart_repair: a timeout/conn-reset AFTER the call was issued is
+    treated as success-pending, never as failure).
+    """
+    secrets = Path(os.environ.get("MANITOBA_SECRETS", str(Path.home() / "secrets")))
+    port = (secrets / "sabnzbd.port").read_text(encoding="utf-8").strip()
+    key = (secrets / "sabnzbd.key").read_text(encoding="utf-8").strip()
+    qs = urllib.parse.urlencode({"mode": mode, "apikey": key, "output": "json"})
+    url = "http://127.0.0.1:" + port + "/api?" + qs
+    timeout = 30 if mode == "restart_repair" else 15
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", errors="ignore")
+    return json.loads(body) if body else {}
+
+
+def _sab_restart_repair() -> str:
+    """Fire SAB's mode=restart_repair. SAB restarts mid-response for this
+    call -- a timeout or connection-reset right after we've issued it is the
+    EXPECTED happy path (per the pinned spec's research: verify by re-poll,
+    never by return code), so any error surfacing after the network attempt
+    is "issued-conn-drop" (success-pending), not a failure. Only a missing
+    secrets file (the call was never even attempted) is a real error."""
+    try:
+        _sab_api("restart_repair")
+        return "issued"
+    except FileNotFoundError as exc:
+        return "error:no-secrets:" + str(exc)[:80]
+    except Exception as exc:
+        return "issued-conn-drop:" + str(exc)[:80]
+
+
+def escalate_sab_if_pinned() -> dict:
+    """Port of C4. Called once per collect cycle, after act_on_candidates.
+    Fires SAB's restart_repair circuit-breaker when either strike condition
+    trips, subject to the cooldown latch. Never raises into main() -- every
+    branch is defensive, and the outer try/except is the final backstop.
+
+    Returns a diagnostic dict (mainly useful for tests); main() only cares
+    that this never blows up the rest of the collect cycle.
+    """
+    result: dict = {"fired": False, "trigger": None, "ids": []}
+    try:
+        state_file = DATA_ROOT / "stale-state.json"
+        if not state_file.exists():
+            return result
+        try:
+            loaded = json.loads(state_file.read_text(encoding="utf-8"))
+        except Exception:
+            return result
+        hashes = loaded.get("hashes", {}) or {}
+
+        snaps = _load_snapshots(1)
+        latest_snap = snaps[-1] if snaps else {}
+        sab_section = latest_snap.get("sab") or {}
+        latest_slots = {sl.get("id"): sl for sl in sab_section.get("slots", []) or []}
+        queue_paused = bool((sab_section.get("queue") or {}).get("paused"))
+
+        strike_ids: list[str] = []
+        trigger = None
+
+        # Strike (a): unstick was dispatched >=1h ago, the slot is STILL
+        # there, and it STILL matches a stale rule -- the *arr-side DELETE
+        # no-oped against a wedged SAB queue object (mode=resume/delete
+        # return {"status":true} while doing nothing -- SAB does not log
+        # API calls, so re-polling is the only way to tell).
+        for k, entry in hashes.items():
+            if entry.get("kind") != "sab":
+                continue
+            acted = entry.get("acted_on_at")
+            if not acted:
+                continue
+            slot = latest_slots.get(k)
+            if slot is None:
+                continue
+            try:
+                acted_dt = datetime.fromisoformat(acted.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if (utc_now() - acted_dt).total_seconds() < 3600:
+                continue
+            if _matches_stale_sab_rule(slot.get("state"), queue_paused) is None:
+                continue
+            strike_ids.append(k)
+            trigger = trigger or "strike-a-unstick-no-op"
+
+        # Strike (b): a hung post-processing step (par2/unrar/move) that
+        # unstick can never touch (candidate_for_unstick is False for
+        # these) -- past the escalation threshold, restart_repair is the
+        # only documented remedy.
+        for k, entry in hashes.items():
+            if entry.get("kind") != "sab" or entry.get("rule_matched") != "sab-pp-hung":
+                continue
+            if int(entry.get("consecutive_zero_hours") or 0) >= PP_HUNG_ESCALATE_HOURS:
+                if k not in strike_ids:
+                    strike_ids.append(k)
+                trigger = trigger or "strike-b-pp-hung"
+
+        if not strike_ids:
+            return result
+        result["trigger"] = trigger
+        result["ids"] = strike_ids
+
+        if _sab_repair_cooldown_active():
+            result["skipped"] = "cooldown"
+            return result
+
+        outcome = _sab_restart_repair()
+        _stamp_sab_repair_latch()
+        result["fired"] = True
+        result["outcome"] = outcome
+
+        today = utc_now().strftime("%Y-%m-%d")
+        events_dir = DATA_ROOT / "events"
+        events_dir.mkdir(parents=True, exist_ok=True)
+        line = {"ts": iso(), "action": "sab-restart-repair", "trigger": trigger,
+                "ids": strike_ids, "outcome": outcome}
+        with open(events_dir / (today + ".jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line) + "\n")
+
+        _notify("SAB restart_repair fired (" + str(trigger) + "): " +
+                ", ".join(strike_ids), "warning")
+
+        # Verify by re-poll after a delay (SAB restarts mid-response; give
+        # it a moment to come back before judging the outcome). Best-effort
+        # observability only -- logged, never raised; the next hourly cycle
+        # re-evaluates regardless of what this shows.
+        try:
+            time.sleep(SAB_REPAIR_VERIFY_DELAY_S)
+            verify = _sab_api("queue")
+            still_paused = bool((verify.get("queue") or {}).get("paused"))
+            log("sab-restart-repair verify: queue.paused=" + str(still_paused))
+        except Exception as exc:
+            warn("sab-restart-repair verify failed (non-fatal): " + str(exc))
+
+        return result
+    except Exception as exc:
+        warn("escalate_sab_if_pinned failed (non-fatal): " + str(exc))
+        return result
+
+
 # --- Step 7: retention ----------------------------------------------------
 def _prune_dir(sub: str, days: int, files: bool = False) -> None:
     root = DATA_ROOT / sub
@@ -472,6 +770,14 @@ def main() -> int:
         collect_logs()
         candidates = update_stale_state()
         acted = act_on_candidates(candidates) if candidates else []
+        # Runs every cycle regardless of `candidates` -- strike (b) (a hung
+        # sab-pp-hung entry past threshold) never appears in `candidates`
+        # (candidate_for_unstick is False for those), so gating this behind
+        # `if candidates` would silently starve that whole escalation path.
+        escalation = escalate_sab_if_pinned()
+        if escalation.get("fired"):
+            log("SAB restart_repair fired: trigger=" + str(escalation.get("trigger")) +
+                " ids=" + ",".join(escalation.get("ids") or []))
         prune_retention()
 
         try:
