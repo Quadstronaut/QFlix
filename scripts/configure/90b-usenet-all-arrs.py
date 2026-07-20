@@ -119,11 +119,23 @@ def secret_or(name: str, fallback: str) -> str:
 # directly; every network call above them is a thin, untested wrapper.
 # ===========================================================================
 
+def find_sab_client(clients: list) -> dict:
+    """Return the first Sabnzbd download client (any enable state) or None.
+    Presence — not enabled-ness — is the idempotency key (council 2026-07-20,
+    Defect 6): keying the skip on `enable` alone meant a present-but-DISABLED
+    client failed the check, so every --execute re-POSTed a second "SABnzbd"
+    client that never converged. We converge on presence and report a disabled
+    one rather than silently re-adding or force-enabling an operator's
+    deliberate choice."""
+    return next((c for c in clients or [] if c.get("implementation") == "Sabnzbd"), None)
+
+
 def has_enabled_sab_client(clients: list) -> bool:
-    """True iff an already-enabled Sabnzbd download client exists — the
-    per-C7 skip condition (we don't second-guess an operator's existing
-    client just because our category/priority fields differ)."""
-    return any(c.get("implementation") == "Sabnzbd" and c.get("enable") for c in clients or [])
+    """True iff an already-enabled Sabnzbd client exists. Retained for the
+    tests that assert the enabled-vs-disabled distinction; orchestration uses
+    find_sab_client for the idempotency decision."""
+    c = find_sab_client(clients)
+    return bool(c and c.get("enable"))
 
 
 def build_sab_downloadclient_setv(kind: str, slug: str, port: str, apikey: str) -> dict:
@@ -312,8 +324,15 @@ def ensure_download_client(ctx: dict, kind: str, execute: bool) -> str:
     code, clients = arr_call(ctx, "GET", "/downloadclient")
     if code != 200 or not isinstance(clients, list):
         return "[{}] GET /downloadclient failed: {} {}".format(ctx["slug"], code, clients)
-    if has_enabled_sab_client(clients):
-        return "[{}] SABnzbd download client already present+enabled".format(ctx["slug"])
+    existing = find_sab_client(clients)
+    if existing is not None:
+        # Converge on PRESENCE (Defect 6): re-POSTing because a present client
+        # is merely disabled would spawn duplicate "SABnzbd" clients every run.
+        if existing.get("enable"):
+            return "[{}] SABnzbd download client already present+enabled".format(ctx["slug"])
+        return ("[{}] SABnzbd download client present but DISABLED "
+                "(id={}) — leaving as-is; enable it in the arr UI if intended"
+                .format(ctx["slug"], existing.get("id")))
     code, schema_list = arr_call(ctx, "GET", "/downloadclient/schema")
     if code != 200 or not isinstance(schema_list, list):
         return "[{}] GET /downloadclient/schema failed: {} {}".format(ctx["slug"], code, schema_list)
