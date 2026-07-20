@@ -460,6 +460,35 @@ def test_parse_sab_queue_empty_payload():
 
 
 # ---------------------------------------------------------------------------
+# parse_sab_slots — queue.slots -> build_stuck_list's second name/liveness
+# source (C6). Field mapping only, no numeric conversion.
+# ---------------------------------------------------------------------------
+
+SAB_QUEUE_WITH_SLOTS = {
+    "queue": {
+        "paused": False,
+        "slots": [
+            {"nzo_id": "SABnzbd_nzo_p6f6zj0e", "filename": "Some.Show.S01E01",
+             "cat": "sonarr", "status": "Downloading", "mb": "800.00", "mbleft": "400.00"},
+        ],
+    }
+}
+
+
+def test_parse_sab_slots_field_mapping():
+    out = app_status.parse_sab_slots(SAB_QUEUE_WITH_SLOTS)
+    assert out == [{
+        "id": "SABnzbd_nzo_p6f6zj0e", "name": "Some.Show.S01E01", "cat": "sonarr",
+        "state": "Downloading", "mb": "800.00", "mbleft": "400.00",
+    }]
+
+
+def test_parse_sab_slots_empty_payload():
+    assert app_status.parse_sab_slots({}) == []
+    assert app_status.parse_sab_slots({"queue": {}}) == []
+
+
+# ---------------------------------------------------------------------------
 # count_sab_failed — SAB history slots -> failed-in-window count
 # ---------------------------------------------------------------------------
 
@@ -489,6 +518,52 @@ def test_count_sab_failed_malformed_and_empty():
              {"status": "Failed"}]  # completed missing -> 0 -> outside window
     assert app_status.count_sab_failed(_sab_history(slots), _NOW) == 0
     assert app_status.count_sab_failed({}, _NOW) == 0
+
+
+# ---------------------------------------------------------------------------
+# has_sab_unpack_failure — the FDH blind-spot detector (C6): SAB reports
+# this particular unpack failure as a Warning, never Failed, so Sonarr's
+# FailedDownloadService silently skips it. Case-insensitive substring.
+# ---------------------------------------------------------------------------
+
+def test_has_sab_unpack_failure_true_on_exact_message():
+    payload = _sab_history([
+        {"status": "Failed",
+         "fail_message": "Unpacking failed, write error or disk is full?"},
+    ])
+    assert app_status.has_sab_unpack_failure(payload) is True
+
+
+def test_has_sab_unpack_failure_case_insensitive():
+    payload = _sab_history([
+        {"status": "Failed",
+         "fail_message": "UNPACKING FAILED, WRITE ERROR OR DISK IS FULL?"},
+    ])
+    assert app_status.has_sab_unpack_failure(payload) is True
+
+
+def test_has_sab_unpack_failure_false_on_unrelated_failure():
+    payload = _sab_history([
+        {"status": "Failed", "fail_message": "Unknown encoding"},
+    ])
+    assert app_status.has_sab_unpack_failure(payload) is False
+
+
+def test_has_sab_unpack_failure_empty_and_missing_field():
+    assert app_status.has_sab_unpack_failure({}) is False
+    assert app_status.has_sab_unpack_failure(_sab_history([{"status": "Failed"}])) is False
+
+
+def test_derive_alerts_sab_unpack_disk_full_is_crit():
+    doc = {"downloads": {"sab": {"paused": False, "unpack_disk_full": True}}}
+    alerts = app_status.derive_alerts(doc)
+    assert {"level": "crit",
+            "text": "SAB unpack failed (disk full?) — FDH blind spot"} in alerts
+
+
+def test_derive_alerts_no_unpack_alert_without_flag():
+    doc = {"downloads": {"sab": {"paused": False, "unpack_disk_full": False}}}
+    assert app_status.derive_alerts(doc) == []
 
 
 def test_alert_on_sab_failures():
@@ -537,6 +612,9 @@ QBIT_TORRENTS_FOR_STUCK = [
 
 
 def test_build_stuck_list_matches_contract_example():
+    """2-arg call (no sab_slots) must keep working unchanged -- backward
+    compat for existing call sites -- with the new "kind" field now
+    always present (torrent, since this is a 40-char-hex qBit hash)."""
     out = app_status.build_stuck_list(STALE_STATE_JSON, QBIT_TORRENTS_FOR_STUCK)
     assert out == [{
         "hash8": "f0a3658d",
@@ -544,6 +622,7 @@ def test_build_stuck_list_matches_contract_example():
         "hours": 3,
         "rule": "stalledDL",
         "acted": True,
+        "kind": "torrent",
     }]
 
 
@@ -565,6 +644,85 @@ def test_build_stuck_list_filters_ghost_hashes():
 
 def test_build_stuck_list_empty_state():
     assert app_status.build_stuck_list({}, []) == []
+
+
+# ---------------------------------------------------------------------------
+# build_stuck_list — SAB parity (C6): second name/liveness source, id-shape
+# kind + label decision, no collision between the two namespaces.
+# ---------------------------------------------------------------------------
+
+# Chosen so the tail after the literal "SABnzbd_nzo_" prefix IS exactly 8
+# chars -- makes the expected last-8 label trivially verifiable by eye.
+SAB_STUCK_ID = "SABnzbd_nzo_p6f6zj0e"
+
+STALE_STATE_MIXED = {
+    "hashes": {
+        STUCK_HASH: {
+            "consecutive_zero_hours": 3,
+            "rule_matched": "stalledDL",
+            "candidate_for_unstick": True,
+            "acted_on_at": None,
+        },
+        SAB_STUCK_ID: {
+            "consecutive_zero_hours": 5,
+            "rule_matched": "sab-paused-pinned",
+            "candidate_for_unstick": True,
+            "acted_on_at": None,
+        },
+    },
+}
+
+SAB_SLOTS_FOR_STUCK = [
+    {"id": SAB_STUCK_ID, "name": "Some.Show.S01E01", "cat": "sonarr", "state": "Paused"},
+]
+
+
+def test_build_stuck_list_mixed_kinds_both_resolve_no_collision():
+    """One qBit hash + one SABnzbd_nzo id in the same stale-state map: both
+    must resolve their own name via their own source, with distinct kinds
+    and distinct labels — proving the merged names dict doesn't cross-wire
+    the two namespaces."""
+    out = app_status.build_stuck_list(
+        STALE_STATE_MIXED, QBIT_TORRENTS_FOR_STUCK, SAB_SLOTS_FOR_STUCK)
+    assert len(out) == 2
+    by_kind = {e["kind"]: e for e in out}
+    assert set(by_kind) == {"torrent", "usenet"}
+    assert by_kind["torrent"]["name"] == "Some.Movie.2026.1080p"
+    assert by_kind["torrent"]["hash8"] == "f0a3658d"
+    assert by_kind["usenet"]["name"] == "Some.Show.S01E01"
+    assert by_kind["usenet"]["hash8"] == "p6f6zj0e"
+    assert by_kind["torrent"]["hash8"] != by_kind["usenet"]["hash8"]
+
+
+def test_build_stuck_list_sab_label_is_last8_not_first8():
+    out = app_status.build_stuck_list(STALE_STATE_MIXED, [], SAB_SLOTS_FOR_STUCK)
+    assert len(out) == 1
+    assert out[0]["hash8"] == "p6f6zj0e"
+    assert out[0]["hash8"] != SAB_STUCK_ID[:8]  # would collide across every job if first-8
+
+
+def test_build_stuck_list_sab_ghost_pruned_when_slot_gone():
+    """A SAB-kind candidate whose id no longer appears in the live SAB
+    slots list was already resolved (unstick removed it, or SAB itself
+    completed/cleared it) — must not surface as a phantom row, same
+    guarantee build_stuck_list already gives qBit hashes."""
+    out = app_status.build_stuck_list(STALE_STATE_MIXED, QBIT_TORRENTS_FOR_STUCK, sab_slots=[])
+    assert len(out) == 1
+    assert out[0]["kind"] == "torrent"
+
+
+def test_build_stuck_list_sab_only_no_qbit_torrents():
+    out = app_status.build_stuck_list(
+        {"hashes": {SAB_STUCK_ID: STALE_STATE_MIXED["hashes"][SAB_STUCK_ID]}},
+        [], SAB_SLOTS_FOR_STUCK)
+    assert out == [{
+        "hash8": "p6f6zj0e",
+        "name": "Some.Show.S01E01",
+        "hours": 5,
+        "rule": "sab-paused-pinned",
+        "acted": False,
+        "kind": "usenet",
+    }]
 
 
 # ---------------------------------------------------------------------------
@@ -759,6 +917,53 @@ def test_derive_alerts_ordered_crit_before_warn():
     assert levels == sorted(levels, key=lambda lv: {"crit": 0, "warn": 1}[lv])
     assert levels[0] == "crit"
     assert levels[-1] == "warn"
+
+
+# ---------------------------------------------------------------------------
+# _collect_downloads — threads parse_sab_slots through to build_stuck_list
+# and derives downloads.sab.slots_stuck (C6 end-to-end wiring).
+# ---------------------------------------------------------------------------
+
+class _FakeQbitClient:
+    """Stand-in for lib.qbit_client.QbitClient — just enough surface for
+    _collect_downloads (login + list_torrents)."""
+    def login(self):
+        return True
+
+    def list_torrents(self):
+        return [{"hash": STUCK_HASH, "name": "Some.Movie.2026.1080p", "state": "stalledDL"}]
+
+
+def test_collect_downloads_threads_sab_slots_and_counts_slots_stuck(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_status, "QbitClient", _FakeQbitClient)
+    sab_queue_payload = {
+        "queue": {"paused": False, "noofslots": 1, "mbleft": "100", "mb": "100",
+                   "kbpersec": "0",
+                   "slots": [{"nzo_id": SAB_STUCK_ID, "filename": "Some.Show.S01E01",
+                              "cat": "sonarr", "status": "Paused", "mb": "100", "mbleft": "100"}]},
+    }
+    monkeypatch.setattr(app_status, "_collect_sab_queue", lambda: sab_queue_payload)
+    monkeypatch.setattr(app_status, "_collect_sab_history", lambda: {"history": {"slots": []}})
+    monkeypatch.setattr(app_status, "QFLIX_COLLECT_DATA", tmp_path)
+    (tmp_path / "stale-state.json").write_text(json.dumps(STALE_STATE_MIXED), encoding="utf-8")
+
+    section = app_status._collect_downloads()
+    assert section["ok"] is True
+    assert len(section["stuck"]) == 2
+    kinds = {e["kind"] for e in section["stuck"]}
+    assert kinds == {"torrent", "usenet"}
+    assert section["sab"]["slots_stuck"] == 1  # only the usenet-kind entry counts
+
+
+def test_collect_downloads_slots_stuck_zero_when_no_usenet_stuck(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_status, "QbitClient", _FakeQbitClient)
+    monkeypatch.setattr(app_status, "_collect_sab_queue", lambda: {"queue": {}})
+    monkeypatch.setattr(app_status, "_collect_sab_history", lambda: {"history": {"slots": []}})
+    monkeypatch.setattr(app_status, "QFLIX_COLLECT_DATA", tmp_path)
+    (tmp_path / "stale-state.json").write_text(json.dumps(STALE_STATE_JSON), encoding="utf-8")
+
+    section = app_status._collect_downloads()
+    assert section["sab"]["slots_stuck"] == 0
 
 
 # ---------------------------------------------------------------------------

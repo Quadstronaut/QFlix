@@ -6,12 +6,18 @@ Modes:
   --cron        log only, no stdout (systemd-timer caller)
 
 Optional:
-  --include logs,plex,arrs,qbit,seerr  (default: all)
+  --include logs,plex,arrs,qbit,seerr,sab  (default: all)
   --recent-hours N   (Plex recently-added window; default 24)
 
 Reuses scripts/maint/lib/manifest.py + scripts/maint/lib/notify.py.
-Reuses scripts/mcp/lib/{qbit_client,arr_client}.
+Reuses scripts/mcp/lib/{qbit_client,arr_client,sab_client}.
 Plex section delegates to scripts/mcp/plex.py via subprocess (uses python-plexapi venv).
+
+SAB (Usenet) parity note (2026-07-19 sab-stuck-parity spec, C2): SAB is a
+second, protocol-different download client feeding the SAME stuck-download
+pipeline as qBit. The `sab` section below is deliberately shaped to mirror
+`qbit` (slots ~ torrents, totals.count, an error shape on failure) so the
+stale-state loop in qflix-collect.py can walk both with shared logic.
 """
 from __future__ import annotations
 
@@ -33,6 +39,7 @@ sys.path.insert(0, str(HERE.parent / "maint")) # for lib.notify
 
 from lib.qbit_client import QbitClient  # noqa: E402
 from lib.arr_client import ArrClient    # noqa: E402
+from lib.sab_client import SabClient, MIB  # noqa: E402
 
 ARRS = [
     ("sonarr", "v3"),
@@ -85,6 +92,72 @@ def matches_stale_rule(t: dict) -> Optional[str]:
     # only the *DL variants here never touches finished content/hardlinks.
     if state in ("stoppedDL", "pausedDL"):
         return "stopped-incomplete"
+    return None
+
+
+# --- SAB (Usenet) normalize + classify --------------------------------------
+# Second download client, same stuck-download pipeline (2026-07-19 spec, C2).
+# SAB's "mb"/"mbleft" queue-slot fields are MiB despite the name (see
+# lib/sab_client.MIB) and arrive as STRINGS ("4801.69") — _sab_float coerces.
+
+def _sab_float(v, default: float = 0.0) -> float:
+    """SAB emits numeric fields as strings. A malformed/missing field must
+    never crash the hourly collector — fall back to `default` instead."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_sab_slot(s: dict, kbpersec: float = 0.0) -> dict:
+    """SAB queue-slot field names -> spec field names (mirrors
+    normalize_qbit_torrent). `kbpersec` is the QUEUE-level speed (from
+    queue_meta()); it's only attributed to this slot's dl_speed_bytes_s when
+    the slot itself is the one actively Downloading (SAB downloads one nzb
+    at a time — every other slot sits at 0 regardless of queue speed)."""
+    mb = _sab_float(s.get("mb"))
+    mbleft = _sab_float(s.get("mbleft"))
+    downloaded_mb = max(mb - mbleft, 0.0)
+    state = s.get("status", "")
+    progress = (1.0 - (mbleft / mb)) if mb > 0 else 0.0
+    return {
+        "id": s.get("nzo_id", ""),
+        "name": s.get("filename", ""),
+        "cat": s.get("cat", ""),
+        "state": state,
+        "size_bytes": int(round(mb * MIB)),
+        "downloaded_bytes": int(round(downloaded_mb * MIB)),
+        "progress": round(progress, 4),
+        "dl_speed_bytes_s": int(round(kbpersec * 1024)) if state == "Downloading" else 0,
+    }
+
+
+# SAB Status strings eligible for each stale rule (C2 table). "Paused" is
+# handled separately in matches_stale_sab_rule — it's only stuck when the
+# QUEUE isn't paused (the object.py force-pause wedge, not an operator pause).
+_SAB_ZERO_MOVEMENT_STATES = {"Downloading", "Queued", "Grabbing", "Fetching", "Propagating"}
+_SAB_PP_HUNG_STATES = {"Verifying", "Repairing", "Extracting", "Moving", "Running",
+                        "QuickCheck", "Checking"}
+
+
+def matches_stale_sab_rule(slot_state: str, queue_paused: bool) -> Optional[str]:
+    """SAB analogue of matches_stale_rule (qBit). STATE eligibility only —
+    the stale loop (qflix-collect.py, C3) still requires 3 zero-delta
+    samples before treating a match as a real candidate; byte-delta is out
+    of scope here.
+
+    A slot Paused while the queue is RUNNING is the object.py force-pause
+    wedge (rule sab-paused-pinned): Sonarr's FailedDownloadService never
+    fires on Paused, so nothing else will ever unstick it. A slot Paused
+    because the OPERATOR paused the whole queue is not stuck — that's
+    intentional and excluded.
+    """
+    if slot_state == "Paused":
+        return None if queue_paused else "sab-paused-pinned"
+    if slot_state in _SAB_ZERO_MOVEMENT_STATES:
+        return "sab-zero-movement"
+    if slot_state in _SAB_PP_HUNG_STATES:
+        return "sab-pp-hung"
     return None
 
 
@@ -189,6 +262,29 @@ def _collect_qbit() -> dict:
         "up_mbps": round(sum(t["up_speed_bytes_s"] for t in norm) / 125_000.0, 2),
     }
     return {"torrents": norm, "totals": totals}
+
+
+def _collect_sab() -> dict:
+    """SAB section, qbit-parity shape: {"slots": [...], "queue": {...},
+    "totals": {...}} on success, {"error": ..., "slots": [], "queue": {},
+    "totals": {}} on any failure (missing secrets OR transport error —
+    SabClient raises on transport error by design, so this is the one place
+    that catches it, same job _collect_qbit's `if not c.login()` check does
+    for qBit's failure mode)."""
+    c = SabClient()
+    if not c.host or not c.apikey:
+        return {"error": "no_secrets", "slots": [], "queue": {}, "totals": {}}
+    try:
+        meta = c.queue_meta()
+        raw_slots = c.list_slots()
+    except Exception as e:
+        return {"error": str(e)[:200], "slots": [], "queue": {}, "totals": {}}
+    norm = [normalize_sab_slot(s, meta.get("kbpersec", 0.0)) for s in raw_slots]
+    return {
+        "slots": norm,
+        "queue": meta,
+        "totals": {"count": len(norm)},
+    }
 
 
 def _collect_arr(slug: str, version: str) -> dict:
@@ -319,11 +415,13 @@ def run(include: set, recent_hours: int) -> dict:
         "captured_at_az": az.isoformat(),
     }
 
-    # Parallel qBit + 4 *arrs
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+    # Parallel qBit + SAB + 4 *arrs
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
         futs = {}
         if "qbit" in include:
             futs["qbit"] = ex.submit(_collect_qbit)
+        if "sab" in include:
+            futs["sab"] = ex.submit(_collect_sab)
         if "arrs" in include:
             for slug, ver in ARRS:
                 futs[slug] = ex.submit(_collect_arr, slug, ver)
@@ -358,6 +456,12 @@ def run(include: set, recent_hours: int) -> dict:
         t["bad_grab_signals"] = compute_bad_grab_signals(t)
 
     out["qbit"] = qbit
+    # The sab key is emitted ONLY when requested: qflix-collect.py's ghost
+    # prune treats a MISSING sab section as "no evidence, keep sab entries"
+    # — an always-present healthy-empty shape would read as "queue empty,
+    # prune everything" on any snapshot collected without --include sab.
+    if "sab" in include:
+        out["sab"] = results.get("sab", {"slots": [], "queue": {}, "totals": {}})
     out["arrs"] = arrs
 
     if "plex" in include:
@@ -393,8 +497,8 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--emit-json", action="store_true")
     g.add_argument("--cron", action="store_true")
-    ap.add_argument("--include", default="qbit,arrs,seerr,plex",
-                    help="comma list: qbit,arrs,seerr,plex")
+    ap.add_argument("--include", default="qbit,arrs,seerr,plex,sab",
+                    help="comma list: qbit,arrs,seerr,plex,sab")
     ap.add_argument("--recent-hours", type=int, default=24)
     args = ap.parse_args()
     include = {x.strip() for x in args.include.split(",") if x.strip()}
