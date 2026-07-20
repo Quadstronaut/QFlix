@@ -35,6 +35,7 @@ sys.path.insert(0, str(HERE.parent / "maint"))
 from lib.arr_client import ArrClient  # noqa: E402
 from lib.maint_state import is_arr_red       # noqa: E402
 from lib.qbit_client import QbitClient       # noqa: E402
+from lib.sab_client import SabClient         # noqa: E402
 
 EVENTS_DIR = Path(os.environ.get(
     "QFLIX_MCP_EVENTS", str(Path.home() / "scripts" / "mcp" / "events")
@@ -44,14 +45,19 @@ ARR_VERSIONS = {
     "sonarr": "v3", "sonarr2": "v3", "radarr": "v3", "radarr2": "v3",
 }
 
-# Results that actually consumed an *arr/qBit action slot. The daily cap
+# Results that actually consumed an *arr/qBit/SAB action slot. The daily cap
 # counts only these — refusals (cap-hit, arr-red, unknown-slug) are still
 # appended to the events file for audit but must not gate the next attempt,
 # or a single orphan that fires hourly self-traps the counter the moment
 # the real cap is hit (each refusal append re-counts and re-refuses).
+# "sab-orphan-removed" is the usenet twin of "qbit-orphan-removed" (C5, SAB
+# stuck-parity spec 2026-07-19). qflix-collect.py keeps its OWN mirror tuples
+# (_EFFECTIVE_RESULTS / _TERMINAL_STATUSES) per the compartmentalization law
+# and carries "sab-orphan-removed" too — kept in sync there, not edited here.
 _EFFECTIVE_STATUSES = frozenset({
     "deleted+blocklisted",
     "qbit-orphan-removed",
+    "sab-orphan-removed",
 })
 
 
@@ -144,13 +150,30 @@ def _execute_delete(c: ArrClient, *, queue_id: int, dry_run: bool) -> dict:
     return {"status": "delete-failed", "code": code}
 
 
-def _auto_detect_slug(hash_: Optional[str]) -> Optional[str]:
+_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+
+
+def _id_kind(s: Optional[str]) -> str:
+    """Classify a download-client identifier by SHAPE alone — no network
+    call, just string inspection. Two client id formats never collide:
+    SAB's nzo_id is always `SABnzbd_nzo_<random>`; qBit's torrent hash is
+    always a 40-char hex string. Anything else (garbage input, or no id at
+    all) is "unknown" — callers probe both clients rather than guess wrong
+    (see _auto_detect_slug / _try_client_orphan_cleanup below)."""
+    if not s:
+        return "unknown"
+    if s.startswith("SABnzbd_nzo"):
+        return "sab"
+    if len(s) == 40 and all(ch in _HEX_CHARS for ch in s):
+        return "qbit"
+    return "unknown"
+
+
+def _auto_detect_slug_qbit(hash_: str) -> Optional[str]:
     """Look up the qBit torrent for `hash_` and return its category as the
-    candidate *arr slug. Used when callers don't pass --slug (autonomous
-    qflix-collect path). Returns None if qBit doesn't have the hash or the
-    category isn't a known *arr."""
-    if not hash_:
-        return None
+    candidate *arr slug. Returns None if qBit doesn't have the hash or the
+    category isn't a known *arr. (Unchanged qBit-only path — see
+    _auto_detect_slug for the id-shape dispatch that now wraps it.)"""
     c = QbitClient()
     if not c.login():
         return None
@@ -161,6 +184,46 @@ def _auto_detect_slug(hash_: Optional[str]) -> Optional[str]:
         return None
     cat = (hit.get("category") or "").strip().lower()
     return cat if cat in ARR_VERSIONS else None
+
+
+def _auto_detect_slug_sab(nzo_id: str) -> Optional[str]:
+    """SAB twin of _auto_detect_slug_qbit: look up the SAB slot for `nzo_id`
+    via SabClient.list_slots() and return its `cat` as the candidate *arr
+    slug. Returns None if SAB has no secrets configured, list_slots() raises
+    (SabClient raises on transport error by design — this is the one place
+    in unstick.py that catches it for this lookup), SAB doesn't have the
+    id, or the cat isn't a known *arr."""
+    c = SabClient()
+    if not c.host or not c.apikey:
+        return None
+    try:
+        slots = c.list_slots()
+    except Exception:
+        return None
+    hit = next((s for s in slots if s.get("nzo_id") == nzo_id), None)
+    if not hit:
+        return None
+    cat = (hit.get("cat") or "").strip().lower()
+    return cat if cat in ARR_VERSIONS else None
+
+
+def _auto_detect_slug(hash_: Optional[str]) -> Optional[str]:
+    """Dispatch by id shape (C5): a sab-shaped id resolves via SAB's slot
+    cat, a qbit-shaped id via qBit's category (the original, untouched
+    lookup), and an ambiguous/unknown-shaped id probes qBit first then SAB
+    — same probe order as _try_client_orphan_cleanup. Used when callers
+    don't pass --slug (autonomous qflix-collect path)."""
+    if not hash_:
+        return None
+    kind = _id_kind(hash_)
+    if kind == "sab":
+        return _auto_detect_slug_sab(hash_)
+    if kind == "qbit":
+        return _auto_detect_slug_qbit(hash_)
+    slug = _auto_detect_slug_qbit(hash_)
+    if slug is not None:
+        return slug
+    return _auto_detect_slug_sab(hash_)
 
 
 def _try_qbit_orphan_cleanup(hash_: Optional[str], *, dry_run: bool) -> dict:
@@ -192,6 +255,81 @@ def _try_qbit_orphan_cleanup(hash_: Optional[str], *, dry_run: bool) -> dict:
             "qbit_title": hit.get("name", "?")[:80]}
 
 
+def _try_sab_orphan_cleanup(nzo_id: Optional[str], *, dry_run: bool) -> dict:
+    """SAB twin of _try_qbit_orphan_cleanup: fallback for the case where the
+    *arr's queue no longer holds the nzo_id but SAB still does. Without
+    this, a SAB-backed candidate whose *arr entry vanished fires every hour
+    forever — *arr has nothing to delete, so SAB's orphan slot stays put.
+    Returns one of:
+      - sab-orphan-removed    SAB had the slot, delete_slot() reported success
+      - already-fully-removed neither *arr nor SAB had it (also the answer
+                              for a falsy nzo_id — nothing to look up)
+      - sab-unreachable       no secrets configured, or SabClient raised on
+                              list_slots()/delete_slot() (SAB down / transport
+                              error — SabClient raises by design, see its
+                              module docstring; this is the one place in
+                              unstick.py that catches it for this cleanup)
+      - sab-delete-failed     SAB had the slot but delete_slot() reported
+                              {"status": false} (a wedged object — see the
+                              GH #802/#1104/#3106 research note; the
+                              escalation circuit-breaker is the next line
+                              of defense for that case, not this function)
+      - dry-run-sab-orphan    would have deleted; --dry-run suppressed it
+    """
+    if not nzo_id:
+        return {"status": "already-fully-removed"}
+    c = SabClient()
+    if not c.host or not c.apikey:
+        return {"status": "sab-unreachable"}
+    try:
+        slots = c.list_slots()
+    except Exception:
+        return {"status": "sab-unreachable"}
+    hit = next((s for s in slots if s.get("nzo_id") == nzo_id), None)
+    if not hit:
+        return {"status": "already-fully-removed"}
+    title = (hit.get("filename") or "?")[:80]
+    if dry_run:
+        return {"status": "dry-run-sab-orphan", "sab_title": title}
+    try:
+        ok = c.delete_slot(nzo_id, del_files=True)
+    except Exception:
+        return {"status": "sab-unreachable"}
+    return {"status": "sab-orphan-removed" if ok else "sab-delete-failed",
+            "sab_title": title}
+
+
+def _try_client_orphan_cleanup(id_: Optional[str], *, dry_run: bool) -> dict:
+    """Dispatch the orphan-fallback probe by id shape (C5): a sab-shaped id
+    goes straight to _try_sab_orphan_cleanup, a qbit-shaped id straight to
+    _try_qbit_orphan_cleanup, and an ambiguous/absent id probes qBit first
+    (the original single-client behavior, preserved) then SAB — same probe
+    order as _auto_detect_slug. Replaces the direct
+    _try_qbit_orphan_cleanup() calls at every orphan-fallback call site in
+    run() so a SAB-backed candidate gets SAB cleanup instead of a qBit-only
+    "not found" answer."""
+    kind = _id_kind(id_)
+    if kind == "sab":
+        return _try_sab_orphan_cleanup(id_, dry_run=dry_run)
+    if kind == "qbit":
+        return _try_qbit_orphan_cleanup(id_, dry_run=dry_run)
+    # Unknown shape: try qBit first, then SAB. A falsy id can't be found in
+    # either client — qBit's own no-id guard ("no-hash-for-qbit-lookup") is
+    # already the correct final answer there, so don't bother asking SAB
+    # the same unanswerable question.
+    result = _try_qbit_orphan_cleanup(id_, dry_run=dry_run)
+    if not id_ or result["status"] != "already-fully-removed":
+        return result
+    return _try_sab_orphan_cleanup(id_, dry_run=dry_run)
+
+
+def _orphan_title(fallback: dict) -> str:
+    """Both client-specific fallback shapes stash a display title under a
+    client-tagged key (qbit_title / sab_title) — pull whichever is present
+    for the event-log line."""
+    return fallback.get("qbit_title") or fallback.get("sab_title") or "?"
+
+
 def _record_event(*, slug: str, queue_id: Optional[int], hash_: Optional[str],
                   title: str, reason: str, result_status: str) -> None:
     _append_event({
@@ -217,10 +355,12 @@ def run(*, slug: Optional[str] = None, queue_id: Optional[int] = None,
     if slug is None:
         slug = _auto_detect_slug(hash_)
         if slug is None:
-            # No slug, no qBit hit either → orphan in neither plane.
-            fallback = _try_qbit_orphan_cleanup(hash_, dry_run=dry_run)
+            # No slug, no hit in either client plane. Dispatch by id shape
+            # (C5) so a SAB-shaped id gets SAB's own orphan check instead of
+            # qBit's qbit-only "not found" answer.
+            fallback = _try_client_orphan_cleanup(hash_, dry_run=dry_run)
             _record_event(slug="<auto>", queue_id=queue_id, hash_=hash_,
-                           title=fallback.get("qbit_title", "?"), reason=reason,
+                           title=_orphan_title(fallback), reason=reason,
                            result_status=fallback["status"])
             return fallback
 
@@ -236,12 +376,13 @@ def run(*, slug: Optional[str] = None, queue_id: Optional[int] = None,
     resolved = _resolve_queue_item(c, hash_=hash_, queue_id=queue_id)
 
     if resolved["status"] == "already-removed":
-        # *arr has nothing to delete. If qBit still has the hash, it's an
-        # orphan we have to clean up directly — otherwise the candidate will
-        # fire every hour with no effect.
-        fallback = _try_qbit_orphan_cleanup(hash_, dry_run=dry_run)
+        # *arr has nothing to delete. If the download client still has the
+        # id, it's an orphan we have to clean up directly — otherwise the
+        # candidate will fire every hour with no effect. Dispatch by id
+        # shape (C5) so this reaches SAB for a SAB-backed candidate.
+        fallback = _try_client_orphan_cleanup(hash_, dry_run=dry_run)
         _record_event(slug=slug, queue_id=queue_id, hash_=hash_,
-                       title=fallback.get("qbit_title", "?"), reason=reason,
+                       title=_orphan_title(fallback), reason=reason,
                        result_status=fallback["status"])
         return fallback
 
@@ -273,9 +414,10 @@ def run(*, slug: Optional[str] = None, queue_id: Optional[int] = None,
     final_status = action["status"]
 
     if final_status == "already-removed":
-        # Race: queue_item disappeared between lookup and DELETE. Try the qBit
-        # fallback path so we don't leave a candidate stuck in limbo.
-        fallback = _try_qbit_orphan_cleanup(hash_, dry_run=dry_run)
+        # Race: queue_item disappeared between lookup and DELETE. Try the
+        # client-side fallback (dispatched by id shape, C5) so we don't
+        # leave a candidate stuck in limbo.
+        fallback = _try_client_orphan_cleanup(hash_, dry_run=dry_run)
         _record_event(slug=slug, queue_id=actual_qid, hash_=hash_,
                        title=title, reason=reason,
                        result_status=fallback["status"])
