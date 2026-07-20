@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-07-20 — SAB stuck-handling FULL parity: detection, autonomous unstick, restart_repair breaker, usenet on every *arr
+
+Usenet is now a first-class citizen of the stuck-download pipeline
+(spec: `docs/superpowers/specs/2026-07-19-sab-stuck-parity-design.md`;
+operator scope: "absolutely nothing left behind"). Delivered + deployed:
+
+- **Detection**: hourly snapshots now carry a `sab` section (new
+  `lib/sab_client.py`); the stale-state loop tracks SAB slots with the same
+  3-snapshot zero-movement engine, `kind`-tagged entries, SAB rules
+  `sab-paused-pinned` (SAB's `object.py` force-pause wedge — research proved
+  the *arrs NEVER self-heal it), `sab-zero-movement`, `sab-pp-hung`
+  (tracked, never auto-unstuck). Ghost prune is union-aware per kind.
+- **Autonomous unstick**: `unstick.py` dispatches by id shape
+  (`SABnzbd_nzo…` vs 40-hex), auto-detects the *arr from the SAB slot
+  category, and gains a SAB orphan-cleanup twin (`del_files=1`). Core
+  DELETE+blocklist+re-search flow unchanged — proven live 2026-07-19.
+  Shared 10/day cap, shared events log, armed from day 1.
+- **Circuit-breaker**: if an unstick no-ops (wedged queue object survives
+  ≥1h) or post-processing hangs ≥4h, the collector fires SAB
+  `restart_repair` (restart + queue rebuild — the only documented remedy),
+  latched to 1/24h, Discord-warned, event-logged, verified by re-poll.
+- **Usenet everywhere** (`90b-usenet-all-arrs.py`, executed live): radarr,
+  sonarr2, radarr2 each got the SABnzbd download client (own category),
+  NZBgeek wired DIRECT, delay-profile usenet enabled, FDH confirmed on.
+  SAB `history_limit` 10→0 (documented unsafe with *arr FDH — could prune
+  a Failed row before the *arr reconciled it).
+- **Heartbeat doc**: stuck rows carry `kind` (torrent|usenet) with
+  collision-free labels; SAB stuck rows join the name-map (no longer
+  ghost-dropped); new crit alert for SAB's FDH blind spot ("Unpacking
+  failed, write error or disk is full" → *arr Warning, FDH skips it).
+  Phone app needs no rebuild.
+- Built by a 5-agent parallel fleet + suite reconciler + adversarial
+  reviewer (2 crits caught pre-deploy: prod collector wasn't requesting
+  the sab section; unconditional sab key would have mass-pruned). Suite:
+  1003 green, 139 new tests.
+
 ## 2026-07-19 (later) — Usenet monitoring parity: SAB stall canary + failure alerts
 
 The stack went usenet-live 2026-06-22 but monitoring stayed torrent-shaped.
