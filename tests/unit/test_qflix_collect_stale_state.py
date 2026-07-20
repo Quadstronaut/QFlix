@@ -389,6 +389,8 @@ def test_escalation_strike_b_pp_hung_past_threshold_fires(monkeypatch, tmp_path)
         "kind": "sab", "rule_matched": "sab-pp-hung",
         "candidate_for_unstick": False, "acted_on_at": None,
         "consecutive_zero_hours": qc.PP_HUNG_ESCALATE_HOURS,
+        "pp_state": "Verifying",
+        "pp_same_state_hours": qc.PP_HUNG_ESCALATE_HOURS,
         "last_progress": 0.9, "first_zero_movement_at": qc.iso(),
     }
     snap = _snapshot([], sab_slots=[_sab_slot(sid, 900, state="Verifying")])
@@ -414,7 +416,9 @@ def test_escalation_strike_b_below_threshold_does_not_fire(monkeypatch, tmp_path
     stale = {
         "kind": "sab", "rule_matched": "sab-pp-hung",
         "candidate_for_unstick": False, "acted_on_at": None,
-        "consecutive_zero_hours": qc.PP_HUNG_ESCALATE_HOURS - 1,
+        "consecutive_zero_hours": qc.PP_HUNG_ESCALATE_HOURS + 5,
+        "pp_state": "Verifying",
+        "pp_same_state_hours": qc.PP_HUNG_ESCALATE_HOURS - 1,
         "last_progress": 0.9, "first_zero_movement_at": qc.iso(),
     }
     snap = _snapshot([], sab_slots=[_sab_slot(sid, 900, state="Verifying")])
@@ -434,6 +438,8 @@ def test_escalation_latch_cooldown_prevents_second_fire(monkeypatch, tmp_path):
         "kind": "sab", "rule_matched": "sab-pp-hung",
         "candidate_for_unstick": False, "acted_on_at": None,
         "consecutive_zero_hours": qc.PP_HUNG_ESCALATE_HOURS,
+        "pp_state": "Verifying",
+        "pp_same_state_hours": qc.PP_HUNG_ESCALATE_HOURS,
         "last_progress": 0.9, "first_zero_movement_at": qc.iso(),
     }
     snap = _snapshot([], sab_slots=[_sab_slot(sid, 900, state="Verifying")])
@@ -546,3 +552,95 @@ def test_collect_snapshot_requests_sab_section(monkeypatch, tmp_path):
     qc.collect_snapshot()
     include = seen["args"][seen["args"].index("--include") + 1]
     assert "sab" in include.split(",")
+
+
+# ---------------------------------------------------------------------------
+# Council 2026-07-20 follow-ups: D1 (latch not burned on no-op), D2 (breaker
+# doesn't interrupt healthy long PP), D7 (malformed env knob degrades).
+# ---------------------------------------------------------------------------
+
+def test_escalation_no_secrets_does_not_burn_latch(monkeypatch, tmp_path):
+    """Defect 1: when restart_repair is NEVER ISSUED (no-secrets), the 24h
+    cooldown latch must NOT be stamped and no fire recorded -- else a single
+    transient secrets glitch burns the breaker's whole daily budget on a
+    call that never left the box."""
+    monkeypatch.setattr(qc, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(qc, "_notify", lambda *a, **k: None)
+    monkeypatch.setattr(qc, "SAB_REPAIR_VERIFY_DELAY_S", 0)
+    # Point secrets at an EMPTY dir so _sab_api raises FileNotFoundError ->
+    # _sab_restart_repair returns "error:no-secrets:...".
+    empty = tmp_path / "nosecrets"
+    empty.mkdir()
+    monkeypatch.setenv("MANITOBA_SECRETS", str(empty))
+
+    sid = "SABnzbd_nzo_wedged1"
+    old_acted = (qc.utc_now() - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+    stale = {"kind": "sab", "rule_matched": "sab-paused-pinned",
+             "candidate_for_unstick": True, "acted_on_at": old_acted,
+             "consecutive_zero_hours": 5, "last_progress": 0.3,
+             "first_zero_movement_at": old_acted}
+    snap = _snapshot([], sab_slots=[_sab_slot(sid, 700, state="Paused")],
+                     sab_queue_paused=False)
+    _seed(tmp_path, [snap], {sid: stale})
+
+    result = qc.escalate_sab_if_pinned()
+    assert result["fired"] is False
+    assert str(result.get("outcome", "")).startswith("error:no-secrets")
+    assert not (tmp_path / "sab-repair-latch.epoch").exists()   # latch NOT burned
+    assert not (tmp_path / "events").exists() or \
+        not list((tmp_path / "events").glob("*.jsonl"))          # no fire event
+
+
+def test_pp_hung_healthy_state_transition_does_not_escalate(monkeypatch, tmp_path):
+    """Defect 2: a huge release legitimately moving Verifying -> Repairing ->
+    Extracting shows zero downloaded-delta for hours (consecutive_zero_hours
+    climbs) but its PP STATE keeps advancing -- update_stale_state must reset
+    pp_same_state_hours on each transition so the breaker never interrupts
+    healthy long post-processing."""
+    monkeypatch.setattr(qc, "DATA_ROOT", tmp_path)
+    sid = "SABnzbd_nzo_bigremux"
+    # 3 snapshots, zero downloaded-delta, but state advances each hour.
+    snaps = [
+        _snapshot([], sab_slots=[_sab_slot(sid, 900, state=st)])
+        for st in ("Verifying", "Repairing", "Extracting")
+    ]
+    _seed(tmp_path, snaps, {})
+    qc.update_stale_state()
+    entry = json.loads((tmp_path / "stale-state.json").read_text())["hashes"][sid]
+    assert entry["rule_matched"] == "sab-pp-hung"
+    # state changed on the latest sample -> stability clock reset to 0
+    assert entry.get("pp_same_state_hours") == 0
+    assert entry.get("pp_state") == "Extracting"
+
+
+def test_pp_hung_same_state_accrues_stability_hours(monkeypatch, tmp_path):
+    """Complement: a job WEDGED in one PP state across the window accrues
+    pp_same_state_hours so the breaker can eventually fire on it."""
+    monkeypatch.setattr(qc, "DATA_ROOT", tmp_path)
+    sid = "SABnzbd_nzo_wedgepp"
+    snaps = [_snapshot([], sab_slots=[_sab_slot(sid, 900, state="Repairing")])
+             for _ in range(3)]
+    # pre-seed an entry already sitting in Repairing so the update increments.
+    pre = {"kind": "sab", "rule_matched": "sab-pp-hung",
+           "candidate_for_unstick": False, "acted_on_at": None,
+           "consecutive_zero_hours": qc.ZERO_MOVEMENT_HOURS,
+           "pp_state": "Repairing", "pp_same_state_hours": 2,
+           "last_progress": 0.9, "first_zero_movement_at": qc.iso()}
+    _seed(tmp_path, snaps, {sid: pre})
+    qc.update_stale_state()
+    entry = json.loads((tmp_path / "stale-state.json").read_text())["hashes"][sid]
+    assert entry["pp_state"] == "Repairing"
+    assert entry["pp_same_state_hours"] == 3   # incremented, not reset
+
+
+def test_env_int_malformed_degrades_to_default(monkeypatch):
+    """Defect 7: a malformed env knob must fall back to the default, not
+    raise at import and kill the whole collect cycle."""
+    monkeypatch.setenv("PP_HUNG_ESCALATE_HOURS", "not-a-number")
+    assert qc._env_int("PP_HUNG_ESCALATE_HOURS", 4) == 4
+    monkeypatch.setenv("PP_HUNG_ESCALATE_HOURS", "")
+    assert qc._env_int("PP_HUNG_ESCALATE_HOURS", 4) == 4
+    monkeypatch.delenv("PP_HUNG_ESCALATE_HOURS", raising=False)
+    assert qc._env_int("PP_HUNG_ESCALATE_HOURS", 4) == 4
+    monkeypatch.setenv("PP_HUNG_ESCALATE_HOURS", "6")
+    assert qc._env_int("PP_HUNG_ESCALATE_HOURS", 4) == 6

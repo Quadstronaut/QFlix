@@ -20,6 +20,7 @@ REPO_ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 APPS_YAML = os.path.join(REPO_ROOT, "manifest", "apps.yaml")
 README = os.path.join(REPO_ROOT, "README.md")
 INVENTORY = os.path.join(REPO_ROOT, "inventory.md")
+FAQ = os.path.join(REPO_ROOT, "scripts", "data", "qflix-faq.html")
 
 # Real Kuma monitors that live OUTSIDE the manifest's app/canary sets but are
 # manitoba-owned and counted in every "manitoba monitors" total in the docs.
@@ -94,3 +95,23 @@ def test_inventory_counts_match_manifest():
     assert _grab(inv, r"\+\s*(\d+) canaries", "inventory canary count") == exp["canaries"]
     assert _grab(inv, r"\*\*(\d+) Kuma monitors\*\* total", "inventory total monitors") == exp["total_monitors"]
     assert _grab(inv, r"\*\*(\d+) manitoba\*\*", "inventory manitoba monitors") == exp["manitoba_monitors"]
+
+
+def test_faq_canary_count_matches_manifest():
+    """The public FAQ (scripts/data/qflix-faq.html) quotes the canary count in
+    THREE places; the 14->15 bump (b3c3fd3) missed one (council 2026-07-20,
+    Defect 4). This guard closes the gap the earlier README/inventory-only
+    guards left open: every "<N> canaries" / "<N> end-to-end canaries" phrase
+    in the FAQ must equal the manifest count, and no stale off-by-one may
+    linger."""
+    exp = _expected()
+    faq = _read(FAQ)
+    # Only the TOTAL-count anchors — not historical subset references like
+    # "the 4 canaries were wired only to the auto-heal one" (line ~1095).
+    anchors = [
+        (r"(\d+)\s+end-to-end canaries", "FAQ deck-sub 'N end-to-end canaries'"),
+        (r"What do the (\d+) canaries actually test", "FAQ canary-table heading"),
+        (r"all (\d+) canaries", "FAQ app-liveness 'all N canaries'"),
+    ]
+    for pat, label in anchors:
+        assert _grab(faq, pat, label) == exp["canaries"]

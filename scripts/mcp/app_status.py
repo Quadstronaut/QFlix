@@ -366,6 +366,18 @@ def parse_sab_slots(queue_payload: dict) -> list:
 _SAB_ID_PREFIX = "SABnzbd_nzo"
 
 
+def _short_id(key: str) -> Optional[str]:
+    """Collision-proof 8-char label for a stuck/unstick id, decided by SHAPE:
+    torrent hash -> first 8 (high-entropy hex); SAB nzo_id -> LAST 8 (every
+    real nzo_id shares the literal "SABnzbd_nzo_" prefix, so first-8 would
+    render "SABnzbd_" for every usenet row). Used by BOTH build_stuck_list and
+    recent_unsticks_from_lines so the two doc sections label the same id
+    identically (council 2026-07-20, Defect 3)."""
+    if not key:
+        return None
+    return key[-8:] if key.startswith(_SAB_ID_PREFIX) else key[:8]
+
+
 def build_stuck_list(stale_state: dict, torrents: list, sab_slots: list = None) -> list:
     """Join stale-state.json's `hashes` map (candidates only) to a name --
     qBit torrent name for torrent-shaped keys, SAB slot filename (via
@@ -405,7 +417,7 @@ def build_stuck_list(stale_state: dict, torrents: list, sab_slots: list = None) 
         if name is None:
             continue  # ghost — id gone from its own live source
         out.append({
-            "hash8": key[-8:] if is_sab else key[:8],
+            "hash8": _short_id(key),
             "name": name,
             "hours": int(entry.get("consecutive_zero_hours") or 0),
             "rule": entry.get("rule_matched"),
@@ -431,8 +443,12 @@ def recent_unsticks_from_lines(lines: list) -> list:
         if ev.get("action") != "unstick":
             continue
         h = ev.get("hash") or ""
-        out.append({"ts": ev.get("ts"), "hash8": h[:8] if h else None,
-                     "result": ev.get("result")})
+        # Kind-aware label (Defect 3): a SAB unstick's hash is an nzo_id, so a
+        # bare h[:8] would collapse every usenet unstick to "SABnzbd_". Use the
+        # same shape-based short id as build_stuck_list.
+        out.append({"ts": ev.get("ts"), "hash8": _short_id(h),
+                     "result": ev.get("result"),
+                     "kind": "usenet" if h.startswith(_SAB_ID_PREFIX) else "torrent"})
     out.sort(key=lambda e: e.get("ts") or "", reverse=True)
     return out
 
