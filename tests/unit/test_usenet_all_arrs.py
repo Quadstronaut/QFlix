@@ -411,3 +411,23 @@ def test_ensure_history_limit_noop_when_already_zero(monkeypatch):
     monkeypatch.setattr(uaa, "sab_call", fake_sab_call)
     lines, _ = uaa.ensure_history_limit(execute=True)
     assert any("already 0" in line for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# Council 2026-07-20, Defect 6: idempotency must key on PRESENCE, not
+# enabled-ness — a present-but-disabled SAB client must not trigger a re-add.
+# ---------------------------------------------------------------------------
+
+def test_find_sab_client_returns_disabled_client():
+    clients = [{"implementation": "Sabnzbd", "enable": False, "id": 7}]
+    assert uaa.find_sab_client(clients)["id"] == 7
+
+
+def test_find_sab_client_none_when_absent():
+    assert uaa.find_sab_client([{"implementation": "QBittorrent", "enable": True}]) is None
+
+
+def test_has_enabled_sab_client_still_distinguishes():
+    assert uaa.has_enabled_sab_client([{"implementation": "Sabnzbd", "enable": True}]) is True
+    assert uaa.has_enabled_sab_client([{"implementation": "Sabnzbd", "enable": False}]) is False
+    assert uaa.has_enabled_sab_client([]) is False

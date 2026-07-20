@@ -71,14 +71,35 @@ SAB_PP_STATES = frozenset({
     "QuickCheck", "Checking",
 })
 
+def _env_int(name: str, default: int) -> int:
+    """Parse an int env override, falling back to `default` on absence OR a
+    malformed value. These run at import; a bare int(os.environ.get(...))
+    would raise ValueError on e.g. PP_HUNG_ESCALATE_HOURS='' before main()'s
+    try/except exists, killing the entire collect cycle (incl. the armed
+    breaker) with no Kuma-down heartbeat — a silent, self-inflicted outage
+    (council 2026-07-20, Defect 7). A typo'd knob must degrade to the
+    default and warn, never crash the collector."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        # warn()/log() are defined below this import-time call site, so emit
+        # directly to stderr rather than depend on definition order.
+        print("[qflix-collect] WARNING: ignoring malformed {}={!r}, "
+              "using default {}".format(name, raw, default),
+              file=sys.stderr, flush=True)
+        return default
+
+
 # C4 escalation circuit-breaker knobs (env-overridable per spec).
-PP_HUNG_ESCALATE_HOURS = int(os.environ.get("PP_HUNG_ESCALATE_HOURS", "4"))
-SAB_REPAIR_COOLDOWN_H = int(os.environ.get("SAB_REPAIR_COOLDOWN_H", "24"))
+PP_HUNG_ESCALATE_HOURS = _env_int("PP_HUNG_ESCALATE_HOURS", 4)
+SAB_REPAIR_COOLDOWN_H = _env_int("SAB_REPAIR_COOLDOWN_H", 24)
 # Delay before re-polling queue_meta() to verify a fired restart_repair (SAB
 # restarts mid-response and needs time to come back up). Tests monkeypatch
 # this to 0 rather than block on a real 60s sleep.
-SAB_REPAIR_VERIFY_DELAY_S = int(
-    os.environ.get("QFLIX_COLLECT_SAB_VERIFY_DELAY_S", "60"))
+SAB_REPAIR_VERIFY_DELAY_S = _env_int("QFLIX_COLLECT_SAB_VERIFY_DELAY_S", 60)
 
 
 # --- Logging (systemd routes stdout/stderr to journald) -------------------
@@ -371,6 +392,28 @@ def update_stale_state() -> list[str]:
             hashes[k]["candidate_for_unstick"] = candidate_for_unstick
             hashes[k]["last_progress"] = latest.get("progress")
             hashes[k]["kind"] = kind
+
+        # PP-state-stability tracking (council 2026-07-20, Defect 2): a
+        # legitimate multi-hour par2/unrar/extract on a huge release shows the
+        # SAME zero-downloaded-delta signature as a wedged PP step, so
+        # consecutive_zero_hours alone can't tell them apart — escalating on it
+        # would interrupt healthy post-processing. But a HEALTHY job advances
+        # through PP states (Verifying -> Repairing -> Extracting -> Moving),
+        # while a WEDGED one sits in one state. Track hours the SAB PP state has
+        # been UNCHANGED; a transition resets it. Strike (b) fires on this, not
+        # on raw zero-movement hours.
+        if kind == "sab" and rule == "sab-pp-hung":
+            if hashes[k].get("pp_state") == state:
+                hashes[k]["pp_same_state_hours"] = int(
+                    hashes[k].get("pp_same_state_hours") or 0) + 1
+            else:
+                hashes[k]["pp_state"] = state
+                hashes[k]["pp_same_state_hours"] = 0
+        elif "pp_state" in hashes[k]:
+            # No longer a pp-hung entry — clear the stability tracker.
+            hashes[k].pop("pp_state", None)
+            hashes[k].pop("pp_same_state_hours", None)
+
         if candidate_for_unstick and not hashes[k].get("acted_on_at"):
             candidates.append(k)
 
@@ -683,7 +726,11 @@ def escalate_sab_if_pinned() -> dict:
         for k, entry in hashes.items():
             if entry.get("kind") != "sab" or entry.get("rule_matched") != "sab-pp-hung":
                 continue
-            if int(entry.get("consecutive_zero_hours") or 0) >= PP_HUNG_ESCALATE_HOURS:
+            # Fire on hours in the SAME PP state (Defect 2), not raw zero-
+            # movement hours — a job still transitioning Verifying->Repairing->
+            # Extracting->Moving is healthy long PP, not a wedge, and each
+            # transition reset pp_same_state_hours in update_stale_state().
+            if int(entry.get("pp_same_state_hours") or 0) >= PP_HUNG_ESCALATE_HOURS:
                 if k not in strike_ids:
                     strike_ids.append(k)
                 trigger = trigger or "strike-b-pp-hung"
@@ -698,9 +745,21 @@ def escalate_sab_if_pinned() -> dict:
             return result
 
         outcome = _sab_restart_repair()
+        result["outcome"] = outcome
+        # Only a call that was actually ISSUED consumes the 24h cooldown and
+        # counts as a fire. `error:no-secrets` means the request never left
+        # the box — stamping the latch there would burn the breaker's whole
+        # daily budget on a no-op and mis-signal a fire to the event log /
+        # Discord (council 2026-07-20, Defect 1). `issued` and
+        # `issued-conn-drop` (SAB restarting mid-response) are both real fires.
+        if outcome.startswith("error:"):
+            result["skipped"] = "not-issued:" + outcome
+            _notify("SAB restart_repair NOT issued (" + outcome + ") for "
+                    + ", ".join(strike_ids), "error")
+            return result
+
         _stamp_sab_repair_latch()
         result["fired"] = True
-        result["outcome"] = outcome
 
         today = utc_now().strftime("%Y-%m-%d")
         events_dir = DATA_ROOT / "events"

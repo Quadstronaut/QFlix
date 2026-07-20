@@ -105,3 +105,136 @@ def test_verify_rejects_still_dual_default():
 def test_verify_rejects_wrong_sole_default():
     fixed = [_v(), _a("eac3", 6, 1), _a("aac", 2, 0)]
     assert not adj.verify_fixed(fixed, expect_stream_count=3)
+
+
+# ---------------------------------------------------------------------------
+# Destructive path — fix_file / run (council 2026-07-20, Defect 5).
+# The nightly-armed remux path had ZERO coverage; these exercise the
+# free-space guard, atomic replace, post-verify rejection, tmp cleanup on
+# failure, --max-items cap, and active-session skip, all with mocked I/O.
+# ---------------------------------------------------------------------------
+import os
+import subprocess as _subprocess
+import types
+
+
+_PLAN = {"target": 1, "clear": [0], "audio_count": 2}
+_BEFORE = [_v(), _a("eac3", 6, 1), _a("aac", 2, 1)]
+_AFTER = [_v(), _a("eac3", 6, 0), _a("aac", 2, 1)]
+
+
+class _Proc:
+    def __init__(self, rc=0, stderr=""):
+        self.returncode = rc
+        self.stderr = stderr
+
+
+def _mk(path: Path, size=1000):
+    path.write_bytes(b"x" * size)
+    return path
+
+
+def test_fix_file_happy_path_atomic_replace(tmp_path, monkeypatch):
+    src = _mk(tmp_path / "ep.mkv")
+    orig_mtime = 1_600_000_000
+    os.utime(src, (orig_mtime, orig_mtime))
+    monkeypatch.setattr(adj.shutil, "disk_usage",
+                        lambda p: types.SimpleNamespace(free=10**9))
+
+    def _fake_run(cmd, **kw):
+        # ffmpeg writes the tmp output; simulate by copying bytes.
+        Path(cmd[-1]).write_bytes(b"fixed")
+        return _Proc(0)
+    monkeypatch.setattr(adj.subprocess, "run", _fake_run)
+    # src probe -> BEFORE (3 streams); tmp probe -> AFTER (verifies clean)
+    calls = {"n": 0}
+
+    def _fake_probe(p):
+        return _BEFORE if p == str(src) else _AFTER
+    monkeypatch.setattr(adj, "ffprobe_streams", _fake_probe)
+
+    adj.fix_file(src, _PLAN)
+    assert src.read_bytes() == b"fixed"                 # replaced
+    assert int(src.stat().st_mtime) == orig_mtime       # mtime preserved
+    assert not (tmp_path / "ep.dispfix.tmp.mkv").exists()  # tmp gone
+
+
+def test_fix_file_insufficient_space_raises_and_no_tmp(tmp_path, monkeypatch):
+    src = _mk(tmp_path / "big.mkv", size=2000)
+    monkeypatch.setattr(adj.shutil, "disk_usage",
+                        lambda p: types.SimpleNamespace(free=100))  # < size*factor
+    monkeypatch.setattr(adj.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("ffmpeg must not run")))
+    import pytest
+    with pytest.raises(RuntimeError):
+        adj.fix_file(src, _PLAN)
+    assert src.read_bytes() == b"x" * 2000              # untouched
+    assert list(tmp_path.glob("*.tmp*")) == []
+
+
+def test_fix_file_verify_failure_keeps_original(tmp_path, monkeypatch):
+    src = _mk(tmp_path / "ep.mkv")
+    monkeypatch.setattr(adj.shutil, "disk_usage",
+                        lambda p: types.SimpleNamespace(free=10**9))
+    monkeypatch.setattr(adj.subprocess, "run",
+                        lambda cmd, **kw: (Path(cmd[-1]).write_bytes(b"bad"), _Proc(0))[1])
+    # tmp still shows BOTH defaults -> verify_fixed False -> must raise, keep original
+    monkeypatch.setattr(adj, "ffprobe_streams",
+                        lambda p: _BEFORE if p == str(src) else _BEFORE)
+    import pytest
+    with pytest.raises(RuntimeError):
+        adj.fix_file(src, _PLAN)
+    assert src.read_bytes() == b"x" * 1000
+    assert not (tmp_path / "ep.dispfix.tmp.mkv").exists()  # finally-unlink ran
+
+
+def test_fix_file_ffmpeg_nonzero_raises(tmp_path, monkeypatch):
+    src = _mk(tmp_path / "ep.mkv")
+    monkeypatch.setattr(adj.shutil, "disk_usage",
+                        lambda p: types.SimpleNamespace(free=10**9))
+    monkeypatch.setattr(adj.subprocess, "run",
+                        lambda cmd, **kw: (Path(cmd[-1]).write_bytes(b"partial"), _Proc(1, "boom"))[1])
+    monkeypatch.setattr(adj, "ffprobe_streams", lambda p: _BEFORE)
+    import pytest
+    with pytest.raises(RuntimeError):
+        adj.fix_file(src, _PLAN)
+    assert src.read_bytes() == b"x" * 1000
+    assert list(tmp_path.glob("*.tmp*")) == []
+
+
+def test_run_max_items_caps_fixed_count(tmp_path, monkeypatch):
+    files = [_mk(tmp_path / f"e{i}.mkv") for i in range(5)]
+    monkeypatch.setattr(adj, "scan_files", lambda roots: iter(files))
+    monkeypatch.setattr(adj, "ffprobe_streams", lambda p: _BEFORE)  # all candidates
+    monkeypatch.setattr(adj, "classify_streams", lambda streams: dict(_PLAN))
+    monkeypatch.setattr(adj, "active_file_paths", lambda: set())
+    fixed = []
+    monkeypatch.setattr(adj, "fix_file", lambda p, plan: fixed.append(str(p)))
+    res = adj.run(roots=["/x"], execute=True, max_items=2)
+    assert len(res["fixed"]) == 2
+    assert sum(1 for s in res["skipped"] if s["reason"] == "max-items cap") == 3
+
+
+def test_run_skips_active_plex_session(tmp_path, monkeypatch):
+    f = _mk(tmp_path / "e.mkv")
+    monkeypatch.setattr(adj, "scan_files", lambda roots: iter([f]))
+    monkeypatch.setattr(adj, "ffprobe_streams", lambda p: _BEFORE)
+    monkeypatch.setattr(adj, "classify_streams", lambda streams: dict(_PLAN))
+    monkeypatch.setattr(adj, "active_file_paths", lambda: {str(f)})
+    monkeypatch.setattr(adj, "fix_file",
+                        lambda p, plan: (_ for _ in ()).throw(AssertionError("must skip")))
+    res = adj.run(roots=["/x"], execute=True, max_items=50)
+    assert res["fixed"] == []
+    assert res["skipped"][0]["reason"] == "active Plex session"
+
+
+def test_run_dry_run_mutates_nothing(tmp_path, monkeypatch):
+    f = _mk(tmp_path / "e.mkv")
+    monkeypatch.setattr(adj, "scan_files", lambda roots: iter([f]))
+    monkeypatch.setattr(adj, "ffprobe_streams", lambda p: _BEFORE)
+    monkeypatch.setattr(adj, "classify_streams", lambda streams: dict(_PLAN))
+    monkeypatch.setattr(adj, "fix_file",
+                        lambda p, plan: (_ for _ in ()).throw(AssertionError("dry-run must not fix")))
+    res = adj.run(roots=["/x"], execute=False, max_items=50)
+    assert res["candidates"] == [str(f)]
+    assert res["fixed"] == []

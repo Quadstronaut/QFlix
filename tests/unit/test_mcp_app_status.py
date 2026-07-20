@@ -744,7 +744,7 @@ def test_recent_unsticks_matches_contract_example():
     lines = [_event_line()]
     out = app_status.recent_unsticks_from_lines(lines)
     assert out == [{"ts": "2026-07-15T19:00:39Z", "hash8": "f0a3658d",
-                     "result": "qbit-orphan-removed"}]
+                     "result": "qbit-orphan-removed", "kind": "torrent"}]
 
 
 def test_recent_unsticks_filters_non_unstick_actions():
@@ -1072,3 +1072,39 @@ def test_main_emits_json_with_no_args(monkeypatch, capsys):
     parsed = json.loads(captured.out)
     assert parsed == fixed
     assert parsed["meta"]["version"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Council 2026-07-20, Defect 3: recent_unsticks_from_lines must label SAB
+# unstick ids the SAME way build_stuck_list does (last-8 + kind), or every
+# usenet unstick renders hash8="SABnzbd" and collides.
+# ---------------------------------------------------------------------------
+
+def test_recent_unsticks_sab_id_label_last8_and_kind():
+    sab_id = "SABnzbd_nzo_abcd1234"
+    qbit_hash = "deadbeef" + "0" * 32
+    lines = [
+        json.dumps({"action": "unstick", "ts": "2026-07-20T01:00:00Z",
+                    "hash": sab_id, "result": "sab-orphan-removed"}),
+        json.dumps({"action": "unstick", "ts": "2026-07-20T00:00:00Z",
+                    "hash": qbit_hash, "result": "deleted+blocklisted"}),
+    ]
+    out = app_status.recent_unsticks_from_lines(lines)
+    by_result = {e["result"]: e for e in out}
+    assert by_result["sab-orphan-removed"]["hash8"] == sab_id[-8:]      # last-8
+    assert by_result["sab-orphan-removed"]["hash8"] != "SABnzbd"        # no collapse
+    assert by_result["sab-orphan-removed"]["kind"] == "usenet"
+    assert by_result["deleted+blocklisted"]["hash8"] == qbit_hash[:8]   # first-8
+    assert by_result["deleted+blocklisted"]["kind"] == "torrent"
+
+
+def test_recent_unsticks_two_sab_ids_do_not_collide():
+    """Two different SAB unsticks must produce two different labels."""
+    lines = [
+        json.dumps({"action": "unstick", "ts": "2026-07-20T02:00:00Z",
+                    "hash": "SABnzbd_nzo_aaaa1111", "result": "sab-orphan-removed"}),
+        json.dumps({"action": "unstick", "ts": "2026-07-20T01:00:00Z",
+                    "hash": "SABnzbd_nzo_bbbb2222", "result": "sab-orphan-removed"}),
+    ]
+    labels = {e["hash8"] for e in app_status.recent_unsticks_from_lines(lines)}
+    assert len(labels) == 2
