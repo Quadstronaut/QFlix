@@ -367,3 +367,363 @@ def test_resolve_queue_item_follows_pagination(mock_open, tmp_path, monkeypatch)
     out = unstick._resolve_queue_item(c, hash_="target", queue_id=None)
     assert out["status"] == "found"
     assert out["queue_id"] == 2
+
+
+# --- C5: SAB stuck-handling parity (2026-07-19 spec) ------------------------
+#
+# unstick.py's core DELETE flow (_resolve_queue_item / _execute_delete / run)
+# is untouched — it was already protocol-agnostic (matches on the *arr's
+# downloadId string regardless of what client produced it). What's new here
+# is: (1) _id_kind, a pure shape classifier that tells the rest of the module
+# which client an id belongs to; (2) SAB-aware auto-detect and orphan-cleanup
+# paths that dispatch on that classification instead of assuming qBit.
+#
+# SabClient itself is never hit over the network in these tests — its module
+# docstring is explicit that it RAISES on transport error rather than
+# swallowing it (unlike QbitClient), so every SAB-touching test here either
+# (a) lets a real SabClient fail closed via a secrets dir with no sabnzbd.*
+# files (mirrors how the existing qbit-login-failed tests above rely on a
+# real QbitClient with no qbittorrent.* secrets), or (b) monkeypatches the
+# `unstick.SabClient` module attribute with a small stand-in, per the
+# existing test file's convention of patching module-level names rather than
+# reaching into urllib.
+
+
+class _FakeSabClient:
+    """Stand-in for lib.sab_client.SabClient. Tests monkeypatch
+    `unstick.SabClient` to a zero-arg callable returning one of these so
+    _auto_detect_slug_sab / _try_sab_orphan_cleanup can be driven without a
+    real SAB box. `host`/`apikey` mirror the real client's truthy check for
+    "secrets configured"."""
+
+    def __init__(self, slots=None, delete_ok=True,
+                 list_raises=False, delete_raises=False):
+        self.host = "http://127.0.0.1:9999/api"
+        self.apikey = "KEY"
+        self._slots = slots if slots is not None else []
+        self._delete_ok = delete_ok
+        self._list_raises = list_raises
+        self._delete_raises = delete_raises
+        self.deleted_ids = []
+
+    def list_slots(self):
+        if self._list_raises:
+            raise RuntimeError("sab unreachable")
+        return self._slots
+
+    def delete_slot(self, nzo_id, del_files=True):
+        if self._delete_raises:
+            raise RuntimeError("sab unreachable")
+        self.deleted_ids.append(nzo_id)
+        return self._delete_ok
+
+
+# -- _id_kind: pure shape classification -------------------------------------
+
+def test_id_kind_sab_prefix():
+    assert unstick._id_kind("SABnzbd_nzo_AbCdEf12") == "sab"
+
+
+def test_id_kind_qbit_hex_hash():
+    assert unstick._id_kind("a1b2c3d4" * 5) == "qbit"          # 40 hex chars
+    assert unstick._id_kind("F" * 40) == "qbit"                 # uppercase hex ok
+
+
+def test_id_kind_unknown_for_garbage_none_and_empty():
+    assert unstick._id_kind("not-a-real-id") == "unknown"
+    assert unstick._id_kind("") == "unknown"
+    assert unstick._id_kind(None) == "unknown"
+
+
+def test_id_kind_unknown_for_40_chars_non_hex():
+    # Right length, wrong alphabet — must not be misclassified as qbit.
+    assert unstick._id_kind("g" * 40) == "unknown"
+
+
+def test_id_kind_unknown_for_wrong_length_hex():
+    assert unstick._id_kind("abc123") == "unknown"
+
+
+# -- sab slug autodetect (mocked SabClient) ----------------------------------
+
+def test_auto_detect_slug_sab_shaped_id_uses_slot_cat(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(slots=[{"nzo_id": "SABnzbd_nzo_ABC", "cat": "sonarr"}])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    assert unstick._auto_detect_slug("SABnzbd_nzo_ABC") == "sonarr"
+
+
+def test_auto_detect_slug_sab_unknown_cat_returns_none(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(slots=[{"nzo_id": "SABnzbd_nzo_ABC", "cat": "not-an-arr"}])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    assert unstick._auto_detect_slug("SABnzbd_nzo_ABC") is None
+
+
+def test_auto_detect_slug_sab_no_matching_slot_returns_none(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(slots=[{"nzo_id": "SABnzbd_nzo_OTHER", "cat": "sonarr"}])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    assert unstick._auto_detect_slug("SABnzbd_nzo_ABC") is None
+
+
+def test_auto_detect_slug_sab_transport_error_returns_none(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(list_raises=True)
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    assert unstick._auto_detect_slug("SABnzbd_nzo_ABC") is None
+
+
+def test_auto_detect_slug_unknown_shape_probes_qbit_then_sab(tmp_path, monkeypatch):
+    """No qBit secrets in this tmp env -> qBit lookup fails closed -> the
+    unknown-shape dispatch falls through to SAB, per C5's probe order."""
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(slots=[{"nzo_id": "weird-id-123", "cat": "radarr"}])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    assert unstick._auto_detect_slug("weird-id-123") == "radarr"
+
+
+def test_auto_detect_slug_qbit_path_unchanged(tmp_path, monkeypatch):
+    """The 40-char-hex path still goes straight to qBit, never touching SAB
+    (a raising fake would blow up the test if it were reached)."""
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(list_raises=True)
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    # No qbittorrent.* secrets -> QbitClient().login() is False -> None.
+    assert unstick._auto_detect_slug("a" * 40) is None
+
+
+# -- sab orphan-cleanup statuses (C5 status vocabulary) ----------------------
+
+def test_sab_orphan_cleanup_removed(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(slots=[{"nzo_id": "SABnzbd_nzo_ABC", "filename": "Show.S01E01"}])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    out = unstick._try_sab_orphan_cleanup("SABnzbd_nzo_ABC", dry_run=False)
+    assert out["status"] == "sab-orphan-removed"
+    assert out["sab_title"] == "Show.S01E01"
+    assert fake.deleted_ids == ["SABnzbd_nzo_ABC"]
+
+
+def test_sab_orphan_cleanup_already_fully_removed_no_slot(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(slots=[])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    out = unstick._try_sab_orphan_cleanup("SABnzbd_nzo_ABC", dry_run=False)
+    assert out["status"] == "already-fully-removed"
+
+
+def test_sab_orphan_cleanup_already_fully_removed_no_id():
+    out = unstick._try_sab_orphan_cleanup(None, dry_run=False)
+    assert out["status"] == "already-fully-removed"
+
+
+def test_sab_orphan_cleanup_unreachable_no_secrets(tmp_path, monkeypatch):
+    """Real SabClient (not the fake), no sabnzbd.* secrets in this tmp env —
+    mirrors how the existing qbit-login-failed tests rely on a real
+    QbitClient failing closed for the same reason."""
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    out = unstick._try_sab_orphan_cleanup("SABnzbd_nzo_ABC", dry_run=False)
+    assert out["status"] == "sab-unreachable"
+
+
+def test_sab_orphan_cleanup_unreachable_on_transport_error(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(list_raises=True)
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    out = unstick._try_sab_orphan_cleanup("SABnzbd_nzo_ABC", dry_run=False)
+    assert out["status"] == "sab-unreachable"
+
+
+def test_sab_orphan_cleanup_delete_failed(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(
+        slots=[{"nzo_id": "SABnzbd_nzo_ABC", "filename": "X"}], delete_ok=False)
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    out = unstick._try_sab_orphan_cleanup("SABnzbd_nzo_ABC", dry_run=False)
+    assert out["status"] == "sab-delete-failed"
+
+
+def test_sab_orphan_cleanup_dry_run_does_not_delete(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(slots=[{"nzo_id": "SABnzbd_nzo_ABC", "filename": "X"}])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    out = unstick._try_sab_orphan_cleanup("SABnzbd_nzo_ABC", dry_run=True)
+    assert out["status"] == "dry-run-sab-orphan"
+    assert fake.deleted_ids == []  # dry-run must never call delete_slot
+
+
+# -- _try_client_orphan_cleanup: id-shape dispatcher -------------------------
+
+def test_client_orphan_dispatch_routes_sab_shaped_id(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(slots=[{"nzo_id": "SABnzbd_nzo_ABC", "filename": "X"}])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    out = unstick._try_client_orphan_cleanup("SABnzbd_nzo_ABC", dry_run=False)
+    assert out["status"] == "sab-orphan-removed"
+
+
+def test_client_orphan_dispatch_routes_qbit_shaped_id(tmp_path, monkeypatch):
+    """A 40-char hex id must go straight to qBit's fallback and never touch
+    SAB — the raising fake would blow up the test if it were reached."""
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(list_raises=True)
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    out = unstick._try_client_orphan_cleanup("a" * 40, dry_run=False)
+    assert out["status"] == "qbit-login-failed"  # no qbit secrets in this env
+
+
+def test_client_orphan_dispatch_sab_shaped_id_never_touches_qbit(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(slots=[{"nzo_id": "SABnzbd_nzo_ABC", "filename": "X"}])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    with patch("unstick.QbitClient") as MockQbit:
+        MockQbit.return_value.login.return_value = False
+        out = unstick._try_client_orphan_cleanup("SABnzbd_nzo_ABC", dry_run=False)
+    # This id is sab-shaped, so the dispatcher must route straight to SAB —
+    # confirm qBit wasn't even consulted (unlike the true "unknown" case
+    # tested below, which does probe qBit first).
+    MockQbit.return_value.login.assert_not_called()
+    assert out["status"] == "sab-orphan-removed"
+
+
+def test_client_orphan_dispatch_unknown_shape_falls_through_to_sab_when_qbit_says_absent(
+        tmp_path, monkeypatch):
+    """qBit successfully logs in but has no matching hash — an ordinary "not
+    found" (already-fully-removed), as opposed to qBit being unreachable.
+    Per C5's probe order, the unknown-shape dispatch then continues on to
+    SAB rather than stopping at qBit's answer."""
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake_sab = _FakeSabClient(slots=[{"nzo_id": "weird-id-123", "filename": "X"}])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake_sab)
+    with patch("unstick.QbitClient") as MockQbit:
+        MockQbit.return_value.login.return_value = True
+        MockQbit.return_value.list_torrents.return_value = []
+        out = unstick._try_client_orphan_cleanup("weird-id-123", dry_run=False)
+    assert out["status"] == "sab-orphan-removed"
+
+
+def test_client_orphan_dispatch_no_id_short_circuits_without_asking_sab(tmp_path, monkeypatch):
+    """A falsy id can't be found in either client. Confirm SAB is never
+    consulted for the unanswerable question (the raising fake would blow up
+    the test if it were reached)."""
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(list_raises=True)
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    out = unstick._try_client_orphan_cleanup(None, dry_run=False)
+    assert out["status"] == "no-hash-for-qbit-lookup"
+
+
+# -- effective-status accounting (daily cap) ---------------------------------
+
+def test_sab_orphan_removed_is_an_effective_status():
+    assert "sab-orphan-removed" in unstick._EFFECTIVE_STATUSES
+
+
+def test_count_today_counts_sab_orphan_removed(tmp_path, monkeypatch):
+    import datetime as dt_
+    _, _, events = _setup(tmp_path)
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    today = events / f"{dt_.date.today().isoformat()}.jsonl"
+    today.write_text("\n".join([
+        '{"result":"sab-orphan-removed"}',
+        '{"result":"sab-unreachable"}',
+        '{"result":"sab-delete-failed"}',
+        '{"result":"already-fully-removed"}',
+        '{"result":"sab-orphan-removed"}',
+    ]) + "\n")
+    assert unstick._count_today() == 2
+
+
+def test_run_end_to_end_counts_sab_orphan_removed_toward_cap(tmp_path, monkeypatch):
+    """Full run() path: *arr says already-removed, SAB still has the slot ->
+    sab-orphan-removed -> consumes a daily-cap slot exactly like
+    qbit-orphan-removed does."""
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeSabClient(slots=[{"nzo_id": "SABnzbd_nzo_ABC", "filename": "X"}])
+    monkeypatch.setattr(unstick, "SabClient", lambda: fake)
+    with patch("lib.arr_client.urllib.request.urlopen") as mock_open:
+        mock_open.return_value = _resp({"records": []})
+        res = unstick.run(slug="sonarr", hash_="SABnzbd_nzo_ABC", reason="t",
+                          dry_run=False, state_file=state)
+    assert res["status"] == "sab-orphan-removed"
+    assert unstick._count_today() == 1
+
+
+# -- resolve-by-nzo_id (documents the already-proven protocol-agnostic path) -
+
+@patch("lib.arr_client.urllib.request.urlopen")
+def test_resolve_queue_item_matches_sab_shaped_hash_unchanged(mock_open, tmp_path, monkeypatch):
+    """C5/C9: _resolve_queue_item needed ZERO changes for SAB parity — it
+    already matches purely on the *arr's downloadId string, whatever shape
+    that string is. This test documents that proven behavior for an
+    nzo_id-shaped hash, the same way test_resolve_queue_item_by_hash_found
+    documents it for a qBit hash above."""
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    mock_open.return_value = _resp({"records": [
+        {"id": 7, "downloadId": "SABnzbd_nzo_XYZ789", "title": "Some Episode"},
+    ]})
+    from lib.arr_client import ArrClient
+    c = ArrClient("sonarr", "v3", secrets_dir=secrets)
+    out = unstick._resolve_queue_item(c, hash_="SABnzbd_nzo_XYZ789", queue_id=None)
+    assert out["status"] == "found"
+    assert out["queue_id"] == 7
+    assert out["title"] == "Some Episode"

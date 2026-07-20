@@ -318,31 +318,99 @@ def count_sab_failed(history_payload: dict, now_epoch: float,
     return n
 
 
-def build_stuck_list(stale_state: dict, torrents: list) -> list:
-    """Join stale-state.json's `hashes` map (candidates only) to qBit
-    torrent names. `acted` reflects whether the autonomous unstick loop
-    already dispatched an action for this hash (acted_on_at set).
+_SAB_UNPACK_DISK_FULL_NEEDLE = "unpacking failed, write error or disk is full"
 
-    Ghost guard: a candidate whose hash is no longer in qBit is already
-    resolved (unstick deleted it / it was cleaned up out-of-band) — skip
-    it rather than report a phantom stuck row. The collector prunes these
-    from stale-state.json hourly, but this keeps the doc honest in the
-    gap between removal and the next collect (2026-07-19: heartbeat app
-    showed 5 phantom stuck vs 0 real)."""
-    names = {(t.get("hash") or "").lower(): t.get("name", "?") for t in (torrents or [])}
+
+def has_sab_unpack_failure(history_payload: dict) -> bool:
+    """SABnzbd `?mode=history` -> True iff any slot's fail_message matches
+    the FDH blind spot (design doc research, 2026-07-19): SAB reports
+    "Unpacking failed, write error or disk is full?" as a Warning, never a
+    Failed status, so Sonarr/Radarr's FailedDownloadService never sees it
+    and never re-searches -- the job just silently rots. Case-insensitive
+    substring so trailing punctuation/wording variants still match; not
+    time-windowed (reuses whichever history page failed_24h already
+    fetched -- one occurrence anywhere in that page is disk-full evidence
+    worth a page, this isn't a rate count)."""
+    slots = ((history_payload or {}).get("history") or {}).get("slots") or []
+    for s in slots:
+        msg = s.get("fail_message") or ""
+        if _SAB_UNPACK_DISK_FULL_NEEDLE in msg.lower():
+            return True
+    return False
+
+
+def parse_sab_slots(queue_payload: dict) -> list:
+    """SABnzbd `?mode=queue&output=json` -> per-slot list from `queue.slots`,
+    renamed to the vocabulary build_stuck_list's second name-join source
+    speaks (C6 contract): nzo_id -> id, filename -> name, status -> state.
+    cat/mb/mbleft pass through verbatim (mb/mbleft arrive as strings from
+    the SAB API, same as parse_sab_queue above -- no numeric conversion
+    needed here, this helper only feeds a name/liveness join)."""
+    slots = ((queue_payload or {}).get("queue") or {}).get("slots") or []
+    return [{
+        "id": s.get("nzo_id"),
+        "name": s.get("filename"),
+        "cat": s.get("cat"),
+        "state": s.get("status"),
+        "mb": s.get("mb"),
+        "mbleft": s.get("mbleft"),
+    } for s in slots]
+
+
+# A real SAB nzo_id always carries this literal prefix (verified live,
+# 2026-07-19) -- qBit hashes are 40-char hex and never start with it, so
+# it doubles as both the id-shape classifier (C5's unstick.py `_id_kind`
+# uses the identical check) and a collision-proof namespace: a SAB id and
+# a qBit hash can never land on the same dict key even after the two name
+# sources below are merged into one.
+_SAB_ID_PREFIX = "SABnzbd_nzo"
+
+
+def build_stuck_list(stale_state: dict, torrents: list, sab_slots: list = None) -> list:
+    """Join stale-state.json's `hashes` map (candidates only) to a name --
+    qBit torrent name for torrent-shaped keys, SAB slot filename (via
+    parse_sab_slots) for SAB-shaped keys. The two name sources merge into
+    ONE dict (qBit hashes lowercased for the lookup, as before; SAB nzo_ids
+    looked up verbatim since they're not hex and case is significant) --
+    safe because the id-shape prefix makes the two namespaces disjoint.
+
+    `acted` reflects whether the autonomous unstick loop already dispatched
+    an action for this entry (acted_on_at set). `kind` and the `hash8`
+    label are both decided by id SHAPE, matching unstick.py's `_id_kind`
+    dispatch (C5): torrent -> first 8 chars; usenet -> LAST 8 (every real
+    nzo_id shares the identical "SABnzbd_nzo_" prefix, so a first-8 label
+    would collide across every usenet entry).
+
+    Ghost guard: a candidate whose id is no longer live in its OWN source
+    (qBit torrents for torrent-kind, SAB slots for usenet-kind) is already
+    resolved -- skip it rather than report a phantom stuck row (regression
+    guard for the 2026-07-19 phantom-stuck incident this already fixed for
+    qBit; usenet gets the identical treatment now that it's a first-class
+    stuck-list citizen too). `sab_slots` defaults to None/[] so existing
+    2-arg call sites keep working unchanged."""
+    names = {}
+    for t in (torrents or []):
+        names[(t.get("hash") or "").lower()] = t.get("name", "?")
+    for s in (sab_slots or []):
+        sid = s.get("id")
+        if sid:
+            names[sid] = s.get("name", "?")
+
     out = []
-    for h, entry in ((stale_state or {}).get("hashes") or {}).items():
+    for key, entry in ((stale_state or {}).get("hashes") or {}).items():
         if not entry.get("candidate_for_unstick"):
             continue
-        name = names.get(h.lower())
+        is_sab = key.startswith(_SAB_ID_PREFIX)
+        name = names.get(key if is_sab else key.lower())
         if name is None:
-            continue  # ghost — hash gone from qBit
+            continue  # ghost — id gone from its own live source
         out.append({
-            "hash8": h[:8],
+            "hash8": key[-8:] if is_sab else key[:8],
             "name": name,
             "hours": int(entry.get("consecutive_zero_hours") or 0),
             "rule": entry.get("rule_matched"),
             "acted": bool(entry.get("acted_on_at")),
+            "kind": "usenet" if is_sab else "torrent",
         })
     return out
 
@@ -387,6 +455,9 @@ def derive_alerts(doc: dict) -> list:
       - maint apps[*].event == "failed" within 48h = crit
       - any stuck entries = warn
       - SAB paused = warn
+      - SAB history has an "Unpacking failed, write error or disk is
+        full?" row (the FDH blind spot — Sonarr/Radarr never see it as
+        Failed) = crit
     Empty list = all clear.
     """
     crit = []
@@ -436,6 +507,9 @@ def derive_alerts(doc: dict) -> list:
                       "text": "{} download(s) stuck, pending unstick".format(len(stuck))})
 
     sab = downloads.get("sab") or {}
+    if sab.get("unpack_disk_full"):
+        crit.append({"level": "crit",
+                      "text": "SAB unpack failed (disk full?) — FDH blind spot"})
     if sab.get("paused"):
         warn.append({"level": "warn", "text": "SABnzbd queue paused"})
     failed = sab.get("failed_24h")
@@ -643,16 +717,23 @@ def _collect_downloads() -> dict:
         errors.append("qbit: {}".format(e))
 
     sab_summary = {"queued": 0, "paused": False, "mb_left": 0.0, "mb_total": 0.0, "kbps": 0}
+    sab_slots = []
     try:
-        sab_summary = parse_sab_queue(_collect_sab_queue())
+        queue_payload = _collect_sab_queue()
+        sab_summary = parse_sab_queue(queue_payload)
+        sab_slots = parse_sab_slots(queue_payload)
     except Exception as e:
         errors.append("sab: {}".format(e))
-    # failed_24h rides the same summary dict (additive; the Android app's
-    # parser ignores unknown keys). Best-effort: a history fetch failure
-    # keeps the queue numbers and just logs the error.
+    # failed_24h / unpack_disk_full ride the same summary dict (additive;
+    # the Android app's parser ignores unknown keys). Best-effort: a
+    # history fetch failure keeps the queue numbers and just logs the
+    # error. Both derive from the SAME fetched history page -- one fetch,
+    # two independent reads of it.
     try:
+        history_payload = _collect_sab_history()
         now_epoch = dt.datetime.now(dt.timezone.utc).timestamp()
-        sab_summary["failed_24h"] = count_sab_failed(_collect_sab_history(), now_epoch)
+        sab_summary["failed_24h"] = count_sab_failed(history_payload, now_epoch)
+        sab_summary["unpack_disk_full"] = has_sab_unpack_failure(history_payload)
     except Exception as e:
         errors.append("sab_history: {}".format(e))
 
@@ -660,11 +741,15 @@ def _collect_downloads() -> dict:
     try:
         stale_state = json.loads(
             (QFLIX_COLLECT_DATA / "stale-state.json").read_text(encoding="utf-8"))
-        stuck = build_stuck_list(stale_state, torrents)
+        stuck = build_stuck_list(stale_state, torrents, sab_slots)
     except FileNotFoundError:
         pass  # no stale-state.json yet is a legitimate empty-doc state
     except Exception as e:
         errors.append("stuck: {}".format(e))
+    # Passthrough count for the app: how many of the stuck entries are
+    # usenet-kind (i.e. a SAB slot, not a qBit torrent) -- lets the Heartbeat
+    # UI badge the SAB tile without re-deriving kind counts client-side.
+    sab_summary["slots_stuck"] = sum(1 for e in stuck if e.get("kind") == "usenet")
 
     recent = []
     try:
