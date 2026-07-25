@@ -174,7 +174,7 @@ def test_maxpct_tripwire_aborts(m, monkeypatch):
 
 def test_maxpct_force_overrides(m, monkeypatch):
     titles = {
-        "sonarr2": [series(i, "LA%d" % i, ["Drama"], "English") for i in range(3)],
+        "sonarr2": [series(i, "LA%d" % i, ["Drama"], "English") for i in range(1, 4)],
         "radarr2": [], "sonarr": [], "radarr": [],
     }
     calls = []
@@ -187,7 +187,7 @@ def test_maxpct_force_overrides(m, monkeypatch):
 
 def test_maxmoves_defers_excess(m, monkeypatch):
     titles = {
-        "sonarr2": [series(i, "LA%d" % i, ["Drama"], "English") for i in range(3)],
+        "sonarr2": [series(i, "LA%d" % i, ["Drama"], "English") for i in range(1, 4)],
         "radarr2": [], "sonarr": [], "radarr": [],
     }
     calls = []
@@ -254,3 +254,156 @@ def test_enumerate_failure_is_fatal(m, monkeypatch):
     kuma, cap = _wire(m, monkeypatch, titles)
     rc = m.run(_args(m, []))
     assert rc == m.EXIT_FATAL
+
+
+# ===========================================================================
+# Council fixes: classifier B4, valid-id, containment, import-verify fail-safe,
+# partial-enum-fatal, Plex-optional, id-match guard.
+# ===========================================================================
+def test_missing_origin_is_flagged_not_moved(m):
+    # No Animation genre AND no originalLanguage -> flag, NEVER auto_out (B4).
+    r = series(1, "No Lang", ["Drama"], None)
+    assert m.classify_anime_lib(r, {"Japanese"}) == ("flag", "missing-origin")
+
+
+def test_valid_id(m):
+    assert m._valid_id(5) and m._valid_id("123") and m._valid_id(10)
+    assert not m._valid_id(0) and not m._valid_id(None)
+    assert not m._valid_id("0") and not m._valid_id("") and not m._valid_id("x")
+
+
+def test_is_contained(m, tmp_path):
+    root = tmp_path / "TV"
+    root.mkdir()
+    assert m._is_contained(str(root / "Show"), str(root))
+    assert m._is_contained(str(root / "a" / "b"), str(root))
+    assert not m._is_contained(str(tmp_path / "evil" / "x"), str(root))   # escape
+    assert not m._is_contained(str(root), str(root))                       # equal, not inside
+    assert not m._is_contained(None, str(root))
+
+
+def test_partial_enum_is_fatal(m, monkeypatch):
+    # One anime instance unreachable -> EXIT_FATAL even though another yielded a
+    # candidate (design 10; council B6). Was silently EXIT_OK before.
+    titles = {"sonarr2": None,
+              "radarr2": [movie(1, "LA Movie", ["Drama"], "English")],
+              "sonarr": [], "radarr": []}
+    kuma, cap = _wire(m, monkeypatch, titles)
+    rc = m.run(_args(m, []))
+    assert rc == m.EXIT_FATAL
+    assert kuma[-1][0] == "down"
+
+
+def test_plex_missing_is_not_fatal(m, monkeypatch):
+    titles = {"sonarr2": [series(1, "Western", ["Drama"], "English")],
+              "radarr2": [], "sonarr": [], "radarr": []}
+    kuma, cap = _wire(m, monkeypatch, titles)
+    monkeypatch.setattr(m, "_plex_creds",
+                        lambda: (_ for _ in ()).throw(FileNotFoundError("plex.token")))
+    rc = m.run(_args(m, []))
+    assert rc == m.EXIT_OK               # Plex not load-bearing (B7)
+
+
+def test_invalid_id_flagged_not_moved(m, monkeypatch):
+    titles = {"sonarr2": [series(0, "Zero Id LA", ["Drama"], "English", tvdb=0),
+                          series(2, "Good LA", ["Drama"], "English", tvdb=2)],
+              "radarr2": [], "sonarr": [], "radarr": []}
+    kuma, cap = _wire(m, monkeypatch, titles)
+    rc = m.run(_args(m, []))
+    assert rc == m.EXIT_OK
+    assert [r.get("title") for (_p, r) in cap["auto"]] == ["Good LA"]
+    assert "invalid-id" in [f["reason"] for f in cap["flags"]]
+
+
+# ---- rehome() fail-safe ordering (real tmp_path FS + fake arr clients) -----
+class _FakeArr:
+    def __init__(self, responses):
+        self.responses = responses
+        self.deletes = []
+        self.posts = []
+
+    def get(self, path, query=None):
+        return self.responses.get(("GET", path), (200, None))
+
+    def post(self, path, body=None):
+        self.posts.append(path)
+        return self.responses.get(("POST", path), (200, {}))
+
+    def delete(self, path, query=None):
+        self.deletes.append((path, query))
+        return self.responses.get(("DELETE", path), (200, None))
+
+
+def _rehome_env(m, monkeypatch, tmp_path, *, target_path=None, verified=True):
+    anime = tmp_path / "Anime"
+    tv = tmp_path / "TV"
+    (anime / "Show").mkdir(parents=True)
+    (anime / "Show" / "ep.mkv").write_text("x", encoding="utf-8")
+    tv.mkdir()
+    tpath = target_path if target_path is not None else str(tv / "Show")
+    dst = _FakeArr({
+        ("GET", "/rootfolder"): (200, [{"path": str(tv)}]),
+        ("GET", "/qualityprofile"): (200, [{"id": 1}]),
+        ("GET", "/series"): (200, []),                       # not present -> create
+        ("GET", "/series/lookup"): (200, [{"tvdbId": 10, "title": "Show"}]),
+        ("POST", "/series"): (200, {"id": 99, "path": tpath}),
+        ("POST", "/command"): (200, {}),
+    })
+    src = _FakeArr({})
+    monkeypatch.setattr(m, "_arr_client", lambda slug: dst if slug == "sonarr" else src)
+    monkeypatch.setattr(m, "_verify_import", lambda *a, **k: verified)
+    pair = {"kind": "series", "idkey": "tvdbId", "from_slug": "sonarr2",
+            "to_slug": "sonarr", "from_root": str(anime), "to_root": str(tv),
+            "plex_from": "QFlix - Anime", "plex_to": "QFlix - TV",
+            "series_type": "standard"}
+    record = {"id": 5, "tvdbId": 10, "title": "Show",
+              "path": str(anime / "Show"), "monitored": True}
+    return pair, record, src, dst, (tv / "Show")
+
+
+def test_rehome_success_removes_source_after_verify(m, monkeypatch, tmp_path):
+    pair, record, src, dst, tv_show = _rehome_env(m, monkeypatch, tmp_path, verified=True)
+    ok, note = m.rehome(pair, record, section_keys={}, plex_port=None, plex_token=None)
+    assert ok, note
+    assert tv_show.exists()                                    # files moved
+    assert src.deletes and src.deletes[0][0] == "/series/5"    # source removed only after verify
+
+
+def test_rehome_import_unverified_keeps_source(m, monkeypatch, tmp_path):
+    pair, record, src, dst, tv_show = _rehome_env(m, monkeypatch, tmp_path, verified=False)
+    ok, note = m.rehome(pair, record, section_keys={}, plex_port=None, plex_token=None)
+    assert not ok and "import-unverified" in note
+    assert src.deletes == []                                   # source NOT removed -> no orphan
+
+
+def test_rehome_path_escape_rolls_back_created(m, monkeypatch, tmp_path):
+    pair, record, src, dst, _ = _rehome_env(
+        m, monkeypatch, tmp_path, target_path=str(tmp_path / "evil" / "Show"))
+    ok, note = m.rehome(pair, record, section_keys={}, plex_port=None, plex_token=None)
+    assert not ok and "path escape" in note
+    assert src.deletes == []                                   # source untouched
+    assert ("/series/99", "deleteFiles=false") in dst.deletes  # our created record rolled back
+
+
+def test_add_to_target_rejects_mismatched_existing_id(m):
+    dst = _FakeArr({
+        ("GET", "/qualityprofile"): (200, [{"id": 1}]),
+        ("GET", "/series"): (200, [{"tvdbId": 999, "id": 7, "path": "/x"}]),  # wrong id
+        ("GET", "/series/lookup"): (200, [{"tvdbId": 10, "title": "Show"}]),
+        ("POST", "/series"): (200, {"id": 50, "path": "/home/q/media/TV/Show"}),
+    })
+    pair = {"kind": "series", "idkey": "tvdbId", "to_slug": "sonarr",
+            "series_type": "standard"}
+    nid, created, path = m._add_to_target(dst, pair, 10, {"monitored": True}, "/home/q/media/TV")
+    assert nid == 50 and created is True        # did NOT adopt the tvdbId=999 record
+
+
+def test_add_to_target_adopts_matching_existing(m):
+    dst = _FakeArr({
+        ("GET", "/qualityprofile"): (200, [{"id": 1}]),
+        ("GET", "/series"): (200, [{"tvdbId": 10, "id": 8, "path": "/home/q/media/TV/Show"}]),
+    })
+    pair = {"kind": "series", "idkey": "tvdbId", "to_slug": "sonarr",
+            "series_type": "standard"}
+    nid, created, path = m._add_to_target(dst, pair, 10, {"monitored": True}, "/home/q/media/TV")
+    assert nid == 8 and created is False        # adopted the matching record (never rolled back)
