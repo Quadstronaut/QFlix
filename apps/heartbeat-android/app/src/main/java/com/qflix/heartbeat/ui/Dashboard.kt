@@ -41,6 +41,7 @@ import com.qflix.heartbeat.model.AlertView
 import com.qflix.heartbeat.model.DashboardState
 import com.qflix.heartbeat.model.DownloadsView
 import com.qflix.heartbeat.model.KumaView
+import com.qflix.heartbeat.model.MaintView
 import com.qflix.heartbeat.model.QuotaView
 import com.qflix.heartbeat.model.SectionState
 import com.qflix.heartbeat.model.StreamsView
@@ -151,6 +152,7 @@ private fun DashboardBody(dashboard: DashboardState) {
         item { AlertBanner(dashboard.alerts) }
         item { QuotaBars(dashboard.quota) }
         item { KumaCard(dashboard.kuma) }
+        item { MaintCard(dashboard.maint) }
         item { StreamsCard(dashboard.streams) }
         item {
             Row(
@@ -302,6 +304,48 @@ fun KumaCard(state: SectionState<KumaView>) {
     }
 }
 
+// ---- 3b. Maintenance (failed units + anime-janitor activity) ----
+
+@Composable
+fun MaintCard(state: SectionState<MaintView>) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            SectionHeader("Maintenance", state)
+            if (state is SectionState.Ok) {
+                val maint = state.data
+                if (maint.failedUnits.isEmpty()) {
+                    Text(
+                        "All maintenance jobs healthy",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF81C784),
+                    )
+                } else {
+                    Text(
+                        "${maint.failedUnits.size} failed unit(s)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    maint.failedUnits.forEach { unit ->
+                        Text(
+                            unit,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFEF9A9A),
+                        )
+                    }
+                }
+                maint.janitorLabel?.let { label ->
+                    Text(
+                        "Anime janitor: $label",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
 // ---- 4. Streams + top5s ----
 
 @Composable
@@ -439,6 +483,9 @@ private fun DashboardScreenPreview() {
                        "sab": {"queued": 1, "mb_left": 0, "mb_total": 0},
                        "stuck": [{"hash8": "cbed175c", "hours": 3, "rule": "stalledDL", "acted": true}],
                        "recent_unsticks": [{"hash8": "f0a3658d", "result": "qbit-orphan-removed"}]},
+         "maint": {"ok": true, "failed_units": [],
+                   "anime_janitor": {"recent_moves": 1,
+                       "last_move": {"title": "Cowboy Bebop (2021)", "from": "sonarr2", "to": "sonarr", "ts": "2026-07-25T19:04:37Z"}}},
          "alerts": [{"level": "crit", "text": "Kuma down: QFlix Reaper"}]}
     """.trimIndent()
 
