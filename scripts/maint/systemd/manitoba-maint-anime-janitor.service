@@ -1,0 +1,16 @@
+[Unit]
+Description=Manitoba maint - QFlix anime-library janitor (re-home non-anime out of anime libs)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# DEFAULT = DRY-RUN. The unit ships SAFE: it enumerates, classifies, prints the
+# plan, and mutates NOTHING (no file moves, no arr add/delete, no Plex refresh).
+# To arm real re-homes, an operator edits this ExecStart to append --execute
+# (or ships a drop-in override) AFTER reviewing a dry-run plan. Never arm blind.
+ExecStart=/usr/bin/python3 %h/scripts/maint/qflix-anime-janitor.py
+# Enumerating 4 instances + per-title classification is quick, but give headroom
+# for a busy shared box + Plex refreshes during an armed run.
+TimeoutStartSec=1200
+StandardOutput=journal
+StandardError=journal
