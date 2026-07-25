@@ -15,18 +15,20 @@ inherits the reaper's whole safety envelope.
 CLASSIFIER (genre + origin, 4-quadrant; source of truth is the *arr record's
 own `genres` + `originalLanguage`):
 
-    has "Animation" genre?   origin in ANIME_LANGS (Japanese)?   verdict
-    -----------------------  ---------------------------------   ---------------
-    yes                      yes                                 anime -> leave
-    yes                      no                                  FLAG (western cartoon)
-    no                       no                                  AUTO re-home OUT
-    no                       yes                                 FLAG (JP live-action / mislabel)
-    (no genres at all)       -                                   SKIP + FLAG (missing metadata)
+    Animation genre?     originalLanguage name             verdict
+    -------------------  ------------------------------    -----------------------------
+    yes                  in ANIME_LANGS (Japanese)         anime -> leave
+    yes                  anything else (incl. absent)      FLAG (western/unknown cartoon)
+    no                   PRESENT, not in ANIME_LANGS       AUTO re-home OUT (live-action)
+    no                   in ANIME_LANGS (Japanese)         FLAG (JP live-action / mislabel)
+    no                   absent / blank                    FLAG (missing-origin; never move)
+    (no genres at all)   -                                 SKIP + FLAG (missing metadata)
 
-AUTO re-home fires ONLY on the narrowest, highest-precision quadrant: a title
-with NO Animation genre AND non-Japanese origin - unambiguous foreign/Western
-live-action that has no business in an anime library. Everything softer is
-flagged, never moved. Missing metadata is never grounds to move.
+AUTO re-home fires ONLY on the narrowest, highest-precision case: NO Animation
+genre AND a PRESENT originalLanguage that is not Japanese - unambiguous
+foreign/Western live-action with no business in an anime library. A missing
+language is NOT evidence of non-anime (co-productions, English-dub-primary
+entries, metadata gaps) -> flagged, never moved. Missing genres never move.
 
 REVERSE (flag-only): a title in a MAIN library (Sonarr/Radarr) that HAS the
 Animation genre AND Japanese origin is likely a misplaced anime -> reported,
@@ -328,10 +330,16 @@ def classify_anime_lib(record, anime_langs) -> tuple:
         return ("leave", "anime")
     if has_anim and not is_anime_origin:
         return ("flag", "animation-non-jp")
-    if (not has_anim) and (not is_anime_origin):
-        return ("auto_out", "live-action-non-jp")
-    # not has_anim and is_anime_origin -> ambiguous (JP live-action or mislabel)
-    return ("flag", "jp-live-action-or-mislabel")
+    # No Animation genre. AUTO-move demands a POSITIVE non-anime signal: a
+    # PRESENT originalLanguage whose name is not an anime language. A missing/
+    # blank language is NOT evidence of non-anime (co-productions, English-dub-
+    # primary entries, or plain *arr metadata gaps) -> flag, never move. This is
+    # the council B4 false-positive fix (was: auto_out on mere absence of JP).
+    if not origin:
+        return ("flag", "missing-origin")
+    if is_anime_origin:
+        return ("flag", "jp-live-action-or-mislabel")
+    return ("auto_out", "live-action-non-jp")
 
 
 def classify_main_lib(record, anime_langs) -> tuple:
@@ -429,72 +437,179 @@ def _default_quality_profile(client):
     return None
 
 
+def _valid_id(idval) -> bool:
+    """A usable external id (tvdbId/tmdbId) is a POSITIVE integer. Reject the
+    falsy sentinel (None/0/''/'0') that real *arr installs assign to unmatched
+    titles - an id-match guard against it would adopt an unrelated record
+    (council B-IDVAL)."""
+    try:
+        return int(idval) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_contained(path, root) -> bool:
+    """True iff realpath(path) is strictly inside realpath(root). Guards
+    os.rename from being driven outside the target library by an arr-supplied
+    path (council B-SEC path traversal)."""
+    if not path or not root:
+        return False
+    try:
+        rp = os.path.realpath(str(path))
+        rr = os.path.realpath(str(root))
+        return rp != rr and os.path.commonpath([rp, rr]) == rr
+    except (ValueError, OSError):
+        return False
+
+
+def _verify_import(dst, kind, new_id, *, attempts=15, delay=2, sleeper=None) -> bool:
+    """Poll the target record until it reports imported files, or give up.
+    RescanSeries/RescanMovie are ASYNC; removing the source before the import
+    lands orphans the media (council B-IMPORT). Returns True iff files imported."""
+    if sleeper is None:
+        sleeper = time.sleep
+    path = ("/series/" if kind == "series" else "/movie/") + str(new_id)
+    for i in range(attempts):
+        code, rec = dst.get(path)
+        if code == 200 and isinstance(rec, dict):
+            if kind == "series":
+                stats = rec.get("statistics") or {}
+                if (stats.get("episodeFileCount") or 0) > 0:
+                    return True
+            elif rec.get("hasFile"):
+                return True
+        if i < attempts - 1:
+            sleeper(delay)
+    return False
+
+
+_LOCK_PATH = os.environ.get("QFLIX_ANIME_JANITOR_LOCK", "/tmp/qflix-anime-janitor.lock")
+
+
+def _acquire_run_lock():
+    """Exclusive non-blocking flock so two overlapping --execute runs can't both
+    add+rename the same title (council B5; mirrors reaper._acquire_run_lock).
+    Returns an open handle on success, True where fcntl is unavailable (test
+    host), or None if another run holds it."""
+    try:
+        import fcntl
+    except ImportError:
+        return True
+    try:
+        fh = open(_LOCK_PATH, "w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fh
+    except (OSError, IOError):
+        return None
+
+
 def rehome(pair, record, *, section_keys, plex_port, plex_token):
     """Re-home one title from its anime instance to the main instance (EXECUTE
-    path only - callers must guard on --execute). Returns (ok, note). Never
-    raises - failures return (False, reason)."""
+    path only). Returns (ok, note); never raises.
+
+    Ordering is FAIL-SAFE: the source record and its files survive until the
+    move is VERIFIED imported at the target, so a failure at any step leaves
+    recoverable state, never an orphan. A record WE created is rolled back on
+    abort; an ADOPTED (pre-existing) record is never destroyed (council)."""
     kind = pair["kind"]
     idkey = pair["idkey"]
     idval = record.get(idkey)
     title = record.get("title") or "?"
-    src = _arr_client(pair["from_slug"])
-    dst = _arr_client(pair["to_slug"])
 
+    if not _valid_id(idval):
+        return (False, "invalid id (" + str(idval) + ")")
     from_path = record.get("path")
     if not from_path:
         return (False, "no source path on record")
-    to_root = _resolve_root(dst) or pair["to_root"]
-    to_path = os.path.join(to_root, os.path.basename(from_path))
 
-    # 1. same-device guard (skip -> flag). Compare the two ROOT dirs' st_dev.
+    src = _arr_client(pair["from_slug"])
+    dst = _arr_client(pair["to_slug"])
+    to_root = _resolve_root(dst) or pair["to_root"]
     from_root = pair["from_root"]
+
+    # same-device guard (fast-path; os.rename also raises EXDEV as a backstop).
     try:
         if os.stat(from_root).st_dev != os.stat(to_root).st_dev:
             return (False, "crossdev: " + from_root + " vs " + to_root)
     except OSError as exc:
         return (False, "stat failed: " + str(exc))
 
-    if os.path.exists(to_path):
-        return (False, "target path already exists: " + to_path)
-
-    plan = ("rehome " + kind + " '" + title + "' " + idkey + "=" + str(idval)
-            + " : " + pair["from_slug"] + " -> " + pair["to_slug"]
-            + " | " + from_path + " -> " + to_path)
-
     _append_json_list(_ledger_path(), {
         "ts": _utc_now(), "step": "planned", "kind": kind, idkey: idval,
         "title": title, "from": pair["from_slug"], "to": pair["to_slug"],
-        "from_path": from_path, "to_path": to_path,
+        "from_path": from_path,
     })
-    log("EXECUTE " + plan)
 
-    # 2. add to target (import existing; no search)
-    new_id = _add_to_target(dst, pair, idval, record, to_root)
+    # 1. add to target (import-existing; no search). created=True iff WE created
+    #    the record. to_path is the arr-assigned folder (used only after a
+    #    containment check); fall back to basename under to_root if absent.
+    new_id, created, to_path = _add_to_target(dst, pair, idval, record, to_root)
     if new_id is None:
         return (False, "add-to-target failed")
+    if not to_path:
+        to_path = os.path.join(to_root, os.path.basename(from_path))
 
-    # 3. move files (same-device rename)
+    def _rollback():
+        # Only ever undo a record WE created; never delete an adopted real one.
+        if created:
+            ep = ("/series/" if kind == "series" else "/movie/") + str(new_id)
+            try:
+                dst.delete(ep, query="deleteFiles=false")
+            except Exception:
+                pass
+
+    # 2. containment: the destination MUST be inside to_root (council B-SEC).
+    if not _is_contained(to_path, to_root):
+        _rollback()
+        return (False, "path escape: " + str(to_path) + " not under " + str(to_root))
+
+    log("EXECUTE rehome " + kind + " '" + title + "' " + idkey + "=" + str(idval)
+        + " : " + pair["from_slug"] + " -> " + pair["to_slug"]
+        + " | " + from_path + " -> " + to_path)
+
+    # 3. reconcile destination: reclaim the arr's empty stub; refuse an occupant.
+    if os.path.exists(to_path):
+        try:
+            if os.path.isdir(to_path) and not os.listdir(to_path):
+                os.rmdir(to_path)
+            else:
+                _rollback()
+                return (False, "target path occupied: " + to_path)
+        except OSError as exc:
+            _rollback()
+            return (False, "target reclaim failed: " + str(exc))
+
+    # 4. move files (same-device rename; EXDEV/other -> abort + rollback).
     try:
         os.rename(from_path, to_path)
     except OSError as exc:
+        _rollback()
         return (False, "rename failed: " + str(exc))
 
-    # 4. rescan target so it imports the moved files
+    # 5. rescan, then VERIFY the import landed BEFORE touching the source.
     _rescan_target(dst, kind, new_id)
+    if not _verify_import(dst, kind, new_id):
+        # Files are at to_path but the target didn't import. Do NOT remove the
+        # source (that would orphan) - leave both, flag for manual review.
+        return (False, "import-unverified (files at " + to_path + ")")
 
-    # 5. remove from source WITHOUT deleting files
+    # 6. remove source WITHOUT deleting files; a failed delete is partial.
     if kind == "series":
-        src.delete("/series/" + str(record.get("id")),
-                   query="deleteFiles=false&addImportListExclusion=false")
+        code, _ = src.delete("/series/" + str(record.get("id")),
+                             query="deleteFiles=false&addImportListExclusion=false")
     else:
-        src.delete("/movie/" + str(record.get("id")),
-                   query="deleteFiles=false&addImportExclusion=false")
+        code, _ = src.delete("/movie/" + str(record.get("id")),
+                             query="deleteFiles=false&addImportExclusion=false")
+    if not (200 <= (code or 0) < 300):
+        return (False, "remove-source failed HTTP " + str(code)
+                + " (imported at target; source record now stale)")
 
-    # 6. refresh both Plex libraries
-    for plex_title in (pair["plex_from"], pair["plex_to"]):
-        key = section_keys.get(plex_title)
-        if key is not None:
-            plex_refresh(plex_port, plex_token, key)
+    # 7. refresh both Plex libraries (non-load-bearing).
+    if plex_token:
+        for plex_title in (pair["plex_from"], pair["plex_to"]):
+            key = section_keys.get(plex_title)
+            if key is not None:
+                plex_refresh(plex_port, plex_token, key)
 
     _append_json_list(_moved_path(), {
         "ts": _utc_now(), "kind": kind, idkey: idval, "title": title,
@@ -505,49 +620,62 @@ def rehome(pair, record, *, section_keys, plex_port, plex_token):
 
 
 def _add_to_target(dst, pair, idval, record, to_root):
-    """Add the title to the target arr for import-existing. Idempotent: if it
-    already exists (crash resume), returns the existing id."""
+    """Add the title to the target arr for import-existing. Returns
+    (id, created, path):
+      - created=True iff we POSTed a NEW record (safe to roll back on abort);
+        an ADOPTED pre-existing record has created=False and must NEVER be
+        rollback-deleted (council B-ROLLBACK).
+      - path is the target arr's assigned folder (council B2), consumed by the
+        caller only after a containment check.
+    Returns (None, False, None) on failure. The 'already present' branch adopts
+    ONLY a record whose id MATCHES the request - some *arr builds ignore the
+    query filter and return everything (council B8); a falsy id never matches
+    (council B-IDVAL)."""
     kind = pair["kind"]
+    idkey = pair["idkey"]
+    if not _valid_id(idval):
+        return (None, False, None)
     qp = _default_quality_profile(dst)
     if qp is None:
         warn("no quality profile on target " + pair["to_slug"])
-        return None
+        return (None, False, None)
+
+    coll = "/series" if kind == "series" else "/movie"
+    qkey = "tvdbId" if kind == "series" else "tmdbId"
+
+    code, existing = dst.get(coll, query=qkey + "=" + str(idval))
+    if code == 200 and isinstance(existing, list):
+        for r in existing:
+            rid = r.get(idkey)
+            if _valid_id(rid) and int(rid) == int(idval):
+                return (r.get("id"), False, r.get("path"))
+
     if kind == "series":
-        # already present?
-        code, existing = dst.get("/series", query="tvdbId=" + str(idval))
-        if code == 200 and isinstance(existing, list) and existing:
-            return existing[0].get("id")
         code, look = dst.get("/series/lookup", query="term=tvdb:" + str(idval))
-        if code != 200 or not isinstance(look, list) or not look:
-            return None
-        payload = look[0]
-        payload["qualityProfileId"] = qp
-        payload["rootFolderPath"] = to_root
-        payload["monitored"] = bool(record.get("monitored", True))
+        payload = look[0] if (code == 200 and isinstance(look, list) and look) else None
+    else:
+        code, look = dst.get("/movie/lookup/tmdb", query="tmdbId=" + str(idval))
+        payload = look if (code == 200 and isinstance(look, dict)) else None
+    if not isinstance(payload, dict):
+        return (None, False, None)
+    # The lookup must be the SAME title we asked for.
+    if not (_valid_id(payload.get(idkey)) and int(payload.get(idkey)) == int(idval)):
+        return (None, False, None)
+
+    payload["qualityProfileId"] = qp
+    payload["rootFolderPath"] = to_root
+    payload["monitored"] = bool(record.get("monitored", True))
+    if kind == "series":
         payload["seriesType"] = pair.get("series_type", "standard")
         payload["addOptions"] = {"searchForMissingEpisodes": False,
                                  "searchForCutoffUnmetEpisodes": False}
-        code, resp = dst.post("/series", body=payload)
-        if code in (200, 201) and isinstance(resp, dict):
-            return resp.get("id")
-        return None
     else:
-        code, existing = dst.get("/movie", query="tmdbId=" + str(idval))
-        if code == 200 and isinstance(existing, list) and existing:
-            return existing[0].get("id")
-        code, look = dst.get("/movie/lookup/tmdb", query="tmdbId=" + str(idval))
-        if code != 200 or not isinstance(look, dict):
-            return None
-        payload = look
-        payload["qualityProfileId"] = qp
-        payload["rootFolderPath"] = to_root
-        payload["monitored"] = bool(record.get("monitored", True))
         payload["minimumAvailability"] = record.get("minimumAvailability", "released")
         payload["addOptions"] = {"searchForMovie": False}
-        code, resp = dst.post("/movie", body=payload)
-        if code in (200, 201) and isinstance(resp, dict):
-            return resp.get("id")
-        return None
+    code, resp = dst.post(coll, body=payload)
+    if code in (200, 201) and isinstance(resp, dict):
+        return (resp.get("id"), True, resp.get("path"))
+    return (None, False, None)
 
 
 def _rescan_target(dst, kind, new_id):
@@ -589,7 +717,24 @@ def run(args) -> int:
         tokens = set()
 
     dry_run = not args.execute
-    plex_port, plex_token = _plex_creds()
+
+    # Run-lock only matters when armed: two overlapping --execute runs (timer +
+    # manual) could both add+rename the same title (council B5).
+    run_lock = None
+    if not dry_run:
+        run_lock = _acquire_run_lock()
+        if run_lock is None:
+            warn("another --execute run holds the lock; skipping")
+            _push_kuma("up", "skipped (locked)")
+            return EXIT_OK
+
+    # Plex is NOT load-bearing (design 10): classify + re-home never need it, so
+    # missing plex secrets must NOT be fatal (council B7) - refreshes just skip.
+    try:
+        plex_port, plex_token = _plex_creds()
+    except Exception:
+        plex_port, plex_token = None, None
+        warn("Plex creds unavailable - refreshes skipped (non-fatal)")
     section_keys = _plex_section_keys(plex_port, plex_token) if plex_token else {}
 
     auto_candidates = []   # (pair, record)
@@ -613,7 +758,13 @@ def run(args) -> int:
                 continue
             action, reason = classify_anime_lib(rec, anime_langs)
             if action == "auto_out":
-                auto_candidates.append((pair, rec))
+                # A falsy id can't be re-homed safely (id-match guard is
+                # meaningless at the sentinel) - flag it, never move (B-IDVAL).
+                if _valid_id(rec.get(pair["idkey"])):
+                    auto_candidates.append((pair, rec))
+                else:
+                    flags.append({"lib": pair["from_slug"], "title": rec.get("title"),
+                                  pair["idkey"]: rec.get(pair["idkey"]), "reason": "invalid-id"})
             elif action in ("flag", "skip"):
                 flags.append({"lib": pair["from_slug"], "title": rec.get("title"),
                               pair["idkey"]: rec.get(pair["idkey"]), "reason": reason})
@@ -634,7 +785,10 @@ def run(args) -> int:
                 flags.append({"lib": lib["slug"], "title": rec.get("title"),
                               lib["idkey"]: rec.get(lib["idkey"]), "reason": reason})
 
-    if fatal and not auto_candidates:
+    # An anime-instance enumeration failure is EXIT_FATAL per design 10 - never
+    # masked just because another instance yielded candidates (council B6).
+    if fatal:
+        _emit(args, auto_candidates, flags, aborted=True)
         _push_kuma("down", "fatal: could not enumerate an anime instance")
         return EXIT_FATAL
 
