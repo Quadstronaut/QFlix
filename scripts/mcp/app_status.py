@@ -41,7 +41,7 @@ sys.path.insert(0, str(HERE.parent / "maint"))  # for lib.secrets
 from lib.qbit_client import QbitClient  # noqa: E402
 from lib.secrets import read_secret     # noqa: E402
 
-VERSION = 1
+VERSION = 2
 ALL_SECTIONS = ("quota", "kuma", "streams", "top5", "downloads")
 
 # --- Config / paths (env-overridable, mirrors collect.py / qflix-collect.py) -
@@ -51,6 +51,8 @@ MAINT_STATE_FILE = Path(os.environ.get(
     "MANITOBA_MAINT_STATE", str(Path.home() / ".opt" / "maint" / "state.json")))
 QFLIX_COLLECT_DATA = Path(os.environ.get(
     "QFLIX_COLLECT_DATA", str(Path.home() / ".opt" / "qflix-collect")))
+ANIME_JANITOR_DIR = Path(os.environ.get(
+    "QFLIX_ANIME_JANITOR_DIR", str(Path.home() / ".opt" / "maint" / "anime-janitor")))
 
 # The shared Kuma instance also carries another operator's monitors. A red
 # "Quadstronix Node *" is that project's outage, not ours -- still worth a
@@ -516,6 +518,13 @@ def derive_alerts(doc: dict) -> list:
         if ts is not None and (now - ts) <= dt.timedelta(hours=MAINT_FAILED_WINDOW_HOURS):
             crit.append({"level": "crit", "text": "Auto-heal failed: {}".format(slug)})
 
+    # Any systemd --user unit in a FAILED state (a maint job that crashed on its
+    # last run - reaper, anime-janitor, a canary, an ingest, etc.). This is the
+    # broadest maint-failure signal and is Kuma-independent: it catches a job
+    # that broke before it could ever push a heartbeat.
+    for unit in (maint.get("failed_units") or []):
+        crit.append({"level": "crit", "text": "Maint unit failed: {}".format(unit)})
+
     downloads = doc.get("downloads") or {}
     stuck = downloads.get("stuck") or []
     if len(stuck) > 0:
@@ -779,16 +788,73 @@ def _collect_downloads() -> dict:
             "stuck": stuck, "recent_unsticks": recent}
 
 
-def _collect_maint() -> dict:
-    """Internal-only: ~/.opt/maint/state.json apps map, feeding the
-    auto-heal-failed alert rule. Never surfaced as its own doc section --
-    fails silently (empty apps map) so a missing/corrupt state file just
-    means "no auto-heal alerts", never a broken doc."""
+def _collect_failed_units() -> list:
+    """`systemctl --user --failed` -> list of failed unit names. A failed
+    oneshot/service stays 'failed' until its next run, so this is a direct,
+    Kuma-independent signal that a maintenance job crashed (reaper,
+    anime-janitor, a canary, an ingest, ...). Best-effort: any error -> []."""
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "--failed", "--no-legend", "--plain", "--no-pager"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    units = []
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if parts and (parts[0].endswith(".service") or parts[0].endswith(".timer")):
+            units.append(parts[0])
+    return units
+
+
+def anime_janitor_summary(moved, now: dt.datetime, days: int = 7) -> dict:
+    """Pure: recent anime-library-janitor activity from its moved.json list
+    (newest entry last). recent_moves = re-homes in the last `days`; last_move
+    = a compact record of the most recent one."""
+    cutoff = now - dt.timedelta(days=days)
+    recent = 0
+    for m in (moved or []):
+        ts = _parse_iso(m.get("ts"))
+        if ts is not None and ts >= cutoff:
+            recent += 1
+    last = None
+    if moved:
+        m = moved[-1]
+        last = {"title": m.get("title"), "from": m.get("from"),
+                "to": m.get("to"), "ts": m.get("ts")}
+    return {"recent_moves": recent, "last_move": last}
+
+
+def _collect_anime_janitor(now: dt.datetime) -> dict:
+    try:
+        moved = json.loads((ANIME_JANITOR_DIR / "moved.json").read_text(encoding="utf-8"))
+        if not isinstance(moved, list):
+            moved = []
+    except Exception:
+        moved = []
+    return anime_janitor_summary(moved, now)
+
+
+def _collect_maint(now: Optional[dt.datetime] = None) -> dict:
+    """Maintenance health: failed systemd --user units (any crashed maint job)
+    + recent anime-library-janitor activity. Also carries the internal
+    ~/.opt/maint/state.json `apps` map that feeds the auto-heal-failed alert
+    rule (stripped from the output section). Best-effort throughout: a dead
+    source degrades that field, never the doc."""
+    if now is None:
+        now = dt.datetime.now(dt.timezone.utc)
     try:
         state = json.loads(MAINT_STATE_FILE.read_text(encoding="utf-8"))
+        apps = state.get("apps") or {}
     except Exception:
-        return {"apps": {}}
-    return {"apps": state.get("apps") or {}}
+        apps = {}
+    return {
+        "ok": True,
+        "error": None,
+        "apps": apps,                       # internal only (auto-heal-failed rule)
+        "failed_units": _collect_failed_units(),
+        "anime_janitor": _collect_anime_janitor(now),
+    }
 
 
 # =============================================================================
@@ -817,7 +883,7 @@ def run(sections: Optional[list] = None) -> dict:
             jobs["top5"] = ex.submit(_collect_top5, now)
         if "downloads" in want:
             jobs["downloads"] = ex.submit(_collect_downloads)
-        jobs["maint"] = ex.submit(_collect_maint)  # always: feeds alerts only
+        jobs["maint"] = ex.submit(_collect_maint, now)  # always: alerts + output section
 
         results = {}
         for key, fut in jobs.items():
@@ -828,11 +894,22 @@ def run(sections: Optional[list] = None) -> dict:
 
     doc = {name: results.get(name, {"ok": False, "error": "not_requested"})
            for name in ALL_SECTIONS}
-    doc["maint"] = results.get("maint") or {"apps": {}}
+    doc["maint"] = results.get("maint") or {"apps": {}, "failed_units": [],
+                                            "anime_janitor": {}}
     doc["_now"] = now
 
     alerts = derive_alerts(doc)
     elapsed_ms = int(round((time.time() - started) * 1000))
+
+    # Public maint section: strip the internal `apps` map (that only feeds the
+    # auto-heal-failed rule) + keep the operator-facing failure signals.
+    mfull = doc["maint"]
+    maint_out = {
+        "ok": mfull.get("ok", True),
+        "error": mfull.get("error"),
+        "failed_units": mfull.get("failed_units") or [],
+        "anime_janitor": mfull.get("anime_janitor") or {},
+    }
 
     return {
         "meta": {
@@ -846,6 +923,7 @@ def run(sections: Optional[list] = None) -> dict:
         "streams": doc["streams"],
         "top5": doc["top5"],
         "downloads": doc["downloads"],
+        "maint": maint_out,
         "alerts": alerts,
     }
 

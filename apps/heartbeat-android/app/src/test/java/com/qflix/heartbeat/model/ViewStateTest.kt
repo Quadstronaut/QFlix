@@ -51,6 +51,30 @@ class ViewStateTest {
         assertEquals("0s ago", state.dataAge)
     }
 
+    // -- maint section (v2): failed units + anime-janitor activity --
+
+    @Test
+    fun `maint maps failed units and janitor label`() {
+        val json = """
+            {"maint": {"ok": true, "failed_units": ["manitoba-maint-reaper.service"],
+                       "anime_janitor": {"recent_moves": 2,
+                           "last_move": {"title": "Cowboy Bebop (2021)", "from": "sonarr2", "to": "sonarr"}}}}
+        """.trimIndent()
+        val doc = StatusDoc.parse(json)
+        val state = ViewState.from(doc, Instant.parse("2026-07-25T20:00:00Z"))
+        val maint = state.maint as SectionState.Ok
+        assertEquals(listOf("manitoba-maint-reaper.service"), maint.data.failedUnits)
+        assertTrue(maint.data.janitorLabel!!.contains("Cowboy Bebop (2021)"))
+        assertTrue(maint.data.janitorLabel!!.contains("2 re-home"))
+    }
+
+    @Test
+    fun `maint is Missing when section absent`() {
+        val doc = StatusDoc.parse("{}")
+        val state = ViewState.from(doc, Instant.parse("2026-07-25T20:00:00Z"))
+        assertTrue(state.maint is SectionState.Missing)
+    }
+
     // -- per-section render state: Ok / SectionError / Missing --
 
     @Test
