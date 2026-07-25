@@ -150,6 +150,10 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-ucc-detect.timer \
     scripts/maint/systemd/manitoba-maint-backup-prune.service \
     scripts/maint/systemd/manitoba-maint-backup-prune.timer \
+    scripts/maint/systemd/manitoba-maint-anime-janitor.service \
+    scripts/maint/systemd/manitoba-maint-anime-janitor.timer \
+    scripts/maint/qflix-anime-janitor.py \
+    scripts/maint/qflix-anime-janitor.exclude \
     scripts/maint/systemd/manitoba-maint-boot-listeners.service \
     scripts/maint/arr-audit.py \
     scripts/maint/arr-audit-run.sh \
@@ -374,6 +378,8 @@ for unit in \
     manitoba-maint-ucc-detect.timer \
     manitoba-maint-backup-prune.service \
     manitoba-maint-backup-prune.timer \
+    manitoba-maint-anime-janitor.service \
+    manitoba-maint-anime-janitor.timer \
     qflix-collect.service \
     qflix-collect.timer \
     manitoba-maint-boot-listeners.service; do
@@ -468,6 +474,11 @@ systemctl --user enable --now manitoba-maint-ucc-detect.timer
 # app-manager backups per app in ~/.apps/backup; deletes the rest. --now
 # activates the timer's schedule (does not run an immediate prune).
 systemctl --user enable --now manitoba-maint-backup-prune.timer
+# Anime-library janitor — daily 03:00 UTC. Ships DRY-RUN (ExecStart has no
+# --execute): classifies non-anime in the anime libs + flags the reverse,
+# mutates nothing. --now activates the schedule (no immediate run). Arming
+# --execute is an operator step gated on Phase-0 live validation + re-council.
+systemctl --user enable --now manitoba-maint-anime-janitor.timer
 # QFlix hourly collector — snapshot + stale-detect + autonomous unstick + Kuma
 # heartbeat. Migrated off the workstation 2026-07-09 (was Windows Task
 # \QFlix\Hourly Collect, now disabled). Feeds the "QFlix Collect (workstation)"

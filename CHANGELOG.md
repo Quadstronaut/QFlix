@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-07-25 — Anime-library janitor (ships dry-run) + REA completeness overhaul
+
+**Anime-library janitor** (`scripts/maint/qflix-anime-janitor.py`, spec
+`docs/superpowers/specs/2026-07-24-anime-library-janitor-design.md`) — a daily
+box-side corrector, reaper-parity. It classifies titles in the Anime / Anime
+Movies libraries (Sonarr2 / Radarr2) via a 4-quadrant genre + origin tier and,
+when armed, re-homes confirmed non-anime OUT to the main Sonarr/Radarr; it flags
+the reverse (real anime sitting in the main libraries). Ships **DRY-RUN** (timer
+`manitoba-maint-anime-janitor`, 03:00 UTC) — `--execute` stays disarmed pending
+Phase-0 live validation + a re-council of the execute path.
+
+- **Council (arch tier)** route_back'd the first cut *and* its four generated
+  fixes over a shared path-traversal blocker. Every confirmed finding is
+  implemented + covered by **30 unit tests**: a containment invariant under
+  `to_root` before any `os.rename`; import verification before the source
+  delete (no async-rescan orphan); created-vs-adopted rollback (never delete an
+  adopted record); valid-id guard (rejects the 0/None sentinel); empty-stub
+  reclaim; `fcntl` run-lock; `EXIT_FATAL` on an arr enumeration failure;
+  Plex-optional (Plex not load-bearing); id-match adoption guard.
+- **Phase-0 live validation** caught real misroutes immediately: the live-action
+  *Cowboy Bebop (2021)* in the Anime TV library (auto-move OUT), and *Chainsaw
+  Man* + three anime movies sitting in the main libraries (flagged).
+  `originalLanguage` confirmed populated on live records.
+
+**REA completeness overhaul** (`scripts/local-llm/qflix-rea.ps1`, gitignored) —
+a live-state audit found REA had **never actually worked**: it fed the models
+the base64-encoded blob instead of the decoded logs, so every model no-op'd.
+Fixed the decode; fixed two silently-dead sources (bazarr's `log/` dir + Plex's
+docker `~/.config/plex` path); added seven sources (SABnzbd, Tdarr, Kometa,
+config-sync, dash/newsletter/unpackerr, reaper daily log, and a VictoriaLogs
+aggregate) — **7 → 14 sources**; per-section cap 16384 → 3000 for output
+headroom; 90 REA unit tests green. Re-fired: **4 real findings** posted to
+Discord.
+
 ## 2026-07-20 — SAB stuck-handling FULL parity: detection, autonomous unstick, restart_repair breaker, usenet on every *arr
 
 Usenet is now a first-class citizen of the stuck-download pipeline
