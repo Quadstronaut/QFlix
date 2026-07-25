@@ -1002,14 +1002,14 @@ def _mock_all_sections(monkeypatch, *, streams_ok=True):
     monkeypatch.setattr(app_status, "_collect_maint", lambda: {"apps": {}})
 
 
-CONTRACT_TOP_KEYS = {"meta", "quota", "kuma", "streams", "top5", "downloads", "alerts"}
+CONTRACT_TOP_KEYS = {"meta", "quota", "kuma", "streams", "top5", "downloads", "maint", "alerts"}
 
 
 def test_run_full_doc_shape_matches_contract_keys(monkeypatch):
     _mock_all_sections(monkeypatch)
     doc = app_status.run()
     assert set(doc.keys()) == CONTRACT_TOP_KEYS
-    assert doc["meta"]["version"] == 1
+    assert doc["meta"]["version"] == 2
     assert "generated_at" in doc["meta"]
     assert "elapsed_ms" in doc["meta"]
     assert "host" in doc["meta"]
@@ -1108,3 +1108,31 @@ def test_recent_unsticks_two_sab_ids_do_not_collide():
     ]
     labels = {e["hash8"] for e in app_status.recent_unsticks_from_lines(lines)}
     assert len(labels) == 2
+
+
+# ---- maint health: failed units + anime-janitor activity (v2) ----------------
+
+def test_derive_alerts_flags_failed_units_as_crit():
+    doc = {
+        "maint": {"apps": {}, "failed_units": ["manitoba-maint-anime-janitor.service"]},
+        "_now": dt.datetime(2026, 7, 25, tzinfo=dt.timezone.utc),
+    }
+    texts = [a["text"] for a in app_status.derive_alerts(doc) if a["level"] == "crit"]
+    assert any("Maint unit failed: manitoba-maint-anime-janitor.service" in t for t in texts)
+
+
+def test_anime_janitor_summary_counts_recent_and_last():
+    now = dt.datetime(2026, 7, 25, 12, 0, 0, tzinfo=dt.timezone.utc)
+    moved = [
+        {"title": "Old", "from": "sonarr2", "to": "sonarr", "ts": "2026-07-01T00:00:00Z"},   # >7d
+        {"title": "Recent A", "from": "sonarr2", "to": "sonarr", "ts": "2026-07-24T00:00:00Z"},
+        {"title": "Cowboy Bebop (2021)", "from": "sonarr2", "to": "sonarr", "ts": "2026-07-25T10:00:00Z"},
+    ]
+    s = app_status.anime_janitor_summary(moved, now)
+    assert s["recent_moves"] == 2                        # only the last 7 days
+    assert s["last_move"]["title"] == "Cowboy Bebop (2021)"
+
+
+def test_anime_janitor_summary_empty():
+    now = dt.datetime(2026, 7, 25, tzinfo=dt.timezone.utc)
+    assert app_status.anime_janitor_summary([], now) == {"recent_moves": 0, "last_move": None}
