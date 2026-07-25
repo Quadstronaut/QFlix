@@ -24,6 +24,7 @@ data class StatusDoc(
     val streams: StreamsSection? = null,
     val top5: Top5Section? = null,
     val downloads: DownloadsSection? = null,
+    val maint: MaintSection? = null,
     val alerts: List<Alert> = emptyList(),
 ) {
     companion object {
@@ -169,4 +170,26 @@ data class UnstickEvent(
 data class Alert(
     val level: String? = null,
     val text: String? = null,
+)
+
+@Serializable
+data class MaintSection(
+    val ok: Boolean = false,
+    val error: String? = null,
+    @SerialName("failed_units") val failedUnits: List<String> = emptyList(),
+    @SerialName("anime_janitor") val animeJanitor: AnimeJanitor? = null,
+)
+
+@Serializable
+data class AnimeJanitor(
+    @SerialName("recent_moves") val recentMoves: Int? = null,
+    @SerialName("last_move") val lastMove: LastMove? = null,
+)
+
+@Serializable
+data class LastMove(
+    val title: String? = null,
+    val from: String? = null,
+    val to: String? = null,
+    val ts: String? = null,
 )

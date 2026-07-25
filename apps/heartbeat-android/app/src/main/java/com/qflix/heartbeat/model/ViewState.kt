@@ -31,6 +31,7 @@ data class DashboardState(
     val top5: SectionState<Top5View>,
     val downloads: SectionState<DownloadsView>,
     val alerts: List<AlertView>,
+    val maint: SectionState<MaintView> = SectionState.Missing,
 )
 
 data class QuotaView(
@@ -73,6 +74,11 @@ data class UnstickView(val ts: String, val hash8: String, val result: String)
 
 data class AlertView(val level: String, val text: String)
 
+data class MaintView(
+    val failedUnits: List<String>,
+    val janitorLabel: String?,
+)
+
 /** Pure StatusDoc -> DashboardState mapping. No I/O, no Android types - trivially unit-testable. */
 object ViewState {
 
@@ -84,7 +90,34 @@ object ViewState {
         top5 = mapTop5(doc.top5),
         downloads = mapDownloads(doc.downloads),
         alerts = orderAlerts(doc.alerts),
+        maint = mapMaint(doc.maint),
     )
+
+    // ---- maint: failed units + anime-janitor activity ----
+
+    private fun mapMaint(section: MaintSection?): SectionState<MaintView> = when {
+        section == null -> SectionState.Missing
+        !section.ok -> SectionState.SectionError(section.error ?: "maint unavailable")
+        else -> SectionState.Ok(
+            MaintView(
+                failedUnits = section.failedUnits,
+                janitorLabel = janitorLabel(section.animeJanitor),
+            ),
+        )
+    }
+
+    /** "1 re-home(s) in 7d - last: Cowboy Bebop (2021) (sonarr2->sonarr)", or null when idle. */
+    fun janitorLabel(aj: AnimeJanitor?): String? {
+        if (aj == null) return null
+        val n = aj.recentMoves ?: 0
+        val last = aj.lastMove
+        val base = "$n re-home(s) in 7d"
+        return if (last?.title != null) {
+            "$base - last: ${last.title} (${last.from}→${last.to})"
+        } else {
+            base
+        }
+    }
 
     // ---- quota: disk + bandwidth bars ----
 
