@@ -39,11 +39,11 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 
 | Surface | Count | State |
 |---|---:|---|
-| Apps in manifest (`manifest/apps.yaml`) | **35** | 19 UCC · 6 systemd · 9 cron · 1 library |
+| Apps in manifest (`manifest/apps.yaml`) | **35** | 18 UCC · 6 systemd · 10 cron · 1 library |
 | End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **15** | movie · anime · mobile-ux · qbit-stall · sab-stall · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link · quota · newsletter-digest |
 | Kuma push monitors (manitoba-owned) | **54** | 35 manifest apps + 15 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper" + 1 "QFlix Audio Disposition", all reporting continuously (54/54 declared; `kuma audit` shows no drift). Plus 1 external (1 workstation collector); external PUSH tokens self-heal across `bootstrap-kuma-monitors.py` runs. |
-| Cron + systemd timers | **14+** | window-aware (Mon 11–15 UTC drain) |
-| pytest suite (`tests/unit/`) | **650+** | pure-Python, no SSH |
+| Cron + systemd timers | **30** | window-aware (Mon 11–15 UTC drain) |
+| pytest suite (`tests/unit/`) | **1000+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
 
 > [!NOTE]
@@ -95,7 +95,7 @@ flowchart LR
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 52 push monitors)]:::kuma
+  kuma[(Uptime Kuma<br/>isolated netns · 54 push monitors)]:::kuma
   discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex
@@ -185,13 +185,13 @@ flowchart LR
   recovery -->|lifecycle.start ≤3 attempts| status
   recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>52 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>54 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
   C3[Canary plex-transcoder · 10min]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K
   C5[Canary qbit-stall · every 15min]:::probe -->|push| K
   C6[Canary vlogs-stall · every 15min]:::probe -->|push| K
-  C7[+ 7 more canaries<br/>kometa-libraries · stale-log-watchdog · kometa-deploy-drift<br/>prowlarr-indexer-health · hardlink-integrity<br/>tautulli-plex-link · quota]:::probe -->|push| K
+  C7[+ 9 more canaries<br/>sab-stall · newsletter-digest · kometa-libraries · stale-log-watchdog · kometa-deploy-drift<br/>prowlarr-indexer-health · hardlink-integrity<br/>tautulli-plex-link · quota]:::probe -->|push| K
   push1 --> K
   K -->|status page| public[/HTTPS /status/manitoba/]
 ```
@@ -390,7 +390,7 @@ apps/
   smoke-test.sh              # production smoke (~51 checks across the whole stack)
   smoke-test-plex.sh         # Plex-ecosystem-only smoke
   qflix-top.sh               # htop-style CPU/RAM viewer — your components vs other tenants
-  canaries/                  # 9 end-to-end pipeline checks (bash)
+  canaries/                  # 15 end-to-end pipeline checks (bash)
   configure/                 # phased install/configure scripts (numbered)
   install/                   # lower-level installer libs
   lib/                       # shared bash helpers
@@ -406,10 +406,10 @@ apps/
     arr-housekeeping.py      # daily Find-Missing + hourly stuck-queue unstick
     lib/                     # manifest · health · lifecycle · recovery
                              # kuma · pusher · window · notify · state · cli · qbit
-    systemd/                 # 8 services + 8 timers → ~/.config/systemd/user/
+    systemd/                 # 36 services + 30 timers → ~/.config/systemd/user/
 
 secrets/                     # gitignored — per-secret one-line files
-tests/                       # 860+ pytest tests (unit/) — pure-Python, no SSH
+tests/                       # 1000+ pytest tests (unit/) — pure-Python, no SSH
 ```
 
 ---
