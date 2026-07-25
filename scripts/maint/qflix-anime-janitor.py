@@ -558,6 +558,29 @@ def rehome(pair, record, *, section_keys, plex_port, plex_token):
             except Exception:
                 pass
 
+    # FILELESS record: no folder on disk (a monitored title with no downloaded
+    # files) - there is nothing to move. Migrate the RECORD only (remove from
+    # source, no rename/import) so a future download lands in the correct
+    # instance/library. This is the common "misrouted but not yet grabbed" case.
+    if not os.path.exists(from_path):
+        if kind == "series":
+            code, _ = src.delete("/series/" + str(record.get("id")),
+                                 query="deleteFiles=false&addImportListExclusion=false")
+        else:
+            code, _ = src.delete("/movie/" + str(record.get("id")),
+                                 query="deleteFiles=false&addImportExclusion=false")
+        if not (200 <= (code or 0) < 300):
+            _rollback()
+            return (False, "fileless: remove-source failed HTTP " + str(code))
+        _append_json_list(_moved_path(), {
+            "ts": _utc_now(), "kind": kind, idkey: idval, "title": title,
+            "from": pair["from_slug"], "to": pair["to_slug"], "new_id": new_id,
+            "note": "record-only (fileless source)",
+        })
+        log("MIGRATED (record-only, fileless) '" + title + "' "
+            + pair["from_slug"] + " -> " + pair["to_slug"])
+        return (True, "moved (record-only, fileless)")
+
     # 2. containment: the destination MUST be inside to_root (council B-SEC).
     if not _is_contained(to_path, to_root):
         _rollback()
