@@ -1,0 +1,9 @@
+# qflix-anime-janitor exclusions - titles NEVER auto-moved out of an anime library.
+# One token per line (case-insensitive); '#' starts a comment.
+#   tvdb:<id>      keep this series in the Anime library
+#   tmdb:<id>      keep this movie in the Anime Movies library
+#   <bare title>   match by title, e.g.  Cowboy Bebop
+#
+# Example:
+#   tvdb:81797         # a title whose metadata mislabels it; keep as anime
+#   Neon Genesis Evangelion
