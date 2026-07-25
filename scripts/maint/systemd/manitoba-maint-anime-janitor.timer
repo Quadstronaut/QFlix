@@ -1,0 +1,14 @@
+[Unit]
+Description=Manitoba maint - QFlix anime-library janitor (daily, 03:00 UTC off-peak)
+
+[Timer]
+# Daily at 03:00 UTC - offset well clear of the reaper (05:00) so the two
+# don't hammer Plex/arr at the same minute, and clear of the Monday window.
+OnCalendar=*-*-* 03:00:00 UTC
+RandomizedDelaySec=20min
+# Catch up if the box was asleep/off at the scheduled time.
+Persistent=true
+Unit=manitoba-maint-anime-janitor.service
+
+[Install]
+WantedBy=timers.target
