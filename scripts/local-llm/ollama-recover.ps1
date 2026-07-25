@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Ollama recovery — bring the workstation Ollama server back up on demand.
+    Ollama recovery - bring the workstation Ollama server back up on demand.
 
 .DESCRIPTION
     Manually-triggered companion to qflix-rea.ps1. REA posts a Discord WARN
@@ -18,11 +18,11 @@
     The store was relocated to B:\AIModels and pinned via the OLLAMA_MODELS
     env var, which removes the fragile dangling-symlink failure mode entirely.
 
-    No secrets — safe to track in git (unlike qflix-rea.ps1).
+    No secrets - safe to track in git (unlike qflix-rea.ps1).
 
 .PARAMETER Install
     Register the manually-triggered "\Archangel\Ollama Recovery" task (no
-    schedule trigger — runs only when started by hand or by the Documents
+    schedule trigger - runs only when started by hand or by the Documents
     launcher).
 
 .PARAMETER Uninstall
@@ -82,7 +82,7 @@ function Assert-ModelStore {
     # writes to the wrong place or (with a dangling symlink) fails to start.
     $drive = (Split-Path -Qualifier $Script:ModelsDir)          # e.g. "B:"
     if (-not (Test-Path "$drive\")) {
-        Write-Log "Store drive $drive is not mounted — cannot recover." 'ERROR'
+        Write-Log "Store drive $drive is not mounted - cannot recover." 'ERROR'
         throw "drive $drive missing"
     }
     if (-not (Test-Path -LiteralPath $Script:ModelsDir)) {
@@ -142,7 +142,7 @@ function Invoke-Recovery {
     Restart-Serve
     if (Wait-Ollama) {
         $n = Get-ModelCount
-        Write-Log "Ollama is UP on $Script:OllamaBase — $n model(s) present." 'OK'
+        Write-Log "Ollama is UP on $Script:OllamaBase - $n model(s) present." 'OK'
         if ($n -eq 0) {
             Write-Log "Store is EMPTY. Re-pull with: ollama pull qwen3-coder:30b; qwen3:8b; qwen2.5-coder:7b; bge-m3; qwen3-vl:8b" 'WARN'
         }
