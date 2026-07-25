@@ -407,3 +407,13 @@ def test_add_to_target_adopts_matching_existing(m):
             "series_type": "standard"}
     nid, created, path = m._add_to_target(dst, pair, 10, {"monitored": True}, "/home/q/media/TV")
     assert nid == 8 and created is False        # adopted the matching record (never rolled back)
+
+
+def test_rehome_fileless_migrates_record_only(m, monkeypatch, tmp_path):
+    import shutil
+    pair, record, src, dst, tv_show = _rehome_env(m, monkeypatch, tmp_path, verified=True)
+    shutil.rmtree(record["path"])               # make the source fileless (no folder on disk)
+    ok, note = m.rehome(pair, record, section_keys={}, plex_port=None, plex_token=None)
+    assert ok and "record-only" in note
+    assert src.deletes and src.deletes[0][0] == "/series/5"   # source record migrated out
+    assert not tv_show.exists()                               # nothing moved on disk
