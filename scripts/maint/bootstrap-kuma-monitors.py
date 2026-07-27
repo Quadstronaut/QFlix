@@ -383,6 +383,28 @@ def main() -> int:
             print(f"  [FAIL]{target:25s} {exc}")
             failed += 1
 
+    # Standalone self-pushing maint monitors (reaper + janitors). These aren't
+    # apps or canaries — each janitor self-pushes its own monitor per run — but
+    # bootstrap still CREATES any that are missing so a newly-shipped janitor's
+    # monitor + token exist without a manual Kuma click. Daily cadence, so a
+    # large heartbeat (Kuma must not flip DOWN between daily runs). Names +
+    # token keys come from lib.kuma — the single source of truth the drift audit
+    # also reads (so audit and bootstrap can never disagree).
+    from lib.kuma import STANDALONE_SELF_PUSH_MONITORS
+    _STANDALONE_HB_S = 90000  # 24h + buffer, matching the daily-0430 canary heartbeat
+    for mon_name in STANDALONE_SELF_PUSH_MONITORS:
+        if mon_name in existing:
+            print(f"  [skip]{mon_name:25s} (already exists)")
+            skipped += 1
+            continue
+        try:
+            _add_push_monitor(api, mon_name, interval=_STANDALONE_HB_S)
+            print(f"  [add]{mon_name:25s} PUSH (standalone janitor, hb={_STANDALONE_HB_S}s)")
+            created += 1
+        except Exception as exc:
+            print(f"  [FAIL]{mon_name:25s} {exc}")
+            failed += 1
+
     # Final token reconciliation — tokens populate server-side a beat after
     # add. Re-fetch and map kuma_monitor -> app.name -> pushToken.
     import time
@@ -418,6 +440,17 @@ def main() -> int:
             tokens[key] = m["pushToken"]
         else:
             missing.append((key, canary.kuma_monitor))
+
+    # Standalone self-pusher tokens — keyed by the janitor's KUMA_PUSH_KEY (the
+    # VALUE in STANDALONE_SELF_PUSH_MONITORS), which is what each janitor reads
+    # from kuma-push-tokens.json. Monitor NAME != token KEY for these (e.g.
+    # "QFlix Reaper" -> "qflix-reaper"), so they're captured separately.
+    for _mon_name, _token_key in STANDALONE_SELF_PUSH_MONITORS.items():
+        m = fresh.get(_mon_name)
+        if m and m.get("pushToken"):
+            tokens[_token_key] = m["pushToken"]
+        else:
+            missing.append((_token_key, _mon_name))
 
     # External PUSH monitors — entries in manifest.kuma_external_monitors
     # whose Kuma type is PUSH (e.g., "QFlix Collect (workstation)"). The

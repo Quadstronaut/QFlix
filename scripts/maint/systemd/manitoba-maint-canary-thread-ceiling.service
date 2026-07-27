@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - user thread/process ceiling vs ulimit -u (RLIMIT_NPROC headroom)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push thread-ceiling
+StandardOutput=journal
+StandardError=journal
