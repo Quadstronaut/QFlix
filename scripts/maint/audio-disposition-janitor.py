@@ -240,7 +240,14 @@ def active_file_paths() -> set:
     try:
         port = read_secret("tautulli.port")
         key = read_secret("tautulli.key")
-        url = ("http://127.0.0.1:" + port + "/api/v2?"
+        # Tautulli is served under the /tautulli urlbase (there is no
+        # tautulli.urlbase secret) — the bare /api/v2 path 404s, which silently
+        # disabled this active-session guard on EVERY run (audit 2026-07-27):
+        # active_file_paths() caught the 404 and returned an empty set, so files
+        # were remuxed even while a viewer was streaming them. Every other
+        # Tautulli caller in the repo (app_status/functional-audit/playback-audit
+        # /newsletter) already uses this /tautulli base.
+        url = ("http://127.0.0.1:" + port + "/tautulli/api/v2?"
                + urllib.parse.urlencode({"apikey": key, "cmd": "get_activity"}))
         payload = json.loads(urllib.request.urlopen(url, timeout=10).read())
         sessions = ((payload.get("response") or {}).get("data") or {}).get("sessions") or []

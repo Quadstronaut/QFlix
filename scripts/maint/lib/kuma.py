@@ -156,6 +156,24 @@ def monitors_status(
 # Audit — drift between manifest kuma_monitor names and live Kuma monitors
 # ---------------------------------------------------------------------------
 
+# Self-pushing maintenance oneshots (reaper + janitors): each self-pushes its
+# own Kuma monitor on every run rather than being pusher-probed (they're timer
+# oneshots, not long-lived apps), so they are NOT in manifest apps/canaries.
+# Register them here — this is the single source of truth consumed by BOTH the
+# drift audit below (so they count as expected, not orphan) AND
+# bootstrap-kuma-monitors.py (so a missing monitor is created + its token
+# captured). Keys are token keys under secrets/kuma-push-tokens.json, matching
+# each janitor's KUMA_PUSH_KEY. Adding a new self-pushing janitor? Add it here,
+# nowhere else — the 2026-07-27 audit found audio-disposition + anime-janitor
+# flagged as orphan drift precisely because they shipped without this line.
+STANDALONE_SELF_PUSH_MONITORS = {
+    "QFlix Reaper": "qflix-reaper",
+    "QFlix Audio Disposition": "qflix-audio-disposition",
+    "qflix-anime-janitor": "qflix-anime-janitor",
+    "QFlix Torrent Janitor": "qflix-torrent-janitor",
+}
+
+
 def audit_monitors(manifest, *, kuma_url: str | None = None,
                    api_key: str | None = None,
                    timeout_s: float = 5.0) -> dict:
@@ -187,11 +205,11 @@ def audit_monitors(manifest, *, kuma_url: str | None = None,
     # (step 0c). Fed each cycle by push_once() in the pusher service. Collapses
     # correlated mass-down storms into a single operator signal (sub-project C).
     manifest_monitors.add("QFlix Fleet")
-    # QFlix reaper self-heartbeat — the 60-day autodelete oneshot
-    # (scripts/maint/qflix-reaper.py) self-pushes "QFlix Reaper" each daily run
-    # rather than being pusher-probed (it's a oneshot, not a long-lived app).
-    # Part of the expected set so `kuma audit` doesn't flag it as orphan drift.
-    manifest_monitors.add("QFlix Reaper")
+    # Self-pushing maintenance oneshots (reaper + audio-disposition + anime-
+    # janitor + torrent-janitor). See STANDALONE_SELF_PUSH_MONITORS above — the
+    # single registration point that keeps `kuma audit` from flagging these
+    # self-pushers as orphan drift.
+    manifest_monitors.update(STANDALONE_SELF_PUSH_MONITORS)
 
     if kuma_url is None:
         kuma_url = _kuma_host()

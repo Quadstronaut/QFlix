@@ -107,6 +107,42 @@ def _mark_permanently_failed(app_name: str) -> None:
         _permanently_failed[app_name] = time.monotonic()
 
 
+# Events in state.json whose presence means the app's last recorded outcome was
+# a failure or a degraded half-state. reconcile_healthy() clears these once the
+# pusher's own probe confirms the app is actually up again.
+_FAILURE_EVENTS = frozenset({
+    "failed", "auto_downgrade_failed", "healthy_locally_kuma_down",
+})
+
+
+def reconcile_healthy(app_name: str) -> bool:
+    """Reconcile a stale failure record when the pusher observes an app HEALTHY.
+
+    An app can recover OUT OF BAND — the qBittorrent boot-bind-race healer, a
+    UCC auto-restart, or an operator `app-* restart` — without the maint
+    recovery loop ever running. In that case state.json's last event stays
+    `failed`/`down` forever (the 2026-07-08 qBittorrent record was still `failed`
+    at the 2026-07-27 audit, ~19 days stale). When the pusher's own probe says
+    the app is up, write a one-time reconciliation event so `last_recovery`
+    stops surfacing a phantom failure. Best-effort; never raises. Returns True
+    iff it wrote a reconciliation event."""
+    try:
+        data = state.read(_STATE_PATH)
+        entry = data.get("apps", {}).get(app_name)
+        if not entry:
+            return False
+        stale = (entry.get("final_health") == "down"
+                 or entry.get("event") in _FAILURE_EVENTS)
+        if not stale:
+            return False
+        state.record(_STATE_PATH, app_name,
+                     event="reconciled_healthy", attempts=0,
+                     final_health="ok", kuma_status="up")
+        return True
+    except Exception:
+        return False
+
+
 def _is_recoverable(app: App) -> bool:
     """Library apps have no service. Cron apps with a `unit:` field can be
     re-invoked via systemctl start --wait on their .service — see

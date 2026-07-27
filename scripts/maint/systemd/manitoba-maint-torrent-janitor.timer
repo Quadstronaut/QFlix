@@ -1,0 +1,15 @@
+[Unit]
+Description=Manitoba maint - QFlix torrent janitor (daily 05:30 UTC)
+
+[Timer]
+# Daily 05:30 UTC - offset clear of the reaper (05:00), audio-disposition
+# (04:30), and anime-janitor (03:00) so they don't hammer qBit/*arr/Plex at the
+# same minute, and clear of the Monday window.
+OnCalendar=*-*-* 05:30:00 UTC
+RandomizedDelaySec=15min
+# Catch up if the box was asleep/off at the scheduled time.
+Persistent=true
+Unit=manitoba-maint-torrent-janitor.service
+
+[Install]
+WantedBy=timers.target

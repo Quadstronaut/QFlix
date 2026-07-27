@@ -1,0 +1,16 @@
+[Unit]
+Description=Manitoba maint - QFlix torrent janitor (purge completed *arr-untracked seeding leftovers)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# DEFAULT = DRY-RUN. Ships SAFE: enumerates, classifies, writes the plan
+# manifest, deletes NOTHING. Arm real deletes with an on-box drop-in appending
+# --execute (mirrors the reaper's arming ritual) AFTER reviewing a dry-run plan.
+# Never arm blind. The abort-if-any-arr-queue-unreadable rail + max-items +
+# max-pct + audit manifest + hardlink-safe deletes remain in force when armed.
+ExecStart=/usr/bin/python3 %h/scripts/maint/qflix-torrent-janitor.py
+# Enumerating qBit + 4 *arr queues is quick, but give headroom for a busy box.
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
