@@ -460,5 +460,6 @@ class TestAuditIncludesCanaries:
 
         report = audit_monitors(m, kuma_url="http://x")
         assert "Canary Movie" in report["matched"]
-        # sonarr (1) + canary (1) + auto-injected "Manitoba Pusher" (1) + "QFlix Fleet" (1) + "QFlix Reaper" (1).
-        assert report["manifest_count"] == 5
+        # sonarr (1) + canary (1) + auto-injected "Manitoba Pusher" (1) + "QFlix Fleet" (1)
+        # + the 4 standalone self-pushers (Reaper, Audio Disposition, anime-janitor, Torrent Janitor).
+        assert report["manifest_count"] == 8

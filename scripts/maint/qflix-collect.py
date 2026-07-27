@@ -289,6 +289,77 @@ def _matches_stale_sab_rule(state: str | None, queue_paused: bool) -> str | None
     return None
 
 
+# --- qBit state classification (exhaustive) --------------------------------
+# We only reach the classifier for a torrent that made ZERO downloaded-delta
+# across the last 3 hourly snapshots, so the question is narrow: is this
+# zero-movement a genuine STALL to unstick, or an EXPECTED idle (seeding done,
+# a transient disk op, legitimately queued, or a metaDL handled by its own
+# rule below)?
+#
+# EXHAUSTIVE BY DESIGN (2026-07-27 audit). The previous whitelist silently
+# `continue`d on every unlisted state, so forcedDL (Happy Face S01E08 — stuck at
+# 65% / 0 seeds for ~10 weeks), error, and missingFiles were NEVER flagged for
+# unstick. Any state absent from BOTH sets is UNKNOWN: the caller logs it loudly
+# and skips, so a new/renamed libtorrent state surfaces in the journal instead
+# of vanishing. Keep these two sets covering the full qBit `state` enum.
+
+# Incomplete + zero-movement in one of these = a real download stall -> unstick.
+_QBIT_STALL_STATES = frozenset({
+    "stalledDL",              # announced, no seeds serving
+    "forcedDL",               # force-started but still not moving — force
+                              # bypasses the queue/ratio caps, not the lack of
+                              # seeds; a forcedDL at 0 B/s for 3h IS stuck
+    "pausedDL", "stoppedDL",  # paused/stopped mid-download (qBit 4.x vs 5.x name)
+})
+# Broken regardless of progress% -> unstick (a COMPLETE torrent can still error
+# or lose its files; the pre-2026-07-27 progress>=1 early-skip hid these).
+_QBIT_ERROR_STATES = frozenset({"error", "missingFiles"})
+# Zero-movement here is EXPECTED — never a stall the unstick path should touch:
+#   *UP / uploading / queuedUP : complete + seeding (genuinely-orphaned seeding
+#                                leftovers are the torrent-janitor's job, not
+#                                unstick's — unstick would blocklist a good grab)
+#   checking* / allocating / moving : transient disk ops mid-flight
+#   queuedDL                   : legitimately waiting behind active downloads
+#   metaDL                     : handled by the dedicated meta-stuck rule
+#                                (size 0 + added >=24h) later in this function
+_QBIT_IDLE_STATES = frozenset({
+    "uploading", "stalledUP", "forcedUP", "queuedUP", "pausedUP", "stoppedUP",
+    "checkingUP", "checkingDL", "checkingResumeData", "allocating", "moving",
+    "queuedDL", "metaDL",
+})
+
+# Sentinel rule returned for an unrecognized state (caller warns + skips).
+_QBIT_UNKNOWN_RULE = "__unknown-state__"
+
+
+def classify_qbit_stall(state, progress, dlspeed):
+    """Classify a zero-movement qBit torrent by its `state`.
+
+    Returns None to SKIP (idle / transient / complete-seeding / handled by the
+    metaDL rule), or a (rule:str, candidate_for_unstick:bool) pair. An
+    unrecognized state returns (_QBIT_UNKNOWN_RULE, False) so the caller can log
+    it loudly and skip. Pure + deterministic (no I/O) for unit tests — the
+    unknown-state warning is emitted by the caller, not here."""
+    if state in _QBIT_ERROR_STATES:
+        return (state, True)                 # rule == "error" | "missingFiles"
+    # Past here it's a download-progress question; a complete torrent is not a
+    # download stall (its seeding leftovers are the janitor's concern).
+    if (progress or 0) >= 1.0:
+        return None
+    if state in _QBIT_STALL_STATES:
+        return (state, True)
+    if state == "downloading":
+        # Actively "downloading" per qBit but zero net delta across 3 snapshots:
+        # dead-slow if it's crawling under the floor, else leave it (rare — qBit
+        # reports throughput yet the snapshots caught matching byte counts).
+        if (dlspeed or 0) < DEAD_SLOW_BYTES:
+            return ("dead-slow", True)
+        return None
+    if state in _QBIT_IDLE_STATES:
+        return None
+    return (_QBIT_UNKNOWN_RULE, False)
+
+
 def update_stale_state() -> list[str]:
     """Port of Update-StaleState, extended for SAB per spec C3. State is a
     plain dict persisted to stale-state.json. Returns keys (qBit hashes OR
@@ -353,17 +424,20 @@ def update_stale_state() -> list[str]:
         state = latest.get("state")
 
         if kind == "qbit":
-            if (latest.get("progress") or 0) >= 1.0:
+            verdict = classify_qbit_stall(
+                state, latest.get("progress"), latest.get("dlspeed"))
+            if verdict is None:
                 continue
-            if state == "stalledDL":
-                rule = "stalledDL"
-            elif state == "downloading" and (latest.get("dlspeed") or 0) < DEAD_SLOW_BYTES:
-                rule = "dead-slow"
-            elif state in ("stoppedDL", "pausedDL"):
-                rule = "stopped-incomplete"
-            else:
+            rule, candidate_for_unstick = verdict
+            if rule == _QBIT_UNKNOWN_RULE:
+                # A qBit state in NEITHER the stall nor idle set. Don't act (we
+                # don't know it's safe), but surface it loudly so a new/renamed
+                # libtorrent state gets classified instead of being silently
+                # dropped the way forcedDL was before 2026-07-27.
+                warn("unrecognized qBit state " + repr(state) + " for "
+                     + str(k)[:16] + " (progress=" + str(latest.get("progress"))
+                     + ") — not acting; add it to classify_qbit_stall's sets")
                 continue
-            candidate_for_unstick = True
         else:  # kind == "sab" -- same 3-snapshot zero-delta requirement (C3)
             rule = _matches_stale_sab_rule(state, sab_queue_paused)
             if rule is None:

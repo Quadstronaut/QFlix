@@ -1,0 +1,10 @@
+# qflix-torrent-janitor exclusions — qBit torrent hashes to protect from the
+# completed-untracked-seeding reap. One 40-char hash per line (case-insensitive).
+# '#' comments and blank lines ignored.
+#
+# Use this ONLY for a torrent you deliberately want to keep seeding forever
+# (e.g. helping a private-tracker ratio, or a rare release worth keeping alive).
+# Everything else that is complete + *arr-untracked + past its ratio/age is fair
+# game — "nothing forever" is the design.
+#
+# (currently no active rules — same as the reaper's exclude)

@@ -681,3 +681,16 @@ canaries:
     kuma_monitor: "Canary Tautulli-Plex Link"
     script: "scripts/canaries/tautulli-plex-link.sh"
     schedule: "every-15min"
+  thread-ceiling:
+    # Track the user's task count (processes + threads) against RLIMIT_NPROC
+    # (ulimit -u = 2000 on this shared box). A Go app defaulting GOMAXPROCS to
+    # the host's 128 cores spawns hundreds of threads and can hit
+    # pthread_create EAGAIN near the ceiling — the crash-loop class from the
+    # 2026-06-26 VictoriaLogs incident (memory seedbox-thread-cap-gomaxprocs).
+    # Invisible until an app dies, so watch the headroom: 70% WARN (annotate,
+    # stay up), 85% FAIL (down — a runaway producer needs a GOMAXPROCS cap or
+    # restart; an autonomous kill is unsafe). Baseline at the 2026-07-27 audit
+    # that added this canary was ~1026/2000 (51%).
+    kuma_monitor: "Canary Thread Ceiling"
+    script: "scripts/canaries/thread-ceiling.sh"
+    schedule: "every-15min"
