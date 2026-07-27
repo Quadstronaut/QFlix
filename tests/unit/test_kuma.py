@@ -579,6 +579,9 @@ _AUDIT_METRICS = (
     'monitor_status{monitor_id="4",monitor_name="Manitoba Pusher",monitor_type="push"} 1\n'
     'monitor_status{monitor_id="5",monitor_name="QFlix Fleet",monitor_type="push"} 1\n'
     'monitor_status{monitor_id="6",monitor_name="QFlix Reaper",monitor_type="push"} 1\n'
+    'monitor_status{monitor_id="7",monitor_name="QFlix Audio Disposition",monitor_type="push"} 1\n'
+    'monitor_status{monitor_id="8",monitor_name="qflix-anime-janitor",monitor_type="push"} 1\n'
+    'monitor_status{monitor_id="9",monitor_name="QFlix Torrent Janitor",monitor_type="push"} 1\n'
 )
 
 
@@ -592,11 +595,11 @@ class TestAuditMonitors:
         report = audit_monitors(m, kuma_url="http://x")
         # "Manitoba Pusher" and "QFlix Fleet" are always part of the expected
         # set (daemon monitors injected by audit_monitors). Never drift.
-        assert report["matched"] == ["Manitoba Pusher", "QFlix Fleet", "QFlix Reaper", "Radarr", "Sonarr", "Stranger"]
+        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Fleet", "QFlix Reaper", "QFlix Torrent Janitor", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
         assert report["manifest_only"] == []
         assert report["kuma_only"] == []
-        assert report["live_count"] == 6
-        assert report["manifest_count"] == 6
+        assert report["live_count"] == 9
+        assert report["manifest_count"] == 9
 
     def test_audit_manifest_only(self, monkeypatch):
         from lib.kuma import audit_monitors
@@ -633,8 +636,9 @@ class TestAuditMonitors:
         monkeypatch.setattr("lib.kuma._secret_read", lambda n: "fake-key")
         report = audit_monitors(m, kuma_url="http://x")
         # sonarr (1) + auto-injected "Manitoba Pusher" (1) + "QFlix Fleet" (1)
-        # + "QFlix Reaper" (1) — recyclarr skipped (kuma_monitor=None).
-        assert report["manifest_count"] == 4
+        # + the 4 standalone self-pushers (Reaper, Audio Disposition, anime-
+        # janitor, Torrent Janitor) — recyclarr skipped (kuma_monitor=None).
+        assert report["manifest_count"] == 7
         assert "Sonarr" in report["matched"]
         assert "Manitoba Pusher" in report["matched"]
         assert "QFlix Fleet" in report["matched"]

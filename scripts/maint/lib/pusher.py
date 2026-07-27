@@ -252,6 +252,12 @@ def push_once(
             # Always-on safety: clear any prior permanent-failure mark so the
             # next outage gets a fresh 3-attempt loop.
             recovery_mod.clear_permanent_failure(app.name)
+            # Reconcile a stale failure record left by an out-of-band recovery
+            # (qBit boot-bind-race healer, UCC auto-restart, operator restart)
+            # the maint recovery loop never saw, so state.json's last_recovery
+            # stops showing a phantom `failed`/`down`. reconcile_healthy is
+            # self-guarded (never raises) and a no-op when the record is clean.
+            recovery_mod.reconcile_healthy(app.name)
         else:
             n = _consecutive_failures.get(app.name, 0) + 1
             _consecutive_failures[app.name] = n

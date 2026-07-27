@@ -31,7 +31,14 @@ FAQ = os.path.join(REPO_ROOT, "scripts", "data", "qflix-faq.html")
 #   - "QFlix Reaper"              — the reaper's self-pushed daily monitor
 #   - "QFlix Audio Disposition"   — the audio-disposition janitor's self-pushed
 #                                   daily monitor (#102, added 2026-07-19)
-NON_MANIFEST_MONITORS = 4
+#   - "qflix-anime-janitor"       — the anime-janitor's self-pushed daily monitor
+#   - "QFlix Torrent Janitor"     — the torrent-janitor's self-pushed daily
+#                                   monitor (added 2026-07-27). The 2026-07-27
+#                                   audit registered every self-pusher in
+#                                   lib/kuma.py's STANDALONE_SELF_PUSH_MONITORS
+#                                   so `kuma audit` stops flagging anime-janitor
+#                                   + audio-disposition as orphan drift.
+NON_MANIFEST_MONITORS = 6
 
 
 def _read(path):
