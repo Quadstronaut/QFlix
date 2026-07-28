@@ -1,5 +1,64 @@
 # Changelog
 
+## 2026-07-28 — REA noise enforcement + the Plex source that was still dead
+
+The 2026-07-28 REA alert paged the operator with two findings. **Both were
+noise**, and one of them was a class the system prompt *already* forbade —
+`qwen3-coder:30b` reported it anyway at 1/3 consensus, which is enough to page.
+Evaluated against live logs, then fixed at the layer that can actually enforce it
+(`scripts/local-llm/qflix-rea.ps1`, gitignored — tests here carry the contract).
+
+**The two alerted findings, adjudicated:**
+
+- `plex:ssl-protocol-shutdown` — **benign**. `Caught exception trying to stream
+  file …: write: protocol is shutdown (SSL routines)` is a viewer closing or
+  seeking mid-transcode. The identical error fires on PhotoTranscoder *poster
+  JPEGs*, which have no transcode pipeline at all — proof it is the client
+  leaving, not a media fault.
+- `tdarr:undefined-includes-error` — **benign**, and already on the prompt's
+  never-report list. Unhandled express-route error from
+  `Tdarr_Server/srcug/api/servers.js`; server was at `NRestarts=0` with 20 days'
+  uptime while these fired. The prompt's *stated reason* was wrong, though (it
+  blamed the node's quiet-hours shutdown; the node was up) — corrected.
+
+**Fixes:**
+
+- **Deterministic noise suppression** (`$Script:NoiseFindingRules` +
+  `Test-IsNoiseFinding`). Prompt text is advisory and consensus has no floor, so
+  one over-eager model could page alone. Four narrow rules now drop known-benign
+  classes *before* consensus. Rules match exact phrasing, never a subsystem, and
+  every suppression is written to the audit log (`suppressed n=… rules=…`) —
+  never silent.
+- **`plex_errors` was still a dead source.** The 2026-07-25 audit fixed its
+  *path* but not its *pattern*: PMS logs `<ts> [<thread-id>] ERROR - <msg>`, so
+  the brackets hold the thread id and `grep '\[ERROR\]'` matched **zero** lines
+  in every Plex log (measured: 0 hits vs 2021/3351/1328/… for `" ERROR - "`).
+  The finding in this very alert reached REA through VictoriaLogs, not through
+  the Plex source. Pattern fixed, plus three high-volume benign classes dropped
+  so real faults fit the cap — **1204 fresh ERROR lines → 22**.
+- **Byte cap kept the wrong end.** `collect()` caps with `head -c`, which keeps
+  the *oldest* bytes; a rotated PMS log holds a week, so the section filled with
+  day-7 lines that the models' own 3-day staleness rule then discarded — a
+  section that looks full but is 100% ignorable. `plex_errors` now caps from the
+  tail; verified it ends on today's date instead of seven days back.
+- **`tdarr` source rebuilt.** The `.err` files are ~90% express stack-trace
+  continuations the prompt already ignores, so the section spent its whole budget
+  on noise. Continuations stripped and deduped; the *timestamped* app logs added
+  with ERROR lines date-collapsed and `uniq -c`'d, so a fault repeating hundreds
+  of times costs one line instead of drowning the cap.
+
+**What that last fix immediately exposed** — a real, ongoing fault REA had never
+once surfaced: `WebAssembly.instantiate(): Out of memory: wasm memory` →
+`Error running MediaInfo 3`, **858 hits across 2026-07-24…28**. This is the known
+`node-ultracc-wasm-fix` class (slot `ulimit -v` 10 GB vs WASM's ~8 GB trap-guard
+reservation) — `tdarr-server.service` carries no `NODE_OPTIONS`, and the process
+was confirmed running at `Max address space 10240000000`. The prompt now names
+WASM/MediaInfo OOM and quota/`EDQUOT` write failures as explicitly **reportable**,
+so this suppression layer can never grow over them.
+
+REA test suite **90 → 117 assertions**, all green; both rebuilt sources verified
+by running the regenerated heredoc live against the box.
+
 ## 2026-07-25 — Anime-library janitor (ships dry-run) + REA completeness overhaul
 
 **Anime-library janitor** (`scripts/maint/qflix-anime-janitor.py`, spec
