@@ -183,6 +183,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/newsletter-digest-stale.sh \
     scripts/canaries/thread-ceiling.sh \
     scripts/canaries/tdarr-scanner.sh \
+    scripts/canaries/tdarr-healthcheck.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
@@ -399,6 +400,8 @@ for unit in \
     manitoba-maint-canary-thread-ceiling.timer \
     manitoba-maint-canary-tdarr-scanner.service \
     manitoba-maint-canary-tdarr-scanner.timer \
+    manitoba-maint-canary-tdarr-healthcheck.service \
+    manitoba-maint-canary-tdarr-healthcheck.timer \
     qflix-collect.service \
     qflix-collect.timer \
     manitoba-maint-boot-listeners.service; do
@@ -512,6 +515,13 @@ systemctl --user enable --now manitoba-maint-canary-thread-ceiling.timer
 # permanent red on it. Mediainfo is unfixable here: the slot's ulimit -v 10GB
 # can't host Node's ~8GB wasm trap guard, and NODE_OPTIONS rejects the cure.
 systemctl --user enable --now manitoba-maint-canary-tdarr-scanner.timer
+# Tdarr health-check canary — hourly. Guards the health-check pipeline, which ran
+# 100% dead and silent for 68 days (2026-05-21..07-28): libraries defaulted to
+# handbrakescan and HandBrakeCLI does not exist on this rootless slot, so every
+# check spawn-failed ENOENT while transcodes (bundled ffmpeg-static) kept
+# succeeding and masked it. Reds on a missing engine binary immediately, and on a
+# pathological completed-check error ratio.
+systemctl --user enable --now manitoba-maint-canary-tdarr-healthcheck.timer
 # QFlix hourly collector — snapshot + stale-detect + autonomous unstick + Kuma
 # heartbeat. Migrated off the workstation 2026-07-09 (was Windows Task
 # \QFlix\Hourly Collect, now disabled). Feeds the "QFlix Collect (workstation)"
@@ -637,7 +647,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling tdarr-scanner; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
