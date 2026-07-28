@@ -1,0 +1,10 @@
+[Unit]
+Description=Manitoba canary - Tdarr scanner probes (hourly)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
