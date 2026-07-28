@@ -96,8 +96,16 @@ with open("/tmp/qfh-completed.json") as f:
     torrents = json.load(f)
 
 if not torrents:
-    sys.stderr.write("STAGE=qbit-no-completed msg=zero-completed-torrents-suspicious\n")
-    sys.exit(1)
+    # Zero completed torrents is NOT inherently suspicious anymore: the torrent
+    # janitor (qflix-torrent-janitor, 2026-07-27) reaps completed *arr-untracked
+    # seeds once they meet ratio/age, so an empty completed-pool is a legitimate
+    # transient steady state (e.g. right after a purge, before new grabs finish),
+    # not a nuked qBit data dir. A genuine qBit data-loss / mount-evaporation
+    # surfaces via the qBit app monitor + qbit-stall canary. Pass as INCONCLUSIVE
+    # rather than crying wolf — same philosophy as the min-sample branch below.
+    print("PASS: hardlink-integrity — inconclusive (0 completed torrents; "
+          "the torrent janitor may have reaped the seed pool)")
+    sys.exit(0)
 
 # Walk the four library roots and build two indexes:
 #   library  : (dev, inode) → [paths]   — hardlink twin lookup
