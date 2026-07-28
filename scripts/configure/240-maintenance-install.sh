@@ -154,6 +154,12 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-anime-janitor.timer \
     scripts/maint/qflix-anime-janitor.py \
     scripts/maint/qflix-anime-janitor.exclude \
+    scripts/maint/qflix-torrent-janitor.py \
+    scripts/maint/qflix-torrent-janitor.exclude \
+    scripts/maint/systemd/manitoba-maint-torrent-janitor.service \
+    scripts/maint/systemd/manitoba-maint-torrent-janitor.timer \
+    scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.service \
+    scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.timer \
     scripts/maint/systemd/manitoba-maint-boot-listeners.service \
     scripts/maint/arr-audit.py \
     scripts/maint/arr-audit-run.sh \
@@ -175,6 +181,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/quota.sh \
     scripts/canaries/tautulli-plex-link.sh \
     scripts/canaries/newsletter-digest-stale.sh \
+    scripts/canaries/thread-ceiling.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
@@ -203,6 +210,11 @@ chmod +x ~/scripts/maint/prune-app-backups.sh
 # the operator PC being on (was a customer-visible false red on the status page).
 cp -f "$STG"/scripts/maint/qflix-collect.py ~/scripts/maint/qflix-collect.py
 chmod +x ~/scripts/maint/qflix-collect.py
+# QFlix torrent janitor — purge completed *arr-untracked seeding leftovers
+# (added 2026-07-27). Ships DRY-RUN; armed via an on-box drop-in like the reaper.
+cp -f "$STG"/scripts/maint/qflix-torrent-janitor.py ~/scripts/maint/qflix-torrent-janitor.py
+chmod +x ~/scripts/maint/qflix-torrent-janitor.py
+cp -f "$STG"/scripts/maint/qflix-torrent-janitor.exclude ~/scripts/maint/qflix-torrent-janitor.exclude
 # Remove the retired Playwright clicker if a prior install put it in place.
 rm -f ~/scripts/maint/cp_upgrade_clicker.py
 # Remove maint/lib/__init__.py if a prior install put it in place. The 2026-
@@ -380,6 +392,10 @@ for unit in \
     manitoba-maint-backup-prune.timer \
     manitoba-maint-anime-janitor.service \
     manitoba-maint-anime-janitor.timer \
+    manitoba-maint-torrent-janitor.service \
+    manitoba-maint-torrent-janitor.timer \
+    manitoba-maint-canary-thread-ceiling.service \
+    manitoba-maint-canary-thread-ceiling.timer \
     qflix-collect.service \
     qflix-collect.timer \
     manitoba-maint-boot-listeners.service; do
@@ -479,6 +495,15 @@ systemctl --user enable --now manitoba-maint-backup-prune.timer
 # mutates nothing. --now activates the schedule (no immediate run). Arming
 # --execute is an operator step gated on Phase-0 live validation + re-council.
 systemctl --user enable --now manitoba-maint-anime-janitor.timer
+# Torrent janitor — daily 05:30 UTC. Purges completed *arr-untracked qBit
+# seeding leftovers ("nothing forever"). Ships DRY-RUN (ExecStart has no
+# --execute); arm via an on-box drop-in like the reaper. --now activates the
+# schedule (no immediate run).
+systemctl --user enable --now manitoba-maint-torrent-janitor.timer
+# Thread-ceiling canary — every 15 min. Tracks user task count vs ulimit -u
+# (RLIMIT_NPROC), 70% WARN / 85% FAIL. Guards the GOMAXPROCS thread-exhaustion
+# class (memory seedbox-thread-cap-gomaxprocs).
+systemctl --user enable --now manitoba-maint-canary-thread-ceiling.timer
 # QFlix hourly collector — snapshot + stale-detect + autonomous unstick + Kuma
 # heartbeat. Migrated off the workstation 2026-07-09 (was Windows Task
 # \QFlix\Hourly Collect, now disabled). Feeds the "QFlix Collect (workstation)"
@@ -604,7 +629,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
