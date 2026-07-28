@@ -399,6 +399,120 @@ Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
     }
 }
 
+# --- 2026-07-28: deterministic noise suppression + dead-source pattern fixes ---
+# Regression cover for the REA alert of 2026-07-28, which paged the operator with
+# two findings that were BOTH known-benign noise, one of which the system prompt
+# already forbade. Prompt text is advisory; these tests pin the enforcement.
+
+Test-Case 'Test-IsNoiseFinding suppresses the Plex client-abort stream write' {
+    # Verbatim shape of the 2026-07-28 false positive: the tell-tale phrasing sits
+    # in the excerpt, while the signature only says "ssl-protocol-shutdown".
+    $f = @{
+        signature = 'plex:ssl-protocol-shutdown'
+        summary   = 'Plex encountered SSL protocol shutdown while streaming media files'
+        excerpt   = 'Caught exception trying to stream file: /config/Transcode/Sessions/plex-transcode-liuzjq8/init-stream1.m4s: write: protocol is shutdown (SSL routines) [asio.ssl:167772367]'
+    }
+    Assert-Equal 'plex-client-abort-stream-write' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses on signature alone when excerpt is empty' {
+    $f = @{ signature = 'plex:ssl-protocol-shutdown'; summary = ''; excerpt = '' }
+    Assert-Equal 'plex-client-abort-stream-write' (Test-IsNoiseFinding $f) 'signature-only match'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses the tdarr undefined-includes TypeError' {
+    # The prompt already banned this class and qwen3-coder:30b reported it anyway.
+    $f = @{
+        signature = 'tdarr:undefined-includes-error'
+        summary   = 'Tdarr server experiencing unhandled undefined property errors during API requests'
+        excerpt   = "TypeError: Cannot read properties of undefined (reading 'includes') at /home28/quadstronaut/.apps/tdarr/Tdarr_Server/srcug/api/servers.js:1:3117"
+    }
+    Assert-Equal 'tdarr-express-undefined-includes' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses tdarr worker-not-a-function' {
+    $f = @{ signature = 'tdarr:worker-fn'; summary = 'worker2 handler is not a function'; excerpt = '' }
+    Assert-Equal 'tdarr-worker-not-a-function' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses Plex NAT-PMP/UPnP chatter' {
+    $f = @{ signature = 'plex:natpmp'; summary = 'NAT-PMP port mapping not supported by gateway'; excerpt = '' }
+    Assert-Equal 'plex-nat-pmp-upnp' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'Test-IsNoiseFinding does NOT suppress the real faults these rules sit next to' {
+    # The whole risk of a suppression layer is over-reach. These are the actionable
+    # errors found in the SAME log files as the suppressed classes on 2026-07-28 -
+    # if a rule ever starts eating one of them, this test goes red first.
+    $wasm = @{
+        signature = 'tdarr:wasm-oom'
+        summary   = 'Tdarr MediaInfo probe failing: WebAssembly out of memory'
+        excerpt   = '[ERROR] Tdarr_Server - [RangeError: WebAssembly.instantiate(): Out of memory: wasm memory]'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $wasm) 'WASM OOM survives'
+
+    $quota = @{
+        signature = 'tdarr:log-write-edquot'
+        summary   = 'log4js cannot write server log: disk quota exceeded'
+        excerpt   = "log4js.fileAppender - Writing to file Tdarr_Server_Log.txt, error happened [Error: Unknown system error -122, write]"
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $quota) 'EDQUOT write failure survives'
+
+    $plexReal = @{
+        signature = 'plex:db-corrupt'
+        summary   = 'Plex database is corrupt and the server will not start'
+        excerpt   = 'ERROR - Database corruption detected, sqlite3: database disk image is malformed'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $plexReal) 'genuine Plex fault survives'
+}
+
+Test-Case 'Test-IsNoiseFinding returns null for an empty finding' {
+    Assert-Equal $null (Test-IsNoiseFinding @{ signature=''; summary=''; excerpt='' }) 'empty -> null'
+    Assert-Equal $null (Test-IsNoiseFinding $null) 'null -> null'
+}
+
+Test-Case 'every noise rule has an id and a compilable regex' {
+    Assert-True ($Script:NoiseFindingRules.Count -ge 4) 'at least the four known classes'
+    foreach ($r in $Script:NoiseFindingRules) {
+        Assert-True ([bool]$r.id) "rule has an id"
+        # Throws if the pattern is malformed - a broken rule must fail loudly here,
+        # not silently match nothing in production.
+        [void][regex]::new($r.rx)
+    }
+}
+
+Test-Case 'plex_errors source matches the real PMS log level format' {
+    # PMS logs "<ts> [<thread-id>] ERROR - <msg>": the brackets hold the THREAD ID,
+    # so the old grep '\[ERROR\]' matched zero lines and the source was dead.
+    $h = Get-RemoteHeredoc
+    Assert-True  ($h -match 'grep -h " ERROR - "') 'greps the dash-delimited level'
+    Assert-False ($h -match 'grep -h "\\\[ERROR\\\]" "\$f"') 'no bracketed-level grep on PMS logs'
+}
+
+Test-Case 'plex_errors source drops the benign high-volume classes' {
+    # Measured live 2026-07-28: 1204 fresh ERROR lines -> 22 after this filter, so
+    # real Plex faults now fit inside SECTION_CAP instead of being crowded out.
+    $h = Get-RemoteHeredoc
+    Assert-True ($h -match 'Caught exception trying to stream file\.\*protocol is shutdown') 'client-abort writes filtered'
+    Assert-True ($h -match 'CreditsDetectionManager') 'credits-detection chatter filtered'
+    Assert-True ($h -match 'Unknown metadata type: folder') 'folder-type chatter filtered'
+}
+
+Test-Case 'tdarr source strips stack-trace continuations and reads the timestamped logs' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h -match 'grep -vE "\^\[\[:space:\]\]\+at "') 'express stack continuations stripped'
+    Assert-True ($h -match 'Tdarr_Server_Log\.txt')            'timestamped server log included'
+    Assert-True ($h -match 'Tdarr_Node_Log\.txt')              'timestamped node log included'
+    Assert-True ($h -match 'uniq -c')                          'repeated faults collapsed, not truncated away'
+}
+
+Test-Case 'system prompt protects the real faults it sits beside' {
+    $sp = Get-SystemPrompt
+    Assert-True ($sp -match 'Out of memory: wasm memory') 'WASM OOM explicitly reportable'
+    Assert-True ($sp -match 'EDQUOT')                     'quota failures explicitly reportable'
+    Assert-True ($sp -match 'protocol is shutdown')       'Plex client-abort listed as noise'
+}
+
 # Summary
 Write-Host "`n========================================" -F White
 Write-Host "  $Script:Pass passed, $Script:Fail failed" -F $(if($Script:Fail){'Red'}else{'Green'})
