@@ -720,3 +720,27 @@ canaries:
     kuma_monitor: "Canary Tdarr Scanner"
     script: "scripts/canaries/tdarr-scanner.sh"
     schedule: "hourly"
+  tdarr-healthcheck:
+    # Tdarr's health-check pipeline was 100% dead from 2026-05-21 to 2026-07-28:
+    # 2,866 failures over 54 days, 0 successes ever, healthCheckScore 0.000 —
+    # and nothing alerted for 68 days. The libraries carried Tdarr's stock
+    # handbrakescan=true, so every check spawned `HandBrakeCLI --scan`, and
+    # HandBrakeCLI does not exist on this rootless slot (spawn ENOENT).
+    #
+    # It hid because the failure is ORTHOGONAL to transcoding: transcodes use the
+    # bundled ffmpeg-static and were succeeding throughout (1,168 successes over
+    # the same window), so units, dashboard, Kuma and the scanner canary all read
+    # healthy. Nothing watched the one number that was wrong. Fixed by switching
+    # every library to ffmpegscan; this canary is the durable half.
+    #
+    # Two predicates so a ratio (lagging) is not the only guard:
+    #   engine sanity — resolve the configured engine's binary per library;
+    #     a missing binary or no engine at all FAILs on the first tick, before
+    #     a single file is mis-verdicted. This is the exact 2026-05-21 bug.
+    #   error ratio  — of COMPLETED checks, 20% WARN / 50% FAIL, judged only
+    #     after 20 completed so a fresh library can't trip on noise.
+    # Stays UP (indeterminate, not a fault) when tdarr-server is down — the
+    # tdarr-scanner canary owns that red and two reds for one cause is noise.
+    kuma_monitor: "Canary Tdarr Healthcheck"
+    script: "scripts/canaries/tdarr-healthcheck.sh"
+    schedule: "hourly"

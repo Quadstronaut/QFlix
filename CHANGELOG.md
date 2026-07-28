@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026-07-28 — Tdarr health checks: 100% dead and silent for 68 days
+
+A full Tdarr audit. Transcoding was healthy; the **health-check pipeline had
+never once succeeded** since the libraries were built on 2026-05-21 — **2,866
+failures across 54 days, 0 successes, `healthCheckScore` 0.000**, 242 files
+parked at `HealthCheck=Error`, and not one alert in 68 days.
+
+**Root cause.** The libraries carried Tdarr's stock `handbrakescan=true`, so
+every check spawned `HandBrakeCLI -i <file> --scan`. HandBrakeCLI does not exist
+on this rootless Ultra.cc slot, and never did:
+
+```
+Subworker:a.Error executing binary: HandBrakeCLI Error: spawn HandBrakeCLI ENOENT
+```
+
+`add_library()` copies Tdarr's own `libraryDefaults` dict wholesale, so all three
+libraries inherited a HandBrake health check onto a box with no HandBrake.
+
+**Why it stayed invisible for 68 days** — the part worth internalizing. The
+failure is *orthogonal* to transcoding: transcodes use the bundled
+`ffmpeg-static` and were succeeding the entire time (1,168 successes over the
+same window). So every surface an operator would glance at read healthy — unit
+states, the dashboard, the Kuma app monitors, even the `tdarr-scanner` canary
+(which watches the startup FFprobe/Exiftool probes, and those genuinely were
+fine). Nothing in the fleet was watching the one number that was wrong. A
+subsystem can be 100% dead while every adjacent signal is green.
+
+**Fixes:**
+
+- **Engine switched to ffmpeg** on all three libraries (`ffmpegscan=true`).
+  Verified against Tdarr's own `worker1.js`: `handbrakescan` / `ffmpegscan` are
+  the two mutually exclusive health-check engine branches. `ffmpeg-static` is
+  present, already carries every transcode, and full-decodes at ~20x realtime
+  here (~2.5 min for a 50-min episode), bounded by the 2 health-check workers.
+  HandBrake was never an option — no root, no package, and Tdarr would wipe any
+  hand-patched binary on upgrade.
+- **242 stale `Error` verdicts re-queued.** A verdict written by an engine that
+  could not spawn is evidence about the missing binary, not about the file, and
+  Tdarr never retries on its own. All 459 files now queued; backfill clears in
+  about a day of node uptime. First successes confirmed live
+  (`verdict: healthcheckSuccess`) — 0% error rate.
+- **Codified in `50b-tdarr-config.py`** so it cannot regress: `HEALTHCHECK_ENGINE`
+  + `ensure_healthcheck_engine()` (idempotent), plus an overlay in `add_library()`
+  so a freshly created library never inherits the HandBrake default again.
+  Re-queue fires *only* when the engine actually changes — a genuine
+  ffmpeg-found error must stick and surface as a real corrupt file.
+- **New `tdarr-healthcheck` canary** (hourly, `Canary Tdarr Healthcheck`) — the
+  durable half. Two predicates, because a ratio alone lags:
+  **engine sanity** resolves each library's configured engine binary and FAILs on
+  tick one if it's missing (the exact 2026-05-21 bug, caught before a single file
+  is mis-verdicted); **error ratio** of *completed* checks at 20% WARN / 50% FAIL,
+  judged only after 20 completed so a fresh library can't trip on noise. Stays UP
+  when tdarr-server is down — `tdarr-scanner` owns that red, and two reds for one
+  cause is the correlated noise this repo keeps removing. All six branches
+  verified against fixtures, including a reproduction of the original bug.
+- **CCExtractor was misdiagnosed in our own canary.** `tdarr-scanner.sh` reported
+  it as `ccextractor-wasm-oom`; it is not WASM at all —
+  `libtesseract.so.4: cannot open shared object file`, a dynamic-link failure
+  needing root we don't have. Corrected in the message and the header. Mediainfo
+  remains genuine WASM OOM and genuinely unfixable (unchanged).
+
+Suite **1089 passed, 5 skipped** (was 1086 + 3 doc-count failures from the
+17→18 canary bump; README / inventory / FAQ all updated, `kuma audit` no drift
+at manifest 59 = matched 59).
+
 ## 2026-07-28 — REA noise enforcement + the Plex source that was still dead
 
 The 2026-07-28 REA alert paged the operator with two findings. **Both were
