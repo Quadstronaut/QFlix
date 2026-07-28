@@ -246,6 +246,62 @@ def _ensure_autoheal_webhook(api) -> None:
     print(f"  [add]{_AUTOHEAL_WEBHOOK_NAME} → {url} (id={res.get('id')})")
 
 
+def _ensure_notifications_attached(api) -> int:
+    """Attach the standard notification set to every active monitor missing it.
+
+    WHY this exists (2026-07-28): `_ensure_autoheal_webhook` attaches itself with
+    `applyExisting=True`, but ONLY on the run that first creates it. Every later
+    run hits the `[skip]` branch, so every monitor created AFTER that day was born
+    with zero notifications — no Discord alert AND no auto-heal webhook, which is
+    the exact thing that webhook's own docstring warns about ("Kuma down events
+    never reach manitoba-maint-webhook, so lib.recovery never fires").
+
+    By 2026-07-28 that was 32 of 60 active monitors — including 15 of 18 canaries,
+    the `QFlix Fleet` storm aggregate, the `Manitoba Pusher` self-heartbeat, and
+    all four self-pushing janitors. They could go red in total silence. Found while
+    verifying that the new tdarr-healthcheck canary could actually reach the
+    operator; it could not.
+
+    Reconciles on EVERY run instead of only at creation, so a monitor added later
+    can never again be born mute. Idempotent: monitors already carrying the full
+    set are skipped."""
+    try:
+        notifications = api.get_notifications()
+    except Exception as exc:
+        print(f"  [warn] could not list notifications: {exc}")
+        return 0
+    # The standard set is every default channel (Discord + auto-heal webhook).
+    # Derived, not hardcoded, so adding a default channel in the UI propagates.
+    default_ids = sorted(n["id"] for n in notifications if n.get("isDefault"))
+    if not default_ids:
+        default_ids = sorted(
+            n["id"] for n in notifications
+            if n.get("name") in ("Mission Control - QFlix", _AUTOHEAL_WEBHOOK_NAME)
+        )
+    if not default_ids:
+        print("  [warn] no default notification channels found — nothing to attach")
+        return 0
+
+    fixed = 0
+    for m in api.get_monitors():
+        if not m.get("active", True):
+            continue
+        current = set(m.get("notificationIDList") or {})
+        current = {int(k) for k, v in (m.get("notificationIDList") or {}).items() if v} \
+            if isinstance(m.get("notificationIDList"), dict) else set(current)
+        missing = [i for i in default_ids if i not in current]
+        if not missing:
+            continue
+        merged = {str(i): True for i in sorted(set(default_ids) | current)}
+        try:
+            api.edit_monitor(m["id"], notificationIDList=merged)
+            print(f"  [notify]{m['name']:32s} + channels {missing} (was {sorted(current) or 'NONE'})")
+            fixed += 1
+        except Exception as exc:
+            print(f"  [notify-fail]{m['name']:32s} {exc}")
+    return fixed
+
+
 def _delete_all_http_monitors(api):
     """Delete the 22 HTTP monitors I created in the previous pass.
     Idempotent — skips anything that's not HTTP-typed or that doesn't
@@ -510,6 +566,14 @@ def main() -> int:
         pass
     print(f"\nwrote {len(tokens)} token(s) to secrets/kuma-push-tokens.json")
     print(f"created: {created}  skipped(existed): {skipped}  failed: {failed}")
+
+    # Runs LAST, after every monitor exists, so anything created above is also
+    # reconciled. A monitor with no notifications can go red in total silence —
+    # see _ensure_notifications_attached for the 32/60 incident this closes.
+    print("\n--- final: reconcile notification channels on every monitor ---")
+    attached = _ensure_notifications_attached(api)
+    print(f"notification sets repaired: {attached}")
+
     api.disconnect()
     return 0 if failed == 0 else 1
 
