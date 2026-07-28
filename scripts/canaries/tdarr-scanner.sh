@@ -27,6 +27,15 @@
 #   - /usr/bin/mediainfo (v24.12) exists natively, but Tdarr's scanner is
 #     obfuscated (`srcug/`) with no path/toggle knob, and any patch would be
 #     wiped by the next Tdarr update.
+#
+# CCExtractor is a SEPARATE, unrelated failure — do not conflate the two (this
+# canary's own message did until 2026-07-28). It is not WASM/OOM at all:
+#   Scanner test 4: CCExtractor not working:"…/ccextractor: error while loading
+#   shared libraries: libtesseract.so.4: cannot open shared object file"
+# i.e. Tdarr's bundled ccextractor is dynamically linked against a libtesseract
+# the host doesn't ship, and installing one needs root we don't have on a shared
+# slot. Also supplementary (closed-caption extraction only), so it stays in the
+# accepted-down baseline rather than parking a permanent red.
 # Impact is bounded: FFprobe and Exiftool carry the pipeline and scans complete
 # normally. Mediainfo is a supplementary probe. So this canary must NOT sit red
 # forever over a known, accepted, unfixable condition — that is the exact noise
@@ -123,7 +132,7 @@ if [ -n \"\$RECOVERED\" ]; then
   exit 0
 fi
 
-echo \"PASS-WARN: ffprobe=\${FFPROBE}-exiftool=\${EXIFTOOL}-known-down=mediainfo(wasm-oom-unfixable)+ccextractor-wasm-oom-lines=\${OOM}\"
+echo \"PASS-WARN: ffprobe=\${FFPROBE}-exiftool=\${EXIFTOOL}-known-down=mediainfo(wasm-oom-unfixable)+ccextractor(missing-libtesseract.so.4)-wasm-oom-lines=\${OOM}\"
 exit 0
 ") || RC=$?
 RC=${RC:-0}
