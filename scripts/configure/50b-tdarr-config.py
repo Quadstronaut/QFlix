@@ -91,6 +91,32 @@ LIBRARY_DEFAULTS = {
     "scanFoundJobs": True,
 }
 
+# Health-check engine. Tdarr picks the health-check CLI from a mutually
+# exclusive pair on the library record (Tdarr_Node/srcug/workers/worker1.js):
+#   handbrakescan -> HandBrakeCLI -i <file> -o <cache> --scan
+#   ffmpegscan    -> ffmpeg -i <file> -f null -max_muxing_queue_size 9999
+# Tdarr's own libraryDefaults ships handbrakescan=true, and add_library() copies
+# that dict wholesale — but HandBrakeCLI does not exist on this rootless Ultra.cc
+# slot and cannot be installed (no root, no package, and Tdarr would wipe any
+# hand-patched binary on upgrade). So every health check spawn-failed
+# `Error: spawn HandBrakeCLI ENOENT` and the file was recorded HealthCheck=Error.
+#
+# That ran undetected from 2026-05-21 to 2026-07-28: 2,866 failures across 54
+# days with a literal 0% success rate (healthCheckScore 0.000) and no alert,
+# because the pipeline it blocks is orthogonal to transcoding — transcodes use
+# the bundled ffmpeg-static and were succeeding the whole time, so every
+# surface an operator would glance at looked healthy.
+#
+# ffmpeg-static is present, already carries every transcode, and full-decodes at
+# ~20x realtime here (~2.5 min for a 50-min episode), bounded by the 2 healthcheck
+# workers + the 18:00-23:00 UTC quiet-hours pause. Guarded by the
+# tdarr-healthcheck canary, which reds if the error ratio ever goes pathological
+# again. Do NOT "fix" this by reintroducing handbrakescan.
+HEALTHCHECK_ENGINE = {
+    "handbrakescan": False,
+    "ffmpegscan": True,
+}
+
 
 def _short_id() -> str:
     """Tdarr's _id format is a 9-char alphanumeric. Match it for visual
@@ -177,6 +203,9 @@ def add_library(spec: dict) -> bool:
     record["scanOnStart"] = True
     record["folderWatching"] = True
     record["useFsEvents"] = False
+    # Overlay the health-check engine at birth, so a newly created library never
+    # inherits Tdarr's handbrakescan default onto a box with no HandBrakeCLI.
+    record.update(HEALTHCHECK_ENGINE)
     code, resp = _cruddb("LibrarySettingsJSONDB", "insert", obj=record)
     ok = code == 200
     if ok:
@@ -207,6 +236,61 @@ def ensure_library_defaults() -> int:
         os.replace(path + ".tmp", path)
         print(f"[update] library '{doc.get('name')}' "
               f"scanOnStart=True folderWatcher=True")
+        changed += 1
+    return changed
+
+
+def requeue_errored_healthchecks() -> int:
+    """Reset HealthCheck=Error file records back to Queued so they get re-checked.
+
+    Only called when the engine actually changed — a stale Error verdict recorded
+    under the broken HandBrake engine is not evidence about the file, it's
+    evidence about the missing binary, and Tdarr will never retry it on its own.
+    Idempotent by construction: after a successful pass there are no Error rows
+    left to reset, and a genuine Error found by the working ffmpeg engine is a
+    real corrupt-file signal we must NOT keep clearing."""
+    db_dir = f"{HOME}/.apps/tdarr/server/Tdarr/DB2/FileJSONDB"
+    requeued = 0
+    for path in glob.glob(f"{db_dir}/*.json"):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if doc.get("HealthCheck") != "Error":
+            continue
+        doc["HealthCheck"] = "Queued"
+        doc["lastHealthCheckDate"] = 0
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        os.replace(path + ".tmp", path)
+        requeued += 1
+    return requeued
+
+
+def ensure_healthcheck_engine() -> int:
+    """Force every real library onto the ffmpeg health-check engine.
+
+    See HEALTHCHECK_ENGINE above for why HandBrake is not an option on this box.
+    Direct file write, like the other library patchers — Tdarr re-reads the JSON
+    DB on restart. Stop the server before running if you want to be certain the
+    in-memory copy can't race the write."""
+    db_dir = f"{HOME}/.apps/tdarr/server/Tdarr/DB2/LibrarySettingsJSONDB"
+    changed = 0
+    for path in glob.glob(f"{db_dir}/*.json"):
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+        if doc.get("name") not in REAL_LIBRARY_NAMES:
+            continue
+        if all(doc.get(k) == v for k, v in HEALTHCHECK_ENGINE.items()):
+            continue
+        was = {k: doc.get(k) for k in HEALTHCHECK_ENGINE}
+        doc.update(HEALTHCHECK_ENGINE)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        os.replace(path + ".tmp", path)
+        print(f"[healthcheck] library '{doc.get('name')}' engine {was} "
+              f"-> ffmpeg (HandBrakeCLI absent on this slot)")
         changed += 1
     return changed
 
@@ -463,6 +547,11 @@ def main() -> int:
     flow_changed = ensure_flow()
     libs_attached = attach_flow_to_libraries()
     libs_enabled = ensure_library_processing()
+    hc_engine_changed = ensure_healthcheck_engine()
+    # Only re-queue when we just switched engines: stale Error rows written by the
+    # broken HandBrake engine are meaningless, but a real ffmpeg-found Error must
+    # be allowed to stick so it surfaces as an actual corrupt file.
+    hc_requeued = requeue_errored_healthchecks() if hc_engine_changed else 0
     print()
     print(f"Orphan libraries purged: {orphans_purged}")
     print(f"Skeleton libraries healed (re-created with full defaults): {libs_healed}")
@@ -474,8 +563,11 @@ def main() -> int:
     print(f"Flow created/updated: {flow_changed}")
     print(f"Libraries attached to flow: {libs_attached}")
     print(f"Libraries enabled for live transcoding: {libs_enabled}")
+    print(f"Libraries switched to ffmpeg health-check engine: {hc_engine_changed}")
+    print(f"Stale HandBrake-era health-check errors re-queued: {hc_requeued}")
     if any([config_changed, workers_changed, node_changed, libs_patched,
-            orphans_purged, flow_changed, libs_attached, libs_enabled]):
+            orphans_purged, flow_changed, libs_attached, libs_enabled,
+            hc_engine_changed]):
         print("\nNote: restart tdarr-server.service + tdarr-node.service "
               "for changes to take effect:")
         print("  systemctl --user restart tdarr-server.service "
