@@ -122,3 +122,97 @@ def test_faq_canary_count_matches_manifest():
     ]
     for pat, label in anchors:
         assert _grab(faq, pat, label) == exp["canaries"]
+
+
+# --- identity guards (2026-07-28) --------------------------------------------
+# Counting alone was never enough. The 17->18 bump was caught by the count
+# guards above, but an audit that same day found drift the counts could not
+# see: README quoted "15 canaries" in two prose spots, the FAQ's per-canary
+# TABLE listed only 15 of 17 rows, scripts/canaries/README.md was missing 4
+# entries outright, and two FAQ cadences (quota, prowlarr-indexer-health) still
+# said "hourly" for canaries that had long since moved to every-15min. A doc can
+# hold the right total and still describe the wrong system, so these guards
+# assert the NAMES and CADENCES, not just the count.
+
+CANARY_README = os.path.join(REPO_ROOT, "scripts", "canaries", "README.md")
+
+
+def _manifest_canaries():
+    return list(load(APPS_YAML).canaries())
+
+
+def _faq_canary_table():
+    """{name: cadence} parsed from the FAQ's per-canary table."""
+    faq = _read(FAQ)
+    i = faq.find("canaries actually test")
+    assert i != -1, "FAQ canary-table heading moved (update this guard)"
+    seg = faq[i:i + 12000]
+    body = seg[seg.find("<tbody>"):seg.find("</tbody>")]
+    return {
+        name: cadence.strip()
+        for name, cadence in re.findall(
+            r"<code>canary-([a-z0-9-]+)</code></td><td>([^<]*)</td>", body
+        )
+    }
+
+
+def _norm_cadence(text):
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def test_readme_prose_canary_counts_match_manifest():
+    """README quotes the canary count in prose too, not just the tables the
+    original guards checked. Both said 15 while the manifest said 17."""
+    exp = _expected()
+    r = _read(README)
+    for pat, label in [
+        (r"manitoba-maint, (\d+) canaries", "README surrounding-cast prose"),
+        (r"canaries/\s*#\s*(\d+) end-to-end pipeline checks", "README repo-layout comment"),
+    ]:
+        assert _grab(r, pat, label) == exp["canaries"]
+
+
+def test_faq_canary_table_lists_every_canary():
+    """The FAQ's per-canary table must name exactly the manifest's canaries.
+    It had drifted to 15 rows against 17 manifest entries — the count anchors
+    elsewhere on the page were correct, so nothing caught it."""
+    table = set(_faq_canary_table())
+    manifest_names = {c.name for c in _manifest_canaries()}
+    assert table == manifest_names, (
+        f"FAQ canary table drift — missing: {sorted(manifest_names - table)}, "
+        f"unknown: {sorted(table - manifest_names)}"
+    )
+
+
+def test_faq_canary_cadences_match_manifest():
+    """Cadence prose must match the manifest schedule. `quota` and
+    `prowlarr-indexer-health` both still advertised 'hourly' long after moving
+    to every-15min."""
+    table = _faq_canary_table()
+    mismatches = []
+    for c in _manifest_canaries():
+        shown = table.get(c.name)
+        if shown is None:
+            continue  # covered by the table-membership guard above
+        # weekly-mon-send is rendered as the three concrete send-window times,
+        # which is MORE precise than the manifest token and matches the timers.
+        if c.schedule == "weekly-mon-send":
+            assert "mon" in shown.lower(), f"{c.name}: expected a Monday cadence, got {shown!r}"
+            continue
+        if _norm_cadence(shown) != _norm_cadence(c.schedule):
+            mismatches.append(f"{c.name}: manifest={c.schedule!r} FAQ={shown!r}")
+    assert not mismatches, "FAQ cadence drift — " + "; ".join(mismatches)
+
+
+def test_canary_readme_documents_every_canary():
+    """scripts/canaries/README.md must carry a bullet for every canary script.
+    It was missing sab-stall, thread-ceiling, tdarr-scanner and
+    tdarr-healthcheck — 4 undocumented canaries."""
+    doc = _read(CANARY_README)
+    documented = set(re.findall(r"`([a-z0-9-]+)\.sh`", doc))
+    missing = []
+    for c in _manifest_canaries():
+        stem = os.path.basename(c.script)[:-3]  # strip .sh
+        if stem not in documented:
+            missing.append(stem)
+    assert not missing, f"scripts/canaries/README.md missing entries for: {sorted(missing)}"
