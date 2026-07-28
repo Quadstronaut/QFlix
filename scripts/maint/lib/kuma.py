@@ -174,6 +174,34 @@ STANDALONE_SELF_PUSH_MONITORS = {
 }
 
 
+def _kuma_db_path() -> Path:
+    return Path(os.environ.get(
+        "QFLIX_KUMA_DB", str(Path.home() / ".apps" / "uptimekuma" / "kuma.db")))
+
+
+def _live_monitors_from_db():
+    """Authoritative set of ACTIVE monitor names from Kuma's SQLite DB, or None
+    if the DB isn't readable locally (e.g. the audit is run from the
+    workstation). Preferred over /metrics for the existence check: /metrics only
+    emits a monitor_status line within a recent-heartbeat window, so a daily
+    self-pusher (reaper + the janitors, interval 90000s) drops out of /metrics
+    for ~22h/day between beats and the /metrics-based audit then false-flags it
+    as drift. The DB is the source of truth for whether a monitor EXISTS."""
+    db = _kuma_db_path()
+    if not db.exists():
+        return None
+    try:
+        import sqlite3
+        con = sqlite3.connect("file:{}?mode=ro".format(db), uri=True, timeout=3)
+        try:
+            rows = con.execute("SELECT name FROM monitor WHERE active=1").fetchall()
+        finally:
+            con.close()
+        return {r[0] for r in rows if r and r[0]}
+    except Exception:
+        return None
+
+
 def audit_monitors(manifest, *, kuma_url: str | None = None,
                    api_key: str | None = None,
                    timeout_s: float = 5.0) -> dict:
@@ -211,25 +239,31 @@ def audit_monitors(manifest, *, kuma_url: str | None = None,
     # self-pushers as orphan drift.
     manifest_monitors.update(STANDALONE_SELF_PUSH_MONITORS)
 
-    if kuma_url is None:
-        kuma_url = _kuma_host()
-    if api_key is None:
-        api_key = _secret_read("uptimekuma.key")
+    # Prefer Kuma's SQLite DB for the authoritative EXISTENCE check (active
+    # monitors), because /metrics omits daily self-pushers between their
+    # once-a-day beats (see _live_monitors_from_db). Fall back to /metrics only
+    # when the DB isn't local — e.g. the audit is run from the workstation.
+    live_monitors = _live_monitors_from_db()
+    if live_monitors is None:
+        if kuma_url is None:
+            kuma_url = _kuma_host()
+        if api_key is None:
+            api_key = _secret_read("uptimekuma.key")
 
-    try:
-        resp = requests.get(f"{kuma_url}/metrics", auth=("", api_key),
-                            timeout=timeout_s)
-    except requests.RequestException as exc:
-        return {
-            "matched": [],
-            "manifest_only": sorted(manifest_monitors),
-            "kuma_only": [],
-            "live_count": 0,
-            "manifest_count": len(manifest_monitors),
-            "error": f"Kuma unreachable: {exc}",
-        }
+        try:
+            resp = requests.get(f"{kuma_url}/metrics", auth=("", api_key),
+                                timeout=timeout_s)
+        except requests.RequestException as exc:
+            return {
+                "matched": [],
+                "manifest_only": sorted(manifest_monitors),
+                "kuma_only": [],
+                "live_count": 0,
+                "manifest_count": len(manifest_monitors),
+                "error": f"Kuma unreachable: {exc}",
+            }
 
-    live_monitors = set(re.findall(r'monitor_status\{[^}]*monitor_name="([^"]+)"', resp.text))
+        live_monitors = set(re.findall(r'monitor_status\{[^}]*monitor_name="([^"]+)"', resp.text))
 
     # Suppress monitors the operator declared external (other projects sharing
     # this Kuma instance). They count toward live_count but not toward drift.
