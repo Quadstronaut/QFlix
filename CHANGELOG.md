@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-07-28 — 32 of 60 Kuma monitors could go red in total silence
+
+Found while answering a simple question: *can I close this window?* Verifying
+that the new `tdarr-healthcheck` canary could actually reach the operator —
+rather than assuming it — turned up two more silent-failure layers stacked
+underneath it. Neither would have announced itself.
+
+**1. The canary pushed nowhere, and exited 0 doing it.** `manitoba-maint canary
+push` reads `~/secrets/kuma-push-tokens.json`; the token had been deployed to
+`~/.opt/maint/kuma-push-tokens.json`. When a token is missing the CLI returns
+the canary's own exit code and simply doesn't push — no warning, no non-zero.
+Monitor 108 had **zero heartbeats** across three successful-looking `exit=0`
+invocations. Same shape as the 2026-07-19 reaper token gap. Token deployed to
+the path the CLI actually reads; verified a real beat now lands carrying the
+canary's message.
+
+**2. `_ensure_autoheal_webhook` only ever attached itself once.** It creates the
+webhook with `applyExisting=True`, but every subsequent run hits `[skip]` — so
+every monitor created *after* that first run was born with **no notifications at
+all**. Not just no Discord: no auto-heal webhook either, which is precisely what
+that function's own docstring warns about (*"Kuma down events never reach
+manitoba-maint-webhook, so lib.recovery never fires"*).
+
+By today that was **32 of 60 active monitors** — 15 of 18 canaries, the
+`QFlix Fleet` storm aggregate, the `Manitoba Pusher` self-heartbeat, all four
+self-pushing janitors, plus real apps (SABnzbd, VictoriaLogs, QFlix Dashboard,
+Bazarr 2, Upgradinatorr). Every one of them could have gone red without pinging
+anyone or triggering recovery.
+
+**Fix:** new `_ensure_notifications_attached()` reconciles the default channel
+set onto every active monitor and runs **last on every invocation**, after all
+monitors exist — so a monitor added later can never again be born mute. The
+channel set is derived from Kuma's `isDefault` flags rather than hardcoded.
+Applied via the socket.io API, not SQL, because Kuma 2.x caches monitors in
+memory and direct DB writes diverge from that cache.
+
+Repaired 32/32; re-run reports 0 (idempotent); DB confirms **0 of 60 active
+monitors without notifications**.
+
+> Diagnostic note: reading `kuma.db` with `mode=ro` does **not** see the
+> write-ahead log, so recent heartbeats are invisible and every monitor looks
+> stale. Copy `kuma.db` + `-wal` + `-shm` and read the copy.
+
 ## 2026-07-28 — Tdarr health checks: 100% dead and silent for 68 days
 
 A full Tdarr audit. Transcoding was healthy; the **health-check pipeline had
