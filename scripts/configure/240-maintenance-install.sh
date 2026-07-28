@@ -182,6 +182,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/tautulli-plex-link.sh \
     scripts/canaries/newsletter-digest-stale.sh \
     scripts/canaries/thread-ceiling.sh \
+    scripts/canaries/tdarr-scanner.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
@@ -396,6 +397,8 @@ for unit in \
     manitoba-maint-torrent-janitor.timer \
     manitoba-maint-canary-thread-ceiling.service \
     manitoba-maint-canary-thread-ceiling.timer \
+    manitoba-maint-canary-tdarr-scanner.service \
+    manitoba-maint-canary-tdarr-scanner.timer \
     qflix-collect.service \
     qflix-collect.timer \
     manitoba-maint-boot-listeners.service; do
@@ -504,6 +507,11 @@ systemctl --user enable --now manitoba-maint-torrent-janitor.timer
 # (RLIMIT_NPROC), 70% WARN / 85% FAIL. Guards the GOMAXPROCS thread-exhaustion
 # class (memory seedbox-thread-cap-gomaxprocs).
 systemctl --user enable --now manitoba-maint-canary-thread-ceiling.timer
+# Tdarr scanner canary — hourly. Guards FFprobe/Exiftool (pipeline-blocking if
+# they break) and tracks the known-dead Mediainfo probe without parking a
+# permanent red on it. Mediainfo is unfixable here: the slot's ulimit -v 10GB
+# can't host Node's ~8GB wasm trap guard, and NODE_OPTIONS rejects the cure.
+systemctl --user enable --now manitoba-maint-canary-tdarr-scanner.timer
 # QFlix hourly collector — snapshot + stale-detect + autonomous unstick + Kuma
 # heartbeat. Migrated off the workstation 2026-07-09 (was Windows Task
 # \QFlix\Hourly Collect, now disabled). Feeds the "QFlix Collect (workstation)"
@@ -629,7 +637,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling tdarr-scanner; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"

@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - Tdarr scanner self-test probes (FFprobe/Exiftool regression guard)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push tdarr-scanner
+StandardOutput=journal
+StandardError=journal
