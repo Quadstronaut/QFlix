@@ -65,7 +65,7 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 | 🟠 Subtitles | **Bazarr** + **Bazarr 2** (anime branch) | One per arr-pair — Bazarr is hard-capped at one Sonarr + one Radarr each, so the second anime instance is a bare-Python install pinned to Bazarr-1's version (`bazarr2-sync.timer`) |
 | 🟠 Retention | **qflix-reaper** | 60-day "watched + nobody else cared" deletion engine — script-driven (`scripts/maint/qflix-reaper.py`, daily timer, cap 50 items/run, audit manifest written before any delete, re-requestable; the 30%-per-library tripwire is disabled live via the on-box `--max-pct 100` drop-in — operator decision 2026-07-13). Media that can't resolve to a single *arr id is an **orphan** — never deleted, and now graced: a fresh orphan reds the run for 24h so you notice it, then downgrades to green with a weekly WARN reminder instead of paging forever ([2026-07-14 spec](docs/superpowers/specs/2026-07-14-reaper-orphan-grace-design.md)). Replaced Maintainerr 2026-06-20 after its Plex-ID resolution bug made deletes unfixable. |
 
-Surrounding cast (qBittorrent, SABnzbd, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, qflix-dash, Kuma, manitoba-maint, 15 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Download clients are now dual-stack: **torrent** (qBittorrent) and **Usenet** (SABnzbd + NZBgeek indexer + Frugal block account). Full breakdown in [`inventory.md`](inventory.md).
+Surrounding cast (qBittorrent, SABnzbd, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, qflix-dash, Kuma, manitoba-maint, 18 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Download clients are now dual-stack: **torrent** (qBittorrent) and **Usenet** (SABnzbd + NZBgeek indexer + Frugal block account). Full breakdown in [`inventory.md`](inventory.md).
 
 ---
 
@@ -390,7 +390,7 @@ apps/
   smoke-test.sh              # production smoke (~51 checks across the whole stack)
   smoke-test-plex.sh         # Plex-ecosystem-only smoke
   qflix-top.sh               # htop-style CPU/RAM viewer — your components vs other tenants
-  canaries/                  # 15 end-to-end pipeline checks (bash)
+  canaries/                  # 18 end-to-end pipeline checks (bash)
   configure/                 # phased install/configure scripts (numbered)
   install/                   # lower-level installer libs
   lib/                       # shared bash helpers
