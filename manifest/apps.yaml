@@ -694,3 +694,29 @@ canaries:
     kuma_monitor: "Canary Thread Ceiling"
     script: "scripts/canaries/thread-ceiling.sh"
     schedule: "every-15min"
+  tdarr-scanner:
+    # Tdarr logs four scanner self-tests at server start (FFprobe, Exiftool,
+    # Mediainfo, CCExtractor). Mediainfo has been dead for as long as the logs
+    # go back — WebAssembly OOM, 858 hits across 2026-07-24..28 — and REA never
+    # surfaced it because the tdarr source tailed .err files that are ~90%
+    # express stack-trace noise. Both halves fixed 2026-07-28; this is the
+    # durable half.
+    #
+    # Mediainfo is UNFIXABLE at our layer (verified, do not retry — full
+    # reasoning in the script header): the slot's ulimit -v 10GB cannot host
+    # Node's ~8GB wasm trap-guard reservation, and the documented cure
+    # NODE_OPTIONS=--disable-wasm-trap-handler is rejected outright by Tdarr's
+    # bundled Node 18 runtime ("not allowed in NODE_OPTIONS") — deploying it
+    # crash-looped tdarr-server and was rolled back. Impact is bounded: FFprobe
+    # and Exiftool carry the pipeline and scans complete normally.
+    #
+    # So this canary reds only on REGRESSION — FFprobe or Exiftool going down
+    # (pipeline-blocking) or the server not running. The known-down pair stays
+    # green-with-WARN rather than parking a permanent red over an accepted
+    # condition, which is the exact noise the 2026-07-28 REA work removed. If
+    # Mediainfo ever recovers it says so and asks to be dropped from the
+    # baseline, so a later relapse reds properly. Hourly: the self-test only
+    # re-runs on restart, so this state cannot change faster than that.
+    kuma_monitor: "Canary Tdarr Scanner"
+    script: "scripts/canaries/tdarr-scanner.sh"
+    schedule: "hourly"
