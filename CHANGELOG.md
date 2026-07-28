@@ -59,6 +59,42 @@ so this suppression layer can never grow over them.
 REA test suite **90 → 117 assertions**, all green; both rebuilt sources verified
 by running the regenerated heredoc live against the box.
 
+**Tdarr Mediainfo: diagnosed, unfixable at our layer, now monitored.** Two fix
+attempts were tried and both falsified — recorded here so nobody burns the
+afternoon again:
+
+- `NODE_OPTIONS=--disable-wasm-trap-handler` (the `node-ultracc-wasm-fix` that
+  `qflix-dash` carries) is **rejected outright** by Tdarr's bundled Node v18
+  runtime — `"--disable-wasm-trap-handler is not allowed in NODE_OPTIONS"`. It's
+  a CLI-only flag and the launcher spawns the runtime itself. Deploying it
+  crash-looped `tdarr-server` (exit 9, 2 restarts); rolled back within the
+  minute and the server confirmed healthy again at `NRestarts=0`.
+- `--max-old-space-size=512` *is* accepted but doesn't help. Capping the heap
+  frees nothing: on this box even `new WebAssembly.Memory({initial:1})` — one
+  64 KB page — fails, because Node reserves a ~8 GB trap-guard region per wasm
+  memory and the slot's `ulimit -v` is 10 GB. `LimitAS` can't be raised
+  (soft == hard). `/usr/bin/mediainfo` v24.12 exists natively, but Tdarr's
+  scanner is obfuscated (`srcug/`) with no path knob, and any patch dies at the
+  next Tdarr update.
+
+Impact is bounded — FFprobe and Exiftool carry the pipeline and scans complete
+normally — so the answer is monitoring, not a fix. New **`tdarr-scanner` canary**
+(hourly, `Canary Tdarr Scanner`) reads Tdarr's own four startup self-tests and
+reds **only on regression**: FFprobe or Exiftool going down (pipeline-blocking)
+or the server not running. The known-dead pair stays green-with-WARN rather than
+parking a permanent red over an accepted condition — the same disease this entry
+started by curing. If Mediainfo ever recovers the canary says so and asks to be
+dropped from the baseline, so a later relapse reds properly; an indeterminate
+read (log rotated away) stays UP rather than false-redding. All five branches
+exercised live against fixtures.
+
+`bootstrap-kuma-monitors.py` did **not** return a `pushToken` for the freshly
+created monitor — the `reaper-kuma-token-gap` failure mode, which would have left
+the canary silently never pushing — so the token was read from `kuma.db` and
+persisted to both stores. Verified end to end: real heartbeat `status=1`,
+`kuma audit` reports no drift (manifest 58 = matched 58). Counts moved
+**16 → 17 canaries**, **57 → 58** manitoba monitors; unit suite **1089 green**.
+
 ## 2026-07-25 — Anime-library janitor (ships dry-run) + REA completeness overhaul
 
 **Anime-library janitor** (`scripts/maint/qflix-anime-janitor.py`, spec
