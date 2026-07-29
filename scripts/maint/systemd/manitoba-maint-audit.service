@@ -1,0 +1,19 @@
+[Unit]
+Description=Manitoba maint - QFlix audit regime (deterministic offline defect enumeration)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# --push-kuma feeds "QFlix Audit Regime". The push is UP only when there are no
+# ENFORCED findings; advisory findings are reported in the message but do not
+# flip the monitor, because an advisory backlog is a known state, not an alarm.
+#
+# Exit 2 (REGIME INTEGRITY) pushes DOWN with the first problem line. That is the
+# one alert the operator must never confuse with "clean": SuccessExitStatus
+# deliberately does NOT include 1 or 2, so systemd also records the failure.
+ExecStart=/usr/bin/python3 %h/scripts/maint/qflix-audit.py --push-kuma
+# Pure AST + regex over ~550 tracked files. Seconds, not minutes — but the slot
+# is shared, so leave headroom rather than half-report under load.
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal

@@ -45,7 +45,16 @@ FAQ = os.path.join(REPO_ROOT, "scripts", "data", "qflix-faq.html")
 #                                   manifest.external_monitors() instead —
 #                                   same grand total, different bucket; see
 #                                   lib/kuma.py and manifest/apps.yaml).
-NON_MANIFEST_MONITORS = 7
+#   - "QFlix Audit Regime"        — the Convergent Audit Regime's own dead-man
+#                                   (2026-07-29). qflix-audit.py self-pushes it
+#                                   daily from manitoba-maint-audit.timer. It is
+#                                   DECLARED here and in
+#                                   STANDALONE_SELF_PUSH_MONITORS but not yet
+#                                   created live: `kuma audit` reports it as
+#                                   manifest_only until bootstrap runs on the
+#                                   box, which is a true finding rather than
+#                                   drift noise. See docs/audit-regime.md.
+NON_MANIFEST_MONITORS = 8
 
 
 def _read(path):
