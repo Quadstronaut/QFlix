@@ -14,9 +14,14 @@ kuma_external_monitors:
   # the same unreachable IP, 100% packet loss). Dropped from this list 2026-07-18
   # to match live reality (the 2026-07-16 doc sync updated inventory.md's prose
   # but missed this manifest list, leaving test_doc_counts red since then).
-  # Workstation-side hourly collector. The seedbox manifest cannot self-heal
-  # a Windows scheduled task, so it stays outside the audit scope.
-  - "QFlix Collect (workstation)"
+  #
+  # "QFlix Collect (workstation)" MOVED OUT 2026-07-29: it migrated off the
+  # Windows scheduled task onto the box itself 2026-07-09 (qflix-collect.py +
+  # qflix-collect.timer, self-pushing via KUMA_PUSH_KEY — see memory
+  # collect-migrated-to-box). It is no longer an unauditable external app; it
+  # now lives in lib.kuma.STANDALONE_SELF_PUSH_MONITORS alongside the other
+  # self-pushing janitors so drift audit + bootstrap cover it. See that dict
+  # for why the monitor's literal (now cosmetically stale) name is kept.
 
 apps:
 
@@ -659,9 +664,11 @@ canaries:
   quota:
     # Ultra.cc per-user disk quota with autonomous reclaim. Three levels:
     #   80% WARN     → annotate Kuma msg; stay UP
-    #   90% CRITICAL → fire Maintainerr execute + collections/handle
-    #                  autonomously (recovers space before SQLite I/O
-    #                  errors start at the 100% wall) and push DOWN
+    #   90% CRITICAL → fire `python3 ~/scripts/maint/qflix-reaper.py --execute
+    #                  --json` autonomously (Maintainerr was decommissioned
+    #                  2026-06-26 — see scripts/canaries/quota.sh:73; the
+    #                  reaper's own max-items/max-pct caps + run-lock are the
+    #                  safety envelope) and push DOWN
     #   98% FAIL     → operator intervention; DOWN with explicit msg
     # The 2026-05-21 incident took ~30+ minutes of operator triage to
     # diagnose quota exhaustion masked as "apps won't load"; this canary
