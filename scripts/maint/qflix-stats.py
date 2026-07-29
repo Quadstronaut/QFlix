@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Emit stats.json for the qflix.starhold.dev invite page, then ship it.
-
-Runs hourly on the seedbox. The seedbox always initiates: it pushes stats.json
-up to the public VPS and pulls signups.jsonl back down in the same run. The
-public box therefore never needs a credential that can reach anything here.
+"""Emit library stats for the qflix.starhold.dev invite page.
 
 Only stdlib — deliberately. This has to keep working on the box's Python 3.9
 without a venv, because the one job it has is to not silently stop.
@@ -11,7 +7,10 @@ without a venv, because the one job it has is to not silently stop.
 Usage:
     qflix-stats.py                 # collect, print JSON, change nothing
     qflix-stats.py --write         # also write LOCAL_OUT
-    qflix-stats.py --push          # also scp to the VPS and pull signups back
+
+Delivery is a PULL, not a push: the VPS firewalls SSH to its tailnet and this
+box is not on it. The VPS invokes this script hourly over a forced-command key
+(see qflix-stats-serve.sh) and reads stdout.
 """
 
 import argparse
@@ -28,13 +27,7 @@ from datetime import datetime, timezone
 HOME = os.path.expanduser("~")
 SECRETS = os.path.join(HOME, "secrets")
 LOCAL_OUT = os.path.join(HOME, ".opt", "maint", "qflix-stats.json")
-SIGNUPS_LOCAL = os.path.join(HOME, ".opt", "maint", "qflix-signups.jsonl")
 
-VPS_HOST = "15.204.116.242"
-VPS_USER = "qflix"
-VPS_STATS = "/home/qflix/data/stats.json"
-VPS_SIGNUPS = "/home/qflix/data/signups.jsonl"
-SSH_KEY = os.path.join(HOME, ".ssh", "qflix_stats_ed25519")
 
 # Resolved by title, never by section id — Plex renumbers sections when a
 # library is removed and re-added, which has already bitten this stack once.
@@ -98,21 +91,44 @@ def quota_bytes():
     except (OSError, subprocess.SubprocessError):
         return None
     for line in out.splitlines():
-        line = line.strip()
-        if not line.startswith("/dev/"):
-            continue
         parts = line.split()
         if len(parts) < 2:
             continue
-        m = re.match(r"^([0-9.]+)([KMGT])?$", parts[1])
+        # The trailing "*" appears once you are over the soft limit — the exact
+        # moment this figure matters most. A "$"-anchored pattern without it
+        # made the disk tile vanish precisely when the box was filling up.
+        #
+        # A bare number means 1K blocks, not bytes; defaulting to bytes
+        # under-reported by 1024x and rendered "0 GB".
+        m = re.match(r"^([0-9.]+)([KMGT])?\*?$", parts[1])
         if not m:
             continue
-        return int(float(m.group(1)) * _QUOTA_UNITS.get(m.group(2) or "", 1))
+        return int(float(m.group(1)) * _QUOTA_UNITS.get(m.group(2) or "K", 1024))
     return None
+
+
+def canary_count():
+    """How many end-to-end canaries are installed.
+
+    Counted from disk rather than hardcoded on the page, so the figure cannot
+    drift out of date as canaries get added.
+    """
+    d = os.path.join(HOME, "scripts", "canaries")
+    try:
+        return len([f for f in os.listdir(d) if f.endswith(".sh")])
+    except OSError:
+        return None
 
 
 def collect():
     libs = section_map()
+
+    # Fail loudly rather than emitting a valid, fresh, all-zero payload. A
+    # renamed Plex library would otherwise blank the proof wall while this
+    # script still exited 0 — the page would look fine and say nothing.
+    if not [t for t in MOVIE_LIBS + SHOW_LIBS if t in libs]:
+        raise RuntimeError("no configured libraries found; server has: %s" % sorted(libs))
+
     libraries, films, series, episodes = [], 0, 0, 0
 
     for title in MOVIE_LIBS:
@@ -142,40 +158,16 @@ def collect():
     disk = quota_bytes()
     if disk:
         stats["disk_bytes"] = disk
+
+    canaries = canary_count()
+    if canaries:
+        stats["canaries"] = canaries
     return stats
-
-
-def _scp(src, dst):
-    cmd = [
-        "scp", "-q",
-        "-i", SSH_KEY,
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", "ConnectTimeout=20",
-        src, dst,
-    ]
-    return subprocess.run(cmd, capture_output=True, text=True)
-
-
-def push(path):
-    """Push stats up, pull signups down. Never fatal — next run retries."""
-    ok = True
-    up = _scp(path, "%s@%s:%s" % (VPS_USER, VPS_HOST, VPS_STATS))
-    if up.returncode != 0:
-        print("push failed: %s" % up.stderr.strip(), file=sys.stderr)
-        ok = False
-
-    down = _scp("%s@%s:%s" % (VPS_USER, VPS_HOST, VPS_SIGNUPS), SIGNUPS_LOCAL)
-    if down.returncode != 0:
-        print("signup pull failed: %s" % down.stderr.strip(), file=sys.stderr)
-        ok = False
-    return ok
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--write", action="store_true", help="write %s" % LOCAL_OUT)
-    ap.add_argument("--push", action="store_true", help="scp to the VPS (implies --write)")
     args = ap.parse_args()
 
     try:
@@ -187,13 +179,11 @@ def main():
     payload = json.dumps(stats, indent=2)
     print(payload)
 
-    if args.write or args.push:
+    if args.write:
         os.makedirs(os.path.dirname(LOCAL_OUT), exist_ok=True)
         with open(LOCAL_OUT, "w") as fh:
             fh.write(payload + "\n")
 
-    if args.push and not push(LOCAL_OUT):
-        return 2
     return 0
 
 
