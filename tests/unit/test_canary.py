@@ -461,8 +461,11 @@ class TestAuditIncludesCanaries:
         report = audit_monitors(m, kuma_url="http://x")
         assert "Canary Movie" in report["matched"]
         # sonarr (1) + canary (1) + auto-injected "Manitoba Pusher" (1) + "QFlix Fleet" (1)
-        # + the 5 standalone self-pushers (Reaper, Audio Disposition, anime-janitor,
-        # Torrent Janitor, QFlix Collect). Collect joined the list 2026-07-29: the job
-        # moved off the workstation onto the box 2026-07-09, so it is manitoba-owned and
-        # must be audited like the others rather than sitting in kuma_external_monitors.
-        assert report["manifest_count"] == 9
+        # + every standalone self-pusher (Reaper, Audio Disposition, anime-janitor,
+        # Torrent Janitor, QFlix Collect, QFlix Audit Regime). Collect joined the list
+        # 2026-07-29 (the job moved off the workstation onto the box 2026-07-09, so it
+        # is manitoba-owned); "QFlix Audit Regime" joined the same day with
+        # manitoba-maint-audit.timer. Derived from the dict rather than hardcoded so the
+        # NEXT self-pusher does not need this literal edited again.
+        from lib.kuma import STANDALONE_SELF_PUSH_MONITORS
+        assert report["manifest_count"] == 4 + len(STANDALONE_SELF_PUSH_MONITORS)

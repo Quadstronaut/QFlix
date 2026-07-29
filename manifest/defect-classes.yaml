@@ -1,0 +1,380 @@
+# manifest/defect-classes.yaml — the TAXONOMY.
+#
+# One entry per enrolled defect class. This file is the reason "audit qflix"
+# can stop being a search and start being an enumeration: a class that is named
+# here has a detector, a declared boundary, and a status. A class that is not
+# named here does not exist as far as the regime is concerned — which is why
+# docs/audit-residual-risk.md is mandatory reading alongside it.
+#
+# STATUS
+#   enforced  — the unadjudicated backlog for the class's `enforced_kinds` is
+#               ZERO. A finding of an enforced kind exits 1 and fails CI.
+#   advisory  — the detector enumerates exhaustively and reports, but findings
+#               do NOT fail. This is the honest state for a class with a
+#               backlog nobody has adjudicated yet.
+#   residual  — cannot be decided offline. MUST carry `why_not_offline` and MUST
+#               appear as a row in docs/audit-residual-risk.md.
+#
+# A class flips advisory -> enforced when its backlog hits zero. From that
+# moment it cannot surface a new finding without an input change.
+#
+# BIJECTION (checked, exit 2 on failure): every class with status != residual
+# names a `detector` module that imports, and a `test` module that exists and is
+# pytest-collectable; every detector module under lib/audit/detectors/ is named
+# by exactly one class. Adding a class with a bogus detector, or a detector with
+# no class, is a REGIME INTEGRITY failure, not a finding.
+
+schema: 1
+
+classes:
+
+  - id: C-01
+    title: timer-without-deadman
+    detector: c01_timer_deadman
+    test: tests/unit/audit/test_c01_timer_deadman.py
+    status: enforced
+    enforced_kinds: [unadjudicated-timer, incomplete-adjudication, unknown-monitor, orphan-job-entry]
+    advisory_kinds: [open-gap]
+    discovery:
+      date: 2026-07-29
+      provenance: >-
+        Stage-0 spec section 1(g): manitoba-maint-flaresolverr-canary.timer
+        exists in scripts/maint/systemd/ but `flaresolverr-canary` is absent
+        from manifest/apps.yaml:canaries. Whether an audit saw it depended on
+        which files that run happened to open.
+    rule: >-
+      Every tracked scripts/*/systemd/*.timer must have a manifest/jobs.yaml
+      entry declaring either a kuma_monitor that resolves to a real monitor, or
+      a no_monitor_reason with an owner and an adjudication date.
+    boundary:
+      description: glob scripts/*/systemd/*.timer (tracked) UNION manifest/jobs.yaml:jobs
+      offline: true
+    waivers: []
+
+  - id: C-02
+    title: unchecked-subprocess
+    detector: c02_unchecked_subprocess
+    test: tests/unit/audit/test_c02_unchecked_subprocess.py
+    status: advisory
+    enforced_kinds: []
+    advisory_kinds: [no-check-result-ignored]
+    discovery:
+      date: 2026-07-29
+      provenance: >-
+        Stage-0 spec section 2, measured baseline: 30 subprocess run/call/Popen
+        sites, 27 subprocess.run with no check=. A run() whose returncode is
+        never read cannot fail loudly.
+    rule: >-
+      subprocess.run must pass check= explicitly, OR bind its result to a name
+      whose .returncode/.stdout/.stderr is read in the enclosing function, OR be
+      attribute-accessed inline.
+    boundary:
+      description: every ast.Call on subprocess.{run,call,Popen} in tracked scripts/**/*.py, test files excluded
+      offline: true
+    backlog_note: >-
+      Advisory because the backlog is non-zero and every instance needs a human
+      to decide whether a non-zero exit is expected. Flip to enforced when the
+      backlog reaches zero.
+    waivers: []
+
+  - id: C-03
+    title: error-swallowing-handler
+    detector: c03_error_swallowing
+    test: tests/unit/audit/test_c03_error_swallowing.py
+    status: advisory
+    enforced_kinds: []
+    advisory_kinds: [broad-pass-only]
+    discovery:
+      date: 2026-07-29
+      provenance: >-
+        Stage-0 spec section 2, measured baseline: 566 except handlers, 0 bare,
+        288 broad `except Exception`, of which 35 have a pass-only body.
+    rule: >-
+      A handler whose type is bare / Exception / BaseException and whose body is
+      pass-only neither re-raises, nor logs, nor returns a distinguishable
+      value. The 288 broad-but-not-pass-only handlers stay UNADJUDICATED
+      (counted, reported in metrics, not raised as findings) until reviewed.
+    boundary:
+      description: every ast.ExceptHandler in tracked scripts/**/*.py, test files excluded
+      offline: true
+    backlog_note: >-
+      35 pass-only handlers are the enforceable subset. Each needs a human
+      decision (add a log line, or waive with the reason the exception is
+      genuinely uninteresting). Until then: advisory.
+    waivers: []
+
+  - id: C-04
+    title: mtime-freshness
+    detector: c04_mtime_freshness
+    test: tests/unit/audit/test_c04_mtime_freshness.py
+    status: advisory
+    enforced_kinds: []
+    advisory_kinds: [freshness-from-mtime]
+    discovery:
+      date: 2026-07-25
+      commit: cbde5c1
+      provenance: >-
+        "Freshness was gated on FILE mtime, not LINE timestamp" — a log file
+        that is rewritten or touched looks fresh while its newest CONTENT is
+        days old. Generalised here from the one REA instance to the class.
+    rule: >-
+      A st_mtime / getmtime / LastWriteTime / `stat -c %Y` / `-newermt`
+      reference inside a freshness context (enclosing function name or a nearby
+      identifier matching /stale|fresh|age|recent|expire/) must be waived with a
+      written reason saying why file mtime is the right clock there.
+    boundary:
+      description: regex over tracked scripts/** for mtime accessors, scored for freshness context
+      offline: true
+    waivers: []
+
+  - id: C-05
+    title: sibling-inconsistent-envelope
+    detector: c05_sibling_envelope
+    test: tests/unit/audit/test_c05_sibling_envelope.py
+    status: advisory
+    enforced_kinds: []
+    advisory_kinds: [sibling-missing-envelope]
+    discovery:
+      date: 2026-07-29
+      commit: ad8198e
+      provenance: >-
+        qflix_status and qflix_arr_queue computed captured_at /
+        snapshot_age_minutes / stale_warning; three SIBLING functions in the
+        SAME FILE had none and served a 19-day-stale snapshot as live. The class
+        was fixed once, per instance, never generalised — so this detector is
+        the generalisation that stops a third sibling appearing.
+    rule: >-
+      If ANY function in a module annotates snapshot freshness, EVERY function
+      in that module that reads the same snapshot source must call the shared
+      freshness helper (or return a value that carries the freshness keys).
+    boundary:
+      description: AST over tracked scripts/**/*.py — modules containing >=1 freshness-annotating function
+      offline: true
+    waivers: []
+
+  - id: C-06
+    title: doc-count-drift
+    detector: c06_doc_count_drift
+    test: tests/unit/audit/test_c06_doc_count_drift.py
+    status: advisory
+    enforced_kinds: []
+    advisory_kinds: [unguarded-count-claim]
+    discovery:
+      date: 2026-07-20
+      provenance: >-
+        tests/unit/test_doc_counts.py is the reference implementation for this
+        whole regime — it enumerates every canary from the manifest and asserts
+        every doc surface agrees, and that class has stayed closed. It checks
+        ~12 hand-picked anchors. This detector generalises it to EVERY numeric
+        claim on the same surfaces, so a new sentence quoting a count cannot
+        drift unnoticed.
+    rule: >-
+      Every /\d+ (…) (apps|canaries|monitors|tests|timers|services)/ occurrence
+      in the declared doc surfaces must either equal the live computed count for
+      that noun, or appear on the historical-mention allowlist with a reason.
+    boundary:
+      description: README.md, inventory.md, scripts/data/qflix-faq.html, scripts/canaries/README.md
+      offline: true
+    backlog_note: >-
+      Advisory: the surfaces carry many legitimately-historical numbers ("13
+      canaries" in a 2026-05 narrative, "43 timers" describing the LIVE box
+      including panel-managed units). Each needs a human to say which it is.
+    waivers: []
+
+  - id: C-07
+    title: prompt-vs-rule-table-contradiction
+    detector: c07_rea_prompt_rule_bijection
+    test: tests/unit/audit/test_c07_rea_prompt_rule_bijection.py
+    status: enforced
+    enforced_kinds: [segment-without-rule, rule-without-segment, rx-uncompilable, ps1-drift, missing-field]
+    advisory_kinds: []
+    discovery:
+      date: 2026-07-29
+      provenance: >-
+        Three classes the REA system prompt listed as "must NEVER report" had NO
+        enforcement rule — the prompt was asking, not enforcing. Neither copy of
+        the policy was in git, so nothing could compare them.
+    rule: >-
+      Every ';'-segment of the prompt's never-report sentence is claimed by >=1
+      class in manifest/rea-noise-classes.yaml; every class is claimed by
+      exactly one segment; every rx compiles; and when the (untracked)
+      qflix-rea.ps1 is present, its rule ids and rx strings match the yaml
+      byte-for-byte.
+    boundary:
+      description: manifest/rea-noise-classes.yaml, cross-checked against scripts/local-llm/qflix-rea.ps1 when present
+      offline: true
+      partial_offline_note: >-
+        The ps1 half only runs where the file exists (the operator workstation).
+        In CI the yaml-internal bijection is fully checked and the ps1 cross-
+        check records kind `ps1-absent` as an explicit, counted skip — never a
+        silent pass. Residual R4.
+    waivers: []
+
+  - id: C-08
+    title: decommissioned-still-referenced
+    detector: c08_decommissioned_refs
+    test: tests/unit/audit/test_c08_decommissioned_refs.py
+    status: advisory
+    enforced_kinds: []
+    advisory_kinds: [live-reference]
+    discovery:
+      date: 2026-07-29
+      provenance: >-
+        Stage-0 spec section 2, measured baseline: maintainerr in 19 files,
+        homarr in 9, quadstronix in 3 under scripts/ + manifest/. Every one of
+        those is a decommission that left a reference behind.
+    rule: >-
+      A retired name may appear only in a history surface (CHANGELOG, transition
+      log, incidents, inventory's struck-through rows, dated audit docs), on a
+      line that itself declares the retirement, or at an adjudicated allow_path.
+      Never in live executable code, a unit file, a manifest entry or a secrets
+      key.
+    boundary:
+      description: manifest/decommissioned.yaml components x all tracked text files
+      offline: true
+    waivers: []
+
+  - id: C-09
+    title: silent-exit-on-missing-prerequisite
+    detector: c09_silent_exit
+    test: tests/unit/audit/test_c09_silent_exit.py
+    status: advisory
+    enforced_kinds: []
+    advisory_kinds: [guard-exits-clean]
+    discovery:
+      date: 2026-07-27
+      provenance: >-
+        Memory kuma-monitors-born-mute: "canary push tokens live at ~/secrets/
+        NOT ~/.opt/maint/ and a missing token silently exits 0". Unified here
+        with REA's five early-return deadman paths — the same shape, two hosts.
+    rule: >-
+      No `exit 0` / `return 0` / `sys.exit(0)` may be the body of a guard that
+      tested for a MISSING prerequisite (a secret file, a push token, a binary).
+      Missing prerequisites must exit non-zero or push DOWN.
+    boundary:
+      description: tracked scripts/canaries/*.sh exit-0 sites + self-pushing job scripts
+      offline: true
+    backlog_note: >-
+      Deliberately ADVISORY on first landing: the "is this exit-0 guarding a
+      missing prerequisite or an intentional no-op" question has a moderate
+      false-positive rate and every instance needs eyes.
+    waivers: []
+
+  - id: C-10
+    title: test-not-in-CI / subject-not-tracked
+    detector: c10_test_in_ci
+    test: tests/unit/audit/test_c10_test_in_ci.py
+    status: enforced
+    enforced_kinds: [test-not-in-ci, subject-untracked, ci-job-missing, ci-command-missing]
+    # An import that resolves to no file under the declared roots is a REAL
+    # signal, but it can also mean the roots list drifted rather than the test.
+    # Advisory so a roots-list bug cannot make the whole build unreviewable.
+    advisory_kinds: [subject-unresolvable]
+    discovery:
+      date: 2026-07-29
+      provenance: >-
+        `git check-ignore -v scripts/local-llm/qflix-rea.ps1` => .gitignore:55.
+        The 56KB LLM auditor — the alerting layer itself — is not in git;
+        tests/local-llm/test-qflix-rea.ps1 (85 Test-Case blocks) dot-sources it
+        and exits 1 in a clean clone; and .github/workflows/tests.yml ran only
+        the pytest suite. A test suite in ZERO CI, testing a subject that does
+        not exist in CI. Highest value per line in the whole regime.
+    rule: >-
+      Every tracked test file is executed by >=1 CI job (declared in
+      audit-scope.yaml:ci_execution and verified against the real workflow
+      file); every file a test imports or dot-sources is git-tracked, or listed
+      in audit-scope.yaml surface S2 with a residual reason and an owner.
+    boundary:
+      description: tracked tests/** test files UNION .github/workflows/*.yml jobs UNION each test's resolved subjects
+      offline: true
+    waivers:
+      - id: W-C10-001
+        match:
+          instance_id: "tests/local-llm/test-rea-noise-classes.ps1->manifest/does-not-exist.yaml"
+        owner: operator
+        date: 2026-07-29
+        reason: >-
+          Deliberate NEGATIVE fixture, not a real subject. The test asserts that
+          Get-ReaNoiseRules THROWS when the policy file is absent, rather than
+          returning an empty rule table — an empty table would silently disable
+          every noise suppression and page the operator at 2am with known-benign
+          Tdarr chatter. The path must NOT exist for the assertion to mean
+          anything, so it can never be git-tracked. Reviewed with C-09 in mind:
+          this is the loader refusing to run on a missing prerequisite, which is
+          the behaviour that class demands.
+
+  # ------------------------------------------------------------------ RESIDUAL
+  # These CANNOT be decided from the repo. They are named here so their absence
+  # from the offline run is a DECLARED omission, never a silent one. Each has a
+  # matching row in docs/audit-residual-risk.md; a test asserts the two ledgers
+  # agree in both directions.
+
+  - id: L-01
+    title: repo unit files vs deployed unit files
+    status: residual
+    detector: null
+    test: null
+    why_not_offline: >-
+      Drop-ins that exist ONLY on the box are by DESIGN out of repo — the reaper
+      is armed with `--max-pct 100` and the torrent-janitor with `--execute` via
+      on-box drop-ins precisely so a repo clone cannot arm a mass delete. Repo
+      text therefore cannot tell you what systemd will actually run.
+    live_detector: scripts/maint/qflix-audit-live.py
+    residual_row: L-01
+
+  - id: L-02
+    title: deployed timers/services absent from the repo
+    status: residual
+    detector: null
+    test: null
+    why_not_offline: >-
+      A unit that exists only on the box is invisible to a glob over the repo,
+      by definition. Only `systemctl --user list-unit-files` knows.
+    live_detector: scripts/maint/qflix-audit-live.py
+    residual_row: L-02
+
+  - id: L-03
+    title: live Kuma monitor set vs manifest
+    status: residual
+    detector: null
+    test: null
+    why_not_offline: >-
+      Needs kuma.db, which is box-local. /metrics is not a substitute: it omits
+      daily self-pushers for ~22h/day between beats, so a /metrics-based check
+      false-flags them as drift.
+    live_detector: scripts/maint/qflix-audit-live.py
+    residual_row: L-03
+
+  - id: L-04
+    title: declared secret keys exist on the box with correct mode
+    status: residual
+    detector: null
+    test: null
+    why_not_offline: >-
+      Secrets are never in git (public repo). Existence and file mode are
+      properties of the box's filesystem only.
+    live_detector: scripts/maint/qflix-audit-live.py
+    residual_row: L-04
+
+  - id: L-05
+    title: every self-pusher has a persisted push token
+    status: residual
+    detector: null
+    test: null
+    why_not_offline: >-
+      The born-mute class. A push token is a live Kuma artifact written into
+      ~/secrets/kuma-push-tokens.json; a missing one makes the job exit 0
+      silently. Nothing in the repo can observe it.
+    live_detector: scripts/maint/qflix-audit-live.py
+    residual_row: L-05
+
+  - id: L-06
+    title: quota / thread ceiling / disk
+    status: residual
+    detector: null
+    test: null
+    why_not_offline: >-
+      Inherently live numbers on a shared seedbox whose limits Ultra.cc can
+      change out-of-band (128 cores visible, ulimit -u 2000; ulimit -v 10GB).
+    live_detector: scripts/maint/qflix-audit-live.py
+    residual_row: L-06

@@ -186,6 +186,18 @@ STANDALONE_SELF_PUSH_MONITORS = {
     # AND in qflix-collect.py's default) is a coordinated change for the
     # operator, not something this dict can paper over.
     "QFlix Collect (workstation)": "QFlix Collect (workstation)",
+    # The Convergent Audit Regime's own dead-man (2026-07-29). qflix-audit.py
+    # runs daily from manitoba-maint-audit.timer and self-pushes here; the
+    # monitor goes RED on an ENFORCED finding (exit 1) or on a REGIME INTEGRITY
+    # failure (exit 2), and stays green while only an advisory backlog remains.
+    # Registered here — and nowhere else — per the comment above, so the drift
+    # audit expects it and bootstrap-kuma-monitors.py creates it with its token.
+    #
+    # UNTIL bootstrap runs on the box, `manitoba-maint kuma audit` will report
+    # this monitor as manifest_only. That is a TRUE finding, not a false one:
+    # the repo declares the intent, the monitor genuinely does not exist yet,
+    # and deploying (Phase 5) is what closes it. See docs/audit-regime.md.
+    "QFlix Audit Regime": "qflix-audit",
 }
 
 
