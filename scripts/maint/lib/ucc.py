@@ -21,7 +21,15 @@ Debounce
 --------
 - clear → active : single gated probe (immediate).
 - active → clear : requires UCC_CLEAR_DEBOUNCE consecutive clear probes.
-- probe-error    : holds last state, increments consecutive_error only.
+- probe-error    : holds last state and increments consecutive_error --
+                   UNLESS the hold has lasted UCC_PROBE_ERROR_CAP consecutive
+                   errors while active, in which case it fails OPEN (forces
+                   active -> False) rather than holding forever. See the
+                   FIX comment at UCC_PROBE_ERROR_CAP and in detect() for the
+                   2026-07-29 audit finding this closes: consecutive_error
+                   had no upper bound, so a dead/unreachable probe could
+                   freeze the fleet-wide auto-recovery gate ON indefinitely
+                   (suppression.ucc_active() reads this same `active` flag).
 """
 from __future__ import annotations
 
@@ -41,6 +49,27 @@ from typing import Optional
 
 # Number of consecutive clear probes needed to flip active → False.
 UCC_CLEAR_DEBOUNCE: int = 3
+
+# FIX (audit, 2026-07-29): number of consecutive probe-error cycles allowed
+# before we stop trusting a frozen `active=True` and fail OPEN.
+#
+# Before this cap, the probe-error branch held `active` frozen forever with
+# NO upper bound on consecutive_error -- a production instance was found at
+# consecutive_error == 128 (~10.6h at the 5-min timer cadence, see
+# manitoba-maint-ucc-detect.timer) with no code path anywhere in
+# scripts/maint or scripts/canaries ever reading consecutive_error to break
+# the freeze. suppression.ucc_active() / recovery_suppressed() read that
+# same frozen `active` flag on every webhook down-event, so a probe that
+# merely can't reach the host (SSH stall, host overload -- NOT necessarily
+# a real UCC gate) silently disabled auto-recovery for every ucc-class app,
+# fleet-wide, for as long as the probe stayed broken.
+#
+# 3 cycles = 15 minutes at the 5-min cadence: the same order of magnitude as
+# UCC_CLEAR_DEBOUNCE (3 x 5min = 15min) already assumes is enough to rule
+# out a single host-load blip, so it does not fire open on the transient
+# noise the debounce elsewhere already tolerates -- but it is short enough
+# that a genuinely dead probe doesn't leave recovery suppressed for hours.
+UCC_PROBE_ERROR_CAP: int = 3
 
 # Probe subprocess timeout in seconds.
 _PROBE_TIMEOUT_S: int = 15
@@ -219,6 +248,8 @@ def _append_transition(
     from_state: str,
     to_state: str,
     probe_op: str,
+    *,
+    detail: Optional[str] = None,
 ) -> None:
     """Append one JSONL record to the transitions log. Best-effort."""
     try:
@@ -230,6 +261,8 @@ def _append_transition(
             "to": to_state,
             "probe_op": probe_op,
         }
+        if detail is not None:
+            record["detail"] = detail
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except Exception as exc:
@@ -244,7 +277,13 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _on_edge(from_label: str, to_label: str, probe_op: str) -> None:
+def _on_edge(
+    from_label: str,
+    to_label: str,
+    probe_op: str,
+    *,
+    detail: Optional[str] = None,
+) -> None:
     """Fire best-effort side-effects on a state-machine edge.
 
     Both the notify call and the transitions-log write are best-effort;
@@ -253,13 +292,30 @@ def _on_edge(from_label: str, to_label: str, probe_op: str) -> None:
     transitions_path = _transitions_log_path()
 
     # Transitions log (always first — cheaper than network).
-    _append_transition(transitions_path, from_label, to_label, probe_op)
+    _append_transition(transitions_path, from_label, to_label, probe_op, detail=detail)
 
     # Discord notification — best-effort.
     try:
         from lib import notify as notify_mod
         if to_label == "active":
             msg = f"UCC maintenance gate detected (`{probe_op}` returned gated). Window marked active."
+            level = "warning"
+        elif to_label == "clear-failopen":
+            # Distinct from a debounce-confirmed clear: we never SAW a clear
+            # probe here, we gave up trusting the frozen `active` flag after
+            # too many consecutive probe errors (see UCC_PROBE_ERROR_CAP).
+            # Flagged "warning" (not "info") because it's an unconfirmed
+            # guess, not a verified all-clear -- the operator should know
+            # recovery is being un-suppressed on a probe outage, not on
+            # evidence UCC actually lifted the gate.
+            msg = (
+                f"UCC probe-error cap reached ({detail}) -- failing OPEN: "
+                f"`{probe_op}` has been erroring, not confirming clear, so we "
+                f"stopped trusting the frozen `active` flag and un-suppressed "
+                f"recovery rather than risk holding it forever. If UCC is "
+                f"still actually gated, the next successful probe re-flips "
+                f"active immediately."
+            )
             level = "warning"
         else:
             msg = f"UCC maintenance window cleared (`{probe_op}` confirmed clear x{UCC_CLEAR_DEBOUNCE}). Window deactivated."
@@ -312,11 +368,33 @@ def detect(
 
     edge_from: Optional[str] = None
     edge_to: Optional[str] = None
+    edge_detail: Optional[str] = None
 
     if classification == "probe-error":
         # Hold last state — increment error counter only; reset nothing.
-        state["consecutive_error"] = consecutive_error + 1
+        new_consecutive_error = consecutive_error + 1
+        state["consecutive_error"] = new_consecutive_error
         # (consecutive_clear is intentionally unchanged)
+
+        # FIX (audit, 2026-07-29): cap the hold — see UCC_PROBE_ERROR_CAP.
+        # Only relevant while active=True (a frozen `active=False` is
+        # already the non-suppressing state; nothing to fail open from).
+        # Fail OPEN (force active=False) rather than fail CLOSED (the old,
+        # unbounded hold): a probe that can't run tells us nothing about
+        # whether the gate is really up, so trusting the stale True is no
+        # better a guess than False — and False is the direction that
+        # doesn't leave every ucc-class app's recovery suppressed
+        # indefinitely. Worst case on a wrong guess here: one harmless
+        # recovery attempt against a still-gated host, which the gated
+        # lifecycle CLI simply no-ops on (see module docstring).
+        if was_active and new_consecutive_error >= UCC_PROBE_ERROR_CAP:
+            state["active"] = False
+            edge_from = "active"
+            edge_to = "clear-failopen"
+            edge_detail = (
+                f"{new_consecutive_error} consecutive probe errors "
+                f">= cap {UCC_PROBE_ERROR_CAP}"
+            )
 
     elif classification == "gated":
         state["consecutive_error"] = 0
@@ -357,7 +435,7 @@ def detect(
     # best-effort — if they raise, we catch and continue.
     if edge_from is not None and edge_to is not None:
         try:
-            _on_edge(edge_from, edge_to, probe_op_str)
+            _on_edge(edge_from, edge_to, probe_op_str, detail=edge_detail)
         except Exception as exc:
             print(f"WARNING: edge side-effects failed: {exc}", file=sys.stderr)
 

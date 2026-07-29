@@ -23,6 +23,7 @@ from lib.ucc import (
     read_state,
     write_state,
     UCC_CLEAR_DEBOUNCE,
+    UCC_PROBE_ERROR_CAP,
 )
 
 
@@ -395,6 +396,108 @@ class TestStateMachine:
                 state = detect(state_path=state_path, probe_app="kavita")
         assert state["active"] is False
         assert state["consecutive_error"] == 1
+        mock_notify.assert_not_called()
+
+    # --- FIX (audit, 2026-07-29): probe-error cap fails OPEN ---
+
+    def test_probe_error_below_cap_still_holds_active(self, tmp_path):
+        """One short of the cap: still holding, no fail-open yet."""
+        state_path = tmp_path / "ucc-window.json"
+        initial = {
+            "active": True,
+            "first_detected_at": "2026-05-24T21:30:00Z",
+            "last_confirmed_at": "2026-05-24T23:55:00Z",
+            "consecutive_clear": 0,
+            "consecutive_error": UCC_PROBE_ERROR_CAP - 2,
+        }
+        write_state(state_path, initial)
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
+            with patch("lib.notify.notify", return_value=True) as mock_notify:
+                state = detect(state_path=state_path, probe_app="kavita")
+        assert state["active"] is True
+        assert state["consecutive_error"] == UCC_PROBE_ERROR_CAP - 1
+        mock_notify.assert_not_called()
+
+    def test_probe_error_at_cap_fails_open(self, tmp_path):
+        """Reaching UCC_PROBE_ERROR_CAP consecutive errors while active must
+        force active -> False (fail OPEN) instead of holding forever — this
+        is the exact bug: consecutive_error had no upper bound and
+        suppression.ucc_active() read the frozen True on every webhook."""
+        state_path = tmp_path / "ucc-window.json"
+        initial = {
+            "active": True,
+            "first_detected_at": "2026-05-24T21:30:00Z",
+            "last_confirmed_at": "2026-05-24T23:55:00Z",
+            "consecutive_clear": 0,
+            "consecutive_error": UCC_PROBE_ERROR_CAP - 1,
+        }
+        write_state(state_path, initial)
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
+            with patch("lib.notify.notify", return_value=True) as mock_notify:
+                state = detect(state_path=state_path, probe_app="kavita")
+        assert state["active"] is False
+        assert state["consecutive_error"] == UCC_PROBE_ERROR_CAP
+        # Fail-open IS an edge — operator must be notified it happened.
+        mock_notify.assert_called_once()
+
+    def test_probe_error_past_cap_stays_inactive_no_repeat_notify(self, tmp_path):
+        """Once failed open, further probe errors must not keep re-notifying
+        every cycle (would-be edge is a no-op since already inactive)."""
+        state_path = tmp_path / "ucc-window.json"
+        initial = {
+            "active": False,
+            "consecutive_clear": 0,
+            "consecutive_error": UCC_PROBE_ERROR_CAP + 10,
+        }
+        write_state(state_path, initial)
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
+            with patch("lib.notify.notify", return_value=True) as mock_notify:
+                state = detect(state_path=state_path, probe_app="kavita")
+        assert state["active"] is False
+        assert state["consecutive_error"] == UCC_PROBE_ERROR_CAP + 11
+        mock_notify.assert_not_called()
+
+    def test_probe_error_fail_open_appends_transition_log(self, tmp_path, monkeypatch):
+        """The fail-open edge must be durably logged (SECOND DESIGN LAW:
+        every suppression change is written to the audit log, nothing
+        dropped silently)."""
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        state_path = tmp_path / "ucc-window.json"
+        initial = {
+            "active": True,
+            "first_detected_at": "2026-05-24T21:30:00Z",
+            "last_confirmed_at": "2026-05-24T23:55:00Z",
+            "consecutive_clear": 0,
+            "consecutive_error": UCC_PROBE_ERROR_CAP - 1,
+        }
+        write_state(state_path, initial)
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
+            with patch("lib.notify.notify", return_value=True):
+                detect(state_path=state_path, probe_app="kavita")
+        log_path = tmp_path / "ucc-transitions.jsonl"
+        assert log_path.exists()
+        lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["from"] == "active"
+        assert record["to"] == "clear-failopen"
+        assert "detail" in record and str(UCC_PROBE_ERROR_CAP) in record["detail"]
+
+    def test_probe_error_fail_open_only_applies_when_was_active(self, tmp_path):
+        """A high error count while already inactive must not fabricate an
+        edge or otherwise misbehave — nothing to fail open FROM."""
+        state_path = tmp_path / "ucc-window.json"
+        initial = {
+            "active": False,
+            "consecutive_clear": 0,
+            "consecutive_error": UCC_PROBE_ERROR_CAP - 1,
+        }
+        write_state(state_path, initial)
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
+            with patch("lib.notify.notify", return_value=True) as mock_notify:
+                state = detect(state_path=state_path, probe_app="kavita")
+        assert state["active"] is False
+        assert state["consecutive_error"] == UCC_PROBE_ERROR_CAP
         mock_notify.assert_not_called()
 
     def test_probe_error_does_not_reset_consecutive_clear(self, tmp_path):
