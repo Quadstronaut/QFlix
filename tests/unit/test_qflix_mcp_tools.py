@@ -48,7 +48,7 @@ def test_list_torrents_returns_torrents(tmp_path, monkeypatch):
         "qbit": {"torrents": [{"hash": "a", "name": "Foo"}]},
     })
     out = qflix_mcp.qflix_list_torrents()
-    assert out[0]["hash"] == "a"
+    assert out["torrents"][0]["hash"] == "a"
 
 
 def test_list_torrents_filters_by_state(tmp_path, monkeypatch):
@@ -62,7 +62,7 @@ def test_list_torrents_filters_by_state(tmp_path, monkeypatch):
         ]},
     })
     out = qflix_mcp.qflix_list_torrents(state="stalledDL")
-    assert {t["hash"] for t in out} == {"b", "c"}
+    assert {t["hash"] for t in out["torrents"]} == {"b", "c"}
 
 
 def test_list_torrents_filters_by_category(tmp_path, monkeypatch):
@@ -75,7 +75,7 @@ def test_list_torrents_filters_by_category(tmp_path, monkeypatch):
         ]},
     })
     out = qflix_mcp.qflix_list_torrents(category="radarr")
-    assert [t["hash"] for t in out] == ["a"]
+    assert [t["hash"] for t in out["torrents"]] == ["a"]
 
 
 def test_list_torrents_stale_only_filter(tmp_path, monkeypatch):
@@ -91,7 +91,29 @@ def test_list_torrents_stale_only_filter(tmp_path, monkeypatch):
         },
     }))
     out = qflix_mcp.qflix_list_torrents(stale_only=True)
-    assert [t["hash"] for t in out] == ["a"]
+    assert [t["hash"] for t in out["torrents"]] == ["a"]
+
+
+def test_list_torrents_includes_freshness_fields(tmp_path, monkeypatch):
+    """2026-07-29 fix: qflix_list_torrents used to return a bare list with no
+    way to detect a frozen cache. Now wrapped with captured_at/age/warning."""
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    recent = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _seed_snapshot(tmp_path, 1, {
+        "captured_at": recent,
+        "qbit": {"torrents": [{"hash": "a"}]},
+    })
+    out = qflix_mcp.qflix_list_torrents()
+    assert out["captured_at"] == recent
+    assert out["snapshot_age_minutes"] is not None
+    assert out["stale_warning"] is False
+
+
+def test_list_torrents_no_snapshot_warns(tmp_path, monkeypatch):
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    out = qflix_mcp.qflix_list_torrents()
+    assert out["torrents"] == []
+    assert out["stale_warning"] is True
 
 
 def test_status_emits_stale_warning_for_old_snapshot(tmp_path, monkeypatch):
@@ -152,7 +174,23 @@ def test_list_stale_returns_candidates(tmp_path, monkeypatch):
              "updated_at": "2026-05-12T01:00:00Z"}
     (tmp_path / "stale-state.json").write_text(json.dumps(state))
     out = qflix_mcp.qflix_list_stale()
-    assert "abc" in {h["hash"] for h in out}
+    assert "abc" in {h["hash"] for h in out["stale"]}
+
+
+def test_list_stale_includes_freshness_fields(tmp_path, monkeypatch):
+    """2026-07-29 fix: qflix_list_stale used to return a bare list with no
+    way to detect a frozen cache. Now wrapped with captured_at/age/warning,
+    keyed off the same snapshot the stale-state was collected alongside."""
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    _seed_snapshot(tmp_path, 1, {
+        "captured_at": "1999-01-01T00:00:00Z",
+        "qbit": {"torrents": []},
+    })
+    (tmp_path / "stale-state.json").write_text(json.dumps({"hashes": {}}))
+    out = qflix_mcp.qflix_list_stale()
+    assert out["stale"] == []
+    assert out["stale_warning"] is True
+    assert out["snapshot_age_minutes"] is not None
 
 
 @patch("qflix_mcp.ssh_call")
@@ -219,6 +257,29 @@ def test_plex_libraries(tmp_path, monkeypatch):
     })
     out = qflix_mcp.qflix_plex_libraries()
     assert out["libraries"][0]["title"] == "Movies"
+
+
+def test_plex_libraries_includes_freshness_fields(tmp_path, monkeypatch):
+    """2026-07-29 fix: qflix_plex_libraries used to return the bare `plex`
+    sub-object with no captured_at/stale_warning. No shape change here (it
+    already returned a dict) — freshness fields are just merged in."""
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    recent = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _seed_snapshot(tmp_path, 1, {
+        "captured_at": recent,
+        "plex": {"libraries": [], "active_sessions": 0},
+    })
+    out = qflix_mcp.qflix_plex_libraries()
+    assert out["captured_at"] == recent
+    assert out["stale_warning"] is False
+
+
+def test_plex_libraries_no_snapshot_warns(tmp_path, monkeypatch):
+    monkeypatch.setattr(qflix_mcp, "DATA_ROOT", tmp_path)
+    out = qflix_mcp.qflix_plex_libraries()
+    assert out["libraries"] == [] and out["active_sessions"] == 0
+    assert out["stale_warning"] is True
+    assert out["stale_reason"] == "no snapshot has ever been written"
 
 
 def test_recent_events(tmp_path, monkeypatch):
