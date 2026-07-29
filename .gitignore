@@ -41,7 +41,17 @@ scripts/qflix-newsletter/**/*.pyc
 # Workstation tunnel daemon hardcodes the real seedbox FQDN — treat as secret.
 scripts/manitoba-tunnel.ps1
 
-# Workstation-only audit script — hardcodes the real seedbox FQDN.
+# Workstation-only audit script. NOT excluded for secrets — the old comment here
+# claimed it "hardcodes the real seedbox FQDN", which was copied from the tunnel
+# entry above and is false: Resolve-SshHost reads secrets/seedbox.ssh-host (or
+# $env:QFLIX_SSH_HOST) at runtime and throws rather than guess. Verified clean
+# 2026-07-29 — no FQDN, token, webhook or credential in the file.
+# It stays out of git because it is operator-local tooling that runs on the
+# workstation, not on the box, and the repo is public.
+# Backup: covered by the Backup-Documents scheduled task, which robocopy /MIR's
+# all of G:\Documents to B:\BAKS\Documents and ignores .gitignore. That is a
+# MIRROR, not history — a bad edit propagates on the next run. Keep that in mind
+# before large rewrites of this file.
 scripts/local-llm/qflix-rea.ps1
 
 # Staging dir for the 2026-05-11 inventory-driven cleanup; safe to delete once
