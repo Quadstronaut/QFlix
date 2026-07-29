@@ -751,3 +751,37 @@ canaries:
     kuma_monitor: "Canary Tdarr Healthcheck"
     script: "scripts/canaries/tdarr-healthcheck.sh"
     schedule: "hourly"
+  ucc-gate-stuck:
+    # Watch the UCC maintenance-gate DETECTOR, not the apps it gates.
+    #
+    # lib/ucc.py detect() has a probe-error branch that holds the prior
+    # `active` flag and only increments consecutive_error. Before the
+    # 2026-07-29 fix that counter had NO upper bound, and a live instance was
+    # found stuck at consecutive_error=128 (~10.6h at the 5-min detect
+    # cadence). lib/suppression.py reads that same frozen flag on EVERY
+    # webhook down-event, so a probe that merely could not reach the host had
+    # silently disabled auto-recovery for every ucc-class app, fleet-wide,
+    # with nothing watching. The fix caps the hold at 3 cycles and fails OPEN.
+    #
+    # This is the second, independent leg of that fix (design law: every
+    # concern gets its own module/timer/check). It does NOT re-test
+    # suppression behaviour — it reads ~/.opt/maint/ucc-window.json directly,
+    # deliberately not importing lib.ucc, so it keeps working even if a future
+    # bug makes that module unimportable or its status() misbehave.
+    #
+    # Two predicates, both past what the in-code cap already handles:
+    #   consecutive_error > 12 (~1h) — the cap stops the SUPPRESSION damage at
+    #     15 min, but a probe still erroring an hour later means the detection
+    #     pipeline itself is dark (SSH broken, app-manager renamed, misconfigured
+    #     secrets/ucc.probe_app). Fail-open fires one Discord edge, not a
+    #     repeating page, so nothing else would surface it.
+    #   active continuously true >= 6h — defense in depth against a DIFFERENT
+    #     bug class (a future regression in the gated/clear branches, which the
+    #     probe-error cap does not cover) freezing the gate on. Real UCC
+    #     maintenance runs minutes to a few hours; the QFlix-owned window is a
+    #     bounded 4h Monday slot.
+    # A MISSING state file is NOT a failure: it means no window was ever
+    # recorded. Timer liveness is a separate concern and a separate canary.
+    kuma_monitor: "Canary UCC Gate Stuck"
+    script: "scripts/canaries/ucc-gate-stuck.sh"
+    schedule: "every-15min"
