@@ -61,6 +61,29 @@ def _snapshot_age_minutes(captured_at: Optional[str]) -> Optional[int]:
 _STALE_SNAPSHOT_MINUTES = 90
 
 
+def _freshness(snap: Optional[dict]) -> dict:
+    """Shared staleness envelope for every snapshot-backed read tool.
+
+    2026-07-29 audit: qflix_list_torrents, qflix_list_stale and
+    qflix_plex_libraries were returning raw cache data with no captured_at /
+    snapshot_age_minutes / stale_warning — the exact fields qflix_status and
+    qflix_arr_queue already compute (the latter per the 2026-05 incident
+    where a stale read misled the operator into thinking a queue item was
+    still present). This factors that one computation into one place so the
+    five read tools can't drift apart again. Doubly relevant since the
+    hourly collector moved off the workstation on 2026-07-09 — B:\\QFlix\\data
+    hasn't been written since, so every read here is serving a frozen cache.
+    """
+    if snap is None:
+        return {"captured_at": None, "snapshot_age_minutes": None,
+                "stale_warning": True,
+                "stale_reason": "no snapshot has ever been written"}
+    captured_at = snap.get("captured_at")
+    age = _snapshot_age_minutes(captured_at)
+    return {"captured_at": captured_at, "snapshot_age_minutes": age,
+            "stale_warning": age is not None and age > _STALE_SNAPSHOT_MINUTES}
+
+
 def qflix_status() -> dict:
     """Returns: latest snapshot timestamp, torrent count, Kuma red monitors,
     last-collect file age, recent action count. Includes snapshot age and a
@@ -83,13 +106,11 @@ def qflix_status() -> dict:
         except json.JSONDecodeError:
             pass
     events = c.recent_events(n=200)
-    captured_at = snap.get("captured_at")
-    age = _snapshot_age_minutes(captured_at)
-    stale = age is not None and age > _STALE_SNAPSHOT_MINUTES
+    fresh = _freshness(snap)
     out = {
-        "latest_snapshot": captured_at,
-        "snapshot_age_minutes": age,
-        "stale_warning": stale,
+        "latest_snapshot": fresh["captured_at"],
+        "snapshot_age_minutes": fresh["snapshot_age_minutes"],
+        "stale_warning": fresh["stale_warning"],
         "torrent_count": len((snap.get("qbit", {}).get("torrents") or [])),
         "kuma_red": (snap.get("health", {}).get("kuma_red") or []),
         "zombies": (snap.get("health", {}).get("zombies") or []),
@@ -109,8 +130,16 @@ def qflix_status() -> dict:
 
 def qflix_list_torrents(state: Optional[str] = None,
                         category: Optional[str] = None,
-                        stale_only: bool = False) -> list:
-    """Returns: torrent list with enriched fields (qBit + *arr + Seerr).
+                        stale_only: bool = False) -> dict:
+    """Returns: torrent list with enriched fields (qBit + *arr + Seerr),
+    wrapped in a freshness envelope: {"torrents": [...], "captured_at",
+    "snapshot_age_minutes", "stale_warning"}.
+
+    SHAPE CHANGE (2026-07-29): this used to return a bare list. It was
+    serving the cache silently, with no way for a caller to tell a fresh
+    snapshot from a frozen one — see _freshness() docstring for why that
+    became urgent. Existing callers expecting a bare list must be updated
+    to read the `torrents` key.
 
     Use when: you need to inspect specific torrents (DL speed, progress,
     requester, *arr queue state). On large farms (>50 torrents) the
@@ -125,8 +154,9 @@ def qflix_list_torrents(state: Optional[str] = None,
                   candidate_for_unstick by the collector heuristic.
     """
     snap = _cache().latest_snapshot()
+    fresh = _freshness(snap)
     if snap is None:
-        return []
+        return {"torrents": [], **fresh}
     torrents = list(snap.get("qbit", {}).get("torrents") or [])
 
     if state:
@@ -139,7 +169,7 @@ def qflix_list_torrents(state: Optional[str] = None,
         candidates = {h for h, v in stale.items() if v.get("candidate_for_unstick")}
         torrents = [t for t in torrents
                     if (t.get("hash") or "").lower() in candidates]
-    return torrents
+    return {"torrents": torrents, **fresh}
 
 
 def qflix_torrent_history(hash_: str, hours: int = 24) -> list:
@@ -152,12 +182,20 @@ def qflix_torrent_history(hash_: str, hours: int = 24) -> list:
     return _cache().history_for_hash(hash_, hours=hours)
 
 
-def qflix_list_stale() -> list:
+def qflix_list_stale() -> dict:
     """Returns: torrents currently flagged as 'candidate_for_unstick'
-    (3+ consecutive hours of zero-movement matching a stale rule).
+    (3+ consecutive hours of zero-movement matching a stale rule), wrapped
+    in a freshness envelope: {"stale": [...], "captured_at",
+    "snapshot_age_minutes", "stale_warning"}.
+
+    SHAPE CHANGE (2026-07-29): this used to return a bare list. stale_state
+    is written by the same collector run as the snapshot, so it goes just as
+    frozen as qflix_list_torrents did — see _freshness() docstring. Existing
+    callers expecting a bare list must be updated to read the `stale` key.
 
     Use when: deciding what to act on or audit before scheduled action.
     """
+    fresh = _freshness(_cache().latest_snapshot())
     state = _cache().load_stale_state()
     out = []
     for h, data in (state.get("hashes") or {}).items():
@@ -169,7 +207,7 @@ def qflix_list_stale() -> list:
                 "first_zero_movement_at": data.get("first_zero_movement_at"),
                 "acted_on_at": data.get("acted_on_at"),
             })
-    return out
+    return {"stale": out, **fresh}
 
 
 def qflix_get_logs(app: str, since: str = "24h", tail: int = 500,
@@ -266,14 +304,19 @@ def qflix_query_logs(query: str, start: str = "1h",
 
 
 def qflix_plex_libraries() -> dict:
-    """Returns: Plex library list with counts + recently_added_24h + sessions.
+    """Returns: Plex library list with counts + recently_added_24h + sessions,
+    annotated with snapshot freshness (captured_at, snapshot_age_minutes,
+    stale_warning) — see _freshness() docstring for why (2026-07-29). This
+    already returned a dict, so the freshness fields are merged in directly;
+    no shape change for existing callers reading `libraries`/`active_sessions`.
 
     Use when: checking library health, recent additions, active streams.
     """
     snap = _cache().latest_snapshot()
+    fresh = _freshness(snap)
     if snap is None:
-        return {"libraries": [], "active_sessions": 0}
-    return snap.get("plex", {})
+        return {"libraries": [], "active_sessions": 0, **fresh}
+    return {**snap.get("plex", {}), **fresh}
 
 
 def qflix_recent_events(n: int = 20) -> list:
@@ -298,17 +341,11 @@ def qflix_arr_queue(slug: str) -> dict:
     Use when: inspecting downloads in flight for a specific *arr.
     """
     snap = _cache().latest_snapshot()
+    fresh = _freshness(snap)
     if snap is None:
-        return {"queue": [], "missing_count": 0,
-                "captured_at": None, "snapshot_age_minutes": None,
-                "stale_warning": True,
-                "stale_reason": "no snapshot has ever been written"}
-    captured_at = snap.get("captured_at")
-    age = _snapshot_age_minutes(captured_at)
+        return {"queue": [], "missing_count": 0, **fresh}
     base = dict(snap.get("arrs", {}).get(slug) or {"queue": [], "missing_count": 0})
-    base["captured_at"] = captured_at
-    base["snapshot_age_minutes"] = age
-    base["stale_warning"] = age is not None and age > _STALE_SNAPSHOT_MINUTES
+    base.update(fresh)
     return base
 
 
