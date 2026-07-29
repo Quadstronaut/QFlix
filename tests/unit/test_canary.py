@@ -461,5 +461,8 @@ class TestAuditIncludesCanaries:
         report = audit_monitors(m, kuma_url="http://x")
         assert "Canary Movie" in report["matched"]
         # sonarr (1) + canary (1) + auto-injected "Manitoba Pusher" (1) + "QFlix Fleet" (1)
-        # + the 4 standalone self-pushers (Reaper, Audio Disposition, anime-janitor, Torrent Janitor).
-        assert report["manifest_count"] == 8
+        # + the 5 standalone self-pushers (Reaper, Audio Disposition, anime-janitor,
+        # Torrent Janitor, QFlix Collect). Collect joined the list 2026-07-29: the job
+        # moved off the workstation onto the box 2026-07-09, so it is manitoba-owned and
+        # must be audited like the others rather than sitting in kuma_external_monitors.
+        assert report["manifest_count"] == 9
