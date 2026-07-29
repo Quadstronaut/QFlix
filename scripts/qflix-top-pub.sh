@@ -75,7 +75,22 @@ classify() {
     *victoria-logs*)              CL_LABEL=VictoriaLogs; CL_ROLE=Stats;;
     *uptime-kuma*)                CL_LABEL="Uptime Kuma"; CL_ROLE=Stats;;
     *qflix_newsletter*|*qflix-newsletter*) CL_LABEL=Newsletter; CL_ROLE=Comms;;
-    *listmonk*)                   CL_LABEL=Listmonk; CL_ROLE=Comms;;
+    # Match the BINARY, not the bare name. Postgres client backends advertise
+    # their database in argv ("postgres: quadstronaut listmonk 172.17.0.1 idle"),
+    # so a bare *listmonk* glob claimed the POSTGRES cgroup at tier 2 — and since
+    # a cgroup stops classifying once it reaches tier 2, the real postgres master
+    # never got to label it. Postgres then collided with Listmonk and surfaced as
+    # "Listmonk 2" while vanishing from the panel entirely. Worse, it was
+    # intermittent: with no idle listmonk backend open, the same cgroup labelled
+    # correctly, so the panel flipped between "Postgres" and "Listmonk 2".
+    */listmonk/bin/listmonk*)     CL_LABEL=Listmonk; CL_ROLE=Comms;;
+    # One label per maint service, not one shared label. The pusher and the
+    # webhook are separate units in separate cgroups, so a single *manitoba-maint*
+    # glob produced two indistinguishable rows ("manitoba-maint" +
+    # "manitoba-maint 2") whose count also drifted as canary oneshots came and
+    # went. Keep the bare fallback last for any other subcommand.
+    *"manitoba-maint pusher"*)    CL_LABEL="manitoba-maint (pusher)"; CL_ROLE=Maint;;
+    *"manitoba-maint webhook"*)   CL_LABEL="manitoba-maint (webhook)"; CL_ROLE=Maint;;
     *manitoba-maint*)             CL_LABEL=manitoba-maint; CL_ROLE=Maint;;
     *qflix-dash/build*)           CL_LABEL="QFlix Dash"; CL_ROLE=Web;;
     *dist/index.js*)              CL_LABEL=Seerr; CL_ROLE=Requests;;
@@ -179,10 +194,14 @@ sample() {
   done
 }
 
-emit_groups() {  # cpu_d \t pss_kb \t label \t role  (sorted by cpu desc)
+# cpu_d \t pss_kb \t label \t role \t cgroup_key  (sorted by cpu desc)
+# The cgroup key is passed through for ONE purpose: giving duplicate labels a
+# stable numeral (see the de-dupe in render). It is never printed in either the
+# human or the JSON output, so the public view still leaks no paths or cmdlines.
+emit_groups() {
   local k
   for k in "${!G_LABEL[@]}"; do
-    printf '%s\t%s\t%s\t%s\n' "${G_CPU[$k]:-0}" "${G_PSS[$k]:-0}" "${G_LABEL[$k]}" "${G_ROLE[$k]}"
+    printf '%s\t%s\t%s\t%s\t%s\n' "${G_CPU[$k]:-0}" "${G_PSS[$k]:-0}" "${G_LABEL[$k]}" "${G_ROLE[$k]}" "$k"
   done | sort -t$'\t' -k1 -nr
 }
 
@@ -218,18 +237,36 @@ render() {
       n=0
     }
     {
-      cpu[n]=$1+0; pss[n]=$2+0; lab[n]=$3; role[n]=($4==""?"Other":$4); n++
+      cpu[n]=$1+0; pss[n]=$2+0; lab[n]=$3; role[n]=($4==""?"Other":$4); key[n]=$5; n++
     }
     END{
       # Split rows: recognized components vs the single collapsed "Other" bucket.
       other_c=0; other_p=0; m=0
       for(i=0;i<n;i++){
         if(role[i]=="Other"){ other_c+=cpu[i]; other_p+=pss[i] }
-        else { L[m]=lab[i]; C[m]=cpu[i]; P[m]=pss[i]; R[m]=role[i]; m++ }
+        else { L[m]=lab[i]; C[m]=cpu[i]; P[m]=pss[i]; R[m]=role[i]; K[m]=key[i]; m++ }
       }
-      # de-dupe identical labels among recognized apps (sonarr/sonarr2 share a
-      # cmdline) -> append index. Done before Other is appended so it stays "Other".
-      for(i=0;i<m;i++){ seen[L[i]]++; if(seen[L[i]]>1) L[i]=L[i] " " seen[L[i]] }
+      # De-dupe identical labels among recognized apps -> append an index. The
+      # sonarr/sonarr2 and radarr/radarr2 anime pairs run byte-identical cmdlines
+      # ("/app/sonarr/bin/Sonarr -nobrowser -data=/config") in separate
+      # containers, so NOTHING in /proc distinguishes them and the numeral is an
+      # arbitrary discriminator, not the main/anime distinction.
+      #
+      # Order it by CGROUP KEY, not by the momentary CPU order the rows arrive
+      # in. Keyed on CPU, the numeral was reassigned whenever two instances
+      # traded places, so "Sonarr" and "Sonarr 2" swapped VALUES between
+      # refreshes while the UI (which sorts alphabetically) held the rows still —
+      # which reads as the stats being wrong. A container keeps its numeral for
+      # as long as it lives.
+      #
+      # Runs before Other is appended so that bucket stays plain "Other".
+      for(i=0;i<m;i++) ord[i]=i
+      for(a=1;a<m;a++){ v=ord[a]; b=a-1
+        while(b>=0 && (L[ord[b]]>L[v] || (L[ord[b]]==L[v] && K[ord[b]]>K[v]))){ ord[b+1]=ord[b]; b-- }
+        ord[b+1]=v }
+      for(a=0;a<m;a++){ i=ord[a]; seen[L[i]]++
+        if(seen[L[i]]>1) NEWL[i]=L[i] " " seen[L[i]] }
+      for(i=0;i<m;i++) if(i in NEWL) L[i]=NEWL[i]
       if(other_c>0 || other_p>0){ L[m]="Other"; C[m]=other_c; P[m]=other_p; R[m]="Other"; m++ }
 
       # Stack totals — all derived from raw deltas so figures reconcile.
