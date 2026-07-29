@@ -160,6 +160,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-torrent-janitor.timer \
     scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.service \
     scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.timer \
+    scripts/maint/systemd/manitoba-maint-canary-ucc-gate-stuck.service \
+    scripts/maint/systemd/manitoba-maint-canary-ucc-gate-stuck.timer \
     scripts/maint/systemd/manitoba-maint-boot-listeners.service \
     scripts/maint/arr-audit.py \
     scripts/maint/arr-audit-run.sh \
@@ -184,6 +186,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/thread-ceiling.sh \
     scripts/canaries/tdarr-scanner.sh \
     scripts/canaries/tdarr-healthcheck.sh \
+    scripts/canaries/ucc-gate-stuck.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
@@ -402,6 +405,8 @@ for unit in \
     manitoba-maint-canary-tdarr-scanner.timer \
     manitoba-maint-canary-tdarr-healthcheck.service \
     manitoba-maint-canary-tdarr-healthcheck.timer \
+    manitoba-maint-canary-ucc-gate-stuck.service \
+    manitoba-maint-canary-ucc-gate-stuck.timer \
     qflix-collect.service \
     qflix-collect.timer \
     manitoba-maint-boot-listeners.service; do
@@ -510,6 +515,13 @@ systemctl --user enable --now manitoba-maint-torrent-janitor.timer
 # (RLIMIT_NPROC), 70% WARN / 85% FAIL. Guards the GOMAXPROCS thread-exhaustion
 # class (memory seedbox-thread-cap-gomaxprocs).
 systemctl --user enable --now manitoba-maint-canary-thread-ceiling.timer
+# UCC gate-stuck canary — every 15 min. Watches the maintenance-gate DETECTOR
+# itself: a probe erroring past ~1h means detection is dark, and a gate held
+# active 6h+ means something froze it on. Before the 2026-07-29 cap, a broken
+# probe silently suppressed fleet-wide auto-recovery (found at 128 errors,
+# ~10.6h) with nothing watching. Reads the state file, not lib.ucc, so it
+# survives a bug in that module.
+systemctl --user enable --now manitoba-maint-canary-ucc-gate-stuck.timer
 # Tdarr scanner canary — hourly. Guards FFprobe/Exiftool (pipeline-blocking if
 # they break) and tracks the known-dead Mediainfo probe without parking a
 # permanent red on it. Mediainfo is unfixable here: the slot's ulimit -v 10GB
@@ -647,7 +659,7 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck; do
   CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
