@@ -1,0 +1,191 @@
+# manifest/rea-noise-classes.yaml — the REA noise-suppression POLICY, in git.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# scripts/local-llm/qflix-rea.ps1 is gitignored (.gitignore:55 — operator-local
+# workstation tooling, public repo). It carries TWO copies of the same policy:
+#   1. $Script:NoiseFindingRules — the ENFORCEMENT table (deterministic regex).
+#   2. Get-SystemPrompt's "NON-ACTIONABLE NOISE you must NEVER report" sentence
+#      — the ADVISORY ask to the models.
+# On 2026-07-29 three classes were named in the prompt with NO enforcement rule,
+# so the prompt was asking rather than enforcing — the exact gap the rule table
+# exists to close. Nothing could catch that, because neither copy was in git and
+# no test compared them.
+#
+# This file is the SINGLE SOURCE both sides read. qflix-rea.ps1 loads it at
+# start-up via scripts/local-llm/rea-noise-classes.ps1 (tracked); pytest
+# asserts prompt-clause <-> rule-id bijection offline, in CI, with no ps1
+# present. That is how defect class C-07 becomes CI-checkable without
+# un-gitignoring a 56KB operator-local script.
+#
+# HONEST LIMIT: only the POLICY is guarded. A body edit to qflix-rea.ps1 that
+# does not touch this policy is invisible to CI. Registered as residual R4 in
+# docs/audit-residual-risk.md and as surface S2 in manifest/audit-scope.yaml.
+#
+# `rx` values are .NET regex as written in the ps1, byte-for-byte. They must
+# also compile under Python's `re` (C-07 asserts it) — every construct in use
+# (inline flags, \A, negative lookahead, non-capturing groups) is common to
+# both engines. If a future rule needs a .NET-only construct, add
+# `python_incompatible: true` and C-07 will skip the compile check for that one
+# rule and record it as an explicit, named waiver instead of silently passing.
+
+schema: 1
+source_script: scripts/local-llm/qflix-rea.ps1
+source_variable: "$Script:NoiseFindingRules"
+prompt_function: Get-SystemPrompt
+# The prompt sentence the clauses below are carved out of. C-07 splits the text
+# between this marker and `prompt_stop_marker` on ';' and demands every segment
+# be claimed by exactly one class.
+prompt_start_marker: "NON-ACTIONABLE NOISE you must NEVER report"
+prompt_stop_marker: "CONVERSELY"
+
+classes:
+  - id: plex-client-abort-stream-write
+    title: Plex client-abort stream write
+    rx: '(?i)(caught exception trying to stream file|protocol is shutdown \(ssl|ssl[-: ]?protocol[-: ]?shutdown)'
+    field: null
+    prompt_clause: "Plex client-abort stream writes"
+    why: >-
+      A viewer closed or seeked mid-stream and the TLS session went away while
+      Plex was writing a chunk. Proven client-side: the identical error fires on
+      PhotoTranscoder poster JPEGs, which have no transcode pipeline at all.
+    added: 2026-07-28
+
+  - id: plex-nat-pmp-upnp
+    title: Plex NAT-PMP / UPnP port-mapping chatter
+    rx: '(?i)(nat-?pmp|upnp)\b.*(not supported|unsupported|no gateway|failed)'
+    field: null
+    prompt_clause: "Plex NAT-PMP / UPnP / port-mapping"
+    why: Upstream gateway does not support port mapping. External and cosmetic.
+    added: 2026-07-28
+
+  - id: tdarr-express-undefined-includes
+    title: Tdarr express-route TypeError (reading 'includes')
+    rx: '(?i)cannot read properties of undefined \(reading ''includes''\)'
+    field: null
+    prompt_clause: "tdarr unhandled express-route errors"
+    why: >-
+      Unhandled express route error in Tdarr_Server/srcug/api/servers.js.
+      Upstream Tdarr bug, non-fatal: verified live 2026-07-28 with the server at
+      NRestarts=0 and 20 days uptime while these were firing. This is the exact
+      finding qwen3-coder:30b reported anyway on 2026-07-28, proving a prompt
+      alone cannot hold a floor.
+    added: 2026-07-28
+
+  - id: tdarr-worker-not-a-function
+    title: Tdarr worker<N> is not a function
+    rx: '(?i)worker\d*\b.*is not a function'
+    field: null
+    prompt_clause: "tdarr unhandled express-route errors"
+    why: Same upstream Tdarr express-route bug as tdarr-express-undefined-includes.
+    added: 2026-07-28
+
+  - id: tdarr-wasm-oom
+    title: Tdarr Mediainfo probe WASM out-of-memory
+    rx: '(?i)(webassembly\.instantiate\(\):\s*out of memory|wasm memory|wasm-memory-exhausted)'
+    field: null
+    prompt_clause: "WASM out-of-memory failure"
+    why: >-
+      Ruled PERMANENTLY UNFIXABLE 2026-07-28 — Tdarr's bundled Node rejects the
+      only viable mitigation (--disable-wasm-trap-handler) and crash-loops the
+      server if forced, and ulimit -v 10GB vs the WASM runtime's 8GB guard has
+      no other lever on this box. Tracked by the tdarr-scanner Kuma canary, not
+      by paging the operator on every occurrence.
+    added: 2026-07-28
+
+  - id: mediainfo-failure
+    title: Error running MediaInfo
+    rx: '(?i)error running mediainfo'
+    field: null
+    prompt_clause: "Error running MediaInfo"
+    why: Direct consequence of tdarr-wasm-oom; same 2026-07-28 ruling applies.
+    added: 2026-07-28
+
+  - id: plex-post-reap-scan
+    title: Plex "Failed to create parent iterator" after a reap
+    rx: '(?i)failed to create parent iterator'
+    field: null
+    prompt_clause: "Failed to create parent iterator"
+    why: >-
+      Expected trailing edge of qflix-reaper's 60-day add-date retention
+      deleting a whole series directory out from under a library scan (e.g.
+      Fargo, arrId=225, reaped 2026-07-22). Plex noticing the directory it was
+      about to scan is gone, not a fault.
+    added: 2026-07-28
+
+  - id: external-indexer-5xx-html
+    title: Cloudflare / nginx error-page HTML relayed from an EXTERNAL indexer
+    rx: '(?i)(cloudflare.{0,80}(ray id|error 5\d\d)|ray id:\s*[0-9a-f]{8,}|<center>nginx(?:/[\d.]+)?</center>)'
+    field: null
+    prompt_clause: "nginx error-page HTML returned to an *arr from an EXTERNAL indexer/proxy"
+    why: >-
+      Transient upstream hiccup on someone else's server, not a fault in our
+      stack. Deliberately NOT a bare "5xx" or "error" term — that would also hit
+      our own services' genuine 5xx responses.
+    added: 2026-07-29
+
+  - id: indexer-severity-field-echo
+    title: Indexer response echoing its own "severity":"error" JSON field
+    rx: '"severity"\s*:\s*"error"'
+    field: null
+    prompt_clause: 'indexer responses that merely echo a `"severity": "error"` JSON field'
+    why: >-
+      Part of the indexer's normal response schema. Scoped to the exact quoted
+      JSON key:value shape so a genuine log line that mentions severity near the
+      word error in prose still pages.
+    added: 2026-07-29
+
+  - id: bare-stack-continuation
+    title: Bare stack-trace continuation fragment with no root error
+    rx: '(?ims)\A(?!.*(?:^\s*[A-Za-z][\w.]*(?:Exception|Error)\b\s*:|Traceback \(most recent call last\)|\[ERROR\]|ERROR\s*[-:])).*(?:^\s*at\s+\S|end of inner exception stack trace)'
+    field: excerpt
+    prompt_clause: "bare stack-trace CONTINUATION fragments"
+    why: >-
+      .NET-style `   at Namespace.Class.Method()` frames and the boilerplate
+      "End of inner exception stack trace" marker with NOTHING in the same
+      excerpt that looks like a real exception header. Scoped to the EXCERPT
+      field only: a model's own prose summary almost always contains the words
+      error/exception regardless of the raw log, which would poison the
+      negative lookahead into never firing.
+    added: 2026-07-29
+
+# Every ';'-delimited segment of the prompt's never-report sentence must be
+# claimed here by >=1 class, and every class above must be claimed by exactly
+# one segment. That two-way check is what would have caught the 2026-07-29 gap:
+# a segment with no `classes:` entry means the prompt is asking without
+# enforcing.
+prompt_segments:
+  - index: 0
+    marker: 'Plex NAT-PMP / UPnP / port-mapping "not supported by gateway" messages'
+    classes: [plex-nat-pmp-upnp]
+  - index: 1
+    marker: 'nginx error-page HTML returned to an *arr from an EXTERNAL indexer/proxy'
+    classes: [external-indexer-5xx-html]
+  - index: 2
+    marker: 'indexer responses that merely echo a `"severity": "error"` JSON field'
+    classes: [indexer-severity-field-echo]
+  - index: 3
+    marker: 'bare stack-trace CONTINUATION fragments'
+    classes: [bare-stack-continuation]
+  - index: 4
+    marker: 'tdarr unhandled express-route errors'
+    classes: [tdarr-express-undefined-includes, tdarr-worker-not-a-function]
+  - index: 5
+    marker: 'Plex client-abort stream writes'
+    classes: [plex-client-abort-stream-write]
+  - index: 6
+    marker: "WASM out-of-memory failure"
+    classes: [tdarr-wasm-oom, mediainfo-failure]
+  - index: 7
+    marker: 'Failed to create parent iterator'
+    classes: [plex-post-reap-scan]
+
+# Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
+# (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
+# from git without the ps1 present.
+deadman_reasons:
+  - tunnel_timeout
+  - no_models
+  - ssh_fail
+  - blob_parse
+  - all_models_noop
