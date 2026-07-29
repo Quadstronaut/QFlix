@@ -1,0 +1,262 @@
+# manifest/jobs.yaml — the timer <-> dead-man ledger.
+#
+# Boundary for defect class C-01 (timer-without-deadman): every tracked
+# scripts/*/systemd/*.timer UNION every key below. A timer with no entry, or an
+# entry declaring neither `kuma_monitor` nor `no_monitor_reason`, is an ENFORCED
+# finding: it means a scheduled job can stop running and nothing will notice.
+#
+# WHY A SEPARATE FILE (operator design law: compartmentalise for migration):
+# manifest/apps.yaml answers "what apps exist and how are they health-checked".
+# This answers "what runs on a schedule and what notices when it stops". They
+# have different lifecycles — a job can be retimed without touching an app, and
+# a future server migration retimes jobs wholesale. Folding this into apps.yaml
+# would couple them.
+#
+# FIELDS
+#   timer              repo-relative path to the .timer unit (cross-checked
+#                      both ways: a wrong path is a finding, not a silent pass)
+#   kuma_monitor       the Kuma monitor that goes RED when this job stops. Must
+#                      resolve against manifest/apps.yaml (apps + canaries) or
+#                      lib/kuma.py:STANDALONE_SELF_PUSH_MONITORS, else finding.
+#   no_monitor_reason  written adjudication for having none. >=40 chars.
+#   open_gap           true  = adjudicated as a KNOWN, UNCLOSED gap. Reported as
+#                              an ADVISORY finding every run so it cannot fade.
+#                      false = genuinely does not need its own dead-man, and the
+#                              reason says why.
+#   adjudicated/owner  who decided, and when. Both required whenever
+#                      no_monitor_reason is set.
+#
+# `open_gap: true` is deliberately NOT a way to make a finding disappear. It
+# moves it from "unknown" to "known, dated, owned, and still reported".
+
+schema: 1
+
+jobs:
+
+  # ---------------------------------------------------------------- monitored
+  # Each of these has a Kuma monitor that flips RED if the job stops beating.
+
+  bazarr2-sync:
+    timer: scripts/maint/systemd/bazarr2-sync.timer
+    kuma_monitor: "Bazarr 2 Sync"
+
+  manitoba-maint-anime-janitor:
+    timer: scripts/maint/systemd/manitoba-maint-anime-janitor.timer
+    kuma_monitor: "qflix-anime-janitor"
+
+  manitoba-maint-audio-disposition:
+    timer: scripts/maint/systemd/manitoba-maint-audio-disposition.timer
+    kuma_monitor: "QFlix Audio Disposition"
+
+  manitoba-maint-reaper:
+    timer: scripts/maint/systemd/manitoba-maint-reaper.timer
+    kuma_monitor: "QFlix Reaper"
+
+  manitoba-maint-torrent-janitor:
+    timer: scripts/maint/systemd/manitoba-maint-torrent-janitor.timer
+    kuma_monitor: "QFlix Torrent Janitor"
+
+  qflix-collect:
+    timer: scripts/maint/systemd/qflix-collect.timer
+    kuma_monitor: "QFlix Collect (workstation)"
+
+  qflix-newsletter:
+    timer: scripts/maint/systemd/qflix-newsletter.timer
+    kuma_monitor: "Qflix Newsletter"
+
+  qflix-vlogs-ingest:
+    timer: scripts/maint/systemd/qflix-vlogs-ingest.timer
+    kuma_monitor: "Qflix VLogs Ingest"
+
+  qflix-missing-search:
+    timer: scripts/mcp/systemd/qflix-missing-search.timer
+    kuma_monitor: "Qflix Missing Search"
+
+  qflix-quality-fallback:
+    timer: scripts/mcp/systemd/qflix-quality-fallback.timer
+    kuma_monitor: "Qflix Quality Fallback"
+
+  qflix-specials-policy:
+    timer: scripts/mcp/systemd/qflix-specials-policy.timer
+    kuma_monitor: "Qflix Specials Policy"
+
+  manitoba-maint-audit:
+    timer: scripts/maint/systemd/manitoba-maint-audit.timer
+    kuma_monitor: "QFlix Audit Regime"
+
+  # ------------------------------------------------------------- the canaries
+  # 19 canary timers, each pushing its own Kuma monitor.
+
+  manitoba-maint-canary-movie:
+    timer: scripts/maint/systemd/manitoba-maint-canary-movie.timer
+    kuma_monitor: "Canary Movie"
+  manitoba-maint-canary-anime:
+    timer: scripts/maint/systemd/manitoba-maint-canary-anime.timer
+    kuma_monitor: "Canary Anime"
+  manitoba-maint-canary-mobile-ux:
+    timer: scripts/maint/systemd/manitoba-maint-canary-mobile-ux.timer
+    kuma_monitor: "Canary Mobile-UX"
+  manitoba-maint-canary-vlogs-stall:
+    timer: scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.timer
+    kuma_monitor: "Canary VLogs Stall"
+  manitoba-maint-canary-qbit-stall:
+    timer: scripts/maint/systemd/manitoba-maint-canary-qbit-stall.timer
+    kuma_monitor: "Canary qBit Stall"
+  manitoba-maint-canary-sab-stall:
+    timer: scripts/maint/systemd/manitoba-maint-canary-sab-stall.timer
+    kuma_monitor: "Canary SAB Stall"
+  manitoba-maint-canary-kometa-libraries:
+    timer: scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.timer
+    kuma_monitor: "Canary Kometa Libraries"
+  manitoba-maint-canary-stale-log-watchdog:
+    timer: scripts/maint/systemd/manitoba-maint-canary-stale-log-watchdog.timer
+    kuma_monitor: "Canary Stale-Log Watchdog"
+  manitoba-maint-canary-kometa-deploy-drift:
+    timer: scripts/maint/systemd/manitoba-maint-canary-kometa-deploy-drift.timer
+    kuma_monitor: "Canary Kometa Deploy-Drift"
+  manitoba-maint-canary-prowlarr-indexer-health:
+    timer: scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.timer
+    kuma_monitor: "Canary Prowlarr Indexer Health"
+  manitoba-maint-canary-hardlink-integrity:
+    timer: scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer
+    kuma_monitor: "Canary Hardlink Integrity"
+  manitoba-maint-canary-plex-transcoder:
+    timer: scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.timer
+    kuma_monitor: "Canary Plex Transcoder"
+  manitoba-maint-canary-newsletter-digest:
+    timer: scripts/maint/systemd/manitoba-maint-canary-newsletter-digest.timer
+    kuma_monitor: "Canary Newsletter Digest"
+  manitoba-maint-canary-quota:
+    timer: scripts/maint/systemd/manitoba-maint-canary-quota.timer
+    kuma_monitor: "Canary Quota"
+  manitoba-maint-canary-tautulli-plex-link:
+    timer: scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.timer
+    kuma_monitor: "Canary Tautulli-Plex Link"
+  manitoba-maint-canary-thread-ceiling:
+    timer: scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.timer
+    kuma_monitor: "Canary Thread Ceiling"
+  manitoba-maint-canary-tdarr-scanner:
+    timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-scanner.timer
+    kuma_monitor: "Canary Tdarr Scanner"
+  manitoba-maint-canary-tdarr-healthcheck:
+    timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-healthcheck.timer
+    kuma_monitor: "Canary Tdarr Healthcheck"
+  manitoba-maint-canary-ucc-gate-stuck:
+    timer: scripts/maint/systemd/manitoba-maint-canary-ucc-gate-stuck.timer
+    kuma_monitor: "Canary UCC Gate Stuck"
+
+  # -------------------------------------------------------- adjudicated: none
+  # Every entry below was reviewed on 2026-07-29 while landing the audit
+  # regime. Six of these are the spec's named candidates; the flaresolverr pair
+  # was found by the detector itself, which is the point of enumerating the
+  # glob instead of a hand-list.
+
+  manitoba-maint-arr-audit:
+    timer: scripts/maint/systemd/manitoba-maint-arr-audit.timer
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Weekly (Sun 04:00) *arr configuration audit. It notifies Discord on
+      findings but pushes no heartbeat, so a permanently-failing unit is
+      indistinguishable from a clean week — the exact silent-failure shape this
+      class exists to catch. Not closed in this commit because adding a
+      heartbeat means a new Kuma monitor, a new push token, and a live box
+      change, which belongs to the Phase 5 box-side work, not to a repo-only
+      phase.
+    open_gap: true
+    adjudicated: 2026-07-29
+    owner: operator
+
+  manitoba-maint-backup-prune:
+    timer: scripts/maint/systemd/manitoba-maint-backup-prune.timer
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Weekly (Sun 03:30) app-backup pruning. Its only failure consequence is
+      disk growth, and disk growth is already dead-manned by the quota canary
+      (every 15 min, Canary Quota) which fires long before a missed prune can
+      hurt. Indirect coverage is sufficient here and a second monitor would add
+      noise without adding information.
+    open_gap: false
+    adjudicated: 2026-07-29
+    owner: operator
+
+  manitoba-maint-ucc-detect:
+    timer: scripts/maint/systemd/manitoba-maint-ucc-detect.timer
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Detects Ultra.cc platform maintenance and sets the suppression flag other
+      jobs read. If it stops, suppression stops being SET — the failure mode is
+      extra alerts during UCC maintenance, never missed alerts. It fails
+      LOUD-by-omission rather than silent, so a dead-man would guard the safer
+      direction only.
+    open_gap: false
+    adjudicated: 2026-07-29
+    owner: operator
+
+  manitoba-maint-window:
+    timer: scripts/maint/systemd/manitoba-maint-window.timer
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Monday 11:00 UTC maintenance-window orchestrator. A missed run is visible
+      the same week through the newsletter's "This week's tune-ups" line
+      (rendered from last-upgrade.json) and through manitoba-maint-window-
+      watchdog at 15:00 UTC, but neither is a Kuma dead-man: if BOTH the window
+      and the watchdog fail to start, nothing pages. Known gap, weekly cadence,
+      low blast radius; closing it is Phase 5 box-side work.
+    open_gap: true
+    adjudicated: 2026-07-29
+    owner: operator
+
+  manitoba-maint-window-watchdog:
+    timer: scripts/maint/systemd/manitoba-maint-window-watchdog.timer
+    kuma_monitor: null
+    no_monitor_reason: >-
+      The watchdog for the Monday window (15:00 UTC — asserts the lock was
+      released). Same shape as manitoba-maint-window: it is itself a watcher
+      with no watcher. THIS IS AN INSTANCE OF THE TURTLE PROBLEM stated in
+      audit-scope.yaml:S5 — the chain has to end somewhere and it currently ends
+      here. Named so it is never a surprise.
+    open_gap: true
+    adjudicated: 2026-07-29
+    owner: operator
+
+  qflix-poster-cache-prune:
+    timer: scripts/maint/systemd/qflix-poster-cache-prune.timer
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Nightly newsletter poster-cache prune. Pure disk hygiene for a cache that
+      is regenerated on demand; a stopped prune costs bounded disk, which the
+      quota canary already watches. No correctness consequence.
+    open_gap: false
+    adjudicated: 2026-07-29
+    owner: operator
+
+  manitoba-maint-flaresolverr-canary:
+    timer: scripts/maint/systemd/manitoba-maint-flaresolverr-canary.timer
+    kuma_monitor: null
+    no_monitor_reason: >-
+      FOUND BY THE DETECTOR, not by the spec's hand-list. This canary is NOT in
+      manifest/apps.yaml:canaries, so it has no Kuma monitor and no dead-man —
+      it is a second, independent alert path that pages Discord directly and
+      honours the push-suppress registry. That means if its timer dies, the ONLY
+      signal is the absence of Discord messages nobody was expecting anyway.
+      This is exactly the enumeration-boundary bug from the spec: whether an
+      audit "sees" this depends on whether it walked scripts/*/systemd/ or
+      manifest/apps.yaml. Closing it means enrolling it as a real canary
+      (manifest entry + monitor + token) — Phase 5 box-side work.
+    open_gap: true
+    adjudicated: 2026-07-29
+    owner: operator
+
+  manitoba-maint-flaresolverr-unsuppress:
+    timer: scripts/maint/systemd/manitoba-maint-flaresolverr-unsuppress.timer
+    kuma_monitor: null
+    no_monitor_reason: >-
+      A SELF-DESTRUCTING watcher: it polls flaresolverr, lifts the
+      push-suppression once healthy, then deletes its own units and script. A
+      dead-man is inapplicable by construction — the intended terminal state is
+      "this timer no longer exists". If it dies early the suppression simply
+      stays, which the operator sees as a permanently [SUPPRESSED] FlareSolverr
+      monitor: visible, not silent.
+    open_gap: false
+    adjudicated: 2026-07-29
+    owner: operator

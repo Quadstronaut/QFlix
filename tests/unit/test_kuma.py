@@ -583,6 +583,11 @@ _AUDIT_METRICS = (
     'monitor_status{monitor_id="8",monitor_name="qflix-anime-janitor",monitor_type="push"} 1\n'
     'monitor_status{monitor_id="9",monitor_name="QFlix Torrent Janitor",monitor_type="push"} 1\n'
     'monitor_status{monitor_id="10",monitor_name="QFlix Collect (workstation)",monitor_type="push"} 1\n'
+    # "QFlix Audit Regime" joined STANDALONE_SELF_PUSH_MONITORS 2026-07-29 with
+    # the Convergent Audit Regime (manitoba-maint-audit.timer -> qflix-audit.py,
+    # self-pushing like the janitors). This fixture models a Kuma that HAS every
+    # expected monitor, so the no-drift case must include it.
+    'monitor_status{monitor_id="11",monitor_name="QFlix Audit Regime",monitor_type="push"} 1\n'
 )
 
 
@@ -599,11 +604,11 @@ class TestAuditMonitors:
         # "QFlix Collect (workstation)" joined STANDALONE_SELF_PUSH_MONITORS
         # 2026-07-29 (it self-pushes from the box now, see lib/kuma.py) so it
         # must appear here too, matched rather than manifest_only.
-        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Collect (workstation)", "QFlix Fleet", "QFlix Reaper", "QFlix Torrent Janitor", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
+        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Regime", "QFlix Collect (workstation)", "QFlix Fleet", "QFlix Reaper", "QFlix Torrent Janitor", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
         assert report["manifest_only"] == []
         assert report["kuma_only"] == []
-        assert report["live_count"] == 10
-        assert report["manifest_count"] == 10
+        assert report["live_count"] == 11
+        assert report["manifest_count"] == 11
 
     def test_audit_manifest_only(self, monkeypatch):
         from lib.kuma import audit_monitors
@@ -640,10 +645,12 @@ class TestAuditMonitors:
         monkeypatch.setattr("lib.kuma._secret_read", lambda n: "fake-key")
         report = audit_monitors(m, kuma_url="http://x")
         # sonarr (1) + auto-injected "Manitoba Pusher" (1) + "QFlix Fleet" (1)
-        # + the 5 standalone self-pushers (Reaper, Audio Disposition, anime-
-        # janitor, Torrent Janitor, Collect) — recyclarr skipped
-        # (kuma_monitor=None).
-        assert report["manifest_count"] == 8
+        # + the 6 standalone self-pushers (Reaper, Audio Disposition, anime-
+        # janitor, Torrent Janitor, Collect, Audit Regime) — recyclarr skipped
+        # (kuma_monitor=None). Derived from the dict rather than hardcoded so
+        # the next self-pusher does not need this line edited again.
+        from lib.kuma import STANDALONE_SELF_PUSH_MONITORS
+        assert report["manifest_count"] == 3 + len(STANDALONE_SELF_PUSH_MONITORS)
         assert "Sonarr" in report["matched"]
         assert "Manitoba Pusher" in report["matched"]
         assert "QFlix Fleet" in report["matched"]
