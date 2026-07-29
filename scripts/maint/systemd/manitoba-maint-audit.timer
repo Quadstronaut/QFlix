@@ -1,0 +1,16 @@
+[Unit]
+Description=Manitoba maint - QFlix audit regime (daily 06:30 UTC)
+
+[Timer]
+# Daily 06:30 UTC. Offset clear of the reaper (05:00), torrent-janitor (05:30),
+# audio-disposition (04:30) and specials-policy (06:00) so nothing competes for
+# the slot's thread budget, and clear of the Monday 11:00-15:00 window.
+OnCalendar=*-*-* 06:30:00 UTC
+RandomizedDelaySec=10min
+# Catch up if the box was asleep at the scheduled time — a missed audit is a
+# missed digest comparison, which is the whole product.
+Persistent=true
+Unit=manitoba-maint-audit.service
+
+[Install]
+WantedBy=timers.target

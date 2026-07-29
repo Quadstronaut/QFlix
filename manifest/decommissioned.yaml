@@ -1,0 +1,134 @@
+# manifest/decommissioned.yaml — retired components and where their names are
+# still allowed to appear.
+#
+# Boundary for defect class C-08 (decommissioned-still-referenced): every
+# git-tracked file, matched case-insensitively against every `name` below. A
+# retired name in a HISTORY surface (changelog, transition log, incident log,
+# inventory's struck-through rows) is correct and must stay. A retired name in
+# EXECUTABLE code, a unit file, a manifest entry or a secrets key is a defect —
+# it means a decommission left a live reference behind.
+#
+# `allow_paths` entries are adjudications, not conveniences: each carries a
+# `reason`. An entry with no reason fails the meta-check (exit 2).
+
+schema: 1
+
+components:
+
+  - id: maintainerr
+    names: [maintainerr]
+    retired: 2026-06-20
+    fully_removed: 2026-06-26
+    replaced_by: qflix-reaper
+    why: >-
+      Maintainerr's Plex delete path was broken (it resolved the wrong Plex id
+      and silently deleted nothing). Replaced by scripts/maint/qflix-reaper.py.
+      Decommission FULLY FINISHED 2026-06-26 (7d9990b): quota.sh repointed to
+      the reaper, orphan refs + secrets purged, the fix-watch task removed, the
+      app uninstalled.
+    allow_paths:
+      - path: scripts/ops/decommission-maintainerr-2026-06-20.py
+        reason: >-
+          The decommission tool itself. It exists to remove the component and
+          must name it. Retained (not deleted) so the removal is reproducible
+          and auditable; see docs/transition-log.md.
+      - path: docs/maintainerr-plex-id-resolution-bug.md
+        reason: >-
+          The written post-mortem of the delete bug that caused the retirement.
+          A history surface by definition.
+
+  - id: homarr
+    names: [homarr]
+    retired: 2026-07-13
+    fully_removed: 2026-07-13
+    replaced_by: qflix-dash
+    why: >-
+      Mobile-hostile legacy dashboard. Replaced as public root by qflix-dash on
+      2026-07-08; limped as a "QFlix has moved" notice until it started a
+      31-alert restart storm and was uninstalled 2026-07-13 (Kuma monitor #39
+      deleted with it). The mobile-ux canary was KEPT and now guards the dash.
+    allow_paths: []
+
+  - id: quadstronix
+    names: [quadstronix]
+    retired: 2026-07-16
+    fully_removed: 2026-07-18
+    replaced_by: null
+    why: >-
+      Quadstronix / Quadstronix Node 1 / Quadstronix Node 2 external Kuma
+      monitors were removed by the operator 2026-07-16 (both node DNS names had
+      gone stale — same unreachable IP, 100% packet loss) and dropped from
+      manifest/apps.yaml:kuma_external_monitors on 2026-07-18. NOTE: the
+      quadstronix BOXES are a different fleet that still exists; only the
+      monitors were retired. C-08 therefore flags references in THIS repo's
+      executable surfaces, not the fleet's existence.
+    allow_paths: []
+
+# Surfaces where a retired name is history, not a live reference. These are the
+# only places a decommissioned name may appear without a per-path adjudication.
+allowed_context_paths:
+  - path: CHANGELOG.md
+    reason: The append-only change history. Removing a name here would falsify it.
+  - path: docs/transition-log.md
+    reason: The record of every decommission. Its entire purpose is naming them.
+  - path: docs/incidents.md
+    reason: Incident history; several incidents are ABOUT the retired components.
+  - path: inventory.md
+    reason: >-
+      Carries struck-through (~~name~~) DECOMMISSIONED rows on purpose, so an
+      operator reading the inventory learns what used to exist and why it went.
+  - path: WARN.md
+    reason: Known-issue log; entries predate the retirements and are dated.
+  - path: Tuesday.md
+    reason: Dated session log — a history surface.
+  - path: todo-after-claude.md
+    reason: Dated operator worklist; entries reference the decommission work itself.
+  - path: docs/arr-audit-2026-05-09.md
+    reason: A dated audit FINDINGS document — a frozen historical snapshot.
+  - path: docs/arr-audit-actions-2026-05-09.md
+    reason: The action list from that same dated audit; frozen by definition.
+  - path: docs/operator-deferred.md
+    reason: Deferral register; entries are dated and reference retired components.
+  - path: docs/councils/**
+    reason: Council transcripts are immutable records of a decision at a date.
+  - path: scripts/qflix-newsletter/cutover-2026-05-11.html
+    reason: >-
+      A frozen, already-sent newsletter issue. Editing a sent email's archived
+      body would make the archive lie about what subscribers received.
+  - path: docs/superpowers/**
+    reason: >-
+      Dated design specs and plans. A 2026-05 consolidation design that did not
+      mention Maintainerr would be a forgery of what was actually decided then.
+  - path: docs/external/**
+    reason: >-
+      Vendored third-party reference material. Not ours to edit, and editing it
+      would break the point of keeping a verbatim copy.
+  - path: .claude/council-ledger.jsonl
+    reason: >-
+      Append-only record of council decisions at a point in time. Immutable by
+      construction.
+  - path: manifest/decommissioned.yaml
+    reason: >-
+      This ledger. It has to name the components it retires; excluding itself is
+      the only way the detector does not report its own input as a defect.
+  - path: manifest/defect-classes.yaml
+    reason: >-
+      The taxonomy cites the measured C-08 baseline (maintainerr 19 files,
+      homarr 9, quadstronix 3) as the class's discovery provenance.
+  - path: scripts/maint/lib/audit/detectors/c08_decommissioned_refs.py
+    reason: >-
+      The detector for this very class. Its docstring cites the measured
+      baseline so a future reader can tell whether the numbers moved.
+
+# A line matching any of these is an allowed mention wherever it appears: the
+# text itself declares the component retired, which is documentation, not a
+# live reference. Deliberately narrow — "decommissioned"/"RETIRED"/"~~name~~"
+# and nothing looser, so `subprocess.run(["app-homarr", ...])` can never hide
+# behind a nearby comment.
+allowed_line_patterns:
+  - pattern: '(?i)\b(decommission(ed|ing)?|retired|removed|uninstalled|replaced by|no longer|legacy|purged)\b'
+    reason: >-
+      The line states the retirement as a fact. Comments and prose that say
+      "X was decommissioned" are the correct way to keep institutional memory.
+  - pattern: '~~'
+    reason: Markdown strikethrough — the inventory's DECOMMISSIONED row marker.
