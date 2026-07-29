@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - UCC maintenance-gate detector wedged (probe-error stuck / gate held active)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push ucc-gate-stuck
+StandardOutput=journal
+StandardError=journal
