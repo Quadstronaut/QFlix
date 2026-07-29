@@ -54,21 +54,101 @@
 		sending = false;
 	}
 
+	// --- keyboard accessibility -------------------------------------------
+	// aria-modal="true" is a promise: focus goes in on open, cannot Tab out
+	// while open, and comes back to wherever it started on close. None of that
+	// was implemented, so a keyboard-only user could never reach this dialog —
+	// the only ways out were the × button and a mouse click on the scrim.
+	let dialogEl = $state<HTMLDivElement | null>(null);
+	let restoreFocusTo: HTMLElement | null = null;
+
+	// The honeypot carries tabindex="-1" and must stay out of the tab order,
+	// so exclude it here rather than special-casing it later.
+	const FOCUSABLE =
+		'a[href], button:not([disabled]), textarea:not([disabled]),' +
+		' input:not([disabled]):not([tabindex="-1"]), select:not([disabled]),' +
+		' [tabindex]:not([tabindex="-1"])';
+
+	// No visibility filtering: Svelte's {#if} means anything not shown isn't in
+	// the DOM to begin with, and the one hidden-but-present control (the
+	// honeypot) is already excluded by the tabindex="-1" clause above. Filtering
+	// on offsetParent would also break under jsdom, which computes no layout and
+	// reports offsetParent as null for everything.
+	function focusables(): HTMLElement[] {
+		if (!dialogEl) return [];
+		return [...dialogEl.querySelectorAll<HTMLElement>(FOCUSABLE)];
+	}
+
+	// Runs after the dialog is in the DOM, so document.activeElement is still
+	// whatever opened it — capture that before stealing focus.
+	$effect(() => {
+		if (!open || !dialogEl) return;
+		restoreFocusTo = document.activeElement as HTMLElement | null;
+		// Land on the first real control; fall back to the dialog itself, which
+		// is focusable via tabindex="-1" (programmatic only — not a tab stop).
+		(focusables()[0] ?? dialogEl).focus();
+	});
+
+	function onKeydown(e: KeyboardEvent) {
+		if (!open) return;
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			close();
+			return;
+		}
+		if (e.key !== 'Tab' || !dialogEl) return;
+		const items = focusables();
+		if (items.length === 0) {
+			e.preventDefault();
+			dialogEl.focus();
+			return;
+		}
+		const first = items[0];
+		const last = items[items.length - 1];
+		const active = document.activeElement;
+		// Wrap at both ends so Tab can never escape to the page behind.
+		if (e.shiftKey && (active === first || active === dialogEl)) {
+			e.preventDefault();
+			last.focus();
+		} else if (!e.shiftKey && active === last) {
+			e.preventDefault();
+			first.focus();
+		}
+	}
+
 	function close() {
 		open = false;
 		denied = false;
 		history.replaceState(null, '', location.pathname);
+		// Hand focus back to whatever opened the dialog, or it lands on <body>
+		// and the user loses their place in the page.
+		restoreFocusTo?.focus();
+		restoreFocusTo = null;
 	}
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 {#if open}
-	<div class="scrim" onclick={close} role="presentation">
+	<!-- Close only when the scrim ITSELF is the click target. The modal used to
+	     stopPropagation to achieve this, but a click handler on a non-interactive
+	     div has no keyboard equivalent (svelte-check a11y_click_events_have_key_events
+	     + a11y_interactive_supports_focus). Testing the target removes the handler
+	     at the source instead of silencing the rule. Escape is the keyboard path. -->
+	<div
+		class="scrim"
+		role="presentation"
+		onclick={(e) => {
+			if (e.target === e.currentTarget) close();
+		}}
+	>
 		<div
 			class="modal"
 			role="dialog"
 			aria-modal="true"
 			aria-label="Support"
-			onclick={(e) => e.stopPropagation()}
+			tabindex="-1"
+			bind:this={dialogEl}
 		>
 			<button class="x" onclick={close} aria-label="Close">×</button>
 			<h2>Support</h2>
