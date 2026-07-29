@@ -28,6 +28,13 @@ HOME = os.path.expanduser("~")
 SECRETS = os.path.join(HOME, "secrets")
 LOCAL_OUT = os.path.join(HOME, ".opt", "maint", "qflix-stats.json")
 
+# Shallow checkout of the public repo, refreshed on every run. The manifest and
+# the test suite are the source of truth for "how many apps" and "how many
+# tests", and neither is otherwise present on this box — without this the page
+# would be quoting numbers somebody had to remember to update by hand.
+SRC_DIR = os.path.join(HOME, ".opt", "qflix-src")
+SRC_URL = "https://github.com/Quadstronaut/QFlix.git"
+
 
 # Resolved by title, never by section id — Plex renumbers sections when a
 # library is removed and re-added, which has already bitten this stack once.
@@ -120,6 +127,67 @@ def canary_count():
         return None
 
 
+def _git(*args, **kw):
+    return subprocess.run(
+        ["git"] + list(args), capture_output=True, text=True, timeout=kw.get("timeout", 90)
+    )
+
+
+def refresh_src():
+    """Clone or update the shallow source checkout. Never fatal.
+
+    A failure here just means the counts fall back to whatever the last good
+    checkout says, which is far better than the page losing them entirely.
+    """
+    try:
+        if not os.path.isdir(os.path.join(SRC_DIR, ".git")):
+            os.makedirs(os.path.dirname(SRC_DIR), exist_ok=True)
+            r = _git("clone", "--depth", "1", SRC_URL, SRC_DIR, timeout=180)
+            return r.returncode == 0
+        if _git("-C", SRC_DIR, "fetch", "--depth", "1", "origin", "master").returncode != 0:
+            return False
+        return _git("-C", SRC_DIR, "reset", "--hard", "origin/master").returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+_TEST_DEF = re.compile(r"^\s*def (test_\w+)", re.M)
+
+
+def test_count():
+    """Automated tests in the suite, counted from the checkout."""
+    root = os.path.join(SRC_DIR, "tests")
+    if not os.path.isdir(root):
+        return None
+    total = 0
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            try:
+                with open(os.path.join(dirpath, f), encoding="utf-8", errors="replace") as fh:
+                    total += len(_TEST_DEF.findall(fh.read()))
+            except OSError:
+                continue
+    return total or None
+
+
+def app_count():
+    """Apps declared in manifest/apps.yaml, excluding the canaries block.
+
+    Deliberately not a count of ~/.apps: that directory holds only the
+    UCC-installed subset and would undercount the systemd, cron and library
+    entries that the manifest treats as first-class apps.
+    """
+    path = os.path.join(SRC_DIR, "manifest", "apps.yaml")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            body = fh.read().split("\ncanaries:")[0]
+    except OSError:
+        return None
+    return len(re.findall(r"^  ([a-z0-9][\w.-]*):\s*$", body, re.M)) or None
+
+
 def collect():
     libs = section_map()
 
@@ -162,6 +230,14 @@ def collect():
     canaries = canary_count()
     if canaries:
         stats["canaries"] = canaries
+
+    refresh_src()
+    tests = test_count()
+    if tests:
+        stats["tests"] = tests
+    apps = app_count()
+    if apps:
+        stats["apps"] = apps
     return stats
 
 
