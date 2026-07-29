@@ -1274,7 +1274,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
           <strong>qBittorrent</strong> is C++ / Qt &mdash; the spiritual open-source successor to &micro;Torrent. The moment &micro;Torrent went ad-supported in 2012, qBit picked up the torch and never looked back. <strong>Plex Media Server</strong> is mostly C/C++ with Python plugins; its lineage traces back through OSXBMC (2008) to <a href="https://kodi.tv/">XBMC</a>, the original Xbox Media Center.
         </p>
         <p>
-          The boring-but-essential stack underneath: <strong>nginx</strong> (Igor Sysoev, 2004) does HTTPS termination + reverse-proxy with QFlix's <code>proxy.d</code> fragments. <strong>PostgreSQL</strong> (1996 &mdash; older than half the apps it supports) holds Listmonk subscriber data. <strong>systemd</strong> (Lennart Poettering, 2010) runs every long-lived service as a user-unit; QFlix has 36 services + 30 timers under <code>~/.config/systemd/user/</code>.
+          The boring-but-essential stack underneath: <strong>nginx</strong> (Igor Sysoev, 2004) does HTTPS termination + reverse-proxy with QFlix's <code>proxy.d</code> fragments. <strong>PostgreSQL</strong> (1996 &mdash; older than half the apps it supports) holds Listmonk subscriber data. <strong>systemd</strong> (Lennart Poettering, 2010) runs every long-lived service as a user-unit; QFlix had 55 services + 43 timers under <code>~/.config/systemd/user/</code> as of 2026-07-29 (the exact count keeps climbing as new janitors and canaries ship, so treat this as a snapshot, not a spec).
         </p>
       </article>
 
