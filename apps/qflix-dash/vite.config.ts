@@ -22,7 +22,32 @@ export default defineConfig({
 		})
 	],
 	test: {
-		environment: 'node',
-		include: ['src/**/*.test.ts']
+		// Two projects, because the suites need different module resolution.
+		// The server suites run under node. Component suites need jsdom AND
+		// `resolve.conditions: ['browser']` — without the browser condition Svelte
+		// resolves to its SERVER build and mount() throws
+		// `lifecycle_function_unavailable`, which a per-file @vitest-environment
+		// docblock cannot fix since it sets the environment but not resolution.
+		// Component tests are named *.svelte.test.ts so the split is mechanical.
+		projects: [
+			{
+				extends: true,
+				test: {
+					name: 'server',
+					environment: 'node',
+					include: ['src/**/*.test.ts'],
+					exclude: ['src/**/*.svelte.test.ts']
+				}
+			},
+			{
+				extends: true,
+				resolve: { conditions: ['browser'] },
+				test: {
+					name: 'client',
+					environment: 'jsdom',
+					include: ['src/**/*.svelte.test.ts']
+				}
+			}
+		]
 	}
 });
