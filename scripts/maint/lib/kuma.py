@@ -171,6 +171,21 @@ STANDALONE_SELF_PUSH_MONITORS = {
     "QFlix Audio Disposition": "qflix-audio-disposition",
     "qflix-anime-janitor": "qflix-anime-janitor",
     "QFlix Torrent Janitor": "qflix-torrent-janitor",
+    # Moved here from manifest.kuma_external_monitors 2026-07-29: this job
+    # migrated off the operator's Windows scheduled task onto the box itself
+    # 2026-07-09 (qflix-collect.py + qflix-collect.timer — see memory
+    # collect-migrated-to-box) and now self-pushes just like the janitors
+    # above, so it belongs in the audit's expected set instead of being
+    # invisible to drift. Its token KEY equals its monitor NAME (unlike the
+    # other entries here, where the value is a short slug) because
+    # qflix-collect.py's KUMA_PUSH_KEY constant reads
+    # secrets/kuma-push-tokens.json["QFlix Collect (workstation)"] verbatim —
+    # that literal string is baked into the already-deployed box script and
+    # the box is read-only from here, so the name stays as-is even though
+    # "(workstation)" is now cosmetically stale. Renaming it live (in Kuma
+    # AND in qflix-collect.py's default) is a coordinated change for the
+    # operator, not something this dict can paper over.
+    "QFlix Collect (workstation)": "QFlix Collect (workstation)",
 }
 
 
