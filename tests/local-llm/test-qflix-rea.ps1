@@ -444,13 +444,10 @@ Test-Case 'Test-IsNoiseFinding does NOT suppress the real faults these rules sit
     # The whole risk of a suppression layer is over-reach. These are the actionable
     # errors found in the SAME log files as the suppressed classes on 2026-07-28 -
     # if a rule ever starts eating one of them, this test goes red first.
-    $wasm = @{
-        signature = 'tdarr:wasm-oom'
-        summary   = 'Tdarr MediaInfo probe failing: WebAssembly out of memory'
-        excerpt   = '[ERROR] Tdarr_Server - [RangeError: WebAssembly.instantiate(): Out of memory: wasm memory]'
-    }
-    Assert-Equal $null (Test-IsNoiseFinding $wasm) 'WASM OOM survives'
-
+    # NOTE: the WASM/MediaInfo OOM pairing that used to live in this list was
+    # itself ruled permanently unfixable + canary-tracked on 2026-07-28 (see the
+    # 2026-07-29 suppression tests below) - it now belongs on the "gets
+    # suppressed" side, not here.
     $quota = @{
         signature = 'tdarr:log-write-edquot'
         summary   = 'log4js cannot write server log: disk quota exceeded'
@@ -469,6 +466,37 @@ Test-Case 'Test-IsNoiseFinding does NOT suppress the real faults these rules sit
 Test-Case 'Test-IsNoiseFinding returns null for an empty finding' {
     Assert-Equal $null (Test-IsNoiseFinding @{ signature=''; summary=''; excerpt='' }) 'empty -> null'
     Assert-Equal $null (Test-IsNoiseFinding $null) 'null -> null'
+}
+
+# --- 2026-07-29: WASM/MediaInfo + post-reap noise rules (REA 02:51 false page) ---
+# The REA auditor paged on 2026-07-29 with 4 findings, all verified noise. Two of
+# the three root causes are code-level suppression gaps closed here (the third,
+# the prompt/enforcement de-conflict + line-level staleness, is covered below).
+
+Test-Case 'Test-IsNoiseFinding suppresses the tdarr WASM/MediaInfo out-of-memory (ruled unfixable 2026-07-28)' {
+    $f = @{
+        signature = 'tdarr:wasm-oom'
+        summary   = 'Tdarr MediaInfo probe failing: WebAssembly out of memory'
+        excerpt   = '[ERROR] Tdarr_Server - [RangeError: WebAssembly.instantiate(): Out of memory: wasm memory]'
+    }
+    Assert-Equal 'tdarr-wasm-oom' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses the wasm-memory-exhausted signature shape' {
+    $f = @{ signature = 'tdarr:wasm-memory-exhausted'; summary = ''; excerpt = '' }
+    Assert-Equal 'tdarr-wasm-oom' (Test-IsNoiseFinding $f) 'signature-only match'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses "Error running MediaInfo"' {
+    $f = @{ signature = 'tdarr:mediainfo'; summary = 'Error running MediaInfo on file'; excerpt = '' }
+    Assert-Equal 'mediainfo-failure' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses Plex post-reap "Failed to create parent iterator" chatter' {
+    # Fargo was reaped 2026-07-22 (arrId=225); this is Plex noticing the series
+    # directory it was about to scan is gone, not a fault.
+    $f = @{ signature = 'plex:scan-error'; summary = 'Plex library scan reported an error'; excerpt = 'Failed to create parent iterator for /data/media/tv/Fargo' }
+    Assert-Equal 'plex-post-reap-scan' (Test-IsNoiseFinding $f) 'matched by rule id'
 }
 
 Test-Case 'every noise rule has an id and a compilable regex' {
@@ -508,9 +536,289 @@ Test-Case 'tdarr source strips stack-trace continuations and reads the timestamp
 
 Test-Case 'system prompt protects the real faults it sits beside' {
     $sp = Get-SystemPrompt
-    Assert-True ($sp -match 'Out of memory: wasm memory') 'WASM OOM explicitly reportable'
-    Assert-True ($sp -match 'EDQUOT')                     'quota failures explicitly reportable'
+    Assert-True ($sp -match 'EDQUOT')                     'quota failures still mentioned'
+    Assert-True ($sp -match 'MUST still report')          'disk-quota MUST-report force preserved'
     Assert-True ($sp -match 'protocol is shutdown')       'Plex client-abort listed as noise'
+}
+
+# --- 2026-07-29: system-prompt de-conflict (root cause #1 of the 02:51 false page) ---
+# The prompt used to ORDER the model to ALWAYS report WASM/MediaInfo OOM, which by
+# 2026-07-29 was ruled permanently unfixable + canary-tracked - the prompt was
+# fighting the suppression list above. This must flip WITHOUT weakening the
+# disk-quota/write-failure half, which is still a genuine, actionable fault class.
+Test-Case 'system prompt no longer orders WASM/MediaInfo OOM to be reported, and reclassifies it as known/permanent/canary-tracked' {
+    $sp = Get-SystemPrompt
+    Assert-True ($sp -match 'Out of memory: wasm memory') 'WASM OOM phrase still present (now under noise/reclassification)'
+    Assert-True ($sp -match '(?i)(permanent|unfixable)') 'reclassified as permanent/unfixable'
+    Assert-True ($sp -match '(?i)canary')                'reclassified as canary-tracked'
+    Assert-True ($sp -match '(?i)do NOT report it')       'explicit do-not-report instruction for WASM/MediaInfo'
+}
+
+Test-Case 'system prompt lists Plex post-reap parent-iterator chatter as noise' {
+    $sp = Get-SystemPrompt
+    Assert-True ($sp -match '(?i)failed to create parent iterator') 'mentioned'
+    Assert-True ($sp -match '(?i)reaper')                            'tied to reaper retention, not a fault'
+}
+
+# --- 2026-07-29: line-level staleness enforcement (root cause #3 of the 02:51 page) ---
+# Freshness used to be gated per FILE mtime only; a fresh file (touched benignly,
+# e.g. the newsletter .err file touched every Monday) could still carry weeks-old
+# lines that rode along forever because the model's own 3-day rule is advisory.
+Test-Case 'Test-IsStaleFinding drops a finding whose time is older than FreshDays before fetched_at' {
+    $f = @{ time = '2026-06-22T10:00:00Z' }  # ~37 days before fetched_at below
+    Assert-True (Test-IsStaleFinding -Finding $f -FetchedAt '2026-07-29T02:51:00Z') 'stale line dropped'
+}
+
+Test-Case 'Test-IsStaleFinding keeps a finding within FreshDays of fetched_at' {
+    $f = @{ time = '2026-07-27T10:00:00Z' }  # ~2 days before fetched_at below
+    Assert-False (Test-IsStaleFinding -Finding $f -FetchedAt '2026-07-29T02:51:00Z') 'fresh line kept'
+}
+
+Test-Case 'Test-IsStaleFinding fails OPEN on a missing time field' {
+    Assert-False (Test-IsStaleFinding -Finding @{ time = '' } -FetchedAt '2026-07-29T02:51:00Z') 'missing time kept, not dropped'
+    Assert-False (Test-IsStaleFinding -Finding @{ } -FetchedAt '2026-07-29T02:51:00Z') 'absent time field kept, not dropped'
+}
+
+Test-Case 'Test-IsStaleFinding fails OPEN on an unparseable time field' {
+    $f = @{ time = 'not-a-real-timestamp' }
+    Assert-False (Test-IsStaleFinding -Finding $f -FetchedAt '2026-07-29T02:51:00Z') 'garbage time kept, not dropped'
+}
+
+Test-Case 'Test-IsStaleFinding does not drop a future timestamp (clock skew)' {
+    $f = @{ time = '2026-08-15T00:00:00Z' }  # after fetched_at
+    Assert-False (Test-IsStaleFinding -Finding $f -FetchedAt '2026-07-29T02:51:00Z') 'future timestamp kept, not dropped'
+}
+
+Test-Case 'Test-IsStaleFinding reuses the shared FreshDays constant (no second hardcoded copy)' {
+    $prev = $Script:FreshDays
+    try {
+        $Script:FreshDays = 100
+        $f = @{ time = '2026-06-22T10:00:00Z' }  # ~37 days before - stale under 3, fresh under 100
+        Assert-False (Test-IsStaleFinding -Finding $f -FetchedAt '2026-07-29T02:51:00Z') 'threshold follows $Script:FreshDays'
+    } finally { $Script:FreshDays = $prev }
+}
+
+Test-Case 'Get-RemoteHeredoc templates FRESH_DAYS from the shared constant' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h -match "FRESH_DAYS=$($Script:FreshDays)") 'FRESH_DAYS substituted, single source of truth'
+}
+
+# ============================================================================
+# 2026-07-29 REA audit fixes
+# ============================================================================
+
+# --- Fix 1: REA can go permanently dark - five early-return failure paths in
+# Invoke-Main used to write only an audit-log line and return, never paging.
+# Only ollama_down paged. These pin the new shared Send-DeadmanAlert helper and
+# its per-reason 24h dedup keys in state.json.
+
+Test-Case 'DeadmanReasons covers exactly the five non-ollama silent failure paths' {
+    Assert-Equal @('tunnel_timeout','no_models','ssh_fail','blob_parse','all_models_noop') $Script:DeadmanReasons 'five reasons'
+}
+
+Test-Case 'New-DiscordDeadmanPayload keeps the original Ollama wording when called with no overrides' {
+    # Backward-compat pin: the ollama_down caller only ever passes -OperatorId.
+    $p = New-DiscordDeadmanPayload -OperatorId '123'
+    Assert-Equal '<@123>' $p.content 'operator mention'
+    Assert-Equal 16753920 $p.embeds[0].color 'orange'
+    Assert-True ($p.embeds[0].title -match 'Ollama') 'default title unchanged'
+}
+
+Test-Case 'New-DiscordDeadmanPayload accepts a reason-specific title and description' {
+    $p = New-DiscordDeadmanPayload -OperatorId '123' -Title '[WARN] QFlix REA - custom reason' -Description 'custom body'
+    Assert-Equal '<@123>' $p.content 'operator mention still present'
+    Assert-Equal 16753920 $p.embeds[0].color 'shared deadman color'
+    Assert-Equal '[WARN] QFlix REA - custom reason' $p.embeds[0].title 'custom title used'
+    Assert-Equal 'custom body' $p.embeds[0].description 'custom description used'
+}
+
+Test-Case 'Read-State returns empty dead_ping_<reason> defaults for all five reasons when file absent' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        $s = Read-State
+        foreach ($r in $Script:DeadmanReasons) {
+            Assert-Equal '' $s["dead_ping_$r"] "default dead_ping_$r"
+        }
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'Write-State then Read-State roundtrips a dead_ping_<reason> key without disturbing the others' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        Write-State @{ last_heartbeat_date = ''; last_ollama_dead_ping = ''; dead_ping_ssh_fail = '2026-07-29T02:00:00Z' }
+        $s = Read-State
+        Assert-Equal '2026-07-29T02:00:00Z' $s.dead_ping_ssh_fail 'persisted dead_ping_ssh_fail'
+        Assert-Equal '' $s.dead_ping_no_models 'unrelated reason still defaults to empty'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'Send-DeadmanAlert pages (dry-run) on first occurrence of a reason' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $prevDry = $DryRun
+    try {
+        $DryRun = $true
+        Send-DeadmanAlert -Reason 'tunnel_timeout' -Title 't' -Description 'd' -Webhook 'http://example.invalid' -OpId '123'
+        $log = Get-Content -Raw -LiteralPath (Join-Path (Get-StateDir) 'audit.log')
+        Assert-True ($log -match 'fail reason=tunnel_timeout outcome=dryrun_deadman') 'dry-run deadman logged'
+    } finally {
+        $DryRun = $prevDry
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'Send-DeadmanAlert stays silent within the 24h dedup window for the same reason' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        Write-State @{ last_heartbeat_date = ''; last_ollama_dead_ping = ''; dead_ping_no_models = (Get-Date).ToString('o') }
+        Send-DeadmanAlert -Reason 'no_models' -Title 't' -Description 'd' -Webhook 'http://example.invalid' -OpId '123'
+        $log = Get-Content -Raw -LiteralPath (Join-Path (Get-StateDir) 'audit.log')
+        Assert-True ($log -match 'fail reason=no_models outcome=silent') 'deduped within 24h, no POST attempted'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'Send-DeadmanAlert dedup keys are independent per reason' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $prevDry = $DryRun
+    try {
+        $DryRun = $true
+        # no_models was "just paged" (recent timestamp) - ssh_fail is a DIFFERENT
+        # reason and must still page: a stuck tunnel must not mask a model outage.
+        Write-State @{ last_heartbeat_date = ''; last_ollama_dead_ping = ''; dead_ping_no_models = (Get-Date).ToString('o') }
+        Send-DeadmanAlert -Reason 'ssh_fail' -Title 't' -Description 'd' -Webhook 'http://example.invalid' -OpId '123'
+        $log = Get-Content -Raw -LiteralPath (Join-Path (Get-StateDir) 'audit.log')
+        Assert-True ($log -match 'fail reason=ssh_fail outcome=dryrun_deadman') 'independent reason still pages'
+        Assert-False ($log -match 'reason=ssh_fail outcome=silent') 'not deduped by an unrelated reason''s recent ping'
+    } finally {
+        $DryRun = $prevDry
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'Send-DeadmanAlert is silent (never throws) when webhook/opid are missing' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        Send-DeadmanAlert -Reason 'blob_parse' -Title 't' -Description 'd' -Webhook '' -OpId ''
+        $log = Get-Content -Raw -LiteralPath (Join-Path (Get-StateDir) 'audit.log')
+        Assert-True ($log -match 'fail reason=blob_parse outcome=silent') 'no webhook/opid -> silent outcome logged'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'Send-DeadmanAlert appends an optional Detail suffix to the audit line' {
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $prevDry = $DryRun
+    try {
+        $DryRun = $true
+        Send-DeadmanAlert -Reason 'ssh_fail' -Title 't' -Description 'd' -Webhook 'http://example.invalid' -OpId '123' -Detail 'msg=connection refused'
+        $log = Get-Content -Raw -LiteralPath (Join-Path (Get-StateDir) 'audit.log')
+        Assert-True ($log -match 'fail reason=ssh_fail outcome=dryrun_deadman msg=connection refused') 'detail suffix present on the audit line'
+    } finally {
+        $DryRun = $prevDry
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+# --- Fix 2: the vlogs LogsQL query used to carry global term exclusions
+# "-PMP -includes" that dropped a real error from ANY of the 13+ aggregated
+# apps merely for containing the word "includes", with no audit trace. Widened
+# instead of scoped (see the comment above `collect vlogs` for why) - the two
+# offending classes are now caught by NoiseFindingRules, which IS logged.
+
+Test-Case 'vlogs query no longer carries the blanket -PMP -includes exclusions' {
+    $h = Get-RemoteHeredoc
+    # Check the actual query text (the exact adjoining shape from the old query
+    # line), not just any mention of the string - the fix comment above
+    # `collect vlogs` deliberately quotes "-PMP -includes" for documentation,
+    # so a bare substring check would false-fail against its own explanation.
+    Assert-False ($h -match 'traceback\) -PMP -includes') 'blanket global-term exclusions removed from the query'
+    Assert-True ($h -match 'collect vlogs') 'vlogs source still present'
+}
+
+Test-Case 'vlogs query still fetches the core error/fatal/exception/panic/traceback terms' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h -match 'error OR fatal OR exception OR panic OR traceback') 'core query terms unchanged'
+    Assert-True ($h -match 'fields _time,app,_msg') 'field projection unchanged'
+}
+
+# --- Fix 3: the system prompt already lists three "must NEVER report" classes
+# with no corresponding $Script:NoiseFindingRules entry - prompt text alone is
+# advisory, exactly the gap this rule table exists to close for every other class.
+
+Test-Case 'Test-IsNoiseFinding suppresses a Cloudflare 5xx error page relayed from an external indexer' {
+    $f = @{
+        signature = 'prowlarr:indexer-5xx'
+        summary   = 'Prowlarr received a 5xx error page from an external indexer'
+        excerpt   = 'Cloudflare Error 522: Connection timed out - Ray ID: 7d1f2a3b4c5d6e7f'
+    }
+    Assert-Equal 'external-indexer-5xx-html' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses nginx default error-page HTML relayed from an upstream proxy' {
+    $f = @{ signature = ''; summary = ''; excerpt = '<html><body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body></html>' }
+    Assert-Equal 'external-indexer-5xx-html' (Test-IsNoiseFinding $f) 'matched by the same rule id'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses an indexer response merely echoing a severity:error JSON field' {
+    $f = @{ signature = ''; summary = ''; excerpt = '{"result":"failure","severity":"error","description":"query too broad"}' }
+    Assert-Equal 'indexer-severity-field-echo' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'Test-IsNoiseFinding does NOT suppress plain prose that merely mentions severity and error' {
+    # The rule is scoped to the exact quoted JSON key:value shape, not the bare
+    # words, so a real narrative sentence using both words still pages.
+    $f = @{ signature = ''; summary = 'the severity of this error is high'; excerpt = '' }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'prose mention is not the quoted JSON shape'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses a bare stack-trace continuation with no root error' {
+    $f = @{
+        signature = 'bazarr:unhandled'
+        summary   = 'Bazarr logged a stack trace continuation with no visible root cause'
+        excerpt   = "   at Foo.Bar() in /src/Foo.cs:line 42`n   at Baz.Qux()`n--- End of inner exception stack trace ---"
+    }
+    Assert-Equal 'bare-stack-continuation' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'Test-IsNoiseFinding does NOT suppress a stack trace that carries its own root exception header' {
+    $f = @{
+        signature = 'bazarr:nullref'
+        summary   = 'Bazarr crashed with a null reference exception'
+        excerpt   = "System.NullReferenceException: Object reference not set to an instance of an object.`n   at Foo.Bar() in /src/Foo.cs:line 42"
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'real exception header survives - continuation rule must not eat it'
+}
+
+Test-Case 'Test-IsNoiseFinding does NOT suppress a continuation-shaped excerpt that also carries an ERROR log line' {
+    $f = @{
+        signature = ''
+        summary   = ''
+        excerpt   = "[ERROR] something genuinely broke`n   at Foo.Bar()"
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'an ERROR-prefixed line blocks the continuation-only suppression'
+}
+
+Test-Case 'Test-IsNoiseFinding continuation rule is scoped to the excerpt field, not summary/signature' {
+    # A model's own prose summary will almost always contain the word
+    # "error"/"exception" regardless of what the raw excerpt shows - if this
+    # rule read the combined haystack it would never fire. It must also never
+    # fire on an empty excerpt.
+    $f = @{ signature = 'x:error'; summary = 'an unhandled exception occurred somewhere'; excerpt = '' }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'empty excerpt never triggers the continuation rule'
+}
+
+Test-Case 'every noise rule (including field-scoped ones) has an id and a compilable regex' {
+    Assert-True ($Script:NoiseFindingRules.Count -ge 9) 'nine known classes now (6 prior + 3 added 2026-07-29)'
+    foreach ($r in $Script:NoiseFindingRules) {
+        Assert-True ([bool]$r.id) "rule has an id"
+        [void][regex]::new($r.rx)
+    }
 }
 
 # Summary
