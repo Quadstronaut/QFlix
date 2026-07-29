@@ -856,7 +856,9 @@ def test_run_upgrade_sweep_dry_run_passes_flag(tmp_path):
     assert out == {"summary": {}}
 
 
-def test_run_upgrade_sweep_missing_script_returns_empty(tmp_path, monkeypatch):
+def test_run_upgrade_sweep_missing_script_returns_none(tmp_path, monkeypatch):
+    """Script missing is a FAILURE to run — must return None, not {}, so it's
+    never confused with a clean sweep that found zero upgrades (2026-07-29)."""
     from lib import window
     monkeypatch.setattr(window, "_upgrade_script_path", lambda: tmp_path / "nope.sh")
     called = []
@@ -864,19 +866,82 @@ def test_run_upgrade_sweep_missing_script_returns_empty(tmp_path, monkeypatch):
         state_dir=tmp_path,
         runner=lambda *a, **k: called.append(1),
     )
-    assert out == {}
+    assert out is None
     assert called == [], "runner must not be invoked when the script is missing"
 
 
-def test_run_upgrade_sweep_runner_raises_returns_empty(tmp_path):
-    """A runner that raises (timeout / OSError) must not propagate — return {}."""
+def test_run_upgrade_sweep_runner_raises_returns_none(tmp_path):
+    """A runner that raises (crash) must not propagate — but must return None
+    (not {}) so a crash is distinguishable from a clean zero-upgrade run."""
     from lib import window
 
     def boom(*a, **k):
         raise RuntimeError("bash exploded")
 
     out = window.run_upgrade_sweep(state_dir=tmp_path, runner=boom)
-    assert out == {}
+    assert out is None
+
+
+def test_run_upgrade_sweep_timeout_returns_none(tmp_path):
+    """subprocess.TimeoutExpired (or any runner timeout) is the same failure
+    class as a crash — must return None, not {}."""
+    from lib import window
+    import subprocess as _sp
+
+    def times_out(*a, **k):
+        raise _sp.TimeoutExpired(cmd="bash", timeout=1)
+
+    out = window.run_upgrade_sweep(state_dir=tmp_path, runner=times_out)
+    assert out is None
+
+
+def test_run_upgrade_sweep_unreadable_results_returns_none(tmp_path):
+    """The script runs (runner doesn't raise) but never writes a results file
+    — e.g. it crashed internally after the subprocess call returned. Reading
+    last-upgrade.json must fail, and that must return None, not {}."""
+    from lib import window
+
+    def fake_runner(cmd, env=None, timeout=None, capture_output=False, text=False):
+        # Deliberately does NOT write MANITOBA_UPGRADE_RESULTS.
+        class _R:
+            returncode = 1; stdout = ""; stderr = "internal script failure"
+        return _R()
+
+    out = window.run_upgrade_sweep(state_dir=tmp_path, runner=fake_runner)
+    assert out is None
+
+
+def test_run_upgrade_sweep_malformed_results_returns_none(tmp_path):
+    """A results file that exists but isn't valid JSON is unreadable —
+    must return None, not {}."""
+    from lib import window
+
+    def fake_runner(cmd, env=None, timeout=None, capture_output=False, text=False):
+        Path(env["MANITOBA_UPGRADE_RESULTS"]).write_text("{not json", encoding="utf-8")
+        class _R:
+            returncode = 0; stdout = ""; stderr = ""
+        return _R()
+
+    out = window.run_upgrade_sweep(state_dir=tmp_path, runner=fake_runner)
+    assert out is None
+
+
+def test_run_upgrade_sweep_clean_zero_returns_dict_not_none(tmp_path):
+    """A sweep that ran fine and genuinely found zero upgrades must return the
+    parsed dict (truthy-summary-or-not), never None — None means the run
+    itself is untrustworthy, which is not the case here."""
+    from lib import window
+    clean_zero = {"schema_version": 1, "summary": {"upgraded": 0, "failed": 0, "bailed": 0}}
+
+    def fake_runner(cmd, env=None, timeout=None, capture_output=False, text=False):
+        Path(env["MANITOBA_UPGRADE_RESULTS"]).write_text(json.dumps(clean_zero), encoding="utf-8")
+        class _R:
+            returncode = 0; stdout = ""; stderr = ""
+        return _R()
+
+    out = window.run_upgrade_sweep(state_dir=tmp_path, runner=fake_runner)
+    assert out == clean_zero
+    assert out is not None
 
 
 def test_run_records_upgrade_results_and_notes(tmp_path):
@@ -927,3 +992,115 @@ def test_run_upgrade_sweep_exception_does_not_fail_run(tmp_path):
         summary = w.run()  # must not raise
 
     assert summary is not None
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-29 fix: a failed sweep must be distinguishable from a clean zero
+# ---------------------------------------------------------------------------
+
+def test_upgrade_sweep_records_failure_when_run_returns_none(tmp_path):
+    """upgrade_sweep() must set upgrade_sweep_failed=True (and note it) when
+    run_upgrade_sweep() reports None (crash/timeout/unreadable results) —
+    this must NOT look like a clean run that found zero upgrades."""
+    manifest = _simple_manifest()
+
+    with patch("lib.window.run_upgrade_sweep", return_value=None):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.open()
+        w.upgrade_sweep()
+        summary = w.close()
+
+    assert summary.upgrade_sweep_failed is True
+    assert summary.upgrade_results == {}
+    assert any("failed" in n.lower() for n in summary.notes)
+
+
+def test_upgrade_sweep_clean_zero_does_not_set_failed_flag(tmp_path):
+    """A sweep that ran cleanly and found zero upgrades must leave
+    upgrade_sweep_failed False — only a genuine failure sets it."""
+    manifest = _simple_manifest()
+    clean_zero = {"summary": {"upgraded": 0, "failed": 0, "bailed": 0}}
+
+    with patch("lib.window.run_upgrade_sweep", return_value=clean_zero):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.open()
+        w.upgrade_sweep()
+        summary = w.close()
+
+    assert summary.upgrade_sweep_failed is False
+    assert summary.upgrade_results == clean_zero
+
+
+def test_window_log_line_marks_upgrade_sweep_failed(tmp_path):
+    """Design law: every suppression goes to the audit log. A failed sweep
+    must show up in the window-log line, not just vanish."""
+    manifest = _simple_manifest()
+
+    with patch("lib.window.run_upgrade_sweep", return_value=None):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.open()
+        w.upgrade_sweep()
+        w.close()
+
+    log_dir = tmp_path / "window-log"
+    log_content = next(log_dir.iterdir()).read_text(encoding="utf-8")
+    assert "upgrade_sweep=FAILED" in log_content
+
+
+def test_window_log_line_unchanged_shape_on_clean_run(tmp_path):
+    """Happy-path window-log line format must be unchanged (no downstream
+    parser breakage) — no upgrade_sweep segment appears at all."""
+    manifest = _simple_manifest()
+    clean_zero = {"summary": {"upgraded": 0, "failed": 0, "bailed": 0}}
+
+    with patch("lib.window.run_upgrade_sweep", return_value=clean_zero):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.open()
+        w.upgrade_sweep()
+        w.close()
+
+    log_dir = tmp_path / "window-log"
+    log_content = next(log_dir.iterdir()).read_text(encoding="utf-8")
+    assert "upgrade_sweep=FAILED" not in log_content
+
+
+def test_run_notify_message_says_upgrade_sweep_failed(tmp_path):
+    """The window-close Discord message must say the sweep failed explicitly,
+    instead of silently omitting any upgrade mention (the original bug)."""
+    manifest = _simple_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+
+    with patch("lib.window.notify.notify") as mock_notify, \
+         patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.kuma.monitors_status", return_value={}), \
+         patch("lib.window.deep_check.run_deep_check"), \
+         patch("lib.window.run_upgrade_sweep", return_value=None):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        summary = w.run()
+
+    assert summary.upgrade_sweep_failed is True
+    post_msg = mock_notify.call_args_list[1].args[0]
+    assert "upgrade sweep FAILED" in post_msg
+
+
+def test_run_notify_message_happy_path_format_unchanged(tmp_path):
+    """A successful sweep with upgrades still uses the original
+    ' · upgraded N' segment — the fix must not touch the happy path."""
+    manifest = _simple_manifest()
+    ok_health = HealthResult(ok=True, latency_ms=5, reason="ok")
+    sweep = {"summary": {"upgraded": 2, "failed": 0, "bailed": 0}}
+
+    with patch("lib.window.notify.notify") as mock_notify, \
+         patch("lib.window.listmonk.fire_template_campaign", return_value=True), \
+         patch("lib.window.health.probe", return_value=ok_health), \
+         patch("lib.window.kuma.monitors_status", return_value={}), \
+         patch("lib.window.deep_check.run_deep_check"), \
+         patch("lib.window.run_upgrade_sweep", return_value=sweep):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        summary = w.run()
+
+    assert summary.upgrade_sweep_failed is False
+    post_msg = mock_notify.call_args_list[1].args[0]
+    assert "· upgraded 2" in post_msg
+    assert "FAILED" not in post_msg

@@ -73,6 +73,10 @@ class WindowSummary:
     # UCC app-upgrade sweep results (the JSON app-upgrade-all.sh writes to
     # last-upgrade.json; {} when the sweep was skipped/dry-run/failed).
     upgrade_results: dict = field(default_factory=dict)
+    # True only when the sweep actually attempted to run but crashed, timed
+    # out, or its results file couldn't be read — as opposed to a clean run
+    # that legitimately found zero upgrades. See run_upgrade_sweep() (2026-07-29).
+    upgrade_sweep_failed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -166,22 +170,33 @@ def run_upgrade_sweep(
     dry_run: bool = False,
     budget_s: int = _UPGRADE_SWEEP_BUDGET_S,
     runner=subprocess.run,
-) -> dict:
+) -> Optional[dict]:
     """Run the UCC app-upgrade sweep (app-upgrade-all.sh) and return the parsed
     results dict — the same JSON the script writes to last-upgrade.json, which
     the newsletter reads for its "what we tuned" section.
 
     Best-effort, NEVER raises: a sweep crash/timeout must not fail the window.
-    Returns {} if the script is missing, the run errors with no partial output,
-    or the results file is unparseable. The script's internal budget is passed
-    via env so it bails gracefully (and still writes results) before the Python
-    subprocess timeout fires.
+
+    Return contract (fixed 2026-07-29 — a crashed sweep used to be
+    indistinguishable from a clean run that found zero upgrades, both
+    collapsing to {}, which hid a broken weekly sweep for weeks with only a
+    logger.error as a trace):
+      - None  → the sweep did NOT produce trustworthy results: script missing,
+        the subprocess raised (crash/timeout/OSError), or last-upgrade.json
+        was missing/unparseable afterwards. Caller must treat this as a
+        failure, not a zero-upgrade run.
+      - dict  → the script ran and its results file parsed cleanly. May
+        legitimately be {} or have an empty "summary" if the script itself
+        wrote that — that's a real (if uninformative) result, not a failure.
+
+    The script's internal budget is passed via env so it bails gracefully
+    (and still writes results) before the Python subprocess timeout fires.
     """
     script = _upgrade_script_path()
     results_path = _upgrade_results_path(Path(state_dir))
     if not script.exists():
         logger.warning("upgrade sweep: script missing at %s — skipping", script)
-        return {}
+        return None
 
     cmd = ["bash", str(script)]
     if dry_run:
@@ -194,14 +209,18 @@ def run_upgrade_sweep(
         runner(cmd, env=env, timeout=budget_s + 300,
                capture_output=True, text=True)
     except Exception as exc:
-        # Timeout / OSError / anything — log and still try to read whatever the
-        # script managed to write before dying.
+        # Timeout / OSError / anything — this is a real failure, not a clean
+        # zero-upgrade run, so it must NOT collapse into the same {} below.
         logger.error("upgrade sweep run failed: %s", exc)
+        return None
 
     try:
         return json.loads(results_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    except Exception as exc:
+        # Missing/unreadable/malformed results file — same reasoning: this is
+        # a failure to observe the outcome, distinct from an observed zero.
+        logger.error("upgrade sweep: results unreadable: %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +253,7 @@ class WindowOrchestrator:
         self._kuma_still_down: list[str] = []
         self._queue_depth_at_open: int = 0
         self._upgrade_results: dict = {}
+        self._upgrade_sweep_failed: bool = False
 
     # ------------------------------------------------------------------ paths
 
@@ -386,7 +406,21 @@ class WindowOrchestrator:
             results = run_upgrade_sweep(state_dir=self._state_dir)
         except Exception as exc:  # run_upgrade_sweep is meant not to raise; belt+braces
             logger.error("upgrade_sweep: unexpected error: %s", exc)
-            results = {}
+            results = None
+
+        if results is None:
+            # 2026-07-29 fix: a crash/timeout/unreadable-results-file used to
+            # fall through to {} here, indistinguishable from a sweep that ran
+            # cleanly and found zero upgrades — the only trace was a
+            # logger.error in journald, invisible until someone went looking.
+            # Since this runs weekly, that hid a broken sweep for weeks.
+            # Recorded explicitly on the summary so both the window-log line
+            # and the Discord window-close message can say so.
+            self._upgrade_sweep_failed = True
+            self._upgrade_results = {}
+            self._notes.append("upgrade sweep: FAILED to run or produce readable results")
+            return
+
         self._upgrade_results = results or {}
         summ = self._upgrade_results.get("summary", {}) if isinstance(self._upgrade_results, dict) else {}
         if summ:
@@ -502,6 +536,7 @@ class WindowOrchestrator:
             kuma_wait_s=self._kuma_wait_s,
             kuma_still_down=list(self._kuma_still_down),
             upgrade_results=dict(self._upgrade_results),
+            upgrade_sweep_failed=self._upgrade_sweep_failed,
         )
 
         log_path = self._window_log_path()
@@ -514,6 +549,13 @@ class WindowOrchestrator:
             if self._kuma_converged
             else f"kuma_timeout still_down={len(self._kuma_still_down)}"
         )
+        # Upgrade-sweep segment only appears when the sweep actually failed —
+        # omitted on the happy path (incl. dry-run/no-results) so the log line
+        # format above is unchanged for every case that isn't a new failure.
+        # This is the audit-log side of the fix: a suppressed/failed sweep
+        # must never be silently dropped (second design law), even though the
+        # window-log line previously carried no upgrade info at all.
+        upgrade_seg = " upgrade_sweep=FAILED" if self._upgrade_sweep_failed else ""
         summary_line = (
             f"{closed_at} window closed: "
             f"processed={self._queue_processed} "
@@ -522,7 +564,7 @@ class WindowOrchestrator:
             f"dropped_max_block={self._queue_dropped_max_block} "
             f"deferred_cron={self._queue_deferred_active_cron} "
             f"smoke={smoke_pass}/{smoke_total} "
-            f"{kuma_seg}\n"
+            f"{kuma_seg}{upgrade_seg}\n"
         )
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(summary_line)
@@ -597,8 +639,16 @@ class WindowOrchestrator:
             tail = f"kuma TIMEOUT after {summary.kuma_wait_s // 60}m, still down: {still}"
             level = "warning"
             icon = "⚠"
-        up_summ = summary.upgrade_results.get("summary", {}) if summary.upgrade_results else {}
-        up_seg = f" · upgraded {up_summ.get('upgraded', 0)}" if up_summ else ""
+        if summary.upgrade_sweep_failed:
+            # Explicit failure marker — 2026-07-29 fix. Previously a crashed/
+            # timed-out/unreadable sweep produced the same {} as a clean
+            # zero-upgrade run, so this segment was silently omitted and the
+            # only trace was a logger.error, invisible for up to a week
+            # between Monday windows. Happy-path format below is unchanged.
+            up_seg = " · upgrade sweep FAILED"
+        else:
+            up_summ = summary.upgrade_results.get("summary", {}) if summary.upgrade_results else {}
+            up_seg = f" · upgraded {up_summ.get('upgraded', 0)}" if up_summ else ""
         notify.notify(
             f"{icon} window closed: "
             f"{summary.queue_processed}↑ {summary.queue_succeeded}✓ "
