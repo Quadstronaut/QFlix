@@ -5,6 +5,12 @@ name: tests
 # pytest/pyyaml/requests/jinja2, and runs tests/unit/ (no SSH, no secrets).
 # Gate this job in branch protection (required_status_checks: "pytest") so a
 # red suite blocks merge — the gap that let 17 failing tests sit on master.
+#
+# The `pwsh` job (added 2026-07-29, Phase 0 of the Convergent Audit Regime)
+# closes the OTHER gap: the PowerShell suite that guards the LLM alerting layer
+# ran in ZERO CI. Defect class C-10 asserts, from manifest/audit-scope.yaml,
+# that every tracked test file is executed by a live job here — delete a job
+# below and `qflix-audit` exits 1 naming the orphaned tests.
 
 on:
   pull_request:
@@ -24,3 +30,31 @@ jobs:
           python-version: "3.12"
       - name: Run unit tests
         run: bash tests/run.sh -q
+
+  pwsh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: REA policy-seam tests (always run)
+        shell: pwsh
+        run: ./tests/local-llm/test-rea-noise-classes.ps1
+      - name: REA suite (subject is an audit-scope S2 member)
+        shell: pwsh
+        run: |
+          # tests/local-llm/test-qflix-rea.ps1 dot-sources
+          # scripts/local-llm/qflix-rea.ps1, which .gitignore:55 keeps out of
+          # git (operator-local tooling, public repo). On a hosted runner the
+          # subject is absent, so its 85 Test-Case blocks CANNOT run here.
+          #
+          # This is registered residual R4 — read it as a limit, not a pass.
+          # The skip is LOUD, and the job still executes the file wherever the
+          # subject exists (workstation / self-hosted runner), which is the
+          # only place those assertions mean anything.
+          $subject = 'scripts/local-llm/qflix-rea.ps1'
+          if (Test-Path $subject) {
+            ./tests/local-llm/test-qflix-rea.ps1
+          } else {
+            Write-Host "SKIP tests/local-llm/test-qflix-rea.ps1"
+            Write-Host "     subject $subject is untracked by design (audit-scope S2)."
+            Write-Host "     85 Test-Case blocks did NOT run on this runner. Residual R4."
+          }

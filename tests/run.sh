@@ -18,3 +18,10 @@ PY="$VENV/bin/python"
 "$PY" -m pip install -q pytest pyyaml requests jinja2
 
 "$PY" -m pytest "$HERE/unit/" "$@"
+
+# The newsletter package ships its OWN pytest suite next to its source. It was
+# tracked, passing, and executed by nothing — defect class C-10 (test-not-in-CI)
+# found it the first time the detector ran. Two invocations, not one: both dirs
+# contain a `tests/conftest.py`, and pytest rejects the pair in a single process
+# with ImportPathMismatchError.
+"$PY" -m pytest "$HERE/../scripts/qflix-newsletter/tests" "$@"
