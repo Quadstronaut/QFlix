@@ -1,0 +1,440 @@
+# manifest/audit-scope.yaml — what "audit qflix" MEANS, as data.
+#
+# Before this file, the scope of the 2026-07-27 audit was declared in PROSE
+# inside a commit message ("Audit of everything on the seedbox (except
+# content)") — unqueryable, unenforced, and demonstrably false the next day.
+# Scope is now a query.
+#
+# THE PARTITION INVARIANT (meta-check; failure exits 2, REGIME INTEGRITY):
+# every git-tracked path matches EXACTLY ONE `repo_areas` entry or EXACTLY ONE
+# `out_of_scope` entry. Not zero (a new top-level directory must be enrolled
+# before it can be audited), not two (overlapping claims mean the boundary is
+# ambiguous, which is precisely the section-1(g) failure).
+#
+# Patterns are glob-ish: `*` does not cross '/', `**` does. Order is
+# irrelevant — the invariant is exactly-one, not first-match, so a new pattern
+# cannot silently shadow an old one.
+
+schema: 1
+
+# ---------------------------------------------------------------------------
+# THE FIVE SURFACES
+# ---------------------------------------------------------------------------
+surfaces:
+
+  S1:
+    title: repo, git-tracked
+    host: repo
+    enumerability: offline, 100% enumerable
+    note: >-
+      Everything `git ls-files` returns. Fully deterministic at a commit SHA.
+      This is where all ten offline detectors operate.
+
+  S2:
+    title: repo-adjacent, untracked but load-bearing
+    host: workstation
+    enumerability: offline-PARTIAL
+    note: >-
+      Files the system depends on that are NOT in git and never will be (public
+      repo, operator-local tooling). The FILE BODIES are permanently outside CI.
+      Mitigation: extract their POLICY into tracked data and guard the
+      extraction (C-07 + C-10). A body edit that does not touch policy is
+      invisible to CI — residual R4.
+    members:
+      - path: scripts/local-llm/qflix-rea.ps1
+        owner: operator
+        residual: >-
+          The 56KB LLM log auditor. Gitignored at .gitignore:55 because it is
+          workstation-local tooling and the repo is public. It is the ALERTING
+          LAYER — the thing the operator specifically said nothing audits. Its
+          noise policy is extracted to manifest/rea-noise-classes.yaml and
+          guarded by C-07; its test file is put in CI by C-10. What remains
+          unguarded: any change to the script BODY that does not alter the
+          extracted policy. Backup is robocopy /MIR (a mirror, not history), so
+          a bad edit propagates on the next run.
+        policy_extract: manifest/rea-noise-classes.yaml
+        loader: scripts/local-llm/rea-noise-classes.ps1
+        review_cadence_days: 90
+        last_reviewed: 2026-07-29
+      - path: scripts/manitoba-tunnel.ps1
+        owner: operator
+        residual: >-
+          The SSH tunnel launcher (gitignored at .gitignore:42). Workstation-
+          local; carries operator host details. Nothing in the repo depends on
+          its internals, but REA's blob collection depends on the tunnel being
+          up — which is why REA has a `tunnel_timeout` deadman reason rather
+          than a repo-side check. No policy to extract; the failure mode is
+          covered live by REA's own dead-man, not offline.
+        policy_extract: null
+        loader: null
+        review_cadence_days: 90
+        last_reviewed: 2026-07-29
+
+  S3:
+    title: seedbox runtime state
+    host: box
+    enumerability: LIVE ONLY
+    note: >-
+      Deployed unit files, live Kuma monitor set, secret existence and modes,
+      push tokens, quota, thread ceiling. Classes L-01..L-06 in
+      manifest/defect-classes.yaml. Offline detectors CANNOT see this and do
+      not pretend to.
+    live_detector: scripts/maint/qflix-audit-live.py
+
+  S4:
+    title: workstation tooling
+    host: workstation
+    enumerability: MIXED
+    note: >-
+      REA, its scheduled task \Archangel\QFlix-LLM\, the MCP server, ollama, and
+      the frozen B:\QFlix\data snapshot. THIS IS THE SURFACE THE 2026-07-27
+      AUDIT DECLARED ITSELF OUT OF, which is why it missed everything REA. The
+      tracked half (scripts/local/**, scripts/local-llm/*.ps1 that ARE tracked,
+      tests/local-llm/**) is enumerated as S1; the untracked half is S2; the
+      scheduled task and the ollama service are live-only and registered as
+      residual rows R-S4-TASK and R-S4-OLLAMA.
+
+  S5:
+    title: the alerting layer itself
+    host: mixed
+    enumerability: MIXED
+    note: >-
+      Kuma, the pusher, the 19 canaries, REA, and THIS AUDIT REGIME. The named
+      trap. Each must be watched by something that is NOT itself:
+      pusher <- "Manitoba Pusher"; REA <- Send-DeadmanAlert (5 reasons, 24h
+      per-reason dedup); canaries <- Kuma dead-man; audit regime <- its own Kuma
+      monitor ("QFlix Audit Regime") plus the section-3.3 bijection meta-check.
+    turtle: >-
+      THE IRREDUCIBLE LAST TURTLE, stated so it is never a surprise: the CI job
+      itself is unwatched. If GitHub Actions silently stops running, everything
+      above stays green and the digest stops changing for the most boring
+      possible reason. The mitigation (assert the last successful master run is
+      < 7 days old via the GitHub API) is NOT implemented — it needs network
+      and a token, and every detector in this regime is offline by construction.
+      Registered as residual row R5. It is not permitted to go unmentioned.
+
+# ---------------------------------------------------------------------------
+# REPO AREAS — the partition of S1
+# ---------------------------------------------------------------------------
+repo_areas:
+
+  - id: A-root-docs
+    surface: S1
+    paths: ["README.md", "inventory.md", "CHANGELOG.md", "WARN.md", "Tuesday.md", "todo-after-claude.md"]
+    covered_by: [C-06, C-08]
+
+  - id: A-root-config
+    surface: S1
+    paths: [".gitignore", ".gitattributes", "versions.env", "Q.png"]
+    covered_by: []
+    note: >-
+      .gitignore is load-bearing for this regime: it is the file that put the
+      alerting layer outside git. C-10's S2 registration is the guard.
+
+  - id: A-manifest
+    surface: S1
+    paths: ["manifest/*"]
+    covered_by: [C-01, C-07, C-08]
+
+  - id: A-ci
+    surface: S5
+    paths: [".github/**"]
+    covered_by: [C-10]
+
+  - id: A-claude
+    surface: S1
+    paths: [".claude/**"]
+    covered_by: []
+    note: Agent skill + council ledger. Documentation of process, not runtime code.
+
+  - id: A-docs
+    surface: S1
+    paths: ["docs/*"]
+    covered_by: [C-08]
+
+  - id: A-docs-councils
+    surface: S1
+    paths: ["docs/councils/**"]
+    covered_by: []
+    note: Immutable transcripts. History surface for C-08.
+
+  - id: A-docs-external
+    surface: S1
+    paths: ["docs/external/**"]
+    covered_by: []
+
+  - id: A-docs-superpowers
+    surface: S1
+    paths: ["docs/superpowers/**"]
+    covered_by: []
+    note: Vendored agent-workflow docs; not QFlix runtime.
+
+  - id: A-scripts-root
+    surface: S1
+    paths: ["scripts/*"]
+    covered_by: [C-02, C-03, C-04, C-08]
+
+  - id: A-scripts-canaries
+    surface: S5
+    paths: ["scripts/canaries/**"]
+    covered_by: [C-04, C-08, C-09]
+
+  - id: A-scripts-configure
+    surface: S1
+    paths: ["scripts/configure/**"]
+    covered_by: [C-02, C-03, C-04, C-08]
+
+  - id: A-scripts-data
+    surface: S1
+    paths: ["scripts/data/**"]
+    covered_by: [C-06, C-08]
+
+  - id: A-scripts-install
+    surface: S1
+    paths: ["scripts/install/**"]
+    covered_by: [C-02, C-03, C-08]
+
+  - id: A-scripts-lib
+    surface: S1
+    paths: ["scripts/lib/*"]
+    covered_by: [C-08]
+
+  - id: A-scripts-local
+    surface: S4
+    paths: ["scripts/local/*", "scripts/local/qflix-mcp/**"]
+    covered_by: [C-02, C-03, C-04, C-05]
+
+  - id: A-scripts-local-llm
+    surface: S4
+    paths: ["scripts/local-llm/*"]
+    covered_by: [C-07]
+    note: >-
+      Only the TRACKED files here (ollama-recover.ps1, .gitkeep, and the
+      rea-noise-classes.ps1 loader). qflix-rea.ps1 itself is S2, not S1.
+
+  - id: A-scripts-maint
+    surface: S1
+    paths: ["scripts/maint/*"]
+    covered_by: [C-02, C-03, C-04, C-05, C-08, C-09]
+
+  - id: A-scripts-maint-lib
+    surface: S1
+    paths: ["scripts/maint/lib/*"]
+    covered_by: [C-02, C-03, C-04, C-08]
+
+  - id: A-audit-regime
+    surface: S5
+    paths: ["scripts/maint/lib/audit/**"]
+    covered_by: [C-02, C-03, C-10]
+    note: >-
+      The regime auditing itself. Its own findings are as enumerable as anyone
+      else's — the detectors run over their own source. That is deliberate.
+
+  - id: A-units-maint
+    surface: S1
+    paths: ["scripts/maint/systemd/**"]
+    covered_by: [C-01, C-08]
+
+  - id: A-scripts-mcp
+    surface: S1
+    paths: ["scripts/mcp/*", "scripts/mcp/lib/**"]
+    covered_by: [C-02, C-03, C-04, C-05, C-08]
+
+  - id: A-units-mcp
+    surface: S1
+    paths: ["scripts/mcp/systemd/**"]
+    covered_by: [C-01]
+
+  - id: A-scripts-ops
+    surface: S1
+    paths: ["scripts/ops/**"]
+    covered_by: [C-02, C-03, C-08]
+
+  - id: A-scripts-patches
+    surface: S1
+    paths: ["scripts/patches/**"]
+    covered_by: [C-08]
+
+  - id: A-scripts-plex
+    surface: S1
+    paths: ["scripts/plex/**"]
+    covered_by: [C-02, C-03, C-08]
+
+  - id: A-scripts-post-import
+    surface: S1
+    paths: ["scripts/post-import/**"]
+    covered_by: [C-04, C-08]
+
+  - id: A-scripts-qflix-dash
+    surface: S1
+    paths: ["scripts/qflix-dash/**"]
+    covered_by: [C-08]
+
+  - id: A-scripts-newsletter
+    surface: S1
+    paths: ["scripts/qflix-newsletter/**"]
+    covered_by: [C-02, C-03, C-04, C-08, C-10]
+
+  - id: A-scripts-smoke
+    surface: S1
+    paths: ["scripts/smoke/**"]
+    covered_by: [C-08]
+
+  - id: A-apps-dash
+    surface: S1
+    paths: ["apps/qflix-dash/**"]
+    covered_by: []
+    note: >-
+      SvelteKit source for the public dashboard. No Python detector applies. Its
+      own `npm run check` gate is NOT in this repo's CI — registered as residual
+      row R-DASH-CI rather than quietly implied to be covered.
+
+  - id: A-apps-heartbeat
+    surface: S1
+    paths: ["apps/heartbeat-android/**"]
+    covered_by: []
+    note: Android heartbeat client. Same situation as A-apps-dash.
+
+  - id: A-tests-root
+    surface: S1
+    paths: ["tests/*"]
+    covered_by: [C-10]
+
+  - id: A-tests-unit
+    surface: S1
+    paths: ["tests/unit/*"]
+    covered_by: [C-10]
+
+  - id: A-tests-audit
+    surface: S5
+    paths: ["tests/unit/audit/**"]
+    covered_by: [C-10]
+
+  - id: A-tests-fixtures
+    surface: S1
+    paths: ["tests/fixtures/**"]
+    covered_by: []
+
+  - id: A-tests-local-llm
+    surface: S5
+    paths: ["tests/local-llm/**"]
+    covered_by: [C-10]
+    note: >-
+      85 Test-Case blocks against the alerting layer, in ZERO CI until Phase 0
+      of this regime added the pwsh job.
+
+out_of_scope:
+  - id: OOS-media
+    paths: []
+    reason: >-
+      Media content itself (the libraries, the files). Not in the repo and never
+      will be. Declared so its omission is a decision, not an accident.
+  - id: OOS-upstream
+    paths: []
+    reason: >-
+      Third-party upstream source (Tdarr, the *arr suite, Plex, SABnzbd) and
+      Ultra.cc platform internals the operator cannot change. These are residual
+      R1 — they will keep producing new findings forever.
+
+# ---------------------------------------------------------------------------
+# CI EXECUTION MAP — the data C-10 checks the workflow against
+# ---------------------------------------------------------------------------
+# Each job must EXIST in the workflow file and one of its steps' `run:` must
+# contain `must_contain`. Delete the pwsh job from the workflow and C-10 fails
+# (test-not-in-ci for tests/local-llm/test-qflix-rea.ps1) — that is AC-5.
+ci_execution:
+  workflow: .github/workflows/tests.yml
+  jobs:
+    - job: pytest
+      must_contain: "bash tests/run.sh"
+      executes:
+        - "tests/unit/**"
+        - "tests/conftest.py"
+        - "tests/__init__.py"
+        - "scripts/qflix-newsletter/tests/**"
+    - job: pwsh
+      must_contain: "tests/local-llm/test-qflix-rea.ps1"
+      executes:
+        - "tests/local-llm/**"
+
+# Files matching these are TEST FILES for C-10's purposes.
+test_file_patterns:
+  - "**/test_*.py"
+  - "**/test-*.ps1"
+
+# Roots a `from lib.X import ...` in a test resolves against. Mirrors
+# tests/conftest.py's sys.path inserts — if those diverge, C-10 reports
+# subject-unresolvable rather than guessing.
+python_import_roots:
+  - scripts/maint
+  - scripts/qflix-newsletter
+  - scripts/mcp
+  - scripts/local/qflix-mcp
+
+# ---------------------------------------------------------------------------
+# RESIDUALS — every un-enumerable surface, with an owner and a review cadence.
+# A `residual:` here with no matching row in docs/audit-residual-risk.md, or a
+# row past its cadence, is a REGIME INTEGRITY failure (exit 2).
+# ---------------------------------------------------------------------------
+residuals:
+  - id: R1
+    owner: operator
+    review_cadence_days: 90
+    last_reviewed: 2026-07-29
+    residual: Upstream / platform change (Tdarr, *arr, Plex, SAB, Ultra.cc). Unbounded.
+  - id: R2
+    owner: operator
+    review_cadence_days: 30
+    last_reviewed: 2026-07-29
+    residual: Live box drift between audit runs (L-01..L-06). Bounded only by cadence.
+  - id: R3
+    owner: operator
+    review_cadence_days: 90
+    last_reviewed: 2026-07-29
+    residual: >-
+      Semantic defects with no syntactic signature — a policy contradiction
+      between two config surfaces that share no token, a wrong threshold, wrong
+      business logic. This regime does NOT replace an LLM audit; it shrinks the
+      LLM's job from "search everything" to "search the residual".
+  - id: R4
+    owner: operator
+    review_cadence_days: 90
+    last_reviewed: 2026-07-29
+    residual: S2 untracked file bodies — only their extracted policy is guarded.
+  - id: R5
+    owner: operator
+    review_cadence_days: 30
+    last_reviewed: 2026-07-29
+    residual: >-
+      CI itself. The last-successful-run-age assertion is NOT implemented (it
+      needs network + a token; this regime is offline by construction).
+  - id: R6
+    owner: operator
+    review_cadence_days: 180
+    last_reviewed: 2026-07-29
+    residual: >-
+      A defect class nobody has thought of yet. The regime does not prevent
+      this; it guarantees that once thought of ONCE, it is enumerated
+      exhaustively and never re-sampled.
+  - id: R-S4-TASK
+    owner: operator
+    review_cadence_days: 90
+    last_reviewed: 2026-07-29
+    residual: >-
+      The Windows scheduled task \Archangel\QFlix-LLM\ that runs REA. Its
+      existence, schedule and enabled-state are live workstation registry state.
+  - id: R-S4-OLLAMA
+    owner: operator
+    review_cadence_days: 90
+    last_reviewed: 2026-07-29
+    residual: >-
+      The local ollama service and its model set. Live workstation state; the
+      store was relocated to B:\AIModels 2026-07-24 after a deletion killed
+      `serve` every boot.
+  - id: R-DASH-CI
+    owner: operator
+    review_cadence_days: 90
+    last_reviewed: 2026-07-29
+    residual: >-
+      apps/qflix-dash has a `svelte-check` gate that is NOT run by this repo's
+      CI. 16 errors -> 0 was a manual milestone (8a694da), not an enforced one.
