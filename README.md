@@ -42,7 +42,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 | Apps in manifest (`manifest/apps.yaml`) | **35** | 18 UCC · 6 systemd · 10 cron · 1 library |
 | End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **20** | movie · anime · mobile-ux · qbit-stall · sab-stall · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link · quota · newsletter-digest · thread-ceiling · tdarr-scanner · tdarr-healthcheck · ucc-gate-stuck · dash-asset-integrity |
 | Kuma push monitors (manitoba-owned) | **62** | 35 manifest apps + 20 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper" + 1 "QFlix Audio Disposition" + 1 "qflix-anime-janitor" + 1 "QFlix Torrent Janitor" + 1 "QFlix Collect", all reporting continuously (62/62 declared; `kuma audit` shows no drift). 0 external: "QFlix Collect" was reclassified manitoba-owned on 2026-07-29 because the collector moved off the workstation onto the box on 2026-07-09, so the drift audit and `bootstrap-kuma-monitors.py` now treat it as mandatory. Its Kuma name still reads "(workstation)" — cosmetic only; renaming needs a coordinated live change. |
-| Cron + systemd timers | **44** _(live count in `~/.config/systemd/user/`, 2026-07-29 — 45 once `dash-asset-integrity` deploys)_ | window-aware (Mon 11–15 UTC drain) |
+| Cron + systemd timers | **45** _(live count in `~/.config/systemd/user/`, 2026-07-30 — re-count with `ls ~/.config/systemd/user/*.timer | wc -l`)_ | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **1000+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
 
@@ -406,7 +406,7 @@ apps/
     arr-housekeeping.py      # daily Find-Missing + hourly stuck-queue unstick
     lib/                     # manifest · health · lifecycle · recovery
                              # kuma · pusher · window · notify · state · cli · qbit
-    systemd/                 # 56 services + 44 timers LIVE in ~/.config/systemd/user/
+    systemd/                 # 57 services + 45 timers LIVE in ~/.config/systemd/user/
                              # (2026-07-29; 57 + 45 once dash-asset-integrity
                              # deploys). This is a live-box measurement, NOT a
                              # count of this repo directory — the panel templates
