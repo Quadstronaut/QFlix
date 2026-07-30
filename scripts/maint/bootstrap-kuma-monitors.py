@@ -302,6 +302,31 @@ def _ensure_notifications_attached(api) -> int:
     return fixed
 
 
+def _mute_monitor_names(api) -> list:
+    """Names of active monitors carrying ZERO notification channels.
+
+    The post-reconcile assertion. Kept separate from
+    _ensure_notifications_attached so the check is independent of the code that
+    is supposed to have done the work — a verifier that reuses the actor's view
+    of the world cannot catch the actor missing a monitor entirely, which is the
+    failure it exists to catch."""
+    mute = []
+    try:
+        monitors = api.get_monitors()
+    except Exception as exc:
+        print(f"  [warn] could not re-read monitors to verify: {exc}")
+        return []
+    for m in monitors:
+        if not m.get("active", True):
+            continue
+        raw = m.get("notificationIDList") or {}
+        current = ({int(k) for k, v in raw.items() if v} if isinstance(raw, dict)
+                   else set(raw))
+        if not current:
+            mute.append(m.get("name", f"id={m.get('id')}"))
+    return sorted(mute)
+
+
 def _delete_all_http_monitors(api):
     """Delete the 22 HTTP monitors I created in the previous pass.
     Idempotent — skips anything that's not HTTP-typed or that doesn't
@@ -573,6 +598,37 @@ def main() -> int:
     print("\n--- final: reconcile notification channels on every monitor ---")
     attached = _ensure_notifications_attached(api)
     print(f"notification sets repaired: {attached}")
+
+    # VERIFY, don't assume. The reconcile above is correct in intent but reads
+    # api.get_monitors(), which is a client-side cache the server refreshes over
+    # the socket. A monitor CREATED moments earlier in this same run may not have
+    # landed in that cache yet, so it is silently skipped — no [notify] line and
+    # no [notify-fail] line, because the loop never sees it at all.
+    #
+    # That is exactly how "Canary Dash Asset Integrity" was born mute on
+    # 2026-07-30 despite this function existing to prevent it: the creating run
+    # missed it, and only the NEXT run repaired it. Reconcile-on-every-run fixes
+    # a monitor eventually, but "eventually" means the guard ships deaf and stays
+    # deaf until someone happens to re-run the bootstrap.
+    #
+    # So: re-read, retry once against a freshly fetched list, and if anything is
+    # still mute, FAIL the run. A non-zero exit makes 240-maintenance-install.sh
+    # print its "monitors may be incomplete" warning instead of reporting success
+    # over a silent monitor.
+    mute = _mute_monitor_names(api)
+    if mute:
+        print(f"  [retry] {len(mute)} monitor(s) still mute after reconcile: {', '.join(mute)}")
+        attached += _ensure_notifications_attached(api)
+        mute = _mute_monitor_names(api)
+    if mute:
+        print(f"\nFATAL: {len(mute)} active monitor(s) have NO notification channels:")
+        for name in mute:
+            print(f"  - {name}")
+        print("These can go red in total silence — no Discord, no auto-heal webhook.")
+        print("Re-run this script; if it persists, attach the channels in the Kuma UI.")
+        api.disconnect()
+        return 1
+    print("verified: every active monitor has notification channels")
 
     api.disconnect()
     return 0 if failed == 0 else 1
