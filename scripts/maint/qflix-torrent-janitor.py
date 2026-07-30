@@ -123,7 +123,25 @@ SEEDING_DONE_STATES = frozenset({
 DEFAULT_MIN_RATIO = 2.0
 DEFAULT_MAX_SEED_DAYS = 30
 DEFAULT_MAX_ITEMS = 20
-DEFAULT_MAX_PCT = 90.0
+# 100.0 = the per-population fraction tripwire is OFF, and that is deliberate.
+#
+# It aborts when more than P% of the pool is a candidate -- a circuit breaker
+# for a MASS mistake (e.g. metadata loss making every torrent look untracked).
+# On a pool this small it fires on normal operation instead: with 2 torrents,
+# reaping 2 finished ones is 100%, which trips any cap below that. A breaker
+# that fires on the correct case is noise, not safety.
+#
+# It lived ONLY in the on-box drop-in until 2026-07-30, so the armed run used
+# 100 while a bare hand-run used 90 -- the preview was STRICTER than reality.
+# On 2026-07-28 the dry-run printed "would ABORT on --execute" and the execute
+# two minutes later deleted both torrents. A preview that does not predict the
+# real run is worse than no preview. One number, one place.
+#
+# The mass-delete scenario this guarded is already covered by a STRONGER,
+# count-independent rail: if ANY *arr queue is unreadable the whole run aborts
+# (exit 3), and an unreadable queue is precisely what would make everything
+# look untracked. --max-items remains the per-run rate limit.
+DEFAULT_MAX_PCT = 100.0
 DAY_SECONDS = 86400
 
 KUMA_BASE = os.environ.get("KUMA_BASE", "http://127.0.0.1:42005")
