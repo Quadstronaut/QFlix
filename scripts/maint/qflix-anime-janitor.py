@@ -15,7 +15,7 @@ inherits the reaper's whole safety envelope.
 CLASSIFIER (genre + origin, 4-quadrant; source of truth is the *arr record's
 own `genres` + `originalLanguage`):
 
-    Animation genre?     originalLanguage name             verdict
+    Anime/Animation?     originalLanguage name             verdict
     -------------------  ------------------------------    -----------------------------
     yes                  in ANIME_LANGS (Japanese)         anime -> leave
     yes                  anything else (incl. absent)      FLAG (western/unknown cartoon)
@@ -24,15 +24,18 @@ own `genres` + `originalLanguage`):
     no                   absent / blank                    FLAG (missing-origin; never move)
     (no genres at all)   -                                 SKIP + FLAG (missing metadata)
 
-AUTO re-home fires ONLY on the narrowest, highest-precision case: NO Animation
-genre AND a PRESENT originalLanguage that is not Japanese - unambiguous
+AUTO re-home fires ONLY on the narrowest, highest-precision case: NEITHER the
+"Animation" NOR the "Anime" genre, AND a PRESENT originalLanguage that is not
+Japanese - unambiguous
 foreign/Western live-action with no business in an anime library. A missing
 language is NOT evidence of non-anime (co-productions, English-dub-primary
 entries, metadata gaps) -> flagged, never moved. Missing genres never move.
 
-REVERSE (flag-only): a title in a MAIN library (Sonarr/Radarr) that HAS the
-Animation genre AND Japanese origin is likely a misplaced anime -> reported,
-never auto-moved.
+REVERSE (flag-only): a title in a MAIN library (Sonarr/Radarr) that HAS either
+the "Animation" OR the "Anime" genre AND Japanese origin is likely a misplaced
+anime -> reported, never auto-moved. TheTVDB treats those two as DISTINCT genres
+and does not always tag both, so matching only "Animation" silently missed real
+anime -- see ANIME_GENRES below.
 
 DRY-RUN IS THE DEFAULT. With no flags the janitor enumerates, classifies,
 prints the plan + totals, and MUTATES NOTHING. The systemd unit ships in this
@@ -134,6 +137,26 @@ MAIN_LIBS = [
 ]
 
 ANIMATION_GENRE = "Animation"
+# TheTVDB carries "Anime" as a genre SEPARATE from "Animation", and does not
+# always tag both. Sonarr surfaces that taxonomy verbatim, so a literal
+# `"Animation" in genres` check silently misses anime whose TVDB entry only
+# carries "Anime".
+#
+# Found 2026-07-30 via "Mob Psycho 100" (seriesType=anime, originalLanguage
+# Japanese, genres ['Action','Anime','Comedy','Fantasy'] -- no "Animation").
+# classify_main_lib fell straight through to ("ignore", "") so it was never even
+# flagged for review, while "Chainsaw Man" (which carries BOTH tags) was flagged
+# every day. A silent miss, not a visible disagreement.
+#
+# Widening this is safe in BOTH directions, and strictly reduces risk:
+#   - reverse: more genuine anime gets flagged for manual re-route (the point)
+#   - forward: `auto_out` requires NOT has_anim, so making has_anim true more
+#     often can only REDUCE auto-moves, never cause a false one. It also fixes a
+#     false flag -- a JP title tagged only "Anime" currently reaches
+#     ("flag", "jp-live-action-or-mislabel") and now correctly returns
+#     ("leave", "anime").
+# TMDB (Radarr) has no separate "Anime" genre, so this is a Sonarr/TVDB-side gap.
+ANIME_GENRES = frozenset({ANIMATION_GENRE, "Anime"})
 DEFAULT_ANIME_LANGS = ["Japanese"]
 DEFAULT_MAX_MOVES = 10
 DEFAULT_MAX_PCT = 25.0
@@ -323,7 +346,7 @@ def classify_anime_lib(record, anime_langs) -> tuple:
     genres = record.get("genres") or []
     if not genres:
         return ("skip", "missing-metadata")
-    has_anim = ANIMATION_GENRE in genres
+    has_anim = bool(ANIME_GENRES.intersection(genres))
     origin = ((record.get("originalLanguage") or {}) or {}).get("name") or ""
     is_anime_origin = origin in anime_langs
     if has_anim and is_anime_origin:
@@ -346,7 +369,7 @@ def classify_main_lib(record, anime_langs) -> tuple:
     """Verdict for a title in a MAIN library (reverse direction). Returns
     (action, reason); action in {flag_reverse, ignore}."""
     genres = record.get("genres") or []
-    has_anim = ANIMATION_GENRE in genres
+    has_anim = bool(ANIME_GENRES.intersection(genres))
     origin = ((record.get("originalLanguage") or {}) or {}).get("name") or ""
     if has_anim and origin in anime_langs:
         return ("flag_reverse", "anime-in-main-lib")

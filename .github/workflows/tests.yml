@@ -31,6 +31,49 @@ jobs:
       - name: Run unit tests
         run: bash tests/run.sh -q
 
+  audit:
+    # The Convergent Audit Regime, actually RUN.
+    #
+    # Without this step the regime is a guard that is committed but never
+    # scheduled -- the precise failure mode it was built to enumerate (C-01
+    # timer-without-deadman, C-10 test-not-in-CI). The audit named that class in
+    # its own manifests while not running anywhere itself, which would have been
+    # a fitting way to ship it.
+    #
+    # qflix-audit.py exits 1 on any ENFORCED finding and 0 when only advisory
+    # ones remain, so this fails the build exactly when a defect class the repo
+    # has committed to holding is violated. Zero findings is explicitly NOT the
+    # deliverable -- docs/audit-residual-risk.md says so in its first paragraph.
+    # The deliverable is DETERMINISM: same commit -> same report_digest, so
+    # "will it find something new?" becomes "did the digest change?"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the boundary is `git ls-files`; a shallow clone lies
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install audit deps
+        run: python -m pip install --quiet pyyaml
+      - name: Convergent audit (fails on ENFORCED findings)
+        env:
+          PYTHONPATH: scripts/maint
+        run: python scripts/maint/qflix-audit.py
+      - name: Assert the report digest is reproducible
+        env:
+          PYTHONPATH: scripts/maint
+        run: |
+          set -euo pipefail
+          a=$(python scripts/maint/qflix-audit.py | grep -oE 'digest=[0-9a-f]+' | head -1)
+          b=$(python scripts/maint/qflix-audit.py | grep -oE 'digest=[0-9a-f]+' | head -1)
+          echo "run1 $a"
+          echo "run2 $b"
+          if [ "$a" != "$b" ]; then
+            echo "::error::audit is non-deterministic at a fixed commit — the regime's core guarantee is broken"
+            exit 1
+          fi
+
   pwsh:
     runs-on: ubuntu-latest
     steps:
