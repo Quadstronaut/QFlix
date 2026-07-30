@@ -162,6 +162,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/qflix-anime-janitor.exclude \
     scripts/maint/qflix-torrent-janitor.py \
     scripts/maint/qflix-torrent-janitor.exclude \
+    scripts/maint/systemd/manitoba-maint-audit.service \
+    scripts/maint/systemd/manitoba-maint-audit.timer \
     scripts/maint/systemd/manitoba-maint-torrent-janitor.service \
     scripts/maint/systemd/manitoba-maint-torrent-janitor.timer \
     scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.service \
@@ -235,6 +237,18 @@ chmod +x ~/scripts/maint/qflix-collect.py
 # (added 2026-07-27). Ships DRY-RUN; armed via an on-box drop-in like the reaper.
 cp -f "$STG"/scripts/maint/qflix-torrent-janitor.py ~/scripts/maint/qflix-torrent-janitor.py
 chmod +x ~/scripts/maint/qflix-torrent-janitor.py
+
+# Convergent Audit Regime (landed on master 2026-07-30). Its units sat in the
+# repo with ZERO installer wiring, so the audit would have shipped as a guard
+# that is committed but never scheduled -- the exact C-01/C-10 class it exists
+# to enumerate.
+#
+# It is NOT copied into ~/scripts/maint: the audit needs a real git checkout
+# (its boundary is `git ls-files`) and a manifest/ dir above the script, and
+# the deployed layout has neither. It runs out of ~/.opt/qflix-src instead --
+# the same shallow checkout qflix-stats.py maintains. Ensure it exists here so
+# the timer never fires against a missing directory.
+sshm "test -d ~/.opt/qflix-src/.git || git clone --depth 1 https://github.com/Quadstronaut/QFlix.git ~/.opt/qflix-src" >/dev/null 2>&1 || log_warn "  could not prepare ~/.opt/qflix-src — audit timer will no-op until it exists"
 cp -f "$STG"/scripts/maint/qflix-torrent-janitor.exclude ~/scripts/maint/qflix-torrent-janitor.exclude
 # Remove the retired Playwright clicker if a prior install put it in place.
 rm -f ~/scripts/maint/cp_upgrade_clicker.py
@@ -538,6 +552,9 @@ systemctl --user enable --now manitoba-maint-anime-janitor.timer
 # --execute); arm via an on-box drop-in like the reaper. --now activates the
 # schedule (no immediate run).
 systemctl --user enable --now manitoba-maint-torrent-janitor.timer
+# Convergent audit: daily enumeration of the declared defect classes, self-
+# pushing "QFlix Audit Regime". Exits 1 on any ENFORCED finding.
+systemctl --user enable --now manitoba-maint-audit.timer
 # Thread-ceiling canary — every 15 min. Tracks user task count vs ulimit -u
 # (RLIMIT_NPROC), 70% WARN / 85% FAIL. Guards the GOMAXPROCS thread-exhaustion
 # class (memory seedbox-thread-cap-gomaxprocs).
