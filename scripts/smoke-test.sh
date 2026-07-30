@@ -111,17 +111,75 @@ echo "6. Disk usage"
 USAGE=$(sshm "df -h ~ | tail -1 | awk '{print \$3 \" / \" \$2 \" (\" \$5 \" used)\"}'")
 record "disk-usage" pass "$USAGE"
 
-# 7. Landing page — the public root serves the QFlix Dashboard directly (200 +
-# the `data-qflix-dash` marker, no htpasswd). Homarr was decommissioned
-# 2026-07-13; the mobile-ux canary guards this same surface every 15 min.
+# 7. Landing page - the public root serves the QFlix Dashboard directly, AND the
+# shell it serves is internally consistent.
+#
+# 200 + the `data-qflix-dash` marker is NOT sufficient, and believing it was cost
+# ~22h of customer-visible outage on 2026-07-29. That marker lives in the
+# server-RENDERED html, so it survives a total hydration failure. A fresh build/
+# was shipped over a live node process; adapter-node hands static files to sirv,
+# which snapshots its file manifest ONCE at process start, so 6 of the 10
+# /_app/immutable modules the shell referenced returned 404 while every file sat
+# on disk at mode 644 - and the document itself advertised the Content-Length
+# sirv computed at boot, so browsers aborted with ERR_CONTENT_LENGTH_MISMATCH and
+# never reached domcontentloaded. This gate stayed green throughout.
+#
+# So it now asserts the same invariant as the dash-asset-integrity canary (every
+# 15 min, "Canary Dash Asset Integrity"): every asset the shell references must
+# resolve from the process that served the shell, and the advertised byte count
+# must match the bytes delivered. Folded into the single `landing-page` record on
+# purpose - one customer-visible surface, one gate, and the detail string carries
+# the diagnosis; a second record would only drift the hand-maintained smoke
+# badge. Homarr was decommissioned 2026-07-13; mobile-ux owns root reachability
+# and mobile page weight on this same surface, this owns hydratability.
 echo "7. Landing page"
 PUBLIC_HOST=$(secret_read seedbox.host 2>/dev/null || echo "quadstronaut.seedbox.example.com")
-ROOT_CODE=$(curl -sk -L -m 15 -o /dev/null -w "%{http_code}" "https://${PUBLIC_HOST}/" 2>/dev/null || echo 000)
-HITS=$(curl -sk -L -m 15 "https://${PUBLIC_HOST}/" 2>/dev/null | grep -c "data-qflix-dash" || echo 0)
-if [ "${ROOT_CODE}" = "200" ] && [ "${HITS:-0}" -ge 1 ]; then
-  record "landing-page" pass "/ -> QFlix Dashboard (200, $HITS marker hits)"
+LP_HDR=$(mktemp); LP_BODY=$(mktemp)
+# NOTE `|| echo 000` would CONCATENATE here: on a mid-transfer failure curl
+# prints the status it received AND the fallback appends, so a truncated 200
+# becomes "200000" and the gate blames the wrong thing. Capture the exit status
+# separately and normalise a non-numeric result to 000.
+ROOT_CODE=$(curl -sk -L -m 20 -D "$LP_HDR" -o "$LP_BODY" -w "%{http_code}" "https://${PUBLIC_HOST}/" 2>/dev/null)
+ROOT_RC=$?
+case "$ROOT_CODE" in '' | *[!0-9]*) ROOT_CODE=000 ;; esac
+HITS=$(grep -c "data-qflix-dash" "$LP_BODY" 2>/dev/null || true)
+# Content-Length agreement (the ERR_CONTENT_LENGTH_MISMATCH leg). Independent of
+# the 404 sweep: a file rewritten in place at a path sirv DID index at boot still
+# returns 200, just under a stale length. An absent header (chunked / encoded, or
+# root unreachable) is inconclusive, not a failure.
+LP_ADV=$(tr -d '\r' < "$LP_HDR" 2>/dev/null | awk 'tolower($1)=="content-length:"{print $2}' | tail -1)
+LP_GOT=$(wc -c < "$LP_BODY" 2>/dev/null | tr -d ' ')
+LP_CL_OK=1; LP_CL="skipped(no-header)"
+if [ -n "${LP_ADV:-}" ]; then
+  if [ "$LP_ADV" = "${LP_GOT:-0}" ]; then
+    LP_CL="agrees"
+  else
+    LP_CL_OK=0; LP_CL="MISMATCH(adv=$LP_ADV got=${LP_GOT:-0})"
+  fi
+elif [ "${ROOT_CODE}" = "200" ] && [ "${ROOT_RC:-0}" != "0" ]; then
+  # 200 with no Content-Length AND a broken transfer: the document did not
+  # arrive intact and there is no header to arbitrate with. Not a free pass.
+  LP_CL_OK=0; LP_CL="TRANSFER-FAILED(curl-rc=${ROOT_RC})"
+fi
+# Asset resolvability (the 404-while-present-on-disk leg). Zero references is
+# itself a failure - it means what came back was not a SvelteKit shell.
+LP_REFS=$(grep -oE '/_app/immutable/[A-Za-z0-9._/-]+' "$LP_BODY" 2>/dev/null | sort -u)
+LP_N=$(printf '%s\n' "$LP_REFS" | grep -c . || true)
+LP_BAD=0
+for ref in $LP_REFS; do
+  RC=$(curl -sk -m 12 -o /dev/null -w "%{http_code}" "https://${PUBLIC_HOST}${ref}" 2>/dev/null)
+  ARC=$?
+  case "$RC" in '' | *[!0-9]*) RC=000 ;; esac
+  # A 200 whose transfer broke mid-body counts as bad: the browser cannot
+  # execute a module it never fully received.
+  { [ "$RC" = "200" ] && [ "$ARC" = "0" ]; } || LP_BAD=$((LP_BAD+1))
+done
+rm -f "$LP_HDR" "$LP_BODY"
+if [ "${ROOT_CODE}" = "200" ] && [ "${HITS:-0}" -ge 1 ] && [ "${LP_N:-0}" -ge 1 ] \
+   && [ "${LP_BAD:-0}" -eq 0 ] && [ "${LP_CL_OK}" -eq 1 ]; then
+  record "landing-page" pass "/ -> QFlix Dashboard (200, $HITS marker hits, ${LP_N}/${LP_N} assets 200, content-length $LP_CL)"
 else
-  record "landing-page" fail "root not serving QFlix Dashboard (code=$ROOT_CODE marker=$HITS)"
+  record "landing-page" fail "dead or inconsistent shell (code=$ROOT_CODE marker=${HITS:-0} assets_404=${LP_BAD}/${LP_N:-0} content-length=$LP_CL) - assets 404 while present under ~/.apps/qflix-dash/build/client means a stale in-process sirv manifest: systemctl --user restart qflix-dash"
 fi
 
 # 8. Unpackerr daemon
@@ -454,7 +512,7 @@ else
 fi
 
 # 15. Phase-15 canaries (movie / anime / quota / mobile-ux)
-# Spot-checks a representative subset of the 13 live canaries — not all of them.
+# Spot-checks a representative subset of the 20 live canaries - not all of them.
 # (deletion canary retired 2026-06-20 with Maintainerr; swapped to quota.)
 echo "15. Phase-15 canaries"
 HERE="$(cd "$(dirname "$0")" && pwd)"
