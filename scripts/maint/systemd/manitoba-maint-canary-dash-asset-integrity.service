@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - QFlix dashboard build integrity (served shell references only servable assets)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push dash-asset-integrity
+StandardOutput=journal
+StandardError=journal
