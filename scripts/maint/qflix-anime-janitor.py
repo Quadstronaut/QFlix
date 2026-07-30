@@ -6,8 +6,8 @@ WHY: Seerr routes anime to the dedicated anime *arr instances (Sonarr2 ->
 misfires, so regular shows/movies land in the anime instances and show up in
 the Plex Anime / Anime Movies libraries. This is a box-side, once-a-day janitor
 - structurally a sibling of qflix-reaper - that re-homes confirmed non-anime
-titles OUT of the anime libraries and FLAGS the reverse (real anime sitting in
-the main libraries) for manual review.
+titles OUT of the anime libraries and, since 2026-07-30, re-homes real anime
+sitting in the main libraries INTO them. Both directions MOVE.
 
 The reaper deletes; this janitor MOVES (a reversible, non-destructive op) and
 inherits the reaper's whole safety envelope.
@@ -31,11 +31,14 @@ foreign/Western live-action with no business in an anime library. A missing
 language is NOT evidence of non-anime (co-productions, English-dub-primary
 entries, metadata gaps) -> flagged, never moved. Missing genres never move.
 
-REVERSE (flag-only): a title in a MAIN library (Sonarr/Radarr) that HAS either
-the "Animation" OR the "Anime" genre AND Japanese origin is likely a misplaced
-anime -> reported, never auto-moved. TheTVDB treats those two as DISTINCT genres
-and does not always tag both, so matching only "Animation" silently missed real
-anime -- see ANIME_GENRES below.
+REVERSE (AUTO-MOVE, since 2026-07-30): a title in a MAIN library (Sonarr/Radarr)
+that HAS either the "Animation" OR the "Anime" genre AND Japanese origin is a
+misfiled anime -> re-homed INTO the anime library through the same rehome()
+path as the forward direction, inheriting its full safety envelope. This was
+report-only until the operator corrected it: flagging a misfiled title and
+leaving it in place is not a correction. TheTVDB treats "Anime" and "Animation"
+as DISTINCT genres and does not always tag both, so matching only "Animation"
+silently missed real anime -- see ANIME_GENRES below.
 
 DRY-RUN IS THE DEFAULT. With no flags the janitor enumerates, classifies,
 prints the plan + totals, and MUTATES NOTHING. The systemd unit ships in this
@@ -47,7 +50,8 @@ crash mid-move is resumable):
   1. same-device guard: refuse (flag crossdev) if source/target roots differ in
      st_dev - a cross-device move would double disk usage / risk seeding.
   2. add the title to the TARGET instance (import-existing; no new search).
-  3. rename() the folder from the anime root to the main root (same device).
+  3. rename() the folder from the source root to the destination root (same
+     device) - anime->main in the forward direction, main->anime in reverse.
   4. rescan the target so it imports the moved files.
   5. remove the title from the SOURCE instance WITHOUT deleting files.
   6. refresh both Plex libraries.
@@ -117,7 +121,7 @@ ANIME_PAIRS = [
         "kind": "series", "idkey": "tvdbId",
         "from_slug": "sonarr2", "to_slug": "sonarr",
         "from_root": "/home/quadstronaut/media/Anime",
-        "to_root": "/home/quadstronaut/media/TV",
+        "to_root": "/home/quadstronaut/media/TV Shows",
         "plex_from": "QFlix - Anime", "plex_to": "QFlix - TV",
         "series_type": "standard",
     },
@@ -130,10 +134,47 @@ ANIME_PAIRS = [
     },
 ]
 
-# Main instances scanned for the reverse (flag-only) direction.
+# Main instances scanned for the reverse direction.
 MAIN_LIBS = [
     {"kind": "series", "slug": "sonarr",  "idkey": "tvdbId", "plex": "QFlix - TV"},
     {"kind": "movie",  "slug": "radarr",  "idkey": "tmdbId", "plex": "QFlix - Movies"},
+]
+
+# REVERSE pairs: real anime sitting in a MAIN library, moved INTO the anime
+# library. Same shape as ANIME_PAIRS, so they run through the identical rehome()
+# path and inherit its whole safety envelope -- same-device guard, inflight
+# ledger, verified import before the source record is touched, rollback of a
+# record we created, per-library tripwire and per-run rate limit.
+#
+# This direction was originally report-only. It is an AUTO-MOVE per operator
+# instruction (2026-07-30): flagging a misfiled title and leaving it sitting
+# there is not a correction, and five titles had been flagged daily for six days
+# with nothing moved.
+#
+# `to_root` matters more here than in the forward direction: sonarr2 and radarr2
+# each expose TWO root folders and the FIRST is the main one, so resolving by
+# roots[0] would register the title with the anime *arr while leaving the files
+# under the main folder. _resolve_root(prefer=...) pins the intended root.
+#
+# series_type flips to "anime" so Sonarr uses absolute/scene numbering, which is
+# the whole reason the anime instance exists -- the mirror of the forward pair
+# setting "standard".
+REVERSE_PAIRS = [
+    {
+        "kind": "series", "idkey": "tvdbId",
+        "from_slug": "sonarr", "to_slug": "sonarr2",
+        "from_root": "/home/quadstronaut/media/TV Shows",
+        "to_root": "/home/quadstronaut/media/Anime",
+        "plex_from": "QFlix - TV", "plex_to": "QFlix - Anime",
+        "series_type": "anime",
+    },
+    {
+        "kind": "movie", "idkey": "tmdbId",
+        "from_slug": "radarr", "to_slug": "radarr2",
+        "from_root": "/home/quadstronaut/media/Movies",
+        "to_root": "/home/quadstronaut/media/Anime Movies",
+        "plex_from": "QFlix - Movies", "plex_to": "QFlix - Anime Movies",
+    },
 ]
 
 ANIMATION_GENRE = "Animation"
@@ -445,12 +486,28 @@ def _utc_now() -> str:
 # ===========================================================================
 # Re-home (execute path).
 # ===========================================================================
-def _resolve_root(client):
-    """First root folder path from an arr's /rootfolder, or None."""
+def _resolve_root(client, prefer=None):
+    """Root folder path from an arr's /rootfolder, preferring `prefer`.
+
+    `roots[0]` alone is WRONG for the anime instances. sonarr2 and radarr2 each
+    carry TWO roots and the first is the MAIN one:
+
+        sonarr2  -> ['/home/.../media/TV Shows', '/home/.../media/Anime']
+        radarr2  -> ['/home/.../media/Movies',   '/home/.../media/Anime Movies']
+
+    So a reverse re-home (main -> anime) that trusted roots[0] would register the
+    title with the anime *arr but drop the files back under the MAIN folder --
+    the arr would look right while Plex's Anime library never saw it. The pair
+    declares where it intends to land; honour that when the destination really
+    offers it, and fall back to roots[0] only when it does not.
+    """
     code, roots = client.get("/rootfolder")
-    if code == 200 and isinstance(roots, list) and roots:
-        return roots[0].get("path")
-    return None
+    if code != 200 or not isinstance(roots, list) or not roots:
+        return None
+    paths = [r.get("path") for r in roots if r.get("path")]
+    if prefer and prefer in paths:
+        return prefer
+    return paths[0] if paths else None
 
 
 def _default_quality_profile(client):
@@ -547,7 +604,7 @@ def rehome(pair, record, *, section_keys, plex_port, plex_token):
 
     src = _arr_client(pair["from_slug"])
     dst = _arr_client(pair["to_slug"])
-    to_root = _resolve_root(dst) or pair["to_root"]
+    to_root = _resolve_root(dst, prefer=pair.get("to_root")) or pair["to_root"]
     from_root = pair["from_root"]
 
     # same-device guard (fast-path; os.rename also raises EXDEV as a backstop).
@@ -815,21 +872,26 @@ def run(args) -> int:
                 flags.append({"lib": pair["from_slug"], "title": rec.get("title"),
                               pair["idkey"]: rec.get(pair["idkey"]), "reason": reason})
 
-    # --- main libraries: reverse flag-only ---
-    for lib in MAIN_LIBS:
-        if only and lib["slug"] not in only:
+    # --- main libraries: reverse direction, AUTO-MOVE into the anime library ---
+    # Candidates join the same auto_candidates list as the forward direction, so
+    # the tripwire, the rate limit and rehome() treat both identically. An
+    # enumeration failure here is NOT fatal: the main instances are not the
+    # subject of the forward correction, so a main-arr outage degrades this run
+    # to forward-only rather than aborting a run that could still do useful work.
+    for pair in REVERSE_PAIRS:
+        if only and pair["from_slug"] not in only:
             continue
-        titles = _list_titles(lib["slug"], lib["kind"])
+        titles = _list_titles(pair["from_slug"], pair["kind"])
         if titles is None:
-            warn("could not enumerate " + lib["slug"] + " (reverse) - skipping")
+            warn("could not enumerate " + pair["from_slug"] + " (reverse) - skipping")
             continue
+        lib_counts[pair["from_slug"]] = len(titles)
         for rec in titles:
-            if is_excluded(rec, lib["idkey"], tokens):
+            if is_excluded(rec, pair["idkey"], tokens):
                 continue
             action, reason = classify_main_lib(rec, anime_langs)
             if action == "flag_reverse":
-                flags.append({"lib": lib["slug"], "title": rec.get("title"),
-                              lib["idkey"]: rec.get(lib["idkey"]), "reason": reason})
+                auto_candidates.append((pair, rec))
 
     # An anime-instance enumeration failure is EXIT_FATAL per design 10 - never
     # masked just because another instance yielded candidates (council B6).
@@ -919,9 +981,16 @@ def _emit(args, auto_candidates, flags, *, moved=0, deferred=0, failures=0,
         print(json.dumps(out, indent=2))
         return
     log("=== plan ===")
-    log("auto-move candidates (non-anime in anime libs): " + str(len(auto_candidates)))
+    # Direction-aware wording. Both directions move, so a single "MOVE OUT"
+    # label misread the reverse ones as leaving the anime library when they are
+    # entering it -- on the exact screen an operator reads before arming a
+    # mutation.
+    log("auto-move candidates (misfiled in either direction): "
+        + str(len(auto_candidates)))
     for p, r in auto_candidates:
-        log("  MOVE OUT " + p["from_slug"] + ": '" + str(r.get("title")) + "'")
+        _arrow = "INTO ANIME" if p["to_slug"].endswith("2") else "OUT OF ANIME"
+        log("  MOVE " + _arrow + " " + p["from_slug"] + " -> " + p["to_slug"]
+            + ": '" + str(r.get("title")) + "'")
     log("flags (manual review): " + str(len(flags)))
     for f in flags:
         log("  FLAG " + str(f.get("lib")) + ": '" + str(f.get("title"))
