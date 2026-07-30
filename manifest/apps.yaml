@@ -785,6 +785,41 @@ canaries:
     kuma_monitor: "Canary UCC Gate Stuck"
     script: "scripts/canaries/ucc-gate-stuck.sh"
     schedule: "every-15min"
+  timer-liveness:
+    # The GENERIC dead-man for every scheduled job, driven off manifest/jobs.yaml.
+    #
+    # manifest/jobs.yaml carried four entries adjudicated `open_gap: true` -- a
+    # job that can stop with nothing noticing. Their own written reasons say it:
+    # manitoba-maint-window ("if BOTH the window and the watchdog fail to start,
+    # nothing pages"), manitoba-maint-window-watchdog ("a watcher with no watcher
+    # -- THE TURTLE PROBLEM"), manitoba-maint-arr-audit ("a permanently-failing
+    # unit is indistinguishable from a clean week") and
+    # manitoba-maint-flaresolverr-canary ("the ONLY signal is the absence of
+    # Discord messages nobody was expecting anyway").
+    #
+    # One monitor per gap was the wrong shape: four more monitors, four more push
+    # tokens, four more things that can be born mute or born tokenless (both
+    # happened on 2026-07-30), and nothing for the NEXT timer somebody adds. This
+    # watches liveness generically instead, so a new job is covered the moment it
+    # is declared in the ledger.
+    #
+    # It terminates the turtle chain where it can legitimately end: Kuma. This
+    # canary PUSHES, so if it stops, Kuma flips it DOWN on a missed heartbeat --
+    # the dead-man dead-mans itself, visibly, on the public status page.
+    #
+    # Predicates are cadence-INDEPENDENT on purpose. Encoding each timer's
+    # interval would copy its OnCalendar into a second policy surface, and two
+    # surfaces drifting apart is this repo's recurring defect. systemd already
+    # knows the schedule; it is asked about health instead: LOADED (declared but
+    # never installed -- sab-stall, tdarr-scanner and tdarr-healthcheck all
+    # shipped that way), ACTIVE (will never fire again), NEXT (active but nothing
+    # scheduled). A failed last run is reported as a WARN, not a FAIL, because a
+    # canary legitimately exits non-zero to report ITS subject down and that is
+    # already someone else's monitor.
+    kuma_monitor: "Canary Timer Liveness"
+    script: "scripts/canaries/timer-liveness.sh"
+    schedule: "every-15min"
+
   dash-asset-integrity:
     # Assert that the SERVED dashboard shell can actually hydrate - not that
     # the root answers 200.
