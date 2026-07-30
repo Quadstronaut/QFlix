@@ -151,6 +151,10 @@ jobs:
   # dashboard served a dead shell for ~22h with every monitor green -- and it then
   # spent its first 25 minutes deployed pushing nothing, because its token was
   # missing and `manitoba-maint canary push` exits 0 when it cannot find one.
+  manitoba-maint-canary-timer-liveness:
+    timer: scripts/maint/systemd/manitoba-maint-canary-timer-liveness.timer
+    kuma_monitor: "Canary Timer Liveness"
+
   manitoba-maint-canary-dash-asset-integrity:
     timer: scripts/maint/systemd/manitoba-maint-canary-dash-asset-integrity.timer
     kuma_monitor: "Canary Dash Asset Integrity"
@@ -163,17 +167,17 @@ jobs:
 
   manitoba-maint-arr-audit:
     timer: scripts/maint/systemd/manitoba-maint-arr-audit.timer
-    kuma_monitor: null
-    no_monitor_reason: >-
-      Weekly (Sun 04:00) *arr configuration audit. It notifies Discord on
-      findings but pushes no heartbeat, so a permanently-failing unit is
-      indistinguishable from a clean week — the exact silent-failure shape this
-      class exists to catch. Not closed in this commit because adding a
-      heartbeat means a new Kuma monitor, a new push token, and a live box
-      change, which belongs to the Phase 5 box-side work, not to a repo-only
-      phase.
-    open_gap: true
     adjudicated: 2026-07-29
+    owner: operator
+    kuma_monitor: "Canary Timer Liveness"
+    no_monitor_reason: >-
+      Weekly (Sun 04:00) *arr configuration audit. It notifies Discord on findings
+      but pushes no heartbeat, so a permanently-failing unit used to be
+      indistinguishable from a clean week. Closed 2026-07-30: timer-liveness
+      checks this timer is loaded/active/scheduled AND reports a non-success
+      last run, which is precisely the "runs, fails, nobody hears" shape.
+    open_gap: false
+    adjudicated: 2026-07-30
     owner: operator
 
   manitoba-maint-backup-prune:
@@ -204,29 +208,32 @@ jobs:
 
   manitoba-maint-window:
     timer: scripts/maint/systemd/manitoba-maint-window.timer
-    kuma_monitor: null
-    no_monitor_reason: >-
-      Monday 11:00 UTC maintenance-window orchestrator. A missed run is visible
-      the same week through the newsletter's "This week's tune-ups" line
-      (rendered from last-upgrade.json) and through manitoba-maint-window-
-      watchdog at 15:00 UTC, but neither is a Kuma dead-man: if BOTH the window
-      and the watchdog fail to start, nothing pages. Known gap, weekly cadence,
-      low blast radius; closing it is Phase 5 box-side work.
-    open_gap: true
     adjudicated: 2026-07-29
+    owner: operator
+    kuma_monitor: "Canary Timer Liveness"
+    no_monitor_reason: >-
+      Monday 11:00 UTC maintenance-window orchestrator. Its dead-man is the
+      timer-liveness canary (every 15 min), which fails if this timer stops
+      being loaded, active or scheduled. Closed 2026-07-30: the previous gap
+      was "if BOTH the window and the watchdog fail to start, nothing pages",
+      and a generic liveness check covers exactly that both-fail case.
+    open_gap: false
+    adjudicated: 2026-07-30
     owner: operator
 
   manitoba-maint-window-watchdog:
     timer: scripts/maint/systemd/manitoba-maint-window-watchdog.timer
-    kuma_monitor: null
-    no_monitor_reason: >-
-      The watchdog for the Monday window (15:00 UTC — asserts the lock was
-      released). Same shape as manitoba-maint-window: it is itself a watcher
-      with no watcher. THIS IS AN INSTANCE OF THE TURTLE PROBLEM stated in
-      audit-scope.yaml:S5 — the chain has to end somewhere and it currently ends
-      here. Named so it is never a surprise.
-    open_gap: true
     adjudicated: 2026-07-29
+    owner: operator
+    kuma_monitor: "Canary Timer Liveness"
+    no_monitor_reason: >-
+      The watchdog for the Monday window. Was the canonical TURTLE PROBLEM -- a
+      watcher with no watcher. Closed 2026-07-30 by the timer-liveness canary,
+      which watches this timer like any other and is itself dead-manned by
+      Kuma: it PUSHES, so if it stops, Kuma flips it DOWN on a missed
+      heartbeat. The chain now terminates at Kuma rather than at this unit.
+    open_gap: false
+    adjudicated: 2026-07-30
     owner: operator
 
   qflix-poster-cache-prune:
@@ -242,22 +249,26 @@ jobs:
 
   manitoba-maint-flaresolverr-canary:
     timer: scripts/maint/systemd/manitoba-maint-flaresolverr-canary.timer
-    kuma_monitor: null
-    no_monitor_reason: >-
-      FOUND BY THE DETECTOR, not by the spec's hand-list. This canary is NOT in
-      manifest/apps.yaml:canaries, so it has no Kuma monitor and no dead-man —
-      it is a second, independent alert path that pages Discord directly and
-      honours the push-suppress registry. That means if its timer dies, the ONLY
-      signal is the absence of Discord messages nobody was expecting anyway.
-      This is exactly the enumeration-boundary bug from the spec: whether an
-      audit "sees" this depends on whether it walked scripts/*/systemd/ or
-      manifest/apps.yaml. Closing it means enrolling it as a real canary
-      (manifest entry + monitor + token) — Phase 5 box-side work.
-    open_gap: true
     adjudicated: 2026-07-29
+    owner: operator
+    kuma_monitor: "Canary Timer Liveness"
+    no_monitor_reason: >-
+      A second, independent alert path that pages Discord directly and is not in
+      manifest/apps.yaml:canaries, so it has no monitor of its own. The gap was
+      "if its timer dies, the ONLY signal is the absence of Discord messages
+      nobody was expecting anyway". Closed 2026-07-30 by timer-liveness, which
+      needs no monitor of its own to notice this timer stopped.
+    open_gap: false
+    adjudicated: 2026-07-30
     owner: operator
 
   manitoba-maint-flaresolverr-unsuppress:
+    # Exempt from the timer-liveness canary's LOADED predicate. This unit
+    # deletes itself on success, so ABSENT is its intended terminal state --
+    # the canary correctly reported it missing on its first working run, and
+    # that would be a permanent false red. Declared here rather than
+    # hardcoded in the canary so the exemption is visible where the job is.
+    may_be_absent: true
     timer: scripts/maint/systemd/manitoba-maint-flaresolverr-unsuppress.timer
     kuma_monitor: null
     no_monitor_reason: >-

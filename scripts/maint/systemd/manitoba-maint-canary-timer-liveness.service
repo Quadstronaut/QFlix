@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - timer liveness (every scheduled job is loaded, active and scheduled)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push timer-liveness
+StandardOutput=journal
+StandardError=journal
