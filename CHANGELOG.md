@@ -1,5 +1,346 @@
 # Changelog
 
+## 2026-07-29 — The dashboard served a dead app shell for 22 hours, green the whole way
+
+The public board at `/` looked fine. It was not fine: for roughly 22 hours it
+served an HTML shell that could not hydrate. No Support modal, no live refresh,
+no client-side navigation. Some people saw a working dashboard and some saw
+nothing, which is the tell — browsers with a warm cache kept running off the
+stale-but-*consistent* June-28 shell, and only a cold load exposed the break.
+
+**Mechanism.** `build/` on the box was rewritten at 01:33 and again at
+03:31–03:32. The node process serving it — PID 15178 — had been running since
+2026-07-08 21:14 and was never restarted. SvelteKit's adapter-node hands static
+assets to **sirv, which snapshots its file manifest exactly once, at process
+start**. Files created after that moment do not exist as far as the running
+server is concerned. So 6 of the 10 `/_app/immutable/*` modules the freshly
+rendered shell referenced returned **404** while sitting on disk at mode 644:
+
+```
+app.CGGeqWLt.js   2830 bytes, present on disk   ->  HTTP 404
+```
+
+sirv also precomputes `Content-Length`, `ETag` and `Last-Modified` at boot, so
+the four assets it *had* indexed — and the HTML document itself — advertised
+their old byte counts while streaming the new bytes. Chrome aborted the document
+with `net::ERR_CONTENT_LENGTH_MISMATCH` and navigation never reached
+`domcontentloaded` (60 s timeout). Two distinct symptoms, one cause.
+
+**Why nothing caught it** — the part worth internalizing. Three independent
+guards pointed at this exact surface and all three were structurally incapable
+of seeing it:
+
+1. **The app monitor probes `/healthz`.** `qflix-dash`'s manifest health kind is
+   `http_root` with `path_override: /healthz`. The stale in-memory server
+   answers that forever, so the pusher's probe never failed, `recovery.trigger_async`
+   never ran, and "QFlix Dashboard" stayed green.
+2. **The canary and the smoke grepped a marker that outlives hydration.**
+   `scripts/canaries/mobile-ux.sh:29` and `scripts/smoke-test.sh:120` counted
+   occurrences of `data-qflix-dash`. That string is emitted by the *server-side*
+   render, so a dashboard with zero working JavaScript scores a perfect green.
+3. **The installer shipped the build and then asked the old process how it was
+   doing.** `scripts/configure/90-qflix-dash-install.sh` used
+   `systemctl --user enable --now qflix-dash.service`. `enable --now` **starts a
+   stopped unit but does not restart a running one** — so step 2's `scp` of the
+   new `build/` landed under a process that would never read it. The verify step
+   then probed `/healthz` and `/api/status`, both answered happily by that same
+   stale process, and the installer reported success.
+
+Every layer was honest about what it measured. None of them measured whether the
+bytes the page asks for are bytes the server will hand over.
+
+**Fixes:**
+
+- **The deploy path now restarts, and its verify asserts the real invariant.**
+  `enable --now` became `enable` + `restart` — `restart` also starts a stopped
+  unit, so it is a strict superset and just as idempotent (the same reasoning
+  `lib/recovery.py` already records for using restart over start: a process that
+  is alive but degraded is a no-op under `start`). The verify step now fetches
+  the loopback root, extracts **every** `/_app/immutable/*` reference from the
+  served HTML, requires all of them to return 200, and compares the document's
+  advertised `Content-Length` against the bytes delivered. A deploy that leaves a
+  dead shell now **fails the install** instead of printing `healthz=ok`.
+- **New `dash-asset-integrity` canary** (every 15 min, `Canary Dash Asset
+  Integrity`) — the durable half, because the next stale-manifest cause will not
+  necessarily be the installer. Two predicates, deliberately independent:
+  *asset resolvability* (every referenced `/_app/immutable/*` must resolve 200
+  from the process that served the shell) and *Content-Length agreement*. The
+  second is **not** implied by the first: sirv *did* index the files it knew
+  about at boot, so a file rewritten in place at the same path still returns 200
+  — just under a stale length. The 404 sweep can be entirely clean while browsers
+  still refuse to parse the document.
+- **A narrow self-heal, and an explicit refusal.** A 404 whose file **exists**
+  under `~/.apps/qflix-dash/build/client/` is diagnostic of a stale in-process
+  sirv manifest and of nothing else, so the canary fires one
+  `systemctl --user restart qflix-dash` — capped at one per 24 h by a durable
+  epoch latch, suppressed inside the Monday 11:00–15:00 UTC maintenance window
+  (lockfile *and* wall-clock legs, as in `qflix-torrent-janitor.py`), stamping the
+  latch only when a restart was actually issued, and **re-fetching afterwards** so
+  it never reports a heal it did not verify. A 404 whose file is **absent** is a
+  partial deploy: it alerts and does not restart, because a restart cannot fix
+  it. Same refuse-on-the-wrong-signature discipline as `flaresolverr-canary.py`.
+- **Wired at all five points, not four.** Manifest entry with the full rationale,
+  both systemd units, installer staging + unit install + `enable --now` on the
+  timer, and — the line that makes "committed but inert" impossible — the name
+  appended to the installer's canary-timer smoke loop, so a missing timer fails
+  the install gate. Kuma provisioning needed no code: `bootstrap-kuma-monitors.py`
+  iterates `manifest.canaries()`, derives the 1500 s heartbeat from the
+  `every-15min` schedule, captures the push token as `canary-dash-asset-integrity`
+  (the exact key `cli.py` reads), and `_ensure_notifications_attached()` runs last
+  on every invocation, so the new monitor cannot be born mute.
+- **Corrected two count sites that were already stale.** The operator-visibility
+  mermaid diagram still said 54 push monitors (the 2026-07-29 pass fixed the
+  high-level diagram and missed this one) and labelled the remainder `+ 9 more
+  canaries` against a real remainder of 14. The timer count in the at-a-glance
+  table was understated by one for the same reason.
+
+> Diagnostic note: `enable --now` is correct and idempotent on a **timer** — a
+> timer has no long-running in-memory state to go stale. It is only dangerous on
+> a **service** whose process caches something at start. The distinction is what
+> made this bug survive dozens of clean-looking installer runs.
+
+Doc counts were not hand-chased: `tests/unit/test_doc_counts.py` derives them
+from the manifest and named all six stale sites (README table + prose + repo
+layout, inventory, FAQ deck-sub + count + canary table, `canaries/README`).
+Canaries **19 → 20**, manitoba Kuma monitors **61 → 62**. Suite **1113 passed,
+5 skipped** with the wiring in place; `kuma audit` will declare manifest 62 =
+matched 62 once `bootstrap-kuma-monitors.py` has created the new monitor.
+
+### Adversarial review of the above, same day — seven more defects, five of them in the fix itself
+
+The change above was put through a hostile review before it shipped. It found
+seven real defects, every one reproduced by running the shipped artifacts rather
+than reading them. Two reviewer findings were duplicates of others, and two
+proposed mutants turned out to be behaviourally equivalent to the code they were
+attacking — those are called out below rather than papered over.
+
+**1. The installer would have aborted before installing the new timer.** This is
+the one that mattered most, because it would have shipped the guard *inert* —
+the precise failure the five-point wiring exists to prevent. Step 7's unit-copy
+loop iterates 60 unit filenames and `cp -f`s each out of `~/scripts/maint/systemd/`
+under `set -euo pipefail`. Four of those names —
+`manitoba-maint-canary-tdarr-{scanner,healthcheck}.{service,timer}` — were in
+the loop, in the `enable` list and in the smoke gate, but had never been added to
+the **tar staging list**, so they do not exist on the box. Confirmed read-only:
+`~/scripts/maint/systemd/` holds 61 files and not one of them is a tdarr,
+sab-stall, ucc-gate or dash-asset unit. Replaying the heredoc verbatim under a
+fake `$HOME` pre-populated with exactly what the staging list names:
+
+```
+cp: cannot stat '.../manitoba-maint-canary-tdarr-scanner.service'
+--- heredoc exit code: 1 ---
+units installed: 49        dash-asset-integrity.timer MISSING
+```
+
+Entry #50 of 60 kills the remote shell, so `daemon-reload`, all 20 `enable --now`
+lines and the smoke gate never run. Worse than "no coverage": Step 4.5 runs
+*before* Step 7 and had already created the `Canary Dash Asset Integrity` monitor
+with both notification channels attached, so a deploy would have left a live
+monitor with a 1500 s heartbeat and nothing pushing to it — a permanent Discord
+page, plus zero coverage. After the fix the same replay installs all 62 units and
+exits 0.
+
+While in there, `sab-stall` was wired too. It had shipped on 2026-07-19 with a
+manifest entry, a script and both units and **zero** installer wiring — never
+staged, never installed, never enabled, and the repo read as though usenet stalls
+were covered.
+
+**2. Every counting smoke gate was dead code.** `CT=$(sshm "... | grep -c ...")`
+is a bare assignment, so it inherits the command substitution's exit status — and
+`grep -c` exits **1** when it counts zero. Under the installer's `set -euo
+pipefail` the exact condition each gate exists to catch (a timer that is *not*
+scheduled) terminated the installer **at the assignment**, so the
+`gate ... fail` branch below it was unreachable. With `2>/dev/null` also
+swallowing ssh's stderr, the operator got a bare `rc=1` and no clue which check
+failed. Demonstrated against the live box using the genuinely-undeployed timer as
+the natural zero case:
+
+```
+BEFORE:  replay exit=1        (nothing printed at all)
+AFTER:   GATE canary-timer-dash-asset-integrity  fail  timer not in list-timers
+         GATE canary-timer-movie                 pass  scheduled
+         LOOP COMPLETED
+```
+
+Seven sites shared the pattern; all now route through a `remote_count` helper
+that always yields an integer.
+
+**3. The 24-hour breaker deleted itself whenever the state dir was unwritable.**
+`stamp_latch()` swallowed its write error and returned `False`; the caller only
+*logged* that. `heal_cooldown_active()` then failed **open** on the absent latch,
+so a repairable fault produced an unattended `systemctl --user restart qflix-dash`
+on every 15-minute tick — 96 a day — and left no record, because the narrative log
+and `events/*.jsonl` die on the same `ENOSPC`. Not hypothetical on this slot:
+`quota.sh` exists because the disk reaches 90 %. Two-arm proof, one variable
+changed:
+
+```
+latch unwritable:  3 ticks -> 3 restarts
+latch writable:    3 ticks -> 1 restart
+```
+
+The stated backstop did not exist either: `MIN_UPTIME_S` was 120 s against an
+`OnCalendar=*:0/15` timer, so measured uptime at the next tick is always ~900 s
+and the cold-start guard could never fire. Both fixed. The latch is now
+**reserved before the mutation** — written atomically (tmp + fsync + `os.replace`)
+and read back — and the restart is *refused* with `dash-heal-latch-unwritable` if
+it will not persist, because a breaker that is not durable is not a breaker.
+Every path that turns out not to have issued the restart **releases** the
+reservation, so council defect D1 (a breaker spending its whole budget on a
+no-op) stays fixed. `MIN_UPTIME_S` is now derived as two timer ticks, and a test
+pins the tick literal against the unit's own `OnCalendar`.
+
+**4. One dropped response restarted a healthy dashboard.** `record()` promoted
+any single `IncompleteRead` straight to the repairable bucket with no
+corroboration. A fixture that over-declared `Content-Length` on exactly the first
+request produced `STAGE=dash-healed ... restarted-and-RE-VERIFIED-healthy` — it
+restarted a fine dashboard, claimed to have repaired a fault that never existed,
+and burned the 24 h latch, so a *real* incident in the next 24 h would have needed
+a human. The 404 leg's licence for single-cycle escalation is sirv's manifest
+being immutable for the process lifetime; that argument does not extend to body
+delivery, which one cycling nginx worker can break transiently. A mismatch is now
+**re-probed once** before it is believed. A genuine stale sirv stat tuple lies
+identically forever, so the re-probe confirms it and the real fault still heals on
+the first cycle; noise resolves to inconclusive and never touches the breaker.
+
+**5. A 200 whose body never arrived was reported as `PASS`.** When the mid-body
+read raised anything other than `IncompleteRead`, `received` stayed `None`, so the
+probe matched neither the transport bucket (status was 200, not 0) nor the length
+predicate (which needs a number) — it fell through **every** bucket and counted as
+healthy. Against a fixture answering `200`, `Content-Length: 5000`, ten bytes and
+then a stall, the shipped canary printed:
+
+```
+PASS: dash-asset-integrity refs=3-probes=4-enc=identity-all-200-and-length-consistent
+```
+
+for an asset no browser can execute — the exact false-green class this canary was
+built to eliminate, inside the canary. It now has its own bucket and stage
+(`dash-asset-unread`), is retried once because body delivery *is* transient, and
+alerts without restarting: headers-then-stall is a wedged worker, not stale
+in-process state.
+
+**6. The hardened verify raced node's readiness.** `qflix-dash.service` is
+`Type=exec`, so `systemctl --user restart` returns at `execve`, not at `listen()`
+— confirmed on the box, where `ExecMainStartTimestamp` and `ActiveEnterTimestamp`
+are the same instant while "Listening on 127.0.0.1:*" lands in `app.log` later.
+The new gate curled `/healthz` immediately afterwards with no settle and no retry,
+so a deploy that had in fact succeeded would `FATAL` on connection-refused. Every
+sibling installer settles first; this one now polls, which costs nothing on a
+healthy deploy:
+
+```
+BEFORE:  FATAL: /healthz returned HTTP 000        exit=1  elapsed=1s
+AFTER:   healthz=ok ... assets=3/3 resolve 200    exit=0  elapsed=6s
+```
+
+**7. Found while testing the fix, not reported by the review.**
+`CODE=$(curl ... -w '%{http_code}' || echo 000)` **concatenates** on a
+mid-transfer failure: curl prints the status it did receive *and* the fallback
+appends, so a truncated 200 came out as `200000`. The root gate then aborted with
+`loopback root returned HTTP 200000` — the wrong diagnosis, and it aborted
+*before* the Content-Length predicate that exists specifically to name that fault.
+Now:
+
+```
+FATAL: document Content-Length=328 but 288 bytes delivered (curl rc=18)
+       - stale sirv metadata; the running process predates this build
+```
+
+The same pattern was fixed in the smoke test's landing-page gate, where a 200
+with no `Content-Length` and a broken transfer had been a free pass.
+
+**8. Three contradictory unit counts, all stamped with the same date.** The
+at-a-glance table said 45 timers while the repo-layout comment nine lines of prose
+later and the public FAQ both said 43. Git history shows those figures have moved
+in lockstep through every commit that touched them (36/30 → 55/43), so they are
+one measurement, not three populations — and the derivation offered for the bump
+does not survive checking. Measured read-only instead:
+`~/.config/systemd/user/` holds **56 services + 44 timers** today (57 + 45 once
+this canary deploys). All three sites now say 44, the re-count instruction names
+the exact command, and a new `test_doc_counts` anchor asserts the three agree —
+the mechanism RULE 4 exists for, applied to a number the manifest cannot derive.
+
+**The durable fix for the class, not just the instance.** `tests/unit/test_canary_wiring.py`
+derives the required wiring from `manifest/apps.yaml` and asserts, for **every**
+canary: both units exist, the service unit's `ExecStart` names the canary by its
+manifest key, the script is tar-staged, both units are tar-staged, the unit is in
+the cp loop, the timer is enabled, and the name is in the smoke gate — plus the
+closure property that actually caused the abort, *every unit the installer copies
+or enables must be tar-staged*. Seven mutants restoring each historical omission
+are all caught. That is what makes the three-time-repeated "committed but not
+scheduled" failure a test failure from now on instead of a reading exercise.
+
+**Two reviewer claims rejected, with evidence.** A proposed mutant that removed
+the sweep's `status == 200 and body is None` branch survived the suite — because
+it is behaviourally equivalent: `main()` checks the `unread` bucket *before*
+`inconclusive`, so that branch was dead code. It was deleted rather than tested
+around, and replaced with a comment pinning the ordering that makes the deletion
+safe. Separately, two pairs of findings (installer abort; breaker fail-open) were
+the same root cause reported twice from different angles, and are fixed once.
+
+Suite **1180 → 1209 passed, 6 skipped**. 10/10 canary mutants and 7/7 wiring
+mutants caught. Nothing was written to the box: `qflix-dash` is still
+`MainPID=237679`, `NRestarts=0`.
+
+### Completeness pass, same day — the *fix* was the unguarded half
+
+Everything above was verified by re-deriving it from the working tree. The five
+wiring points hold for all 20 canaries, the units are byte-identical to the
+`ucc-gate-stuck` precedent, the self-heal genuinely gates on the window before
+the breaker and reserves the latch before mutating, the live box confirms the
+documented **56 services + 44 timers**, and the canary passes against the healthy
+dashboard. One thing did not hold.
+
+**The deploy-path fix — the root cause, the half that actually stops this
+recurring — had zero test coverage.** Proven by mutation against the full suite:
+
+```
+revert `restart` -> `enable --now`      (the literal root cause)  1209 passed
+delete the installer's asset sweep                                1209 passed
+neuter the smoke landing-page predicates back to a marker count   1209 passed
+```
+
+Three separate reversions of the incident fix, and the suite never blinked. That
+is the same defect the canary exists to prevent, aimed at the repair instead of
+the guard: the repo *reads* as though the deploy path is fixed, and nothing would
+notice if it stopped being. RULE 3's "committed but not scheduled is worse than
+no guard" applies verbatim to "committed but not pinned" — the canary half was
+mutation-verified to death while the half that removes the fault was held in
+place by nothing but the diff.
+
+`tests/unit/test_deploy_path.py` closes it in two tiers. **Structural** pins the
+properties whose deletion was invisible: `restart` not `enable --now`, the verify
+extracting *and probing* `/_app/immutable` references, the Content-Length
+predicate, the exists-vs-absent discrimination, the readiness poll, and the smoke
+gate actually *consuming* the predicates it computes (computing one and not
+gating on it is indistinguishable from not computing it). **Behavioural**
+extracts the installer's remote verify heredoc verbatim — located by content, so
+restructuring the installer fails loudly rather than silently exercising the
+wrong block — and runs it under a fake `$HOME` against a real loopback server
+that reproduces the incident signature: shell renders, marker present,
+`/healthz` 200, and a referenced module 404s while the file sits on disk. The old
+verify reported success on exactly that fixture. 9/9 mutants caught.
+
+**One live defect found by the new guard on its first run.** The readiness poll
+added in finding 6 above still carried the `|| echo 000` concatenation that
+finding 7 claims to have eliminated:
+
+```
+HZ=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$BASE/healthz" || echo 000)
+  -> HZ=[000000] on a refused connection, verified by running it
+```
+
+The poll still behaves (neither value equals `200`), but the `FATAL` below it
+then reports a nonsense status and sends the operator after the wrong fault —
+the same wrong-diagnosis class, in the fix for that class. Normalised the same
+way as its two siblings.
+
+Suite **1209 → 1222 passed, 6 skipped**. The box remains untouched:
+`MainPID=237679`, `NRestarts=0`, public root 200, and no
+`~/.opt/maint/dash-asset-integrity/` or canary timer exists there yet — this
+change is **not deployed**, and the guard is inert until it is.
+
 ## 2026-07-28 — 32 of 60 Kuma monitors could go red in total silence
 
 Found while answering a simple question: *can I close this window?* Verifying
