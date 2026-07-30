@@ -185,7 +185,16 @@ def trigger_async(app: App, *, manifest: Optional[Manifest] = None) -> str:
     with _in_flight_mutex:
         if app.name in _in_flight:
             return "already_running"
-        if not _RECOVERY_SEMAPHORE.acquire(blocking=False):
+        # Bind the semaphore ONCE and release that same object below. Reading
+        # the module global again at release time is an asymmetric
+        # acquire/release: if anything rebinds _RECOVERY_SEMAPHORE while this
+        # worker is in flight, the worker releases a semaphore it never
+        # acquired and BoundedSemaphore raises "released too many times".
+        # test_kuma.py swaps it for a size-1 semaphore and restores it in a
+        # finally, which raced this worker and made the suite fail roughly 1 run
+        # in 3 -- a flaky gate is an unreliable gate.
+        sem = _RECOVERY_SEMAPHORE
+        if not sem.acquire(blocking=False):
             return "cap_exceeded"
         _in_flight.add(app.name)
 
@@ -206,7 +215,7 @@ def trigger_async(app: App, *, manifest: Optional[Manifest] = None) -> str:
         finally:
             with _in_flight_mutex:
                 _in_flight.discard(app.name)
-            _RECOVERY_SEMAPHORE.release()
+            sem.release()   # the SAME object acquired above — see the note there
 
     threading.Thread(target=_worker, daemon=True).start()
     return "started"
