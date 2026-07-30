@@ -97,13 +97,33 @@ fi
 
 # 5. Hardlink sanity
 echo "5. Hardlinks"
-HLINKS=$(sshm "find ~/media/Movies -type f -name '*.mkv' 2>/dev/null | head -5 | xargs -I{} stat -c '%h' {} 2>/dev/null | grep -c '^2'" 2>/dev/null || echo 0)
-if [ "${HLINKS:-0}" -ge 4 ]; then
-  record "hardlink-sanity" pass "$HLINKS/5 sample files have linkcount >= 2"
-elif [ "${HLINKS:-0}" -ge 1 ]; then
-  record "hardlink-sanity" pass "$HLINKS/5 (some, not all)"
+# Sample library files and report the ACTUAL linkcounts.
+#
+# The old version counted files whose linkcount starts with '2' and, on zero,
+# recorded skip "no .mkv samples in ~/media/Movies". That message was simply
+# false: measured 2026-07-30 there are 800 GB of Movies and 50+ .mkv files, all
+# with linkcount 1. It was reporting "no samples" when what it meant was "no
+# sample had two links" -- a real result disguised as an absent one.
+#
+# And linkcount 1 is the CORRECT steady state now. A library file has two links
+# only while its torrent is still seeding; qflix-torrent-janitor purges
+# completed *arr-untracked torrents daily and qBit currently tracks 0, so the
+# library copy is legitimately the only remaining link. Content arriving over
+# Usenet never has a torrent link at all.
+#
+# So this cannot assert linkcount>=2 from the library side. The real guard is
+# the hardlink-integrity canary, which enumerates from the QBIT side (completed
+# torrent -> check the library inode) and therefore only asserts the invariant
+# where it actually has to hold. This gate now reports honestly and defers.
+HL_SAMPLE=$(sshm "find ~/media/Movies -type f -name '*.mkv' 2>/dev/null | head -5 | xargs -I{} stat -c '%h' {} 2>/dev/null | tr '\n' ' '" 2>/dev/null)
+HL_N=$(printf '%s' "$HL_SAMPLE" | wc -w | tr -d ' ')
+HL_LINKED=$(printf '%s' "$HL_SAMPLE" | tr ' ' '\n' | grep -c '^[2-9]' 2>/dev/null || echo 0)
+if [ "${HL_N:-0}" -eq 0 ]; then
+  record "hardlink-sanity" fail "no .mkv files found under ~/media/Movies at all — library missing or path wrong"
+elif [ "${HL_LINKED:-0}" -ge 1 ]; then
+  record "hardlink-sanity" pass "$HL_LINKED/$HL_N sampled files still share an inode with a seeding torrent"
 else
-  record "hardlink-sanity" skip "no .mkv samples in ~/media/Movies"
+  record "hardlink-sanity" pass "$HL_N sampled, all linkcount 1 — expected with 0 torrents tracked; hardlink-integrity canary owns the real assertion"
 fi
 
 # 6. Disk quota (best-effort — find the largest mount under home)
@@ -215,11 +235,37 @@ done
 
 # 12. qBittorrent health + seeding count
 echo "12. qBittorrent"
-QC=$(sshm "C=\$(mktemp); curl -sS -c \$C --data-urlencode 'username=$(secret_read qbittorrent.user)' --data-urlencode 'password=$(secret_read qbittorrent.password)' http://127.0.0.1:17041/api/v2/auth/login >/dev/null; curl -sS -b \$C 'http://127.0.0.1:17041/api/v2/sync/maindata' | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get(\"torrents\",{})))'" 2>/dev/null)
-if [ "${QC:-0}" -ge 1 ]; then
+# Assert the API is REACHABLE AND AUTHENTICATED, not that it is populated.
+#
+# This used to fail whenever the torrent count was 0, which conflates two very
+# different states: "qBittorrent is broken" and "nothing happens to be seeding
+# right now". Zero is a legitimate steady state here -- qflix-torrent-janitor
+# purges completed *arr-untracked leftovers daily, and content now also arrives
+# over Usenet via SABnzbd, so the torrent pool can drain to empty with the stack
+# perfectly healthy. The hardlink-integrity canary was taught to tolerate an
+# empty completed pool in 1f37f9c; this gate was not, so it stayed a standing
+# false red. A check that cries wolf trains you to ignore it.
+#
+# Login response is the discriminator: 'Ok.' means the API answered and the
+# credentials work. Anything else is a real fault and still fails.
+QOUT=$(sshm "C=\$(mktemp)
+L=\$(curl -sS -m 15 -c \$C --data-urlencode 'username=$(secret_read qbittorrent.user)' --data-urlencode 'password=$(secret_read qbittorrent.password)' http://127.0.0.1:17041/api/v2/auth/login 2>/dev/null)
+N=\$(curl -sS -m 15 -b \$C 'http://127.0.0.1:17041/api/v2/sync/maindata' 2>/dev/null | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin); print(len(d.get(\"torrents\",{})))
+except Exception:
+    print(\"ERR\")' 2>/dev/null)
+echo \"\$L|\$N\"" 2>/dev/null)
+QLOGIN=${QOUT%%|*}
+QC=${QOUT##*|}
+if [ "$QLOGIN" != "Ok." ]; then
+  record "qbit-torrents" fail "auth failed (login='${QLOGIN:-no response}') — API unreachable or credentials wrong"
+elif [ "$QC" = "ERR" ] || [ -z "$QC" ]; then
+  record "qbit-torrents" fail "authenticated but maindata unreadable"
+elif [ "${QC:-0}" -ge 1 ]; then
   record "qbit-torrents" pass "$QC torrents tracked"
 else
-  record "qbit-torrents" fail
+  record "qbit-torrents" pass "API up + authenticated; 0 torrents (empty pool is legitimate — janitor purges, Usenet path active)"
 fi
 
 # 13b. qflix-newsletter (replaces Conjurr+Newsletterr 2026-05-10) — timer scheduled + last run
@@ -494,10 +540,45 @@ sys.stdout.write("\n".join(ext + parked))
     fi
     K_TOTAL=$(echo "$K_FILTERED" | grep -c '^monitor_status' 2>/dev/null || echo 0)
     K_UP=$(echo "$K_FILTERED" | grep -cE ' 1(\.0+)?$' 2>/dev/null || echo 0)
-    if [ "${K_TOTAL:-0}" -ge 1 ] && [ "$K_UP" = "$K_TOTAL" ]; then
-      record "maint-kuma-all-up" pass "$K_UP/$K_TOTAL manitoba monitors UP (external excluded)"
+
+    # /metrics is NOT the authoritative monitor set. It omits infrequent
+    # self-pushers between beats -- measured 2026-07-30: 61 monitors in /metrics
+    # vs 62 active in kuma.db, the missing one being "Canary Newsletter Digest",
+    # a weekly Monday canary. That is exactly why `kuma audit` was moved to the
+    # DB; this sibling gate was left on /metrics and so had been silently
+    # checking 61 of 62 while reporting "all up".
+    #
+    # The danger is not the quiet weekly pusher, it is that a monitor which
+    # VANISHES (deleted, deactivated) is likewise absent from /metrics -- so it
+    # is neither counted nor checked, and UP==TOTAL still holds. Cross-check the
+    # DB's active set and fail on any DB-active monitor that is DOWN, including
+    # ones /metrics never mentioned.
+    K_DB_DOWN=$(sshm "python3 -c \"
+import sqlite3
+c=sqlite3.connect('file:/home/quadstronaut/.apps/uptimekuma/kuma.db?mode=ro',uri=True)
+bad=[]
+for mid,name in c.execute('select id,name from monitor where active=1'):
+    r=c.execute('select status from heartbeat where monitor_id=? order by time desc limit 1',(mid,)).fetchone()
+    if r is None or r[0]==0:
+        bad.append(name)
+print(len(bad));print('|'.join(sorted(bad)))
+\" 2>/dev/null" </dev/null 2>/dev/null)
+    K_DB_DOWN_N=$(printf '%s' "$K_DB_DOWN" | head -1 | tr -dc '0-9')
+    K_DB_DOWN_NAMES=$(printf '%s' "$K_DB_DOWN" | sed -n '2p' | head -c 160)
+    K_DB_ACTIVE=$(sshm "python3 -c \"
+import sqlite3
+c=sqlite3.connect('file:/home/quadstronaut/.apps/uptimekuma/kuma.db?mode=ro',uri=True)
+print(c.execute('select count(*) from monitor where active=1').fetchone()[0])
+\" 2>/dev/null" </dev/null 2>/dev/null | tr -dc '0-9')
+
+    if [ -n "$K_DB_DOWN_N" ] && [ "$K_DB_DOWN_N" -gt 0 ]; then
+      record "maint-kuma-all-up" fail "${K_DB_DOWN_N} DB-active monitor(s) DOWN or never-beat: ${K_DB_DOWN_NAMES}"
+    elif [ -z "$K_DB_ACTIVE" ]; then
+      record "maint-kuma-all-up" fail "could not read kuma.db to verify the monitor set"
+    elif [ "${K_TOTAL:-0}" -ge 1 ] && [ "$K_UP" = "$K_TOTAL" ]; then
+      record "maint-kuma-all-up" pass "${K_DB_ACTIVE}/${K_DB_ACTIVE} DB-active monitors UP (/metrics saw $K_UP/$K_TOTAL; quiet self-pushers omitted there)"
     else
-      record "maint-kuma-all-up" fail "$K_UP/$K_TOTAL UP — see Kuma UI for which are down"
+      record "maint-kuma-all-up" fail "$K_UP/$K_TOTAL UP in /metrics — see Kuma UI for which are down"
     fi
   else
     record "maint-kuma-all-up" skip "no uptimekuma.{port,key}"
