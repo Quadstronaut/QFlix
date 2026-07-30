@@ -785,3 +785,90 @@ canaries:
     kuma_monitor: "Canary UCC Gate Stuck"
     script: "scripts/canaries/ucc-gate-stuck.sh"
     schedule: "every-15min"
+  dash-asset-integrity:
+    # Assert that the SERVED dashboard shell can actually hydrate - not that
+    # the root answers 200.
+    #
+    # On 2026-07-29 the public dashboard served a DEAD app shell for ~22h with
+    # every monitor green. build/ on the box was rewritten at 01:33 and
+    # 03:31-03:32; the node process (PID 15178) had been running since
+    # 2026-07-08 21:14 and was never restarted. SvelteKit adapter-node serves
+    # static assets through sirv, which snapshots its file manifest ONCE at
+    # process start, so files created after boot are invisible to it: 6 of the
+    # 10 /_app/immutable/* modules the shell referenced returned 404 even
+    # though every file was on disk at mode 644 (app.CGGeqWLt.js, 2830 bytes,
+    # present -> HTTP 404). sirv also precomputes Content-Length/ETag/
+    # Last-Modified at boot, so a file rewritten in place kept advertising its
+    # OLD byte count while streaming the new bytes - browsers took
+    # net::ERR_CONTENT_LENGTH_MISMATCH on the HTML document itself and
+    # navigation never reached domcontentloaded (60s timeout). Net effect: zero
+    # hydration. No Support modal, no live refresh, no client-side nav.
+    # Warm-cache clients kept working off the stale-but-consistent June-28
+    # shell, which is why it looked fine to some people and dead to others.
+    #
+    # Three things watched this surface and all three were structurally blind:
+    #   - qflix-dash's app monitor probes http_root with path_override /healthz
+    #     expecting 200 (see the qflix-dash app entry above). The stale
+    #     in-memory server answers /healthz forever, so the pusher's probe
+    #     never failed, lib/recovery.py trigger_async never ran, and "QFlix
+    #     Dashboard" stayed green the whole time.
+    #   - scripts/canaries/mobile-ux.sh:29 and scripts/smoke-test.sh:120 only
+    #     grep the body for "data-qflix-dash". That marker lives in the
+    #     server-RENDERED shell, so it survives a total hydration failure.
+    #   - scripts/configure/90-qflix-dash-install.sh shipped the new build over
+    #     the live process with `enable --now`, which STARTS a stopped unit but
+    #     does NOT restart a running one, then "verified" via /healthz and
+    #     /api/status - both answered happily by the stale process, so the
+    #     installer reported success while leaving the dead shell serving.
+    #     Both of those are fixed in the same change; this canary is the
+    #     durable half, because the next stale-manifest cause will not
+    #     necessarily be the installer.
+    #
+    # Two independent predicates, because the two symptoms are separable:
+    #   asset resolvability - extract EVERY /_app/immutable/* reference out of
+    #     the served HTML and require all of them to return 200. This is the
+    #     exact invariant that was violated: an app shell may only reference
+    #     assets the RUNNING server can serve. Any 404 is a hard FAIL. Nothing
+    #     cheaper implies it - the file being present on disk is precisely what
+    #     made this look healthy from every other angle.
+    #   content-length agreement - compare the document's advertised
+    #     Content-Length against the bytes actually delivered. A SEPARATE
+    #     predicate, not implied by the 404 sweep: sirv DID index these paths at
+    #     boot, so a file rewritten in place at the same path still returns 200
+    #     while advertising a stale length. The 404 leg can be entirely clean
+    #     while browsers still refuse to parse the document. Unlike the 404 leg
+    #     this one is CORROBORATED by an immediate re-probe before it is
+    #     believed: a stale sirv stat tuple lies identically forever, but one
+    #     cycling nginx worker also produces a single truncated response, and
+    #     restarting a healthy dashboard over wire noise would spend the 24h
+    #     self-heal budget on nothing.
+    #   body actually delivered - a 200 whose body never arrives at all (headers
+    #     then stall) is its own failure bucket, because `received` is never a
+    #     number there and it would otherwise satisfy neither predicate and be
+    #     silently counted as a healthy probe.
+    #
+    # Self-heal is narrow on purpose. A 404 whose file EXISTS on disk under
+    # ~/.apps/qflix-dash/build/client/ is diagnostic of a stale in-process sirv
+    # manifest and of nothing else, and the only repair is
+    # `systemctl --user restart qflix-dash`. A 404 whose file is genuinely
+    # ABSENT is a broken or partial deploy - a restart cannot help, so that
+    # branch alerts and does NOT restart (the same refuse-on-wrong-signature
+    # logic as scripts/maint/flaresolverr-canary.py); so does a stalled body.
+    # The restart is capped at one per 24h by a durable epoch latch that is
+    # RESERVED (written atomically and read back) BEFORE the restart is issued
+    # and RELEASED on every path that turns out not to have issued it: if the
+    # latch cannot be persisted, the 1-per-24h guarantee does not exist and the
+    # restart is refused rather than issued unbounded. It is suppressed inside
+    # the Monday 11:00-15:00 UTC maintenance window (lockfile OR wall-clock,
+    # both legs, as in qflix-torrent-janitor.py), refused when the unit itself
+    # entered active less than two timer ticks ago, and re-fetches afterwards so
+    # it never reports a heal it did not verify.
+    #
+    # Deliberately NOT covered: root reachability and mobile page weight, which
+    # mobile-ux owns (one concern per canary, per the compartmentalize design
+    # law), and the correctness of the app's DATA. This canary asks only
+    # whether the bytes the shell asks for are the bytes the server will hand
+    # over.
+    kuma_monitor: "Canary Dash Asset Integrity"
+    script: "scripts/canaries/dash-asset-integrity.sh"
+    schedule: "every-15min"
