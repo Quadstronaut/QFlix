@@ -9,7 +9,7 @@
 _One operator. One manifest. One maintenance window. Everything else is wires._
 
 <p>
-  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-54%2F55_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-55%2F55_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-35_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-63%2F63_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
