@@ -16,9 +16,30 @@ WHAT IT REAPS (ALL must hold — the criteria are deliberately narrow):
   3. category names an *arr (contains "sonarr" or "radarr") — this PROTECTS any
      manually-added personal torrent, which has no *arr category
   4. the hash is NOT tracked by ANY *arr queue (i.e. already imported/orphaned)
-  5. seeding duty is done: ratio >= --min-ratio (default 1.0, "seed back your
-     fair share then stop") OR added > --max-seed-days ago (default 30, the
-     "nothing forever" backstop for a 0-seed torrent that can never reach ratio)
+  5. seeding duty is done: ratio >= --min-ratio (default 2.0) OR added >
+     --max-seed-days ago (default 30, the "nothing forever" backstop for a
+     0-seed torrent that can never reach ratio)
+
+MIN-RATIO IS COUPLED TO qBITTORRENT'S OWN max_ratio. THEY MUST AGREE.
+qBit is configured max_ratio=2.0 with max_ratio_act=pause: seed to 2.0, then
+stop. This default was 1.0, i.e. HALF that, so the janitor deleted every
+torrent at 1.0 and qBit's 2.0 target was unreachable dead config -- nothing
+could ever survive to it. Measured 2026-07-30: both remaining torrents were
+deleted on 07-28 at ratios 1.85 and 1.18, and every run since logged
+"qBittorrent: 0 torrent(s)". The pool had been permanently drained for 6
+days while the qBit setting said it should still be seeding.
+
+Raised to 2.0 on operator instruction. The intended flow is now coherent:
+seed to 2.0 -> qBit PAUSES the torrent (pausedUP/stoppedUP, both in the
+DONE-state list above) -> the janitor reaps it. qBit owns the seeding
+decision and the janitor only collects what qBit has finished with.
+
+If you change qBit's max_ratio, change this too. They are two policy
+surfaces describing one intent, and the lower one silently wins.
+
+Note the 30-day backstop now does more work: raising the bar to 2.0 means
+more torrents never reach it, so poorly-seeded content is reaped on age
+rather than ratio. That is the intended "nothing seeds forever" rail.
 
 DELETE is hardlink-SAFE: the *arr imports with hardlinks (guarded by the
 hardlink-integrity canary), so removing the torrent's copy only drops a link —
@@ -96,7 +117,10 @@ SEEDING_DONE_STATES = frozenset({
     "pausedUP", "stoppedUP", "checkingUP",
 })
 
-DEFAULT_MIN_RATIO = 1.0
+# MUST match qBittorrent's max_ratio (currently 2.0). See the module docstring:
+# at 1.0 this deleted every torrent at half the ratio qBit was told to seed to,
+# making qBit's own setting unreachable and draining the pool to zero.
+DEFAULT_MIN_RATIO = 2.0
 DEFAULT_MAX_SEED_DAYS = 30
 DEFAULT_MAX_ITEMS = 20
 DEFAULT_MAX_PCT = 90.0
