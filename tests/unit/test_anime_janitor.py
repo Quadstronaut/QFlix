@@ -224,7 +224,14 @@ def test_window_skips_run(m, monkeypatch):
     assert kuma[-1][0] == "up" and "window" in kuma[-1][1]
 
 
-def test_reverse_flag_surfaced(m, monkeypatch):
+def test_reverse_is_an_auto_move_candidate_not_a_flag(m, monkeypatch):
+    """Reverse became an AUTO-MOVE on 2026-07-30 (operator instruction).
+
+    It used to assert the title merely appeared in `flags`. Flagging a misfiled
+    title and leaving it in place is not a correction -- five titles sat flagged
+    daily for six days with nothing moved. A reverse hit must now be a MOVE
+    candidate, routed through the same rehome() path as the forward direction.
+    """
     titles = {
         "sonarr2": [], "radarr2": [],
         "sonarr": [series(10, "Misplaced Anime", ["Animation"], "Japanese", tvdb=10)],
@@ -233,8 +240,17 @@ def test_reverse_flag_surfaced(m, monkeypatch):
     kuma, cap = _wire(m, monkeypatch, titles)
     rc = m.run(_args(m, []))
     assert rc == m.EXIT_OK
-    reasons = [f["reason"] for f in cap["flags"]]
-    assert "anime-in-main-lib" in reasons
+    moved_titles = [rec.get("title") for _pair, rec in cap["auto"]]
+    assert "Misplaced Anime" in moved_titles, (
+        "reverse hit did not become an auto-move candidate: " + repr(cap["auto"])
+    )
+    pair = [p for p, _r in cap["auto"]][0]
+    assert pair["from_slug"] == "sonarr" and pair["to_slug"] == "sonarr2"
+    assert pair["to_root"].endswith("/Anime")
+    assert pair.get("series_type") == "anime", (
+        "a series moved into the anime instance must switch to absolute/scene "
+        "numbering, which is the reason that instance exists"
+    )
 
 
 def test_execute_failure_is_partial(m, monkeypatch):
