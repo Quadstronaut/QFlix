@@ -151,3 +151,34 @@ def test_still_never_touches_an_arr_tracked_torrent(m):
         _t(9.0, h=h), tracked_hashes={h}, now_epoch=10 * 86400,
         min_ratio=m.DEFAULT_MIN_RATIO, max_seed_days=30)
     assert action == "keep" and reason == "arr-tracked"
+
+
+def test_preview_and_armed_run_use_the_same_cap(m):
+    """The drop-in must not carry a threshold the default disagrees with.
+
+    Until 2026-07-30 `--max-pct 100` lived only in the on-box drop-in, so the
+    armed run had the tripwire OFF while a bare hand-run had it ON at 90. The
+    preview was STRICTER than reality: on 2026-07-28 the dry-run printed
+    "would ABORT on --execute" and the execute deleted both torrents two minutes
+    later. A preview that does not predict the real run is worse than none.
+
+    Pinning the default at 100 means a bare dry-run behaves exactly like the
+    armed run minus the mutation, with no flag needed to get a faithful preview.
+    """
+    assert m.DEFAULT_MAX_PCT == 100.0, (
+        "default max-pct must equal what the armed drop-in runs, or the dry-run "
+        "lies about what --execute will do"
+    )
+
+
+def test_the_mass_delete_rail_is_not_the_percentage_cap(m):
+    """Turning the cap off is only safe because a stronger guard exists.
+
+    The scenario max-pct guarded -- everything suddenly looking untracked -- is
+    caused by an unreadable *arr queue, and that aborts the run outright,
+    independent of pool size. Pin that the guard is still documented and wired.
+    """
+    src = JANITOR.read_text(encoding="utf-8")
+    assert "queue fetch fails" in src or "queue-fetch failure ABORTS" in src, \
+        "the abort-if-any-arr-queue-unreadable rail is no longer documented"
+    assert "EXIT_FATAL" in src, "the fatal abort path is gone"
