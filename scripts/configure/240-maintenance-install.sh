@@ -731,6 +731,23 @@ for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall kometa-libr
   else
     gate "canary-timer-${canary}" fail "timer not in systemctl list-timers"
   fi
+
+  # A scheduled timer is NOT evidence the canary reports anything. `manitoba-maint
+  # canary push <name>` SILENTLY EXITS 0 when its token is absent from
+  # ~/secrets/kuma-push-tokens.json, so the unit runs, systemd records success,
+  # and Kuma never hears from it -- the monitor then sits DOWN on "No heartbeat
+  # in the time window" with zero real coverage.
+  #
+  # dash-asset-integrity shipped exactly that way on 2026-07-30: the bootstrap
+  # hit a create-then-read race, left the key out of the token file, warned, and
+  # exited 0. Timer-scheduled and token-present are independent facts and both
+  # have to be asserted ON THE BOX, against the file the consumer actually reads.
+  TOKPRESENT=$(remote_count "python3 -c \"import json;d=json.load(open('\$HOME/secrets/kuma-push-tokens.json'));print(1 if d.get('canary-${canary}') else 0)\" 2>/dev/null")
+  if [ "${TOKPRESENT:-0}" -ge 1 ]; then
+    gate "canary-token-${canary}" pass "push token present on box"
+  else
+    gate "canary-token-${canary}" fail "NO push token — canary would exit 0 and push nothing"
+  fi
 done
 
 # Smoke 13: weekly arr-audit timer scheduled
