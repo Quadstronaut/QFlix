@@ -4,6 +4,28 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+# RUNS FROM A GIT CHECKOUT, NOT ~/scripts/maint.
+#
+# The audit is a REPO audit: its boundary is `git ls-files` (rglob gave 107 vs
+# 3659 files at one commit, so the boundary must come from git), and
+# find_repo_root() walks up looking for manifest/apps.yaml. Neither holds under
+# the deployed layout — ~/scripts/maint is a flat copy of individual files, not
+# a checkout, and the manifest lands at ~/.opt/maint/apps.yaml. Pointed at
+# ~/scripts/maint/qflix-audit.py this unit would have failed on EVERY run and
+# parked "QFlix Audit Regime" permanently DOWN. Verified 2026-07-30 by running
+# it out of the checkout instead: exit 0, 1417 instances, 0 enforced.
+#
+# ~/.opt/qflix-src is a real shallow checkout of the public repo, already
+# maintained by qflix-stats.py. Running the audit from there hands the detectors
+# a genuine git boundary, the manifests and lib/audit with no staging at all.
+# It audits last-pushed master rather than the box's deployed copy, which is
+# correct — this defect class lives in the source, and CI audits the same tree
+# on every push. This timer is the daily dead-man behind that.
+#
+# The refresh is ExecStartPre and deliberately NON-FATAL (leading `-`): a failed
+# fetch means auditing the last good checkout, which beats dropping the run and
+# the digest comparison with it.
+ExecStartPre=-/bin/sh -c 'cd %h/.opt/qflix-src && git fetch --depth 1 origin master && git reset --hard origin/master'
 # --push-kuma feeds "QFlix Audit Regime". The push is UP only when there are no
 # ENFORCED findings; advisory findings are reported in the message but do not
 # flip the monitor, because an advisory backlog is a known state, not an alarm.
@@ -11,7 +33,7 @@ Type=oneshot
 # Exit 2 (REGIME INTEGRITY) pushes DOWN with the first problem line. That is the
 # one alert the operator must never confuse with "clean": SuccessExitStatus
 # deliberately does NOT include 1 or 2, so systemd also records the failure.
-ExecStart=/usr/bin/python3 %h/scripts/maint/qflix-audit.py --push-kuma
+ExecStart=/bin/sh -c 'cd %h/.opt/qflix-src && PYTHONPATH=%h/.opt/qflix-src/scripts/maint /usr/bin/python3 %h/.opt/qflix-src/scripts/maint/qflix-audit.py --push-kuma'
 # Pure AST + regex over ~550 tracked files. Seconds, not minutes — but the slot
 # is shared, so leave headroom rather than half-report under load.
 TimeoutStartSec=300
