@@ -248,7 +248,13 @@ chmod +x ~/scripts/maint/qflix-torrent-janitor.py
 # the deployed layout has neither. It runs out of ~/.opt/qflix-src instead --
 # the same shallow checkout qflix-stats.py maintains. Ensure it exists here so
 # the timer never fires against a missing directory.
-sshm "test -d ~/.opt/qflix-src/.git || git clone --depth 1 https://github.com/Quadstronaut/QFlix.git ~/.opt/qflix-src" >/dev/null 2>&1 || log_warn "  could not prepare ~/.opt/qflix-src — audit timer will no-op until it exists"
+if [ ! -d "$HOME/.opt/qflix-src/.git" ]; then
+  git clone --depth 1 https://github.com/Quadstronaut/QFlix.git "$HOME/.opt/qflix-src" >/dev/null 2>&1 \
+    && echo "[+] cloned ~/.opt/qflix-src for the audit regime" \
+    || echo "[!] could not clone ~/.opt/qflix-src - audit timer will fail until it exists"
+else
+  echo "[+] ~/.opt/qflix-src present for the audit regime"
+fi
 cp -f "$STG"/scripts/maint/qflix-torrent-janitor.exclude ~/scripts/maint/qflix-torrent-janitor.exclude
 # Remove the retired Playwright clicker if a prior install put it in place.
 rm -f ~/scripts/maint/cp_upgrade_clicker.py
@@ -429,6 +435,8 @@ for unit in \
     manitoba-maint-anime-janitor.timer \
     manitoba-maint-torrent-janitor.service \
     manitoba-maint-torrent-janitor.timer \
+    manitoba-maint-audit.service \
+    manitoba-maint-audit.timer \
     manitoba-maint-canary-thread-ceiling.service \
     manitoba-maint-canary-thread-ceiling.timer \
     manitoba-maint-canary-sab-stall.service \
