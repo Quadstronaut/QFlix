@@ -9,9 +9,9 @@
 _One operator. One manifest. One maintenance window. Everything else is wires._
 
 <p>
-  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-51%2F51_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-54%2F55_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-35_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-62%2F62_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-63%2F63_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -95,7 +95,7 @@ flowchart LR
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 62 push monitors)]:::kuma
+  kuma[(Uptime Kuma<br/>isolated netns · 63 push monitors)]:::kuma
   discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex
@@ -185,7 +185,7 @@ flowchart LR
   recovery -->|lifecycle.start ≤3 attempts| status
   recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>62 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>63 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
   C3[Canary plex-transcoder · 10min]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K
