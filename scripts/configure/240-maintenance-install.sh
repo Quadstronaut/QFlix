@@ -77,7 +77,13 @@ migrate_pin TDARR_VERSION "2.17.01"
 # ── Step 4: deploy code + manifest to seedbox ──────────────────────────────
 log_info "syncing code + manifest to ~/scripts/maint/ and ~/.opt/maint/"
 
-sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/maint ~/.opt/maint/window-log ~/.opt/heartbeat ~/.opt/_maint_stage ~/bin'
+# ~/.opt/maint/dash-asset-integrity/ is the dash-asset-integrity canary's own
+# state dir: heal-latch.epoch (the 1-per-24h self-heal breaker), the durable
+# per-day heal log, and events/YYYY-MM-DD.jsonl (one JSON object per heal
+# attempt). Pre-created here for the same reason the reaper's dir is: the journal
+# on this shared slot is permission-restricted and rotation-prone, so a
+# self-owned logfile is the only reliable audit trail of an autonomous restart.
+sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/maint ~/.opt/maint/window-log ~/.opt/maint/dash-asset-integrity/events ~/.opt/heartbeat ~/.opt/_maint_stage ~/bin'
 
 # Sync via tar to keep this single-roundtrip. --no-owner because the seedbox
 # uses different uid/gid than the local workstation.
@@ -160,8 +166,16 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-torrent-janitor.timer \
     scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.service \
     scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.timer \
+    scripts/maint/systemd/manitoba-maint-canary-sab-stall.service \
+    scripts/maint/systemd/manitoba-maint-canary-sab-stall.timer \
+    scripts/maint/systemd/manitoba-maint-canary-tdarr-scanner.service \
+    scripts/maint/systemd/manitoba-maint-canary-tdarr-scanner.timer \
+    scripts/maint/systemd/manitoba-maint-canary-tdarr-healthcheck.service \
+    scripts/maint/systemd/manitoba-maint-canary-tdarr-healthcheck.timer \
     scripts/maint/systemd/manitoba-maint-canary-ucc-gate-stuck.service \
     scripts/maint/systemd/manitoba-maint-canary-ucc-gate-stuck.timer \
+    scripts/maint/systemd/manitoba-maint-canary-dash-asset-integrity.service \
+    scripts/maint/systemd/manitoba-maint-canary-dash-asset-integrity.timer \
     scripts/maint/systemd/manitoba-maint-boot-listeners.service \
     scripts/maint/arr-audit.py \
     scripts/maint/arr-audit-run.sh \
@@ -184,9 +198,11 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/tautulli-plex-link.sh \
     scripts/canaries/newsletter-digest-stale.sh \
     scripts/canaries/thread-ceiling.sh \
+    scripts/canaries/sab-stall.sh \
     scripts/canaries/tdarr-scanner.sh \
     scripts/canaries/tdarr-healthcheck.sh \
     scripts/canaries/ucc-gate-stuck.sh \
+    scripts/canaries/dash-asset-integrity.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
@@ -401,12 +417,16 @@ for unit in \
     manitoba-maint-torrent-janitor.timer \
     manitoba-maint-canary-thread-ceiling.service \
     manitoba-maint-canary-thread-ceiling.timer \
+    manitoba-maint-canary-sab-stall.service \
+    manitoba-maint-canary-sab-stall.timer \
     manitoba-maint-canary-tdarr-scanner.service \
     manitoba-maint-canary-tdarr-scanner.timer \
     manitoba-maint-canary-tdarr-healthcheck.service \
     manitoba-maint-canary-tdarr-healthcheck.timer \
     manitoba-maint-canary-ucc-gate-stuck.service \
     manitoba-maint-canary-ucc-gate-stuck.timer \
+    manitoba-maint-canary-dash-asset-integrity.service \
+    manitoba-maint-canary-dash-asset-integrity.timer \
     qflix-collect.service \
     qflix-collect.timer \
     manitoba-maint-boot-listeners.service; do
@@ -441,6 +461,13 @@ systemctl --user enable --now manitoba-maint-canary-vlogs-stall.timer
 # qbit-stall canary: detects libtorrent engine wedge (dl_info_speed=0 for
 # ≥5min + queuedDL>N). Same 15-min cadence as vlogs-stall.
 systemctl --user enable --now manitoba-maint-canary-qbit-stall.timer
+# sab-stall canary: usenet twin of qbit-stall (queue speed ~0 with active slots
+# waiting, or a slot-level Paused job pinned >=24h). Shipped 2026-07-19 with a
+# manifest entry, a script and both units but ZERO installer wiring, so it was
+# never staged, never installed and never enabled - a guard the repo read as
+# covered while nothing ran it. Wired 2026-07-29 alongside dash-asset-integrity;
+# tests/unit/test_canary_wiring.py now makes that class of omission impossible.
+systemctl --user enable --now manitoba-maint-canary-sab-stall.timer
 # kometa-libraries canary: config-drift detector (Plex rename guard).
 # Idempotent — exits up on match, down on drift; no destructive ops.
 systemctl --user enable --now manitoba-maint-canary-kometa-libraries.timer
@@ -522,6 +549,23 @@ systemctl --user enable --now manitoba-maint-canary-thread-ceiling.timer
 # ~10.6h) with nothing watching. Reads the state file, not lib.ucc, so it
 # survives a bug in that module.
 systemctl --user enable --now manitoba-maint-canary-ucc-gate-stuck.timer
+# Dash asset-integrity canary - every 15 min. Asserts the SERVED shell only
+# references /_app/immutable assets the RUNNING server can actually deliver.
+# On 2026-07-29 the dashboard served a dead shell for ~22h with every monitor
+# green: build/ was rewritten at 01:33 and 03:31, while node PID 15178 had been
+# up since 2026-07-08 - and adapter-node's sirv snapshots its file manifest ONCE
+# at boot, so 6 of 10 referenced modules 404'd though the files sat on disk at
+# mode 644. mobile-ux and the smoke only grepped the server-rendered
+# data-qflix-dash marker, which survives a total hydration failure, and
+# qflix-dash's own /healthz probe was answered by the stale process. Self-heals
+# a stale sirv manifest (restart, breaker 1/24h, Monday-window suppressed,
+# re-verified) but NEVER when the files are genuinely absent - that is a partial
+# deploy, a different fault, and a restart would not fix it.
+# NOTE: `enable --now` on a TIMER is correct and idempotent (a timer has no
+# long-running in-memory state to go stale). It is `enable --now` on a SERVICE
+# that caused the incident this canary guards - see the restart in
+# scripts/configure/90-qflix-dash-install.sh.
+systemctl --user enable --now manitoba-maint-canary-dash-asset-integrity.timer
 # Tdarr scanner canary — hourly. Guards FFprobe/Exiftool (pipeline-blocking if
 # they break) and tracks the known-dead Mediainfo probe without parking a
 # permanent red on it. Mediainfo is unfixable here: the slot's ulimit -v 10GB
@@ -569,6 +613,25 @@ gate() {
   esac
 }
 
+# `VAR=$(sshm "... | grep -c ...")` is a `set -e` landmine, and it silently
+# disabled every counting gate below. A bare assignment inherits the command
+# substitution's exit status, and `grep -c` exits 1 when it counts ZERO. So the
+# exact condition each gate exists to catch - a timer that is NOT scheduled -
+# terminated the installer AT THE ASSIGNMENT (line 11 sets -euo pipefail) instead
+# of reaching the `gate ... fail` branch. Those fail branches were unreachable
+# dead code; with `2>/dev/null` also swallowing ssh's stderr the operator got a
+# bare rc=1 and no indication which check failed. `remote_count` neutralises the
+# status and always echoes an integer, so a missing timer produces a FAIL record.
+remote_count() {
+  local out
+  out=$(sshm "$1" </dev/null 2>/dev/null || true)
+  out=$(printf '%s\n' "$out" | tail -1 | tr -d '[:space:]')
+  case "$out" in
+    '' | *[!0-9]*) printf '0' ;;
+    *) printf '%s' "$out" ;;
+  esac
+}
+
 # Smoke 1: webhook /health returns 200 with body "ok\n" (port 42017 etc.
 # can be over-reported as "free" by app-ports while another service is
 # already bound; checking the body distinguishes our webhook from an
@@ -590,7 +653,7 @@ else
 fi
 
 # Smoke 3: window timer scheduled (next-fire ≤ 7 days)
-TM=$(sshm "systemctl --user list-timers manitoba-maint-window.timer --no-pager 2>/dev/null | grep manitoba-maint-window.timer" 2>/dev/null)
+TM=$(sshm "systemctl --user list-timers manitoba-maint-window.timer --no-pager 2>/dev/null | grep manitoba-maint-window.timer" </dev/null 2>/dev/null || true)
 if [ -n "$TM" ]; then
   gate "window-timer-scheduled" pass "$(echo "$TM" | awk '{print $1, $2, $3}')"
 else
@@ -598,7 +661,7 @@ else
 fi
 
 # Smoke 4: window-watchdog timer scheduled
-WT=$(sshm "systemctl --user list-timers manitoba-maint-window-watchdog.timer --no-pager 2>/dev/null | grep -c manitoba-maint-window-watchdog" 2>/dev/null)
+WT=$(remote_count "systemctl --user list-timers manitoba-maint-window-watchdog.timer --no-pager 2>/dev/null | grep -c manitoba-maint-window-watchdog")
 if [ "${WT:-0}" -ge 1 ]; then
   gate "watchdog-timer-scheduled" pass
 else
@@ -626,7 +689,7 @@ else
 fi
 
 # Smoke 6: heartbeat cron entry present
-CR=$(sshm 'crontab -l 2>/dev/null | grep -c heartbeat-maint-webhook' 2>/dev/null)
+CR=$(remote_count 'crontab -l 2>/dev/null | grep -c heartbeat-maint-webhook')
 if [ "${CR:-0}" -ge 1 ]; then
   gate "heartbeat-cron" pass
 else
@@ -659,8 +722,10 @@ else
 fi
 
 # Smoke 9–12: canary timers scheduled
-for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck; do
-  CT=$(sshm "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer" </dev/null 2>/dev/null)
+# Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
+# asserts that, so a new canary cannot ship with a timer nobody checks.
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity; do
+  CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
   else
@@ -669,7 +734,7 @@ for canary in movie anime mobile-ux vlogs-stall qbit-stall kometa-libraries stal
 done
 
 # Smoke 13: weekly arr-audit timer scheduled
-AAT=$(sshm "systemctl --user list-timers manitoba-maint-arr-audit.timer --no-pager 2>/dev/null | grep -c manitoba-maint-arr-audit.timer" </dev/null 2>/dev/null)
+AAT=$(remote_count "systemctl --user list-timers manitoba-maint-arr-audit.timer --no-pager 2>/dev/null | grep -c manitoba-maint-arr-audit.timer")
 if [ "${AAT:-0}" -ge 1 ]; then
   gate "arr-audit-timer-scheduled" pass
 else
@@ -677,7 +742,7 @@ else
 fi
 
 # Smoke 14: UCC upstream-maintenance detect timer scheduled
-UDT=$(sshm "systemctl --user list-timers manitoba-maint-ucc-detect.timer --no-pager 2>/dev/null | grep -c manitoba-maint-ucc-detect.timer" </dev/null 2>/dev/null)
+UDT=$(remote_count "systemctl --user list-timers manitoba-maint-ucc-detect.timer --no-pager 2>/dev/null | grep -c manitoba-maint-ucc-detect.timer")
 if [ "${UDT:-0}" -ge 1 ]; then
   gate "ucc-detect-timer-scheduled" pass
 else
@@ -685,7 +750,7 @@ else
 fi
 
 # Smoke 15: app-backup retention prune timer scheduled
-BPT=$(sshm "systemctl --user list-timers manitoba-maint-backup-prune.timer --no-pager 2>/dev/null | grep -c manitoba-maint-backup-prune.timer" </dev/null 2>/dev/null)
+BPT=$(remote_count "systemctl --user list-timers manitoba-maint-backup-prune.timer --no-pager 2>/dev/null | grep -c manitoba-maint-backup-prune.timer")
 if [ "${BPT:-0}" -ge 1 ]; then
   gate "backup-prune-timer-scheduled" pass
 else

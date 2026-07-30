@@ -211,6 +211,53 @@ def test_faq_canary_cadences_match_manifest():
     assert not mismatches, "FAQ cadence drift — " + "; ".join(mismatches)
 
 
+def test_unit_counts_agree_across_every_doc_that_quotes_them():
+    """The live systemd unit counts are a BOX measurement, not something the
+    manifest can derive - so the only thing a test can enforce is that the three
+    places quoting them agree with each other. That is enough: they have moved in
+    lockstep through every commit that touched them (36 services/30 timers ->
+    55/43 -> 56/44), and the one time they diverged it was a bug.
+
+    On 2026-07-29 the at-a-glance row was bumped to 45 while the repo-layout
+    comment nine lines of prose later and the public FAQ both still said 43 - all
+    three stamped with the same date. An operator reading top to bottom got three
+    different answers and no way to tell which was real. Nothing caught it,
+    because no guard existed for numbers the manifest cannot compute.
+
+    Re-measure with exactly:
+        ls ~/.config/systemd/user/*.service | wc -l
+        ls ~/.config/systemd/user/*.timer   | wc -l
+    """
+    r = _read(README)
+    faq = _read(FAQ)
+
+    at_a_glance = _grab(
+        r, r"Cron \+ systemd timers \|\s*\*\*(\d+)\*\*", "README at-a-glance timers row")
+    layout = re.search(r"#\s*(\d+) services \+ (\d+) timers", r)
+    assert layout, "README repo-layout systemd comment moved (update this guard)"
+    layout_services, layout_timers = int(layout.group(1)), int(layout.group(2))
+    faq_m = re.search(r"(\d+) services \+ (\d+) timers", faq)
+    assert faq_m, "FAQ stack-paragraph unit counts moved (update this guard)"
+    faq_services, faq_timers = int(faq_m.group(1)), int(faq_m.group(2))
+
+    assert at_a_glance == layout_timers == faq_timers, (
+        "timer count drift - README at-a-glance=%d, README repo-layout=%d, "
+        "FAQ=%d. These are the SAME measurement; make all three agree."
+        % (at_a_glance, layout_timers, faq_timers))
+    assert layout_services == faq_services, (
+        "service count drift - README repo-layout=%d, FAQ=%d"
+        % (layout_services, faq_services))
+    # Sanity floor: the box has more units than the repo has unit FILES, because
+    # the panel templates some. A figure below the repo count means someone
+    # counted the wrong population.
+    repo_units = os.path.join(REPO_ROOT, "scripts", "maint", "systemd")
+    repo_timers = len([f for f in os.listdir(repo_units) if f.endswith(".timer")])
+    assert layout_timers >= repo_timers, (
+        "documented live timer count (%d) is below the number of .timer files in "
+        "scripts/maint/systemd/ (%d) - wrong population counted"
+        % (layout_timers, repo_timers))
+
+
 def test_canary_readme_documents_every_canary():
     """scripts/canaries/README.md must carry a bullet for every canary script.
     It was missing sab-stall, thread-ceiling, tdarr-scanner and
