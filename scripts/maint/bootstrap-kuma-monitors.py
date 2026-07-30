@@ -427,6 +427,22 @@ def main() -> int:
     skipped = 0
     failed = 0
 
+    # Push tokens captured AT CREATION, keyed by monitor name. `_add_push_monitor`
+    # returns the token, but until 2026-07-30 only the pusher and fleet monitors
+    # kept it — every app/canary/janitor discarded the return value and relied on
+    # re-reading it from get_monitors() further down.
+    #
+    # That re-read races: the code below already documents that "get_monitors()
+    # sometimes returns the PUSH monitor without the pushToken field even seconds
+    # after creation", which is why pusher/fleet have a fallback. Canaries had
+    # none, so creating one landed its key in `missing` — and `missing` was only
+    # a [warn]. The run then reported success, the installer deployed a token file
+    # with that canary absent, and `manitoba-maint canary push <name>` silently
+    # exited 0 forever. dash-asset-integrity shipped exactly this way on
+    # 2026-07-30: scheduled, running, exit 0, pushing nothing, monitor DOWN with
+    # "No heartbeat in the time window" and zero real coverage.
+    created_tokens: dict[str, str] = {}
+
     for app in manifest.apps():
         target = app.kuma_monitor
         if not target:
@@ -436,8 +452,10 @@ def main() -> int:
             skipped += 1
             continue
         try:
-            _add_push_monitor(api, target)
-            print(f"  [add]{target:25s} PUSH (id pending)")
+            tok = _add_push_monitor(api, target)
+            if tok:
+                created_tokens[target] = tok
+            print(f"  [add]{target:25s} PUSH (token={'yes' if tok else 'pending'})")
             created += 1
         except Exception as exc:
             print(f"  [FAIL]{target:25s} {exc}")
@@ -457,8 +475,11 @@ def main() -> int:
             skipped += 1
             continue
         try:
-            _add_push_monitor(api, target, interval=hb)
-            print(f"  [add]{target:25s} PUSH (canary, hb={hb}s)")
+            tok = _add_push_monitor(api, target, interval=hb)
+            if tok:
+                created_tokens[target] = tok
+            print(f"  [add]{target:25s} PUSH (canary, hb={hb}s, "
+                  f"token={'yes' if tok else 'pending'})")
             created += 1
         except Exception as exc:
             print(f"  [FAIL]{target:25s} {exc}")
@@ -479,8 +500,11 @@ def main() -> int:
             skipped += 1
             continue
         try:
-            _add_push_monitor(api, mon_name, interval=_STANDALONE_HB_S)
-            print(f"  [add]{mon_name:25s} PUSH (standalone janitor, hb={_STANDALONE_HB_S}s)")
+            tok = _add_push_monitor(api, mon_name, interval=_STANDALONE_HB_S)
+            if tok:
+                created_tokens[mon_name] = tok
+            print(f"  [add]{mon_name:25s} PUSH (standalone janitor, "
+                  f"hb={_STANDALONE_HB_S}s, token={'yes' if tok else 'pending'})")
             created += 1
         except Exception as exc:
             print(f"  [FAIL]{mon_name:25s} {exc}")
@@ -509,6 +533,8 @@ def main() -> int:
         m = fresh.get(app.kuma_monitor)
         if m and m.get("pushToken"):
             tokens[app.name] = m["pushToken"]
+        elif created_tokens.get(app.kuma_monitor):
+            tokens[app.name] = created_tokens[app.kuma_monitor]
         else:
             missing.append((app.name, app.kuma_monitor))
     # Canary tokens use `canary-<name>` so cli.py canary-push can find them.
@@ -519,6 +545,8 @@ def main() -> int:
         key = f"canary-{canary.name}"
         if m and m.get("pushToken"):
             tokens[key] = m["pushToken"]
+        elif created_tokens.get(canary.kuma_monitor):
+            tokens[key] = created_tokens[canary.kuma_monitor]
         else:
             missing.append((key, canary.kuma_monitor))
 
@@ -530,6 +558,8 @@ def main() -> int:
         m = fresh.get(_mon_name)
         if m and m.get("pushToken"):
             tokens[_token_key] = m["pushToken"]
+        elif created_tokens.get(_mon_name):
+            tokens[_token_key] = created_tokens[_mon_name]
         else:
             missing.append((_token_key, _mon_name))
 
@@ -578,10 +608,21 @@ def main() -> int:
     else:
         missing.append(("qflix-fleet", fleet_monitor))
 
+    # A missing token is FATAL, not a warning. It used to print [warn] and let
+    # the run report success; the installer then deployed a token file with that
+    # key absent, and the consumer -- `manitoba-maint canary push <name>` --
+    # SILENTLY EXITS 0 when it cannot find its token. The result is a canary that
+    # is scheduled, runs, succeeds, and pushes nothing, while its Kuma monitor
+    # sits DOWN on "No heartbeat in the time window". A warning nobody reads is
+    # not a guard.
+    token_failure = False
     if missing:
-        print(f"\n[warn] {len(missing)} monitor(s) lack a pushToken in get_monitors():")
+        token_failure = True
+        print(f"\nFATAL: {len(missing)} monitor(s) have NO pushToken:")
         for app_name, mon_name in missing:
             print(f"  - {app_name} ({mon_name})")
+        print("Their consumers would exit 0 while pushing nothing.")
+        print("Re-run this script; the token is generated at monitor creation.")
 
     # Persist tokens for the push-loop service.
     out.write_text(json.dumps(tokens, indent=2, sort_keys=True))
@@ -631,6 +672,8 @@ def main() -> int:
     print("verified: every active monitor has notification channels")
 
     api.disconnect()
+    if token_failure:
+        return 1
     return 0 if failed == 0 else 1
 
 
