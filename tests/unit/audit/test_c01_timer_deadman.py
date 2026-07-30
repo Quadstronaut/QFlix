@@ -72,12 +72,23 @@ def test_the_spec_named_candidates_are_all_adjudicated(ctx):
 def test_flaresolverr_canary_is_the_boundary_bug_and_is_now_visible(ctx):
     """manitoba-maint-flaresolverr-canary.timer is on disk but absent from
     manifest/apps.yaml:canaries — the exact section-1(g) enumeration-boundary
-    bug. Whether an audit 'saw' it used to depend on which file it opened."""
+    bug. Whether an audit 'saw' it used to depend on which file it opened.
+
+    What this guards is ENUMERATION, not brokenness. It originally also asserted
+    kind == "open-gap" so the gap could not be quietly erased, which was right
+    while it was open. It was CLOSED on 2026-07-30 by the timer-liveness canary,
+    a generic dead-man over every job in the ledger — a real closure, not an
+    erasure, so demanding the finding persist would now be demanding the defect
+    persist. The boundary property is what must never regress: this timer has to
+    stay visible to the detector even though nothing in apps.yaml:canaries
+    mentions it.
+    """
     result = det.detect(ctx)
     hit = [v for v in result.verdicts
            if v.path.endswith("manitoba-maint-flaresolverr-canary.timer")]
-    assert len(hit) == 1
-    assert hit[0].kind == "open-gap", "the gap must stay reported, not be erased"
+    assert len(hit) == 1, "the boundary bug is back: this timer is unenumerated"
+    assert hit[0].kind != "unknown-timer", (
+        "enumerated but unadjudicated — the ledger no longer describes it")
 
 
 def test_orphan_job_entry_is_a_finding(ctx, repo):

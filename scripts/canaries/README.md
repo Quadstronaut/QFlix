@@ -62,6 +62,14 @@ request id and skips the cleanup step.
 - `dash-*` — dash-asset-integrity: the served shell references an asset the running server will not serve, or the document's advertised `Content-Length` disagrees with the bytes delivered. The two faults carry **distinct** labels because they need different responses: a 404 whose file is present on disk is a stale in-process sirv manifest (restartable), a 404 whose file is absent is a partial deploy (not restartable), a 200 whose body never arrives is a stalled worker (not restartable), and the self-heal has its own labels for suppressed-by-the-Monday-window, refused-by-the-24h-breaker, refused-because-the-breaker-latch-will-not-persist, refused-because-the-unit-just-started, and issued-but-re-verification-still-failing. The script header carries the authoritative label table and the `QFLIX_CANARY_DASH_*` env overrides — read it there rather than duplicating the strings here, since this canary is the one that *acts*.
 - `digest-stale` / `digest-missing` / `digest-malformed` / `digest-empty` — newsletter-digest-stale: the digest branch's `week_of` isn't fresh at Monday send time, the file/branch 404s or is absent, the JSON fails to parse (or `week_of` is missing/non-string), or `html` is blank. Only evaluated inside the Monday 14:15-24:00 UTC send window — outside it, and on a pure transport failure after 3 retries, the canary passes (`not-in-eval-window` / `digest-check-inconclusive`) rather than alerting.
 
+- `timer-missing` / `timer-inactive` / `timer-stuck` / `timer-read-fail` — `timer-liveness.sh`: a job
+  declared in `manifest/jobs.yaml` is not installed on the box, is loaded but not active (it will
+  never fire again), or is active with nothing scheduled on either clock. `timer-read-fail` means
+  the ledger or systemd could not be read at all. A last run that exited non-success is reported as
+  `PASS-WARN`, not a failure — a canary legitimately exits non-zero to report ITS subject down, and
+  that already has its own monitor. Jobs whose intended terminal state is "gone" opt out with
+  `may_be_absent: true` in the ledger.
+
 ## Exit codes
 
 - 0 — pass; stdout has the `PASS: ...` line (or, for newsletter-digest-stale, `digest-fresh ...` / `not-in-eval-window ...` / `digest-check-inconclusive ...`) that Kuma stores as `msg=`
