@@ -145,6 +145,16 @@ jobs:
     timer: scripts/maint/systemd/manitoba-maint-canary-ucc-gate-stuck.timer
     kuma_monitor: "Canary UCC Gate Stuck"
 
+  # Added 2026-07-30. The C-01 detector caught this the first time the audit ran
+  # after the canary shipped: the timer existed with nothing declaring what would
+  # notice if it stopped. Fitting, since the canary itself exists because the
+  # dashboard served a dead shell for ~22h with every monitor green -- and it then
+  # spent its first 25 minutes deployed pushing nothing, because its token was
+  # missing and `manitoba-maint canary push` exits 0 when it cannot find one.
+  manitoba-maint-canary-dash-asset-integrity:
+    timer: scripts/maint/systemd/manitoba-maint-canary-dash-asset-integrity.timer
+    kuma_monitor: "Canary Dash Asset Integrity"
+
   # -------------------------------------------------------- adjudicated: none
   # Every entry below was reviewed on 2026-07-29 while landing the audit
   # regime. Six of these are the spec's named candidates; the flaresolverr pair
