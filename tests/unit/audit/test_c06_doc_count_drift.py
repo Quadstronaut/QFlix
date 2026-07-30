@@ -29,12 +29,31 @@ def test_covers_more_than_the_hand_picked_anchors(ctx):
 
 def test_headline_counts_agree_with_the_manifest(ctx, repo):
     """The numbers the existing guards protect must come back `ok` here too —
-    two independent implementations agreeing is the signal."""
+    two independent implementations agreeing is the signal.
+
+    The canary claim is located by SHAPE, not by a literal count. It used to be
+    pinned as "inventory.md:19-canary-monitors", which made this test fail the
+    moment a 20th canary shipped — the count changing is the normal case, and a
+    guard that breaks on the thing it is meant to track is noise. What matters is
+    that a canary-monitors claim EXISTS and reads `ok`; the detector itself is
+    what compares it against the manifest.
+    """
+    import re
+
     result = det.detect(ctx)
     by_id = {v.instance_id: v for v in result.verdicts}
-    for iid in ("README.md:35-manifest-apps", "inventory.md:19-canary-monitors"):
-        assert iid in by_id, "expected claim missing: " + iid
-        assert by_id[iid].status == OK
+
+    assert "README.md:35-manifest-apps" in by_id, "expected claim missing: apps"
+    assert by_id["README.md:35-manifest-apps"].status == OK
+
+    canary_claims = [v for iid, v in by_id.items()
+                     if re.fullmatch(r"inventory\.md:\d+-canary-monitors", iid)]
+    assert canary_claims, (
+        "no inventory.md canary-monitors claim was enumerated at all — the "
+        "detector stopped seeing a claim it is supposed to guard"
+    )
+    for v in canary_claims:
+        assert v.status == OK, f"{v.instance_id}: {v.detail}"
 
 
 def test_every_verdict_is_ok_or_a_declared_finding_kind(ctx):
