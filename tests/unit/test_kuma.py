@@ -588,6 +588,11 @@ _AUDIT_METRICS = (
     # self-pushing like the janitors). This fixture models a Kuma that HAS every
     # expected monitor, so the no-drift case must include it.
     'monitor_status{monitor_id="11",monitor_name="QFlix Audit Regime",monitor_type="push"} 1\n'
+    # "QFlix Audit Live" joined STANDALONE_SELF_PUSH_MONITORS 2026-07-30: the
+    # LIVE half of the audit regime (L-01..L-06), auditing what is RUNNING
+    # rather than what is in git. Present here or the drift audit correctly
+    # reports it manifest_only.
+    'monitor_status{monitor_id="12",monitor_name="QFlix Audit Live",monitor_type="push"} 1\n'
 )
 
 
@@ -604,11 +609,11 @@ class TestAuditMonitors:
         # "QFlix Collect (workstation)" joined STANDALONE_SELF_PUSH_MONITORS
         # 2026-07-29 (it self-pushes from the box now, see lib/kuma.py) so it
         # must appear here too, matched rather than manifest_only.
-        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Regime", "QFlix Collect (workstation)", "QFlix Fleet", "QFlix Reaper", "QFlix Torrent Janitor", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
+        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Live", "QFlix Audit Regime", "QFlix Collect (workstation)", "QFlix Fleet", "QFlix Reaper", "QFlix Torrent Janitor", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
         assert report["manifest_only"] == []
         assert report["kuma_only"] == []
-        assert report["live_count"] == 11
-        assert report["manifest_count"] == 11
+        assert report["live_count"] == 12
+        assert report["manifest_count"] == 12
 
     def test_audit_manifest_only(self, monkeypatch):
         from lib.kuma import audit_monitors

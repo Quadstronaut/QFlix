@@ -54,7 +54,23 @@ FAQ = os.path.join(REPO_ROOT, "scripts", "data", "qflix-faq.html")
 #                                   manifest_only until bootstrap runs on the
 #                                   box, which is a true finding rather than
 #                                   drift noise. See docs/audit-regime.md.
-NON_MANIFEST_MONITORS = 8
+# DERIVED, not hardcoded. This was `= 8`, a literal, which meant registering a
+# new standalone self-pusher in lib/kuma.py did NOT move the expected total --
+# so the drift guard could not see the one registry it is supposed to track.
+# Caught 2026-07-30 when "QFlix Audit Live" was registered and this suite stayed
+# green while the README kept saying 64. A guard with a hand-maintained constant
+# inside it is the same two-policy-surface defect it exists to prevent.
+#
+#   2 = the pusher self-heartbeat ("Manitoba Pusher") + the fleet aggregate
+#       ("QFlix Fleet"), which are created by bootstrap and named nowhere else.
+def _non_manifest_monitors():
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(REPO_ROOT, "scripts", "maint"))
+    from lib.kuma import STANDALONE_SELF_PUSH_MONITORS
+    return 2 + len(STANDALONE_SELF_PUSH_MONITORS)
+
+
+NON_MANIFEST_MONITORS = _non_manifest_monitors()
 
 
 def _read(path):

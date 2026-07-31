@@ -1,0 +1,16 @@
+[Unit]
+Description=Manitoba maint - QFlix LIVE audit (what is actually running, not what is in git)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Runs on the BOX from the deployed tree, unlike manitoba-maint-audit.service
+# which audits last-pushed master out of ~/.opt/qflix-src. That distinction is
+# the whole point: source being clean says nothing about what systemd is running.
+# L-01/L-02 compare STAGED units against what systemd actually loaded -- exactly
+# the class that left sab-stall, tdarr-scanner and tdarr-healthcheck present in
+# the repo but never installed, for weeks, silently.
+ExecStart=/usr/bin/python3 %h/scripts/maint/qflix-audit-live.py --push-kuma
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
