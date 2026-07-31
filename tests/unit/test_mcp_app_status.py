@@ -202,7 +202,47 @@ def test_classify_qbit_stoppedDL_rename_equivalence():
 def test_classify_qbit_empty():
     out = app_status.classify_qbit([])
     assert out == {"total": 0, "active": 0, "stalled_dl": 0, "errored": 0,
-                    "stopped_dl": 0, "seeding": 0}
+                    "stopped_dl": 0, "seeding": 0, "dl_bps": 0, "up_bps": 0}
+
+
+# ---------------------------------------------------------------------------
+# transfer rates — the Heartbeat downloads card showed SAB's kbps and NO qBit
+# rate at all, so "is anything actually moving" was unanswerable for the
+# torrent half. Summed here from the per-torrent fields already in the
+# torrents/info payload rather than a second API call, because the
+# forced-command SSH channel pays this script's latency on every refresh.
+# ---------------------------------------------------------------------------
+
+def test_rates_are_summed_across_torrents():
+    out = app_status.classify_qbit([
+        _t("downloading", dlspeed=1_500_000, upspeed=10_000),
+        _t("downloading", dlspeed=500_000, upspeed=5_000),
+        _t("uploading", dlspeed=0, upspeed=250_000),
+    ])
+    assert out["dl_bps"] == 2_000_000
+    assert out["up_bps"] == 265_000
+
+
+def test_missing_or_garbage_rate_fields_do_not_break_the_counts():
+    """A rate is a nice-to-have; the counts are what the card is FOR. A torrent
+    with an absent or non-numeric speed must contribute 0 to the rate and still
+    be counted in its bucket."""
+    out = app_status.classify_qbit([
+        _t("downloading"),                              # no speed keys at all
+        _t("downloading", dlspeed=None, upspeed=None),
+        _t("downloading", dlspeed="not-a-number"),
+        _t("downloading", dlspeed=1_000),
+    ])
+    assert out["active"] == 4, "a bad speed field cost us a state count"
+    assert out["dl_bps"] == 1_000
+    assert out["up_bps"] == 0
+
+
+def test_rates_are_reported_even_when_nothing_is_active():
+    """Seeding-only is the steady state on this box; upload rate must survive."""
+    out = app_status.classify_qbit([_t("stalledUP", dlspeed=0, upspeed=42_000)])
+    assert out["active"] == 0 and out["seeding"] == 1
+    assert out["up_bps"] == 42_000
 
 
 # ---------------------------------------------------------------------------

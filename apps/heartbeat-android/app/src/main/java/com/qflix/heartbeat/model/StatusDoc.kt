@@ -139,6 +139,12 @@ data class QbitStats(
     @SerialName("stalled_dl") val stalledDl: Int? = null,
     val errored: Int? = null,
     val seeding: Int? = null,
+    // Transfer rates, bytes/sec, summed across torrents by the collector.
+    // Nullable because an older box (one that has not had app_status.py
+    // redeployed) simply omits them -- the card must degrade to "no rate
+    // reported", never crash or invent a 0 that reads as "stalled".
+    @SerialName("dl_bps") val dlBps: Long? = null,
+    @SerialName("up_bps") val upBps: Long? = null,
 )
 
 @Serializable
