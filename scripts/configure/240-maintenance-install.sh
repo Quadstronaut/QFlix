@@ -164,6 +164,9 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/qflix-torrent-janitor.exclude \
     scripts/maint/systemd/manitoba-maint-audit.service \
     scripts/maint/systemd/manitoba-maint-audit.timer \
+    scripts/maint/qflix-audit-live.py \
+    scripts/maint/systemd/manitoba-maint-audit-live.service \
+    scripts/maint/systemd/manitoba-maint-audit-live.timer \
     scripts/maint/systemd/manitoba-maint-torrent-janitor.service \
     scripts/maint/systemd/manitoba-maint-torrent-janitor.timer \
     scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.service \
@@ -241,6 +244,12 @@ chmod +x ~/scripts/maint/qflix-collect.py
 # (added 2026-07-27). Ships DRY-RUN; armed via an on-box drop-in like the reaper.
 cp -f "$STG"/scripts/maint/qflix-torrent-janitor.py ~/scripts/maint/qflix-torrent-janitor.py
 chmod +x ~/scripts/maint/qflix-torrent-janitor.py
+
+# The LIVE half of the audit regime runs ON the box against the deployed tree
+# (it reads staged units, kuma.db, secrets and quota), so unlike qflix-audit.py
+# -- which needs a git checkout and runs from ~/.opt/qflix-src -- it IS copied.
+cp -f "$STG"/scripts/maint/qflix-audit-live.py ~/scripts/maint/qflix-audit-live.py
+chmod +x ~/scripts/maint/qflix-audit-live.py
 
 # Convergent Audit Regime (landed on master 2026-07-30). Its units sat in the
 # repo with ZERO installer wiring, so the audit would have shipped as a guard
@@ -444,6 +453,8 @@ for unit in \
     manitoba-maint-torrent-janitor.timer \
     manitoba-maint-audit.service \
     manitoba-maint-audit.timer \
+    manitoba-maint-audit-live.service \
+    manitoba-maint-audit-live.timer \
     manitoba-maint-canary-thread-ceiling.service \
     manitoba-maint-canary-thread-ceiling.timer \
     manitoba-maint-canary-sab-stall.service \
@@ -572,6 +583,8 @@ systemctl --user enable --now manitoba-maint-torrent-janitor.timer
 # Convergent audit: daily enumeration of the declared defect classes, self-
 # pushing "QFlix Audit Regime". Exits 1 on any ENFORCED finding.
 systemctl --user enable --now manitoba-maint-audit.timer
+# LIVE audit: what is actually running vs what the repo says. Every 6h.
+systemctl --user enable --now manitoba-maint-audit-live.timer
 # Thread-ceiling canary — every 15 min. Tracks user task count vs ulimit -u
 # (RLIMIT_NPROC), 70% WARN / 85% FAIL. Guards the GOMAXPROCS thread-exhaustion
 # class (memory seedbox-thread-cap-gomaxprocs).

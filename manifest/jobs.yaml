@@ -80,6 +80,10 @@ jobs:
     timer: scripts/mcp/systemd/qflix-specials-policy.timer
     kuma_monitor: "Qflix Specials Policy"
 
+  manitoba-maint-audit-live:
+    timer: scripts/maint/systemd/manitoba-maint-audit-live.timer
+    kuma_monitor: "QFlix Audit Live"
+
   manitoba-maint-audit:
     timer: scripts/maint/systemd/manitoba-maint-audit.timer
     kuma_monitor: "QFlix Audit Regime"

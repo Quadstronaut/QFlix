@@ -171,6 +171,12 @@ STANDALONE_SELF_PUSH_MONITORS = {
     "QFlix Audio Disposition": "qflix-audio-disposition",
     "qflix-anime-janitor": "qflix-anime-janitor",
     "QFlix Torrent Janitor": "qflix-torrent-janitor",
+    # The LIVE half of the audit regime (L-01..L-06). The offline detectors
+    # above audit SOURCE; this audits what is actually RUNNING -- staged units
+    # vs what systemd loaded, the live Kuma monitor set, persisted push tokens,
+    # secret modes, quota. Registered here or `kuma audit` calls it orphan drift.
+    "QFlix Audit Live": "qflix-audit-live",
+
     # Moved here from manifest.kuma_external_monitors 2026-07-29: this job
     # migrated off the operator's Windows scheduled task onto the box itself
     # 2026-07-09 (qflix-collect.py + qflix-collect.timer — see memory

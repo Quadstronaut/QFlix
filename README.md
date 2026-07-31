@@ -11,7 +11,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-55%2F55_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-35_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-64%2F64_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-65%2F65_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -41,7 +41,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 |---|---:|---|
 | Apps in manifest (`manifest/apps.yaml`) | **35** | 18 UCC · 6 systemd · 10 cron · 1 library |
 | End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **21** | movie · anime · mobile-ux · qbit-stall · sab-stall · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · hardlink-integrity · plex-transcoder · tautulli-plex-link · quota · newsletter-digest · thread-ceiling · tdarr-scanner · tdarr-healthcheck · ucc-gate-stuck · dash-asset-integrity · timer-liveness |
-| Kuma push monitors (manitoba-owned) | **64** | 35 manifest apps + 21 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper" + 1 "QFlix Audio Disposition" + 1 "qflix-anime-janitor" + 1 "QFlix Torrent Janitor" + 1 "QFlix Collect" + 1 "QFlix Audit Regime". 62 of the 63 report continuously and `kuma audit` shows no drift among them. 0 external: "QFlix Collect" was reclassified manitoba-owned on 2026-07-29 because the collector moved off the workstation onto the box on 2026-07-09, so the drift audit and `bootstrap-kuma-monitors.py` now treat it as mandatory. Its Kuma name still reads "(workstation)" — cosmetic only; renaming needs a coordinated live change. **"QFlix Audit Regime" is DECLARED, not yet created**: it lands with `manitoba-maint-audit.timer` and `bootstrap-kuma-monitors.py` creates it on the next box deploy, so `kuma audit` correctly reports it as `manifest_only` until then — see [docs/audit-regime.md](docs/audit-regime.md). |
+| Kuma push monitors (manitoba-owned) | **65** | 35 manifest apps + 21 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper" + 1 "QFlix Audio Disposition" + 1 "qflix-anime-janitor" + 1 "QFlix Torrent Janitor" + 1 "QFlix Collect" + 1 "QFlix Audit Regime" + 1 "QFlix Audit Live". 62 of the 63 report continuously and `kuma audit` shows no drift among them. 0 external: "QFlix Collect" was reclassified manitoba-owned on 2026-07-29 because the collector moved off the workstation onto the box on 2026-07-09, so the drift audit and `bootstrap-kuma-monitors.py` now treat it as mandatory. Its Kuma name still reads "(workstation)" — cosmetic only; renaming needs a coordinated live change. **"QFlix Audit Regime" is DECLARED, not yet created**: it lands with `manitoba-maint-audit.timer` and `bootstrap-kuma-monitors.py` creates it on the next box deploy, so `kuma audit` correctly reports it as `manifest_only` until then — see [docs/audit-regime.md](docs/audit-regime.md). |
 | Cron + systemd timers | **45** _(live count in `~/.config/systemd/user/`, 2026-07-30 — re-count with `ls ~/.config/systemd/user/*.timer | wc -l`; becomes 46 once `manitoba-maint-audit.timer` deploys)_ | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **1000+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -95,7 +95,7 @@ flowchart LR
     comms[Listmonk + qflix-newsletter<br/>Mon 08:00 digest]:::seedbox
   end
 
-  kuma[(Uptime Kuma<br/>isolated netns · 64 push monitors)]:::kuma
+  kuma[(Uptime Kuma<br/>isolated netns · 65 push monitors)]:::kuma
   discord[Discord webhook<br/>operator @ping on error/critical]:::ext
 
   friends -->|HTTPS| nginx --> plex
@@ -185,7 +185,7 @@ flowchart LR
   recovery -->|lifecycle.start ≤3 attempts| status
   recovery -->|still failing| notify[notify.py<br/>Discord + @operator ping]:::alert
 
-  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>64 push monitors)]
+  C1[Canary movie · hourly]:::probe -->|push| K[(Kuma<br/>65 push monitors)]
   C2[Canary anime · hourly]:::probe -->|push| K
   C3[Canary plex-transcoder · 10min]:::probe -->|push| K
   C4[Canary mobile-ux · 15min]:::probe -->|push| K

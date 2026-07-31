@@ -1,0 +1,14 @@
+[Unit]
+Description=Manitoba maint - QFlix LIVE audit (every 6h)
+
+[Timer]
+# Deployed state mutates out-of-band (hand-edits, partial installs, panel
+# updates), so this runs far more often than the daily source audit. Residual R2
+# is explicitly "bounded only by how often qflix-audit-live.py runs".
+OnCalendar=*-*-* 02,08,14,20:15:00 UTC
+RandomizedDelaySec=5min
+Persistent=true
+Unit=manitoba-maint-audit-live.service
+
+[Install]
+WantedBy=timers.target
