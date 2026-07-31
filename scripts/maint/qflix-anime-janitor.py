@@ -65,6 +65,16 @@ CAPS:
   --max-moves N   per-run rate limit on auto re-homes (default 10). Overflow is
                   DEFERRED to the next run (forward progress), not aborted.
   --max-pct  P    per-library tripwire (default 25). If auto-move candidates
+                  LIVE ARMING (council finding, 2026-07-31): the box runs this
+                  with an on-box drop-in passing `--execute --max-pct 80`, so the
+                  effective live tripwire is 80, NOT the 25 below. The drop-in is
+                  deliberately out of git -- a repo clone must not be able to arm
+                  a mass move -- but the VALUE was undocumented anywhere, so the
+                  repo understated the live blast radius by more than 3x. Same
+                  pattern as the reaper (`--max-pct 100`) and the torrent-janitor
+                  (`--execute`), both of which were already written down.
+                  Check what is actually armed with:
+                    systemctl --user cat manitoba-maint-anime-janitor.service
                   exceed P% of an anime library's title count, ABORT the whole
                   run before any mutation (exit 2) - the mass-mislabel circuit
                   breaker (a metadata provider dropping `genres` fleet-wide would
