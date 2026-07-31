@@ -160,6 +160,38 @@ _PAGE_SIZE = 200          # *arr queue page size (see the pagination note below)
 DEFAULT_MAX_PCT = 95.0
 DAY_SECONDS = 86400
 
+# Ten years. Nothing in this stack has been seeding for a decade -- max_seed_days
+# defaults to 30, so anything genuinely old is reaped long before it gets near
+# this. The ceiling exists only to catch values that are not timestamps at all.
+#
+# Deliberately RELATIVE to now_epoch rather than an absolute floor like
+# "2020-01-01": an absolute floor encodes today's wall clock into a pure
+# function, so it would reject a perfectly coherent timeline under any other
+# time base (the existing ratio-policy tests run on a synthetic epoch-relative
+# clock) and would silently rot forward as real dates advance.
+_MAX_PLAUSIBLE_AGE_S = 10 * 365 * DAY_SECONDS
+# Tolerate a little clock skew forward; beyond that the field is not a timestamp
+# we can reason about, and a NEGATIVE age would sail past the aged-out check as
+# "not old enough" while still being nonsense.
+_MAX_ADDED_SKEW_S = DAY_SECONDS
+
+
+def _added_on_is_plausible(added, now_epoch) -> bool:
+    """True iff `added_on` could actually be when this torrent was added.
+
+    Guards the aged-out reap branch, which does NOT consult ratio -- see the
+    call site. Unparseable, absurdly old (0 / 1 / other placeholders), or
+    far-future values return False so the caller falls back to the ratio rule,
+    which keeps.
+    """
+    try:
+        v = int(added)
+    except (TypeError, ValueError):
+        return False
+    if v > now_epoch + _MAX_ADDED_SKEW_S:
+        return False
+    return (now_epoch - v) <= _MAX_PLAUSIBLE_AGE_S
+
 KUMA_BASE = os.environ.get("KUMA_BASE", "http://127.0.0.1:42005")
 KUMA_PUSH_KEY = "qflix-torrent-janitor"
 
@@ -393,6 +425,20 @@ def classify_torrent(t, tracked_hashes, now_epoch, min_ratio, max_seed_days):
             age_s = now_epoch - int(added)
         except (TypeError, ValueError):
             age_s = 0
+        # COUNCIL FINDING 7. The aged-out branch reaps WITHOUT consulting ratio,
+        # so whatever `added_on` says is taken as proof the seeding duty is over.
+        # A garbage value therefore deletes immediately: added_on=1 is epoch
+        # 1970, age_s lands near 56 YEARS, and a torrent that has seeded to 0.02
+        # is reaped as if it had aged out. qBittorrent has been seen to report 0
+        # or a placeholder for items still being (re)checked at startup.
+        #
+        # An age can only be trusted if it is physically possible. Anything
+        # before _MIN_PLAUSIBLE_ADDED (the torrent predates the box) or in the
+        # future (clock skew / bad field) is UNKNOWN, not "very old" -- and
+        # unknown must fall through to the ratio rule, which keeps. Erring
+        # toward keep costs disk; erring toward reap costs the user's media.
+        if not _added_on_is_plausible(added, now_epoch):
+            return ("keep", "added_on-implausible (" + str(added) + ")")
         if age_s >= max_seed_days * DAY_SECONDS:
             return ("reap", "aged-out (" + str(int(age_s / DAY_SECONDS))
                     + "d >= " + str(max_seed_days) + "d)")
