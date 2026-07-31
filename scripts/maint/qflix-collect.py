@@ -184,12 +184,14 @@ def _release_run_lock(handle) -> None:
     try:
         import fcntl
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("qflix-collect.py: fcntl import failed - run-lock degrades to a no-op: "
+                         + repr(_exc) + "\n")
     try:
         handle.close()
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("qflix-collect.py: run-lock acquire failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
 
 
 # --- MCP subprocess helper ------------------------------------------------

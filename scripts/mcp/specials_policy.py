@@ -152,8 +152,9 @@ def _notify(message: str, level: str = "info") -> None:
     try:
         from lib.notify import notify  # type: ignore
         notify(message, level)
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("specials_policy.py: notify import failed - alerts unavailable from this script: "
+                         + repr(_exc) + "\n")
 
 
 def main() -> int:

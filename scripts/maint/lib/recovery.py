@@ -424,9 +424,11 @@ def _emit(event: str, app_name: str, attempts: int,
             final_health=final_health,
             kuma_status=kuma_status,
         )
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("recovery.py: STATE RECORD of recovery outcome failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
     try:
         notify.notify(message, level)
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("recovery.py: OPERATOR NOTIFY of recovery outcome failed - nobody was told: "
+                         + repr(_exc) + "\n")

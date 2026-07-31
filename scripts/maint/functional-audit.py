@@ -8,6 +8,7 @@ Reads secrets from ~/secrets/. No CLI args. Output is a fixed-width table.
 from __future__ import annotations
 import base64, json, os, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
+import sys
 
 SECRETS = Path.home() / "secrets"
 HOST = (SECRETS / "seedbox.host").read_text().strip()
@@ -359,8 +360,9 @@ def main():
         try:
             for line in (Path.home() / "scripts" / "configure" / "55-kometa-install.sh").read_text().splitlines():
                 pass
-        except Exception:
-            pass
+        except Exception as _exc:
+            sys.stderr.write("functional-audit.py: kometa install-script read failed (best-effort, continuing): "
+                             + repr(_exc) + "\n")
     if tdp:
         code, body = _get(f"http://127.0.0.1:{tdp}/api/v2/cruddb",
                           {"Content-Type": "application/json"},

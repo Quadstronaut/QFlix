@@ -181,8 +181,9 @@ def _file_log(line: str) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         _LOG_FH.write(stamp + " " + line + "\n")
         _LOG_FH.flush()
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("qflix-reaper.py: durable log write failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
 
 
 def log(msg: str) -> None:
@@ -282,12 +283,14 @@ def _release_run_lock(handle) -> None:
     try:
         import fcntl
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("qflix-reaper.py: fcntl import failed - run-lock degrades to a no-op: "
+                         + repr(_exc) + "\n")
     try:
         handle.close()
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("qflix-reaper.py: run-lock acquire failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
 
 
 # ===========================================================================
@@ -416,8 +419,9 @@ def _save_orphan_state(path: Path, orphans: dict) -> None:
                        indent=2),
             encoding="utf-8",
         )
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("qflix-reaper.py: audit manifest write failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
 
 
 def reconcile_orphans(current, now, grace_hours, remind_days, state_path=None,
@@ -1361,8 +1365,9 @@ def main(argv=None) -> int:
         if _LOG_FH is not None:
             try:
                 _LOG_FH.close()
-            except Exception:
-                pass
+            except Exception as _exc:
+                sys.stderr.write("qflix-reaper.py: orphan-state write failed (best-effort, continuing): "
+                                 + repr(_exc) + "\n")
 
 
 if __name__ == "__main__":

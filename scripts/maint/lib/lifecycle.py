@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from lib.manifest import App
+import sys
 
 _DEFAULT_TIMEOUT_S = 60.0
 _TAIL = 200  # chars to keep from stdout/stderr
@@ -461,12 +462,14 @@ def _record_state(app: App, event: str, version: str, reason: str) -> None:
                 old_v = old.get("version")
                 if isinstance(old_v, str) and old_v and old_v != version:
                     extra["previous_version"] = old_v
-            except Exception:
-                pass
+            except Exception as _exc:
+                sys.stderr.write("lifecycle.py: previous_version lookup failed (best-effort, continuing): "
+                                 + repr(_exc) + "\n")
         state_mod.record(path, app.name, event=event, version=version,
                          reason=reason, **extra)
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("lifecycle.py: STATE RECORD failed - rollback data and `status` are now stale: "
+                         + repr(_exc) + "\n")
 
 
 def upgrade(

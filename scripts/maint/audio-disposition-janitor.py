@@ -109,8 +109,9 @@ def _file_log(line: str) -> None:
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         _LOG_FH.write(ts + " " + line + "\n")
         _LOG_FH.flush()
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("audio-disposition-janitor.py: durable log write failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
 
 
 def log(msg: str) -> None:
