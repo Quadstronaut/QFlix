@@ -25,3 +25,21 @@ PY="$VENV/bin/python"
 # contain a `tests/conftest.py`, and pytest rejects the pair in a single process
 # with ImportPathMismatchError.
 "$PY" -m pytest "$HERE/../scripts/qflix-newsletter/tests" "$@"
+
+# ---------------------------------------------------------------------------
+# A LOCAL PASS IS NOT A GREEN BUILD.
+#
+# Six tests are skipif(os.name != "posix") — kill(0) liveness semantics, POSIX
+# file modes, the executable bit. They SKIP on the Windows workstation and RUN on
+# the Linux CI runner, so "1406 passed, 6 skipped" locally said nothing about
+# whether those six pass.
+#
+# They did not. CI was red on every push for a full day while the local suite
+# reported green each time, and the operator saw the failure alert first. This
+# banner exists so that gap is stated out loud instead of hiding in a skip count.
+# ---------------------------------------------------------------------------
+if [ "$(uname -s 2>/dev/null)" != "Linux" ]; then
+  printf '\n\033[33m[!] Not Linux: POSIX-only tests were SKIPPED, not passed.\033[0m\n'
+  printf '    This run is NOT equivalent to CI. Before claiming green, check:\n'
+  printf '      gh run list --limit 1\n\n'
+fi
