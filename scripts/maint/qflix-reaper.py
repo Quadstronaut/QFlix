@@ -284,12 +284,12 @@ def _release_run_lock(handle) -> None:
         import fcntl
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except Exception as _exc:
-        sys.stderr.write("qflix-reaper.py: fcntl import failed - run-lock degrades to a no-op: "
+        sys.stderr.write("qflix-reaper.py: run-lock release failed - run-lock degrades to a no-op: "
                          + repr(_exc) + "\n")
     try:
         handle.close()
     except Exception as _exc:
-        sys.stderr.write("qflix-reaper.py: run-lock acquire failed (best-effort, continuing): "
+        sys.stderr.write("qflix-reaper.py: run-lock file close failed (best-effort, continuing): "
                          + repr(_exc) + "\n")
 
 
@@ -1366,7 +1366,7 @@ def main(argv=None) -> int:
             try:
                 _LOG_FH.close()
             except Exception as _exc:
-                sys.stderr.write("qflix-reaper.py: orphan-state write failed (best-effort, continuing): "
+                sys.stderr.write("qflix-reaper.py: durable log close failed (best-effort, continuing): "
                                  + repr(_exc) + "\n")
 
 

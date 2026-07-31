@@ -19,7 +19,7 @@ def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception as _exc:
-        sys.stderr.write("audit-kuma-state.py: kuma state read failed (best-effort, continuing): "
+        sys.stderr.write("audit-kuma-state.py: stdout encoding setup failed (best-effort, continuing): "
                          + repr(_exc) + "\n")
     from uptime_kuma_api import UptimeKumaApi
     pw = (REPO_ROOT / "secrets" / "htpasswd.password").read_text().strip()
