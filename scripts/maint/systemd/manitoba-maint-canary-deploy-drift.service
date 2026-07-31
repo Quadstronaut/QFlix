@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - deploy drift (what RUNS on the box equals what is in git)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push deploy-drift
+StandardOutput=journal
+StandardError=journal
