@@ -40,6 +40,7 @@
 #   QFLIX_CANARY_HARDLINK_MAX_DETACHED      default 2  (absolute floor — allows a lone copy-import in flight)
 #   QFLIX_CANARY_HARDLINK_MAX_DETACHED_PCT  default 5  (percentage floor — covers proportional regressions)
 #   QFLIX_CANARY_HARDLINK_MIN_SAMPLE        default 5  (min imported torrents before asserting a regression)
+#   QFLIX_CANARY_HARDLINK_MAX_VACUOUS_DAYS  default 7  (max consecutive days of INCONCLUSIVE runs before failing)
 # MAX_DETACHED and MAX_DETACHED_PCT must BOTH be exceeded to fail, and the
 # imported-sample count must reach MIN_SAMPLE first — below that the run is
 # inconclusive (passes) rather than crying wolf on a handful of torrents.
@@ -50,6 +51,8 @@
 #   qbit-no-completed       qBit reports zero completed torrents on disk (suspicious)
 #   library-empty           media/ contains zero scanable video files
 #   hardlink-regression     detached count and pct both exceed thresholds
+#   hardlink-blind          canary has passed without asserting anything for
+#                           MAX_VACUOUS_DAYS — the guard stopped guarding
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -69,6 +72,9 @@ PWFILE=~/secrets/qbittorrent.password
 MAX_DETACHED=${QFLIX_CANARY_HARDLINK_MAX_DETACHED:-2}
 MAX_DETACHED_PCT=${QFLIX_CANARY_HARDLINK_MAX_DETACHED_PCT:-5}
 MIN_SAMPLE=${QFLIX_CANARY_HARDLINK_MIN_SAMPLE:-5}
+# Council finding 8: how long this canary may pass WITHOUT asserting anything
+# before the blindness itself becomes the alert. See the vacuity clock below.
+MAX_VACUOUS_DAYS=${QFLIX_CANARY_HARDLINK_MAX_VACUOUS_DAYS:-7}
 
 # Auth — qBit WebUI form-login, same pattern as qbit-stall.sh. Referer
 # header is mandatory on Ultra.cc-flavored qBit or it returns 403.
@@ -88,9 +94,86 @@ TFILE=/tmp/qfh-completed.json
 curl -sf -m 12 -b /tmp/qfh.cookie "$QB/api/v2/torrents/info?filter=completed" > "$TFILE"
 [ -s "$TFILE" ] || { printf "STAGE=qbit-up-fail msg=torrents-info-empty\n" >&2; exit 1; }
 
-export MAX_DETACHED MAX_DETACHED_PCT MIN_SAMPLE
+export MAX_DETACHED MAX_DETACHED_PCT MIN_SAMPLE MAX_VACUOUS_DAYS
 python3 <<"PYEND"
-import json, os, sys
+import json, os, sys, time
+
+# --- vacuity clock (council finding 8) --------------------------------------
+# This canary has TWO exits that pass without asserting anything: an empty
+# completed-pool, and a sample below MIN_SAMPLE. Both are individually correct
+# — the torrent janitor legitimately empties the pool, and a 1-2 torrent sample
+# cannot evidence a systemic copy-mode regression (that small-denominator trap
+# is what retired the previous two designs).
+#
+# What was missing is that "inconclusive" and "verified good" both exited 0 and
+# both rendered as a green monitor. So "this guard has asserted nothing for a
+# week" was indistinguishable from "this guard checked and everything is fine".
+# With the janitor now reaping the pool toward zero that is a reachable steady
+# state, not a hypothetical — the guard can retire itself and stay green.
+#
+# A vacuous run is therefore timed. Below the threshold it still passes (and now
+# SAYS how long it has been blind); past it, the blindness itself is the alert.
+# The clock resets on any run that actually reaches the threshold comparison,
+# pass or fail — what matters is that the assertion executed.
+STATE_DIR = os.path.expanduser("~/.opt/maint/hardlink-integrity")
+STATE_PATH = os.path.join(STATE_DIR, "vacuity.json")
+MAX_VACUOUS_DAYS = float(os.environ.get("MAX_VACUOUS_DAYS", "7"))
+
+
+def _read_vacuity():
+    """Epoch of the first vacuous run in the current streak, or None."""
+    try:
+        with open(STATE_PATH) as fh:
+            since = int(json.load(fh)["since"])
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        # Unreadable state re-arms the clock rather than crashing. A canary that
+        # dies on its own bookkeeping is a false page, which is worse than
+        # forgetting one streak.
+        sys.stderr.write("note: vacuity state unreadable (%s: %s), re-arming\n"
+                         % (type(exc).__name__, exc))
+        return None
+    now = int(time.time())
+    # Clock skew / bad write: a future timestamp would compute a negative age and
+    # silently never trip. Treat it as "starts now".
+    return now if since > now else since
+
+
+def _clear_vacuity():
+    try:
+        os.remove(STATE_PATH)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        sys.stderr.write("note: vacuity state clear failed (%s)\n" % exc)
+
+
+def _vacuous_exit(reason, detail):
+    """Pass-but-blind, unless it has been blind too long."""
+    since = _read_vacuity()
+    now = int(time.time())
+    if since is None:
+        since = now
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(STATE_PATH, "w") as fh:
+                json.dump({"since": since, "reason": reason}, fh)
+        except OSError as exc:
+            # Cannot persist -> cannot ever trip. Say so out loud instead of
+            # degrading silently into the exact blindness this code exists for.
+            sys.stderr.write("note: vacuity state write failed (%s) — the "
+                             "blind-timer cannot arm\n" % exc)
+    days = (now - since) / 86400.0
+    if days >= MAX_VACUOUS_DAYS:
+        sys.stderr.write(
+            "STAGE=hardlink-blind msg=no-assertion-for-%.1fd-max-%.0fd "
+            "reason=%s %s\n" % (days, MAX_VACUOUS_DAYS, reason, detail))
+        sys.exit(1)
+    print("PASS: hardlink-integrity — inconclusive (%s; %s) [blind %.1fd of "
+          "%.0fd allowed]" % (reason, detail, days, MAX_VACUOUS_DAYS))
+    sys.exit(0)
+
 
 with open("/tmp/qfh-completed.json") as f:
     torrents = json.load(f)
@@ -103,9 +186,8 @@ if not torrents:
     # not a nuked qBit data dir. A genuine qBit data-loss / mount-evaporation
     # surfaces via the qBit app monitor + qbit-stall canary. Pass as INCONCLUSIVE
     # rather than crying wolf — same philosophy as the min-sample branch below.
-    print("PASS: hardlink-integrity — inconclusive (0 completed torrents; "
-          "the torrent janitor may have reaped the seed pool)")
-    sys.exit(0)
+    _vacuous_exit("empty-pool", "0 completed torrents; the torrent janitor may "
+                                "have reaped the seed pool")
 
 # Walk the four library roots and build two indexes:
 #   library  : (dev, inode) → [paths]   — hardlink twin lookup
@@ -214,15 +296,24 @@ if total < min_sample:
     # fraction across MANY imports, not 1-2 in a near-empty pool). Pass as
     # inconclusive rather than firing on small-sample noise — the failure
     # mode that produced the 2026-07-10 false positive.
-    print(f"PASS: hardlink-integrity — inconclusive (imported={total} < "
-          f"min={min_sample}; hardlinked={hardlinked} detached={len(detached)} "
-          f"orphans={orphans} resolved={resolved})")
-    sys.exit(0)
+    #
+    # Timed on the same clock as the empty-pool exit: a pool that never grows
+    # back above min_sample blinds this guard just as completely as an empty one,
+    # and is in fact the MORE likely shape now that the janitor reaps to ratio.
+    _vacuous_exit(
+        "below-min-sample",
+        f"imported={total} < min={min_sample}; hardlinked={hardlinked} "
+        f"detached={len(detached)} orphans={orphans} resolved={resolved}")
 
 detached_n = len(detached)
 detached_pct = 100.0 * detached_n / total
 max_n = int(os.environ.get("MAX_DETACHED", "2"))
 max_pct = float(os.environ.get("MAX_DETACHED_PCT", "5"))
+
+# Past this point the real assertion RAN, so the blind-streak is over — reset it
+# on the failure path too. The clock measures "did this guard evaluate", not
+# "did it like what it saw"; a firing canary is the opposite of a blind one.
+_clear_vacuity()
 
 if detached_n >= max_n and detached_pct >= max_pct:
     samples = ";".join(f"{c}:{n}" for c, n in detached[:3])[:80]

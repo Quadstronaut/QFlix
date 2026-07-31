@@ -572,6 +572,79 @@ def _is_contained(path, root) -> bool:
         return False
 
 
+def _pinned_rename(src_path, dst_path, dst_root):
+    """os.rename into a directory whose identity was VERIFIED, not re-resolved.
+
+    COUNCIL FINDING 14 (TOCTOU). _is_contained() resolves PATHS, then os.rename
+    resolves them again independently. Anything that changes a symlink component
+    of dst_path's ancestry between those two resolutions redirects the write, and
+    the containment check has already passed -- so media lands outside the
+    library root with every guard reporting success.
+
+    Renaming relative to an open directory descriptor closes that window: the fd
+    refers to a specific directory INODE, so re-resolution never happens and a
+    swapped symlink simply is not consulted. The fstat/stat comparison catches a
+    swap that landed between our own realpath() and open().
+
+    Returns None on success, or an error string. Never raises.
+
+    Residual, stated honestly: an adversary who can MOVE the validated directory
+    itself (not just re-point a symlink at it) still wins, because the fd follows
+    the inode. Closing that needs the whole ancestry walked with O_NOFOLLOW, which
+    is not worth the complexity on a single-tenant box -- the realistic threat
+    here is a buggy or hostile *arr-supplied path, not a local attacker.
+    """
+    base = os.path.basename(dst_path)
+    if not base:
+        return "refusing rename: destination has no final component: " + str(dst_path)
+    parent = os.path.dirname(os.path.abspath(dst_path))
+
+    try:
+        real_parent = os.path.realpath(parent)
+        real_root = os.path.realpath(str(dst_root))
+    except (OSError, ValueError) as exc:
+        return "refusing rename: cannot resolve destination parent (" + str(exc) + ")"
+
+    # The parent may BE the root (the usual case: <root>/<Title>) or sit under it.
+    if real_parent != real_root and not _is_contained(real_parent, real_root):
+        return ("refusing rename: destination parent " + real_parent
+                + " is not under " + real_root)
+
+    if os.rename not in getattr(os, "supports_dir_fd", set()):
+        # Windows / any platform without renameat. Behaves exactly as before --
+        # the pin is a hardening, and its absence must not stop a legitimate move.
+        try:
+            os.rename(src_path, dst_path)
+        except OSError as exc:
+            return "rename failed: " + str(exc)
+        return None
+
+    try:
+        fd = os.open(real_parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError as exc:
+        return "refusing rename: cannot open destination parent (" + str(exc) + ")"
+    try:
+        # Prove the fd is the directory we just validated, not one swapped in
+        # between realpath() and open().
+        fst = os.fstat(fd)
+        st = os.stat(real_parent)
+        if (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
+            return ("refusing rename: destination parent changed identity "
+                    "mid-check (" + real_parent + ")")
+        try:
+            os.rename(src_path, base, dst_dir_fd=fd)
+        except OSError as exc:
+            return "rename failed: " + str(exc)
+    finally:
+        try:
+            os.close(fd)
+        except OSError as exc:
+            sys.stderr.write("qflix-anime-janitor.py: closing destination dir fd "
+                             "failed (best-effort, continuing): "
+                             + repr(exc) + "\n")
+    return None
+
+
 def _verify_import(dst, kind, new_id, *, attempts=15, delay=2, sleeper=None) -> bool:
     """Poll the target record until it reports imported files, or give up.
     RescanSeries/RescanMovie are ASYNC; removing the source before the import
@@ -714,11 +787,13 @@ def rehome(pair, record, *, section_keys, plex_port, plex_token):
             return (False, "target reclaim failed: " + str(exc))
 
     # 4. move files (same-device rename; EXDEV/other -> abort + rollback).
-    try:
-        os.rename(from_path, to_path)
-    except OSError as exc:
+    #    Pinned to a validated destination directory -- the containment check
+    #    above resolves paths, this resolves them once more, and _pinned_rename
+    #    closes the gap between the two (council finding 14).
+    err = _pinned_rename(from_path, to_path, to_root)
+    if err:
         _rollback()
-        return (False, "rename failed: " + str(exc))
+        return (False, err)
 
     # 5. rescan, then VERIFY the import landed BEFORE touching the source.
     _rescan_target(dst, kind, new_id)
@@ -738,6 +813,14 @@ def rehome(pair, record, *, section_keys, plex_port, plex_token):
         # the source record still describes. Only if the revert ITSELF fails is
         # there genuinely nothing safe left to do -- and that is reported loudly
         # with both paths, because it is the one case a human must resolve.
+        #
+        # Deliberately NOT _pinned_rename: council finding 14 is about the
+        # FORWARD move. Pinning can REFUSE, and a refusal here would convert a
+        # recoverable state into a stranded one. This restores files to a path
+        # the source record still describes and that existed seconds ago, so the
+        # containment question is already settled -- declining to put media back
+        # because its parent failed a re-validation is strictly worse than
+        # putting it back.
         try:
             os.rename(to_path, from_path)
         except OSError as exc:
