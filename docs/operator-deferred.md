@@ -1,146 +1,104 @@
 # Operator-deferred manual steps
 
-**v2 production push 2026-05-09 — most deferrals resolved.** Remaining
-items below are now narrow, well-bounded, or genuinely require human
-judgment / one-time UI work that resists scripting.
+**Last reconciled against the live box: 2026-07-30.**
 
-Last reconciled 2026-05-16 against the 2026-05-15 → 2026-05-16 audit sweep.
-
----
-
-## Still requires the operator
-
-### Phase 16 — uninstall the 6 stopped apps (ready 2026-05-16)
-
-All 7 apps stopped 2026-05-09 (see `docs/transition-log.md`). The 7-day
-hold ended **today (2026-05-16)** — ready to execute. Ombi alone holds
-out pending a Wizarr invite path replacement (it was the invite path too).
-
-```bash
-sshm 'app-jackett uninstall && app-medusa uninstall && \
-  app-pyload uninstall && app-deluge uninstall && \
-  app-transmission uninstall && app-mariadb uninstall'
-```
-
-Re-check `~/.purged-2026-05-11/` afterwards in case anything else
-deserves a sweep (some apps' `app-<x> uninstall` doesn't clean up
-nginx fragments / cron entries — the 2026-05-11 audit-sweep already
-caught most of those).
-
-### ~~Homarr `mediaReleases` widget — TRPCClientError~~ — MOOT 2026-07-13
-
-Homarr was fully decommissioned 2026-07-13 (uninstalled; replaced by the
-qflix-dash SvelteKit board at root). The decorative widget error no longer
-exists because the app is gone.
-
-### Bounced system mail — `root: usbx` unrouteable alias (human-in-the-loop)
-
-Queued from the 2026-07-14 health audit. `/var/spool/mail/quadstronaut` held one
-bounce (`Mail delivery failed: returning message to sender`).
-
-**Scoped findings (2026-07-14):**
-- **Not a QFlix delivery problem, and NOT customer-facing.** Member newsletters go
-  out via the **Listmonk API/SMTP**, never the local MTA — unaffected.
-- The bounce is host-internal: a one-off `sudo` **SECURITY** notice (`quadstronaut :
-  a password is required ... COMMAND=/bin/cat /etc/seedbox/appmanager/app-manager.py`,
-  **May 25 2026**) auto-mailed to `root`. The shared box aliases **`root: usbx`**
-  (`/etc/aliases`), and `support@seedbox-provider.example.com` is **Unrouteable** → permanent
-  bounce back into our spool.
-- **Non-recurring:** exactly **1** message in the entire spool, ~7 weeks old. No
-  `MAILTO` in our crontab (cron mails the local user, stays local). No QFlix
-  script/unit uses `sendmail`/`mail`/`smtplib`.
-- The `root → usbx` alias is **root-owned Ultra.cc host config** — we can't change
-  it without root.
-
-**Decision for the operator (why human-in-the-loop):**
-1. **Do nothing** (recommended) — cosmetic, single stale message, no customer impact.
-   Optionally clear the spool: `ssh manitoba 'cat /dev/null > /var/spool/mail/quadstronaut'`.
-2. **Redirect our own user mail** to a real inbox if you want to *see* future
-   system/cron notices: set `~/.forward` to your address (or `MAILTO=` in crontab).
-   Note: that forwards *quadstronaut* mail; the *root* SECURITY bounce is separate.
-3. **Ultra.cc support ticket** if root-addressed system mail matters to you — ask
-   them to point the `root` alias at a routable address. Low value; the sudo event
-   was a one-time manual `cat` of a root-owned file, not an ongoing signal.
-
-### Notifiarr CLIENT daemon — Plex push notifications
-
-Plex push events (play / pause / scrobble) require the Notifiarr
-client daemon running on the seedbox + a Plex Webhook pointing at
-`http://localhost:5454/plex?token=<plex-token>`. Without it, Plex
-events still flow via Tautulli's Webhook agent (configured 2026-05-09)
-— the client is a redundant secondary channel. Deferred unless
-operator wants the duplicate path.
-
-### UI smoke checklist (operator + agent loop)
-
-After all CLI/API smoke turns green, run a one-link-at-a-time UI
-walkthrough with the operator covering:
-- QFlix Dashboard (qflix-dash) renders at root, all tiles clickable
-- Seerr request flow end-to-end
-- Plex streaming a recently-added title
-- Calibre-Web admin login (rotated password)
-- Tautulli notifications fire to Discord on Watched
-
-Drive this from the agent prompt — see Task #19 in the session task list.
+> **This file is a liability, not a backlog.** QFlix is live and is several
+> people's primary source of entertainment. Anything sitting here is a piece of
+> the shipped product that is not finished, and every entry must therefore be
+> either **done**, **closed with a decision**, or **impossible without the
+> operator** — with the reason stated. "Later session" is not a state.
+>
+> `tests/unit/test_operator_deferred.py` enforces that: every item under
+> "Open" must carry an owner and a dated reason, and the file must not silently
+> accumulate. Two of the entries that lived here for months were **already done**
+> and nobody had noticed — the registry itself was the silent failure.
 
 ---
 
-## Resolved 2026-05-11
+## Open — genuinely needs the operator
 
-- **Newsletterr (template + schedule) + Listmonk cutover campaign** —
-  superseded entirely. Newsletterr was purged 2026-05-11; the
-  replacement (`scripts/qflix-newsletter/` Python package) ships its
-  own template at `qflix_newsletter/templates/weekly.html.j2`, renders
-  every Monday 08:00 via `qflix-newsletter.timer`, and posts to
-  Listmonk via the API. There is no UI tunnel anymore. Operator
-  verifies via the Mon morning email + Kuma `Qflix Newsletter` monitor.
-- **Listmonk cutover campaign** — also dead. The migration email was
-  either sent during the 2026-05-09 push (see Listmonk admin →
-  Campaigns → Archive) or superseded by the first regular Mon digest
-  (Listmonk's subscriber list ported across; existing subscribers are
-  on the new pipeline by default).
+### Notifiarr CLIENT daemon — a redundant Plex push path (DECISION, not work)
 
-## Resolved 2026-05-09
+Plex push events (play / pause / scrobble) can reach Notifiarr either through
+its client daemon on the box plus a Plex webhook, or through Tautulli's Webhook
+agent. **Tautulli's path has been wired and working since 2026-05-09**, so the
+client daemon is a *duplicate* channel, not a missing one.
 
-| Phase | Was | Resolution |
-|-------|-----|------------|
-| 9.4 anime gap | Anime+Anime Movies in Jellyfin only | Added to Plex via 59-plex-anime-libraries.py; Maintainerr 60-day rules now cover all 4 Plex libs (27b-maintainerr-rules.py NAME_OVERRIDES routes anime libs to Sonarr2/Radarr2) |
-| 12.2 Plex Webhook | Required Notifiarr client | Tautulli Webhook agent → Notifiarr passthrough wired (58-tautulli-notifiarr-webhook.py); covers play/scrobble events. Notifiarr client itself deferred (see above) |
-| 13 Homarr boards | DONE prior session | — |
-| 15 canaries | Manual UI walkthrough | Automated as scripts/canaries/{movie,anime,deletion,mobile-ux,qbit-stall,vlogs-stall}.sh; wired into smoke-test.sh §15 |
-| 16 stop apps | DESTRUCTIVE | All 7 stopped via SSH (docs/transition-log.md). Uninstall hold ended 2026-05-16 — see top of file |
-| 22 Conjurr config | UI tunnel | Conjurr+Newsletterr purged 2026-05-11; superseded by qflix-newsletter Python pkg |
-| 23 Newsletterr config | UI tunnel | Same — superseded |
-| 25 Listmonk cutover | UI campaign create | Superseded — see "Resolved 2026-05-11" above |
-| 26 Ombi decom | PARKED | Ombi stopped (invites paused). Decom after Wizarr alternative |
-| 29-31 Tdarr | UI library setup | 50b-tdarr-config.py adds 3 libraries (Movies/TV/Anime), worker cap 2/2, webUIPort fix |
-| Tdarr Phase 30 | Library pass gated | Go-live 2026-05-30: `processLibrary=True` enforced by 50b's `ensure_library_processing()` (was `set_non_destructive_mode()` forcing False). Transcoding is live; re-running 50b now preserves it instead of halting it (PR #65) |
-| 34 Recyclarr no-4k | Smoke gate red | 57-no-4k-enforce.py disabled 9 2160p entries across 3 factory profiles. Gate green |
-| Tautulli Notifiarr | Removed native agent | Webhook agent wired (58-tautulli-notifiarr-webhook.py) |
-| Calibre-Web pw | admin/admin123 | Rotated to shared admin password via direct SQLite UPDATE (PBKDF2-SHA256) |
-| Maintainerr rules | 2 (Plex-only) | 4 active (Movies, TV, Anime, Anime Movies — anime branch routed to Sonarr2/Radarr2 via NAME_OVERRIDES) |
-| Tdarr `:8265` ghost | Broken redirect | webUIPort baked into Tdarr_Server_Config.json (live + 50-tdarr-install.sh) |
-| Tdarr nginx subpath | Disabled fragment | Re-enabled `~/.apps/nginx/proxy.d/tdarr.conf`; SIGHUP-reloaded |
-| Listmonk `/public/` assets | Hardcoded paths | nginx sub_filter rewrites href/src to `/listmonk/public/...` (43-listmonk-install.sh) |
-| Lifecycle upgrade/downgrade | Phase-1 stubs | Real impl for ucc / systemd / cron / library; rollback on health failure; recovery auto-downgrade after attempt-cap |
+Nothing is broken and nothing is missing. This stays open only as a standing
+choice: run a second, redundant path or not. Default is **no** — it is one more
+daemon competing for the slot's thread budget for zero new signal.
+
+**Owner:** operator · **Reason dated:** 2026-07-30 · **Blocks nothing.**
+
+---
+
+## Closed 2026-07-30
+
+### Phase 16 uninstalls — ALREADY DONE, the entry was stale
+
+This file claimed six apps were "ready to execute" for uninstall. Measured on
+the box 2026-07-30: `jackett`, `medusa`, `pyload`, `deluge`, `transmission`,
+`mariadb` and `ombi` all have **no `~/.apps` directory, no systemd units, no
+port secret and no nginx fragment**. They were uninstalled long ago and the
+registry was never updated, so the product read as unfinished when it was not.
+
+### Tdarr worker cap — CLOSED AT 2/2, with data
+
+`todo-after-claude.md` asked whether to raise the 2/2 CPU worker cap given 128
+cores. **Decision: keep 2/2.** Measured live 2026-07-30 while clients were
+streaming:
+
+- **2 Plex transcoders active** — real playback in progress
+- **946 / 2000 threads** used (47% of the slot's `RLIMIT_NPROC`)
+- load average **26** on a **shared** box — those cores are not ours to spend
+- thread exhaustion is a *proven* crash class here: it crash-looped VictoriaLogs
+  (`pthread_create EAGAIN`), which is why `GOMAXPROCS` is capped in units and why
+  the `thread-ceiling` canary exists
+
+Tdarr is a background optimiser; playback is the product. Raising concurrency
+trades guaranteed live-stream quality for faster background transcodes. If it is
+ever raised, do it one worker at a time with the `thread-ceiling` canary watched,
+never during peak viewing.
+
+### Bounced system mail — spool cleared
+
+A single 2,192-byte `MAILER-DAEMON` bounce from 2026-05-25 sat in
+`/var/spool/mail/quadstronaut`. Root cause is host-side and **not ours to fix**:
+the shared box aliases `root: usbx`, and `support@seedbox-provider.example.com` is
+unrouteable. Confirmed **not customer-facing** — member mail goes out via the
+Listmonk API and never touches the local MTA, and a repo-wide grep finds no
+`sendmail` / `mail` / `smtplib` use anywhere in QFlix. Spool cleared to zero.
+Non-recurring: one message in seven weeks. Nothing further to do without a
+support ticket, which is not worth filing.
+
+### quality-fallback Kuma monitor — ALREADY DONE, the entry was stale
+
+Claimed the "Qflix Quality Fallback" push monitor still needed a one-off
+`bootstrap-kuma-monitors.py` run. It exists, is UP, has both notification
+channels, and beats within its cadence (verified 2026-07-30).
+
+### UI smoke checklist — automated, no longer a manual walkthrough
+
+Every item is now asserted by machine on every smoke run:
+
+| Was a manual click | Now |
+|---|---|
+| Dashboard renders at root, tiles clickable | `mobile-ux` canary + `landing-page` smoke gate + `dash-asset-integrity` (asserts it can actually *hydrate*, which a human eyeball could not) |
+| Seerr request flow end-to-end | `movie` and `anime` canaries post a real request and wait for Plex availability |
+| Plex streaming a recent title | `plex-transcoder` canary probes the transcode endpoints |
+| Calibre-Web admin login | `calibre-web` app monitor (authenticated probe) |
+| Tautulli → Discord on Watched | `tautulli-plex-link` canary |
+
+### Homarr `mediaReleases` widget — moot
+
+Homarr was fully decommissioned 2026-07-13; the app no longer exists.
 
 ---
 
 ## Captured already (no operator action)
 
-- ✓ Plex token, host, port → `secrets/plex.{token,host,port}` (port via Docker 172.17.1.250:32400)
-- ✓ Seerr API key → `secrets/seerr.key`
-- ✓ All active *arr API keys (Sonarr/Radarr/Sonarr2/Radarr2/Prowlarr) → `secrets/<arr>.key` (Readarr/Mylar3 secrets moved to `.purged-2026-05-11/` along with the apps)
-- ✓ qBit credentials → `secrets/qbittorrent.{user,password}`
-- ✓ Komga / Kavita / Audiobookshelf / Calibre-Web / Bazarr / Bazarr 2 / Tautulli API keys → `secrets/<app>.key`
-- ✓ htpasswd password → `secrets/htpasswd.password` (= shared admin password)
-- ✓ Listmonk API user + token → `secrets/listmonk.{api_user,api_token}`
-- ✓ Discord webhook + operator user-id → `secrets/discord-webhook.url`, `secrets/discord-operator.id`
-- ✓ Seedbox public FQDN + SSH host → `secrets/seedbox.host`, `secrets/seedbox.ssh-host`
-
-### 2026-06-06 — quality-fallback Kuma monitor
-
-`qflix-quality-fallback` (daily 07:30 UTC) is in the manifest but its Kuma
-push monitor "Qflix Quality Fallback" requires operator-held Kuma creds:
-run `scripts/maint/bootstrap-kuma-monitors.py` once. Until then the pusher
-logs a missing-token WARN for this app (harmless).
+All credentials are in `secrets/` and verified by the smoke test: Plex
+token/host/port, Seerr key, all five *arr keys, qBit credentials, Komga /
+Kavita / Audiobookshelf / Calibre-Web / Bazarr / Bazarr 2 / Tautulli keys,
+htpasswd password, Listmonk API user + token, Discord webhook + operator id,
+seedbox public FQDN and SSH host.

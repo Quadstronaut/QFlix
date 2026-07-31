@@ -250,8 +250,9 @@ def _file_log(line: str) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         _LOG_FH.write(stamp + " " + line + "\n")
         _LOG_FH.flush()
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("qflix-anime-janitor.py: durable log write failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
 
 
 def log(msg: str) -> None:
@@ -320,8 +321,9 @@ def in_maintenance_window(now=None) -> bool:
                     return False
                 except PermissionError:
                     return True
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("qflix-anime-janitor.py: exclusion-file read failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
     return False
 
 
@@ -635,8 +637,9 @@ def rehome(pair, record, *, section_keys, plex_port, plex_token):
             ep = ("/series/" if kind == "series" else "/movie/") + str(new_id)
             try:
                 dst.delete(ep, query="deleteFiles=false")
-            except Exception:
-                pass
+            except Exception as _exc:
+                sys.stderr.write("qflix-anime-janitor.py: plex section refresh failed (best-effort, continuing): "
+                                 + repr(_exc) + "\n")
 
     # FILELESS record: no folder on disk (a monitored title with no downloaded
     # files) - there is nothing to move. Migrate the RECORD only (remove from

@@ -18,8 +18,9 @@ def main() -> int:
     # Force UTF-8 stdout so msg fields with → ✓ etc. don't blow up cp1252.
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("audit-kuma-state.py: kuma state read failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
     from uptime_kuma_api import UptimeKumaApi
     pw = (REPO_ROOT / "secrets" / "htpasswd.password").read_text().strip()
 
@@ -54,8 +55,9 @@ def main() -> int:
                     dt = datetime.strptime(ts, fmt)
                     age = now - int(dt.timestamp())
                     break
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    sys.stderr.write("audit-kuma-state.py: heartbeat timestamp parse failed (best-effort, continuing): "
+                                     + repr(_exc) + "\n")
             if age < 0:
                 # Try ISO format too
                 dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
