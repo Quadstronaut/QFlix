@@ -223,14 +223,66 @@ object ViewState {
         )
     }
 
+    // ---- downloads: say WHICH client, and how fast ----
+    //
+    // The card used to render two bare, unlabelled lines:
+    //
+    //     2 total - 0 active - 2 seeding
+    //     0 queued - 0.0/0.0 MB left
+    //
+    // Nothing said which line was torrents and which was Usenet, and neither
+    // carried a transfer rate -- so the one question a glance is actually asking,
+    // "is anything moving right now", could not be answered from this screen at
+    // all. Each line now names its client and leads with the rate.
+
+    /** Client display names. The protocol is the useful half for an operator
+     *  ("is my Usenet path working"), the product name is what the box calls it. */
+    const val QBIT_LABEL = "qBittorrent"
+    const val SAB_LABEL = "SABnzbd"
+
     private fun qbitSummary(qbit: QbitStats?): String {
-        if (qbit == null) return "0 total"
-        return "${qbit.total ?: 0} total - ${qbit.active ?: 0} active - ${qbit.seeding ?: 0} seeding"
+        if (qbit == null) return "$QBIT_LABEL (torrent): 0 total"
+        val rate = formatRate(qbit.dlBps, qbit.upBps)
+        return "$QBIT_LABEL (torrent): ${qbit.total ?: 0} total - " +
+            "${qbit.active ?: 0} active - ${qbit.seeding ?: 0} seeding - $rate"
     }
 
     private fun sabSummary(sab: SabStats?): String {
-        if (sab == null) return "0 queued"
-        return "${sab.queued ?: 0} queued - ${formatMb(sab.mbLeft ?: 0.0)}/${formatMb(sab.mbTotal ?: 0.0)} MB left"
+        if (sab == null) return "$SAB_LABEL (usenet): 0 queued"
+        val paused = if (sab.paused == true) " - PAUSED" else ""
+        return "$SAB_LABEL (usenet): ${sab.queued ?: 0} queued - " +
+            "${formatMb(sab.mbLeft ?: 0.0)}/${formatMb(sab.mbTotal ?: 0.0)} MB left - " +
+            "${formatKbps(sab.kbps)}$paused"
+    }
+
+    /**
+     * qBit rates, bytes/sec. Down is shown always; up only when non-zero, so a
+     * pure-leeching line stays short.
+     *
+     * A null rate is NOT rendered as "0 B/s". Null means the box has not had the
+     * collector redeployed and reported no rate at all; printing 0 would assert
+     * "nothing is downloading", which is a different and possibly false claim.
+     */
+    fun formatRate(dlBps: Long?, upBps: Long?): String {
+        if (dlBps == null && upBps == null) return "rate n/a"
+        val down = formatBps(dlBps ?: 0L)
+        val up = upBps ?: 0L
+        return if (up > 0L) "$down down, ${formatBps(up)} up" else "$down down"
+    }
+
+    /** SAB reports kB/s directly. Same null-vs-zero rule as above. */
+    fun formatKbps(kbps: Int?): String {
+        if (kbps == null) return "rate n/a"
+        return formatBps(kbps.toLong() * 1000L)
+    }
+
+    /** Decimal units, matching what qBit and SAB themselves display. */
+    fun formatBps(bps: Long): String = when {
+        bps <= 0L -> "0 B/s"
+        bps < 1_000L -> "$bps B/s"
+        bps < 1_000_000L -> String.format(Locale.US, "%.1f kB/s", bps / 1_000.0)
+        bps < 1_000_000_000L -> String.format(Locale.US, "%.1f MB/s", bps / 1_000_000.0)
+        else -> String.format(Locale.US, "%.2f GB/s", bps / 1_000_000_000.0)
     }
 
     private fun formatMb(v: Double): String = String.format(Locale.US, "%.1f", v)
