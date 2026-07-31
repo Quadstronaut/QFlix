@@ -182,9 +182,20 @@ def classify_qbit(torrents: list) -> dict:
     coverage, incl. the qBit5 stoppedDL rename) but is represented in the
     final doc via the itemized "stuck" list instead of this summary --
     stopped_dl torrents are exactly the ones stale-state.json is tracking.
+
+    Also sums transfer rates. The Heartbeat downloads card showed SAB's kbps but
+    had NO qBit rate at all, so the two download clients could not be compared on
+    the one axis an operator actually glances at -- is anything moving. Summed
+    from the per-torrent `dlspeed`/`upspeed` already present in the
+    /api/v2/torrents/info payload rather than a second call to
+    /api/v2/transfer/info: the forced-command SSH channel runs exactly this
+    script, so adding an API round-trip costs latency on every pull-to-refresh
+    for a number we already have. Bytes/sec, as qBit reports them; the client
+    formats.
     """
     counts = {"total": len(torrents), "active": 0, "stalled_dl": 0,
-              "errored": 0, "stopped_dl": 0, "seeding": 0}
+              "errored": 0, "stopped_dl": 0, "seeding": 0,
+              "dl_bps": 0, "up_bps": 0}
     for t in torrents:
         state = t.get("state", "")
         if state in _QBIT_ACTIVE:
@@ -197,6 +208,13 @@ def classify_qbit(torrents: list) -> dict:
             counts["stopped_dl"] += 1
         elif state in _QBIT_SEEDING:
             counts["seeding"] += 1
+        # Missing/garbage rates are treated as 0 rather than skipping the
+        # torrent: a rate is a nice-to-have and must never cost us the counts.
+        for key, field in (("dl_bps", "dlspeed"), ("up_bps", "upspeed")):
+            try:
+                counts[key] += int(t.get(field) or 0)
+            except (TypeError, ValueError):
+                pass
     return counts
 
 
