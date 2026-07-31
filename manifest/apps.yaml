@@ -820,6 +820,33 @@ canaries:
     script: "scripts/canaries/timer-liveness.sh"
     schedule: "every-15min"
 
+  deploy-drift:
+    # Assert that what RUNS on the box is what is in git.
+    #
+    # The source audit reads ~/.opt/qflix-src (a checkout). The box runs
+    # ~/scripts. Nothing compared them, so every "0 findings" was a claim about
+    # source that may or may not resemble the executing code -- council entries
+    # 12 and 15. Measured 2026-07-31: 8 deployed files stale, oldest ~3 months,
+    # git ahead in every case, plus 2 decommission leftovers still on disk that
+    # inventory.md already recorded as "deleted".
+    #
+    # The one that mattered: post-import/prune-text-libraries.sh runs DAILY at
+    # 04:00 from crontab and the deployed copy predated the fix that logs
+    # Notifiarr delivery failures -- on the box it still had `|| true`, so an
+    # outage on prune day silently dropped the digest. Weeks in git, never
+    # deployed. No monitor could have shown this: nothing was down.
+    #
+    # Deployed-but-absent-from-git is checked too, and is the sharper direction:
+    # it is either an unfinished decommission or code running with no source of
+    # truth. Files in git but not deployed are NOT flagged (not everything ships).
+    #
+    # Hourly, not every-15min: it fetches from origin and hashes ~100 files, and
+    # drift is a slow failure -- an hour of exposure on a condition that has
+    # persisted for months is not the risk worth paying for.
+    kuma_monitor: "Canary Deploy Drift"
+    script: "scripts/canaries/deploy-drift.sh"
+    schedule: "hourly"
+
   dash-asset-integrity:
     # Assert that the SERVED dashboard shell can actually hydrate - not that
     # the root answers 200.

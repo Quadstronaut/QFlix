@@ -187,8 +187,11 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-dash-asset-integrity.service \
     scripts/maint/systemd/manitoba-maint-canary-dash-asset-integrity.timer \
     scripts/canaries/timer-liveness.sh \
+    scripts/canaries/deploy-drift.sh \
     scripts/maint/systemd/manitoba-maint-canary-timer-liveness.service \
     scripts/maint/systemd/manitoba-maint-canary-timer-liveness.timer \
+    scripts/maint/systemd/manitoba-maint-canary-deploy-drift.service \
+    scripts/maint/systemd/manitoba-maint-canary-deploy-drift.timer \
     scripts/maint/systemd/manitoba-maint-boot-listeners.service \
     scripts/maint/arr-audit.py \
     scripts/maint/arr-audit-run.sh \
@@ -496,6 +499,8 @@ for unit in \
     manitoba-maint-canary-dash-asset-integrity.timer \
     manitoba-maint-canary-timer-liveness.service \
     manitoba-maint-canary-timer-liveness.timer \
+    manitoba-maint-canary-deploy-drift.service \
+    manitoba-maint-canary-deploy-drift.timer \
     qflix-collect.service \
     qflix-collect.timer \
     manitoba-maint-boot-listeners.service; do
@@ -643,6 +648,12 @@ systemctl --user enable --now manitoba-maint-canary-dash-asset-integrity.timer
 # timer-liveness: the generic dead-man for every scheduled job. Closes the four
 # open_gap entries in manifest/jobs.yaml with one check instead of four monitors.
 systemctl --user enable --now manitoba-maint-canary-timer-liveness.timer
+
+# deploy-drift: asserts the box RUNS what git says. The source audit reads a
+# checkout; the box runs ~/scripts, and until this existed nothing compared
+# them -- 8 files were found stale by up to 3 months, one of them a daily cron
+# job whose deployed copy still swallowed Notifiarr failures.
+systemctl --user enable --now manitoba-maint-canary-deploy-drift.timer
 # Tdarr scanner canary — hourly. Guards FFprobe/Exiftool (pipeline-blocking if
 # they break) and tracks the known-dead Mediainfo probe without parking a
 # permanent red on it. Mediainfo is unfixable here: the slot's ulimit -v 10GB
@@ -801,7 +812,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
