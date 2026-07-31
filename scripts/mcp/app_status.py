@@ -746,6 +746,10 @@ def _read_recent_event_lines() -> list:
 def _collect_downloads() -> dict:
     errors = []
 
+    # Failure default deliberately carries NO dl_bps/up_bps. If qBit could not be
+    # reached we do not know the rate, and emitting 0 would render on the phone as
+    # "0 B/s" -- an assertion that nothing is downloading, which is a different
+    # claim from "we could not ask". Absent -> null -> the client prints "rate n/a".
     qbit_summary = {"total": 0, "active": 0, "stalled_dl": 0, "errored": 0, "seeding": 0}
     torrents = []
     try:
@@ -754,8 +758,14 @@ def _collect_downloads() -> dict:
             raise RuntimeError("qbit_login_failed")
         torrents = c.list_torrents()
         classified = classify_qbit(torrents)
+        # NB: this is a WHITELIST, so a new key in classify_qbit() is silently
+        # dropped here unless it is named. dl_bps/up_bps were computed correctly
+        # and vanished at exactly this line -- caught only by reading the live
+        # payload after deploying, not by any test. Hence test_downloads_section_
+        # forwards_the_rates, which pins the two ends together.
         qbit_summary = {k: classified[k]
-                         for k in ("total", "active", "stalled_dl", "errored", "seeding")}
+                         for k in ("total", "active", "stalled_dl", "errored",
+                                   "seeding", "dl_bps", "up_bps")}
     except Exception as e:
         errors.append("qbit: {}".format(e))
 
