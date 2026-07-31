@@ -63,7 +63,7 @@ def main() -> int:
                 from lib.notify import notify  # type: ignore
                 notify(f"missing.py: failures = {[s for s, r in res['per_arr'].items() if r['status'] != 'queued']}", "error")
             except Exception as _exc:
-                sys.stderr.write("missing.py: notify import failed - alerts unavailable from this script: "
+                sys.stderr.write("missing.py: notify failed - alerts unavailable from this script: "
                                  + repr(_exc) + "\n")
 
     if args.emit_json:

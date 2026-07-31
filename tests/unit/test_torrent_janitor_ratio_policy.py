@@ -165,9 +165,23 @@ def test_preview_and_armed_run_use_the_same_cap(m):
     Pinning the default at 100 means a bare dry-run behaves exactly like the
     armed run minus the mutation, with no flag needed to get a faithful preview.
     """
-    assert m.DEFAULT_MAX_PCT == 100.0, (
-        "default max-pct must equal what the armed drop-in runs, or the dry-run "
-        "lies about what --execute will do"
+    # The invariant is PREVIEW == ARMED, not any particular number. The armed
+    # drop-in passes only `--execute`, so whatever this default is governs both
+    # paths -- which is the property that was broken when the threshold lived in
+    # the drop-in alone.
+    #
+    # The value moved 100.0 -> 95.0 on council review: at 100.0 the breaker was
+    # DEAD, not permissive, because the tripwire is `pct > max_pct` and
+    # 100.0 > 100.0 is False for every pool size. It could never fire, which
+    # mattered because the council also proved the *arr-queue rail is VACUOUS for
+    # the deletable population.
+    assert m.DEFAULT_MAX_PCT < 100.0, (
+        "at 100.0 the tripwire `pct > max_pct` can never fire for any pool size "
+        "-- that is a dead breaker, not a permissive one"
+    )
+    assert m.DEFAULT_MAX_PCT >= 90.0, (
+        "too low and a legitimate full-pool reap trips it every run; this box "
+        "routinely reaps its whole small pool once everything has seeded"
     )
 
 
