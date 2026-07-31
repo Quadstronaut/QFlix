@@ -237,4 +237,80 @@ class ViewStateTest {
     fun `data age with a null timestamp does not crash`() {
         assertEquals("unknown", ViewState.dataAge(null, Instant.now()))
     }
+
+    // ---- downloads: which client, and how fast --------------------------
+    //
+    // The card rendered two bare unlabelled lines ("2 total - 0 active - 2
+    // seeding" / "0 queued - 0.0/0.0 MB left"): nothing said which was torrent
+    // and which was Usenet, and neither carried a transfer rate. "Is anything
+    // moving right now" was unanswerable from the screen.
+
+    private fun downloadsOf(qbit: QbitStats?, sab: SabStats?): DownloadsView {
+        val doc = StatusDoc(downloads = DownloadsSection(ok = true, qbit = qbit, sab = sab))
+        val state = ViewState.from(doc, Instant.EPOCH)
+        return (state.downloads as SectionState.Ok).data
+    }
+
+    @Test
+    fun `each download line names its client and its protocol`() {
+        val d = downloadsOf(
+            QbitStats(total = 5, active = 2, seeding = 3, dlBps = 2_000_000, upBps = 0),
+            SabStats(queued = 1, mbLeft = 10.0, mbTotal = 20.0, kbps = 1_500),
+        )
+        assertTrue("qBit line unlabelled: " + d.qbitSummary,
+            d.qbitSummary.startsWith("qBittorrent (torrent):"))
+        assertTrue("SAB line unlabelled: " + d.sabSummary,
+            d.sabSummary.startsWith("SABnzbd (usenet):"))
+    }
+
+    @Test
+    fun `both lines carry a transfer rate`() {
+        val d = downloadsOf(
+            QbitStats(total = 5, active = 2, seeding = 3, dlBps = 2_000_000, upBps = 0),
+            SabStats(queued = 1, mbLeft = 10.0, mbTotal = 20.0, kbps = 1_500),
+        )
+        assertTrue(d.qbitSummary, d.qbitSummary.contains("2.0 MB/s down"))
+        assertTrue(d.sabSummary, d.sabSummary.contains("1.5 MB/s"))
+    }
+
+    @Test
+    fun `upload rate appears only when there is one`() {
+        val leeching = downloadsOf(QbitStats(dlBps = 1_000, upBps = 0), null)
+        assertTrue(leeching.qbitSummary, !leeching.qbitSummary.contains("up"))
+        val seeding = downloadsOf(QbitStats(dlBps = 0, upBps = 42_000), null)
+        assertTrue(seeding.qbitSummary, seeding.qbitSummary.contains("42.0 kB/s up"))
+    }
+
+    @Test
+    fun `a box that reports no rate says so instead of claiming zero`() {
+        // The live fixture predates the rate fields. Rendering "0 B/s" here would
+        // assert "nothing is downloading", which is a different claim from "this
+        // box did not tell us" -- and would read as a stall that is not real.
+        val d = downloadsOf(QbitStats(total = 12, active = 1, seeding = 10), SabStats(queued = 1))
+        assertTrue(d.qbitSummary, d.qbitSummary.contains("rate n/a"))
+        assertTrue(d.sabSummary, d.sabSummary.contains("rate n/a"))
+        assertTrue(d.qbitSummary, !d.qbitSummary.contains("0 B/s"))
+    }
+
+    @Test
+    fun `a paused SAB queue is called out`() {
+        val d = downloadsOf(null, SabStats(queued = 3, paused = true, kbps = 0))
+        assertTrue(d.sabSummary, d.sabSummary.contains("PAUSED"))
+    }
+
+    @Test
+    fun `rate units follow the decimal scale qBit and SAB display`() {
+        assertEquals("0 B/s", ViewState.formatBps(0))
+        assertEquals("999 B/s", ViewState.formatBps(999))
+        assertEquals("1.0 kB/s", ViewState.formatBps(1_000))
+        assertEquals("1.5 MB/s", ViewState.formatBps(1_500_000))
+        assertEquals("2.50 GB/s", ViewState.formatBps(2_500_000_000))
+    }
+
+    @Test
+    fun `a negative or absent rate never renders as a negative number`() {
+        assertEquals("0 B/s", ViewState.formatBps(-1))
+        assertEquals("rate n/a", ViewState.formatRate(null, null))
+        assertEquals("rate n/a", ViewState.formatKbps(null))
+    }
 }
