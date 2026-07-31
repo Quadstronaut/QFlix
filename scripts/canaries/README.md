@@ -72,5 +72,11 @@ request id and skips the cleanup step.
 
 ## Exit codes
 
+- `deploy-drift` / `deploy-orphan` / `src-missing` / `fetch-failed` — `deploy-drift.sh`: a
+  deployed file under `~/scripts` differs from `origin/master`, or exists on the box with no
+  counterpart in git at all. The second direction is the sharper one: an unfinished
+  decommission, or code running with no source of truth. `fetch-failed` is reported rather
+  than passed, because comparing against a stale ref makes everything look clean — which is
+  the exact failure this canary exists to prevent.
 - 0 — pass; stdout has the `PASS: ...` line (or, for newsletter-digest-stale, `digest-fresh ...` / `not-in-eval-window ...` / `digest-check-inconclusive ...`) that Kuma stores as `msg=`
 - non-zero — fail; stderr's `STAGE=... msg=...` line becomes Kuma `msg=`
