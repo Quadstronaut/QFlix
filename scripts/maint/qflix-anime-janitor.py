@@ -47,6 +47,11 @@ dry-run plan is trusted - same ritual as the reaper.
 
 RE-HOME SEQUENCE (per auto-move title; tracked in a durable inflight ledger so a
 crash mid-move is resumable):
+  0. NOTE: the inflight ledger is WRITE-ONLY. _ledger_path() has exactly one
+     call site (a write) and no reader, so a crash mid-move is NOT resumed
+     from it -- recovery is the next scheduled run re-deriving the plan from
+     live *arr state, which is self-healing but is not what 'resumable'
+     implies. The ledger is an audit trail, not a recovery journal.
   1. same-device guard: refuse (flag crossdev) if source/target roots differ in
      st_dev - a cross-device move would double disk usage / risk seeding.
   2. add the title to the TARGET instance (import-existing; no new search).
@@ -74,7 +79,8 @@ maintenance window - file moves + arr/Plex mutation are box ops.
 
 EXIT CODES (reaper parity):
   0  clean (dry-run plan, or execute with zero failures)
-  1  partial (a per-item step failed; re-run resumes from the ledger)
+  1  partial (a per-item step failed; the next run re-derives the plan from
+     live *arr state -- it does NOT replay the ledger, which has no reader)
   2  cap trip (max-pct exceeded without --force) - aborted, no mutation
   3  fatal (could not reach an arr / read creds)
 
@@ -322,7 +328,7 @@ def in_maintenance_window(now=None) -> bool:
                 except PermissionError:
                     return True
     except Exception as _exc:
-        sys.stderr.write("qflix-anime-janitor.py: exclusion-file read failed (best-effort, continuing): "
+        sys.stderr.write("qflix-anime-janitor.py: window lock check failed (best-effort, continuing): "
                          + repr(_exc) + "\n")
     return False
 
@@ -509,6 +515,18 @@ def _resolve_root(client, prefer=None):
     paths = [r.get("path") for r in roots if r.get("path")]
     if prefer and prefer in paths:
         return prefer
+    if prefer:
+        # COUNCIL FINDING: falling back to paths[0] here fails OPEN in exactly
+        # the direction this function's own comment warns about -- on sonarr2 /
+        # radarr2 roots[0] is the MAIN root, so a missing Anime root would send
+        # the files back under the main tree while the record lived in the anime
+        # *arr. _is_contained() cannot catch it: it compares against the
+        # ALREADY-RESOLVED root, so a wrong-but-consistent root passes.
+        #
+        # A caller that named a destination gets that destination or nothing.
+        # Returning None aborts the move (rehome treats it as unresolvable),
+        # which costs one deferred title instead of misfiling media.
+        return None
     return paths[0] if paths else None
 
 
@@ -638,7 +656,7 @@ def rehome(pair, record, *, section_keys, plex_port, plex_token):
             try:
                 dst.delete(ep, query="deleteFiles=false")
             except Exception as _exc:
-                sys.stderr.write("qflix-anime-janitor.py: plex section refresh failed (best-effort, continuing): "
+                sys.stderr.write("qflix-anime-janitor.py: rollback: target record delete failed (best-effort, continuing): "
                                  + repr(_exc) + "\n")
 
     # FILELESS record: no folder on disk (a monitored title with no downloaded
@@ -695,9 +713,30 @@ def rehome(pair, record, *, section_keys, plex_port, plex_token):
     # 5. rescan, then VERIFY the import landed BEFORE touching the source.
     _rescan_target(dst, kind, new_id)
     if not _verify_import(dst, kind, new_id):
-        # Files are at to_path but the target didn't import. Do NOT remove the
-        # source (that would orphan) - leave both, flag for manual review.
-        return (False, "import-unverified (files at " + to_path + ")")
+        # COUNCIL FINDING (undisputed, proven by executed test): this used to
+        # return here having ALREADY renamed, leaving files at the destination
+        # while the SOURCE *arr record still pointed at a path that no longer
+        # exists. That is not "leave both" -- the source record is stale on disk,
+        # so the source *arr can drop its MediaFile rows on the next disk scan,
+        # mark the episodes missing, and hand them to the missing-search sweep to
+        # re-grab. Re-downloading media we already hold is a real cost, and the
+        # comment claiming it avoided orphaning was describing the opposite of
+        # what the code did.
+        #
+        # Put the files BACK. The rename is the only mutation so far that the
+        # source cares about, and reverting it restores the exact pre-move state
+        # the source record still describes. Only if the revert ITSELF fails is
+        # there genuinely nothing safe left to do -- and that is reported loudly
+        # with both paths, because it is the one case a human must resolve.
+        try:
+            os.rename(to_path, from_path)
+        except OSError as exc:
+            _rollback()
+            return (False, "import-unverified AND revert failed: files stranded at "
+                    + to_path + " while " + str(record.get("title"))
+                    + " still points at " + from_path + " (" + str(exc) + ")")
+        _rollback()
+        return (False, "import-unverified (reverted; files back at " + from_path + ")")
 
     # 6. remove source WITHOUT deleting files; a failed delete is partial.
     if kind == "series":

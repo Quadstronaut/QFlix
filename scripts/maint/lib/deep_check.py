@@ -126,7 +126,7 @@ def run_deep_check(
     try:
         notify.notify(msg, level=level)
     except Exception as _exc:
-        sys.stderr.write("deep_check.py: deep-check probe failed (best-effort, continuing): "
+        sys.stderr.write("deep_check.py: deep-check notify failed (best-effort, continuing): "
                          + repr(_exc) + "\n")
 
     result = {

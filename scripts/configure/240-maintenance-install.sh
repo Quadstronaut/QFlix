@@ -160,6 +160,11 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-anime-janitor.timer \
     scripts/maint/qflix-anime-janitor.py \
     scripts/maint/qflix-anime-janitor.exclude \
+    scripts/maint/qflix-reaper.py \
+    scripts/maint/qflix-reaper.exclude \
+    scripts/maint/audio-disposition-janitor.py \
+    scripts/maint/functional-audit.py \
+    scripts/maint/bootstrap-kuma-monitors.py \
     scripts/maint/qflix-torrent-janitor.py \
     scripts/maint/qflix-torrent-janitor.exclude \
     scripts/maint/systemd/manitoba-maint-audit.service \
@@ -244,6 +249,28 @@ chmod +x ~/scripts/maint/qflix-collect.py
 # (added 2026-07-27). Ships DRY-RUN; armed via an on-box drop-in like the reaper.
 cp -f "$STG"/scripts/maint/qflix-torrent-janitor.py ~/scripts/maint/qflix-torrent-janitor.py
 chmod +x ~/scripts/maint/qflix-torrent-janitor.py
+
+# COUNCIL FINDING: the box was running DIFFERENT code from the repo for
+# these. qflix-anime-janitor.py was staged into $STG and never copied out;
+# qflix-reaper.py (which DELETES media), audio-disposition-janitor.py and
+# functional-audit.py were not staged at all. "What is running" silently
+# diverged from "what is in git" -- the exact gap the live auditor exists to
+# catch, and it caught it. The installer is now the single deploy path.
+cp -f "$STG"/scripts/maint/qflix-anime-janitor.py ~/scripts/maint/qflix-anime-janitor.py
+chmod +x ~/scripts/maint/qflix-anime-janitor.py
+cp -f "$STG"/scripts/maint/qflix-anime-janitor.exclude ~/scripts/maint/qflix-anime-janitor.exclude 2>/dev/null || true
+cp -f "$STG"/scripts/maint/qflix-reaper.py ~/scripts/maint/qflix-reaper.py
+chmod +x ~/scripts/maint/qflix-reaper.py
+cp -f "$STG"/scripts/maint/qflix-reaper.exclude ~/scripts/maint/qflix-reaper.exclude 2>/dev/null || true
+cp -f "$STG"/scripts/maint/audio-disposition-janitor.py ~/scripts/maint/audio-disposition-janitor.py
+chmod +x ~/scripts/maint/audio-disposition-janitor.py
+cp -f "$STG"/scripts/maint/functional-audit.py ~/scripts/maint/functional-audit.py
+chmod +x ~/scripts/maint/functional-audit.py
+# Kept in sync rather than left stale: it CREATES Kuma monitors, and a
+# day-old copy on the box is more dangerous than a current one. No timer
+# runs it; it is operator-invoked.
+cp -f "$STG"/scripts/maint/bootstrap-kuma-monitors.py ~/scripts/maint/bootstrap-kuma-monitors.py
+chmod +x ~/scripts/maint/bootstrap-kuma-monitors.py
 
 # The LIVE half of the audit regime runs ON the box against the deployed tree
 # (it reads staged units, kuma.db, secrets and quota), so unlike qflix-audit.py

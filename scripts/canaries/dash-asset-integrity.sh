@@ -926,6 +926,65 @@ def latch_path():
     return STATE_DIR / "heal-latch.epoch"
 
 
+class _HealRunLock:
+    """Mutual exclusion around the read-latch/decide/stamp/restart sequence.
+
+    COUNCIL FINDING 13: the canary had no lock of any kind, so the 1/24h latch
+    was decided by a read that another process could invalidate before the write
+    landed. Two staggered ticks both saw a stale latch, both stamped, and both
+    restarted -- the storm that two reviews asserted could not happen.
+
+    flock, not a PID file: the kernel drops it when the holder dies, so a crash
+    mid-heal cannot leave the heal path permanently locked out. Non-blocking --
+    a second tick that cannot take the lock DECLINES this cycle rather than
+    queueing, because a queued restart is a delayed storm, not a prevented one.
+    Best-effort on non-POSIX / missing fcntl: degrade to no lock rather than
+    refuse to heal, which is how it behaved before this existed.
+    """
+
+    def __init__(self, path):
+        self._path = path
+        self._fh = None
+
+    def __enter__(self):
+        try:
+            import fcntl
+        except Exception:                                      # noqa: BLE001
+            return True                                        # no fcntl: as before
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._fh = open(self._path, "a+")
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            log("heal run-lock held by another invocation - declining this cycle")
+            self._close()
+            return False
+        except Exception as exc:                               # noqa: BLE001
+            log("heal run-lock unavailable (" + type(exc).__name__
+                + ") - proceeding without it")
+            self._close()
+            return True
+
+    def _close(self):
+        try:
+            if self._fh:
+                self._fh.close()
+        except Exception:                                      # noqa: BLE001
+            pass
+        self._fh = None
+
+    def __exit__(self, *_exc):
+        self._close()
+        return False
+
+
+def _heal_lock_path():
+    return Path(os.environ.get(
+        "QFLIX_CANARY_DASH_STATE",
+        str(Path.home() / ".opt" / "maint" / "dash-asset-integrity"))) / "heal.lock"
+
+
 def heal_cooldown_active():
     p = latch_path()
     try:
@@ -1216,6 +1275,25 @@ def attempt_heal(v):
         return ("dash-heal-suppressed-window",
                 trigger + "-restart-suppressed-window-" + leg)
 
+    # COUNCIL FINDING 13: everything from here to the restart is a
+    # read-latch/decide/stamp/act sequence with no mutual exclusion. Two
+    # staggered ticks both read a stale latch, both stamped, and both restarted.
+    # Take the run-lock BEFORE reading the latch, so the check and the stamp are
+    # inside one critical section. A tick that cannot get the lock declines.
+    _lock = _HealRunLock(_heal_lock_path())
+    _got = _lock.__enter__()
+    if not _got:
+        log_event("restart", trigger, "skipped:concurrent-invocation")
+        return ("dash-heal-concurrent",
+                trigger + "-another-invocation-holds-the-heal-lock")
+    try:
+        return _attempt_heal_locked(v, trigger)
+    finally:
+        _lock.__exit__()
+
+
+def _attempt_heal_locked(v, trigger):
+    """The heal decision + action, serialised by the run-lock in attempt_heal."""
     cooling, age = heal_cooldown_active()
     if cooling:
         log("heal REFUSED by 24h breaker (last fire %ds ago)" % age)
