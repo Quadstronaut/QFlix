@@ -163,6 +163,16 @@ jobs:
     timer: scripts/maint/systemd/manitoba-maint-canary-dash-asset-integrity.timer
     kuma_monitor: "Canary Dash Asset Integrity"
 
+  # Watched by its own Kuma monitor, like every other canary. Worth stating what
+  # it does NOT cover: it compares ~/scripts against origin/master, so it cannot
+  # see a box change made to something outside that tree, and it cannot see the
+  # case where git and the box are BOTH wrong. It answers exactly one question --
+  # is the code running the code we think we shipped -- which was previously
+  # answered by nobody.
+  manitoba-maint-canary-deploy-drift:
+    timer: scripts/maint/systemd/manitoba-maint-canary-deploy-drift.timer
+    kuma_monitor: "Canary Deploy Drift"
+
   # -------------------------------------------------------- adjudicated: none
   # Every entry below was reviewed on 2026-07-29 while landing the audit
   # regime. Six of these are the spec's named candidates; the flaresolverr pair
