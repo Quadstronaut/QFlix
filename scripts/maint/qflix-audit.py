@@ -171,7 +171,16 @@ def main(argv=None) -> int:
 
     if args.push_kuma:
         s = report["summary"]
-        msg = ("digest=" + report["report_digest"][:16] + " enforced=" + str(s["findings_enforced"])
+        # COUNCIL FINDING 11: the commit lived only in `meta`, which
+        # digest_excludes drops, so neither the durable log nor the Kuma message
+        # carried it. A green digest over a STALE checkout was indistinguishable
+        # from a green digest over the current tree -- and the unit's refresh is
+        # a deliberately non-fatal ExecStartPre, so auditing a stale tree is an
+        # expected mode, not a hypothetical one. Say which commit was audited.
+        _commit = (report.get("meta") or {}).get("commit") or "unknown"
+        msg = ("commit=" + str(_commit)[:12]
+               + " digest=" + report["report_digest"][:16]
+               + " enforced=" + str(s["findings_enforced"])
                + " advisory=" + str(s["findings_advisory"]) + " waived=" + str(s["waived"]))
         _push_kuma("up" if code == EXIT_CLEAN else "down", msg)
     return code
