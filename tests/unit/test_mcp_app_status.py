@@ -1176,3 +1176,57 @@ def test_anime_janitor_summary_counts_recent_and_last():
 def test_anime_janitor_summary_empty():
     now = dt.datetime(2026, 7, 25, tzinfo=dt.timezone.utc)
     assert app_status.anime_janitor_summary([], now) == {"recent_moves": 0, "last_move": None}
+
+
+# ---------------------------------------------------------------------------
+# _collect_downloads forwards the rates.
+#
+# THE BUG THIS PINS: classify_qbit() computed dl_bps/up_bps correctly and they
+# never reached the phone, because _collect_downloads rebuilds the summary from
+# an explicit key WHITELIST. A new key is silently dropped there unless named.
+# Every unit test on classify_qbit passed, the deploy succeeded, the drift canary
+# was green -- and the field was still missing from the live payload. It was
+# caught by reading the payload, not by the suite. This test closes that seam by
+# asserting the two ends agree.
+# ---------------------------------------------------------------------------
+
+def test_downloads_section_forwards_the_rates(monkeypatch):
+    class FakeQbit:
+        def login(self):
+            return True
+
+        def list_torrents(self):
+            return [
+                {"hash": "a", "state": "downloading", "dlspeed": 3_000_000, "upspeed": 1_000},
+                {"hash": "b", "state": "uploading", "dlspeed": 0, "upspeed": 7_000},
+            ]
+
+    monkeypatch.setattr(app_status, "QbitClient", FakeQbit)
+    out = app_status._collect_downloads()
+
+    assert "dl_bps" in out["qbit"], (
+        "the rate never reached the doc -- _collect_downloads' key whitelist "
+        "dropped it, which is exactly how this shipped broken the first time"
+    )
+    assert out["qbit"]["dl_bps"] == 3_000_000
+    assert out["qbit"]["up_bps"] == 8_000
+    # and the counts must be untouched by the addition
+    assert out["qbit"]["total"] == 2 and out["qbit"]["seeding"] == 1
+
+
+def test_unreachable_qbit_reports_no_rate_rather_than_zero(monkeypatch):
+    """A rate of 0 renders as '0 B/s' on the phone, which asserts 'nothing is
+    downloading'. When qBit could not be reached we do not know that, so the
+    fields must be ABSENT and the client must say 'rate n/a'."""
+    class DeadQbit:
+        def login(self):
+            return False
+
+        def list_torrents(self):
+            raise AssertionError("must not be called after a failed login")
+
+    monkeypatch.setattr(app_status, "QbitClient", DeadQbit)
+    out = app_status._collect_downloads()
+
+    assert out["ok"] is False
+    assert "dl_bps" not in out["qbit"] and "up_bps" not in out["qbit"]
