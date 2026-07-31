@@ -157,8 +157,9 @@ def _append_fail_log(level: str, message: str, error: str) -> None:
                 if len(lines) > _NOTIFY_FAIL_LOG_MAX_LINES:
                     trimmed = lines[-_NOTIFY_FAIL_LOG_MAX_LINES:]
                     log_path.write_text("".join(trimmed), encoding="utf-8")
-            except Exception:
-                pass  # rotation is best-effort, don't fail the notify
+            except Exception as _exc:
+                sys.stderr.write("notify.py: fail-log rotation failed (best-effort, continuing): "
+                                 + repr(_exc) + "\n")
     except Exception as exc:
         print(f"WARNING: could not write notify-fail.log: {exc}", file=sys.stderr)
 
@@ -194,8 +195,9 @@ def _append_audit_log(level: str, message: str, outcome: str) -> None:
                     log_path.write_text(
                         "".join(lines[-_NOTIFY_AUDIT_LOG_MAX_LINES:]),
                         encoding="utf-8")
-            except Exception:
-                pass  # rotation is best-effort
+            except Exception as _exc:
+                sys.stderr.write("notify.py: audit-log rotation failed (best-effort, continuing): "
+                                 + repr(_exc) + "\n")
     except Exception as exc:
         print(f"WARNING: could not write notify.log: {exc}", file=sys.stderr)
 

@@ -128,8 +128,9 @@ def _version_tuple(v: str):
     try:
         from packaging.version import Version  # type: ignore
         return Version(v)
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("window.py: packaging.version import failed - manual parser follows: "
+                         + repr(_exc) + "\n")
     parts = []
     for seg in v.split("."):
         try:
@@ -674,8 +675,9 @@ class WindowOrchestrator:
                     reason="qflix-window",
                     manifest=self._manifest,
                 )
-            except Exception:
-                pass  # best-effort; window summary already returned
+            except Exception as _exc:
+                sys.stderr.write("window.py: POST-MAINTENANCE DEEP CHECK skipped: "
+                                 + repr(_exc) + "\n")
 
         return summary
 
