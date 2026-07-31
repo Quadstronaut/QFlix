@@ -19,6 +19,7 @@ from typing import Optional
 
 from lib import health, notify, recovery
 from lib.manifest import Manifest
+import sys
 
 
 # ---------------------------------------------------------------------------
@@ -80,8 +81,9 @@ def run_deep_check(
                     f"deep-check manifest load failed ({reason}): {exc}",
                     level="warning",
                 )
-            except Exception:
-                pass
+            except Exception as _exc:
+                sys.stderr.write("deep_check.py: deep-check notify failed (best-effort, continuing): "
+                                 + repr(_exc) + "\n")
             _append_log(result)
             return result
 
@@ -123,8 +125,9 @@ def run_deep_check(
 
     try:
         notify.notify(msg, level=level)
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("deep_check.py: deep-check probe failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
 
     result = {
         "reason": reason,
@@ -151,5 +154,6 @@ def _append_log(entry: dict) -> None:
         line = json.dumps(entry, default=str)
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
-    except Exception:
-        pass  # log write is best-effort
+    except Exception as _exc:
+        sys.stderr.write("deep_check.py: deep-check log write failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")

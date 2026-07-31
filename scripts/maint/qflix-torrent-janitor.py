@@ -191,8 +191,9 @@ def _file_log(line: str) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         _LOG_FH.write(stamp + " " + line + "\n")
         _LOG_FH.flush()
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("qflix-torrent-janitor.py: durable log write failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
 
 
 def log(msg: str) -> None:
@@ -271,8 +272,9 @@ def in_maintenance_window(now=None) -> bool:
                     return False
                 except PermissionError:
                     return True
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("qflix-torrent-janitor.py: exclusion-file read failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
     return False
 
 

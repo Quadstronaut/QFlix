@@ -511,8 +511,9 @@ def main() -> int:
             try:
                 from lib.notify import notify  # type: ignore
                 notify(f"collect.py failed: {e}", "error")
-            except Exception:
-                pass
+            except Exception as _exc:
+                sys.stderr.write("collect.py: notify import failed - alerts unavailable from this script: "
+                                 + repr(_exc) + "\n")
         print(f"error: {e}", file=sys.stderr)
         return 1
 

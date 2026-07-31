@@ -300,8 +300,9 @@ def _notify(message: str, level: str = "info") -> None:
     try:
         from lib.notify import notify  # type: ignore
         notify(message, level)
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("quality_fallback.py: notify import failed - alerts unavailable from this script: "
+                         + repr(_exc) + "\n")
 
 
 def _fetch_paged(client, path: str, page_size: int = 1000) -> list:
