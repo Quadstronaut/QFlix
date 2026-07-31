@@ -31,8 +31,9 @@ def _kuma_host() -> str:
         from lib.secrets import read_secret
         port = read_secret("uptimekuma.port")
         return f"http://127.0.0.1:{port}"
-    except Exception:
-        pass
+    except Exception as _exc:
+        sys.stderr.write("ucc_incident.py: kuma port/key read failed (best-effort, continuing): "
+                         + repr(_exc) + "\n")
     return "http://127.0.0.1:3001"
 
 
@@ -98,8 +99,9 @@ def pin_maintenance_incident() -> bool:
         finally:
             try:
                 api.disconnect()
-            except Exception:
-                pass
+            except Exception as _exc:
+                sys.stderr.write("ucc_incident.py: incident state read failed (best-effort, continuing): "
+                                 + repr(_exc) + "\n")
 
     except Exception as exc:
         print(f"WARNING: ucc_incident.pin_maintenance_incident failed: {exc}", file=sys.stderr)
@@ -131,8 +133,9 @@ def clear_maintenance_incident() -> bool:
         finally:
             try:
                 api.disconnect()
-            except Exception:
-                pass
+            except Exception as _exc:
+                sys.stderr.write("ucc_incident.py: incident state write failed (best-effort, continuing): "
+                                 + repr(_exc) + "\n")
 
     except Exception as exc:
         print(f"WARNING: ucc_incident.clear_maintenance_incident failed: {exc}", file=sys.stderr)

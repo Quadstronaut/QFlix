@@ -49,8 +49,9 @@ def main():
             logged_in = True
             print("login ok via secrets/" + pw_name)
             break
-        except Exception:
-            pass
+        except Exception as _exc:
+            sys.stderr.write("decommission-maintainerr-2026-06-20.py: maintainerr login probe failed (best-effort, continuing): "
+                             + repr(_exc) + "\n")
     if not logged_in:
         print("FATAL: all logins failed", file=sys.stderr)
         api.disconnect()
