@@ -141,7 +141,23 @@ DEFAULT_MAX_ITEMS = 20
 # count-independent rail: if ANY *arr queue is unreadable the whole run aborts
 # (exit 3), and an unreadable queue is precisely what would make everything
 # look untracked. --max-items remains the per-run rate limit.
-DEFAULT_MAX_PCT = 100.0
+_PAGE_SIZE = 200          # *arr queue page size (see the pagination note below)
+# COUNCIL FINDING: at 100.0 this breaker is DEAD, not merely permissive -- the
+# tripwire is `pct > args.max_pct`, and 100.0 > 100.0 is False for every pool
+# size, so it could never fire at all.
+#
+# That mattered more than it looked, because the council also established the
+# OTHER rail is VACUOUS for this population: an *arr queue holds only IN-FLIGHT
+# downloads, so a completed-and-imported torrent is absent from every queue by
+# construction. 'Untracked' is the normal steady state of exactly what this
+# script deletes, so 'abort if any queue is unreadable' guards in-flight
+# imports and NOT the deletable set. --max-items was left as the only bound.
+#
+# Restored to a percentage breaker that CAN fire: above this box's legitimate
+# steady state (a small pool routinely reaped in full once everything has
+# seeded to ratio) but below a mass event. --force still overrides, and the
+# armed drop-in passes only --execute, so this default is what actually runs.
+DEFAULT_MAX_PCT = 95.0
 DAY_SECONDS = 86400
 
 KUMA_BASE = os.environ.get("KUMA_BASE", "http://127.0.0.1:42005")
@@ -273,7 +289,7 @@ def in_maintenance_window(now=None) -> bool:
                 except PermissionError:
                     return True
     except Exception as _exc:
-        sys.stderr.write("qflix-torrent-janitor.py: exclusion-file read failed (best-effort, continuing): "
+        sys.stderr.write("qflix-torrent-janitor.py: window lock check failed (best-effort, continuing): "
                          + repr(_exc) + "\n")
     return False
 
@@ -309,7 +325,7 @@ def build_tracked_hashes(slugs=ARR_SLUGS):
         page = 1
         seen = 0
         while True:
-            query = ("pageSize=200&page=" + str(page))
+            query = ("pageSize=" + str(_PAGE_SIZE) + "&page=" + str(page))
             code, payload = client.get("/queue", query=query, timeout=20)
             if code != 200 or not isinstance(payload, dict):
                 warn(slug + ": queue fetch failed (HTTP " + str(code)
@@ -322,8 +338,22 @@ def build_tracked_hashes(slugs=ARR_SLUGS):
                 if dlid:
                     tracked.add(dlid)
             seen += len(records)
-            total = payload.get("totalRecords", seen)
-            if seen >= total or not records:
+            # COUNCIL FINDING: defaulting totalRecords to `seen` made a reply
+            # that OMITS the field look complete after page 1 -- pages 2..N were
+            # never read and `ok` stayed True, so the rail UNDER-READ silently
+            # rather than aborting. Under-reading is the dangerous direction:
+            # every hash we fail to see looks 'untracked', and untracked is what
+            # this script DELETES.
+            #
+            # Absent totalRecords is now UNKNOWN, not 'done': keep paging while
+            # full pages arrive, stop on a short or empty one. Present = trusted.
+            total = payload.get("totalRecords")
+            if not records:
+                break
+            if total is not None:
+                if seen >= total:
+                    break
+            elif len(records) < _PAGE_SIZE:
                 break
             page += 1
             if page > 50:

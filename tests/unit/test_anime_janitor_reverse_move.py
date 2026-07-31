@@ -76,10 +76,25 @@ def test_movies_side_too(m):
     assert got == "/home/quadstronaut/media/Anime Movies"
 
 
-def test_falls_back_to_first_when_the_preference_is_not_offered(m):
-    """A preference the destination does not have must not be invented."""
-    got = m._resolve_root(FakeClient(["/only/one"]), prefer="/not/there")
-    assert got == "/only/one"
+def test_a_named_preference_that_is_absent_FAILS_CLOSED(m):
+    """Reversed by council review: this used to assert the fail-OPEN behaviour.
+
+    It originally expected paths[0] as a fallback. The council established that
+    is wrong in the one direction that matters: on sonarr2/radarr2 paths[0] is
+    the MAIN root, so a missing Anime root would send files back under the main
+    tree while the record lived in the anime *arr -- and _is_contained() cannot
+    catch it, because it compares against the ALREADY-RESOLVED root, so a
+    wrong-but-consistent root passes containment.
+
+    A caller that names a destination now gets that destination or nothing.
+    Returning None aborts the move: one deferred title beats misfiled media.
+    """
+    assert m._resolve_root(FakeClient(["/only/one"]), prefer="/not/there") is None
+
+
+def test_no_preference_still_falls_back(m):
+    """The fail-closed rule applies only when a destination was NAMED."""
+    assert m._resolve_root(FakeClient(["/only/one"])) == "/only/one"
 
 
 def test_no_preference_keeps_the_old_behaviour(m):
@@ -125,3 +140,31 @@ def test_reverse_uses_the_same_rehome_path_as_forward(m):
         "reverse hits no longer join the shared auto-move list"
     assert "flags.append" not in body, \
         "reverse reverted to flag-only"
+
+
+def test_import_unverified_reverts_the_rename_instead_of_stranding(m):
+    """COUNCIL FINDING 1 (undisputed, proven by executed test in two candidates).
+
+    rehome() used to `os.rename()` the files to the destination, fail
+    `_verify_import()`, and return WITHOUT reverting -- leaving files at the
+    destination while the SOURCE *arr record still pointed at a path that no
+    longer existed. The comment claimed this avoided orphaning; it created one.
+
+    The cost is not cosmetic: the source *arr can drop its MediaFile rows on the
+    next disk scan, mark the episodes missing, and hand them to the daily
+    missing-search sweep to re-grab -- re-downloading media already on disk.
+
+    Pinned structurally because the failing path needs a live *arr pair to
+    exercise end-to-end; what must never regress is that the rename is undone.
+    """
+    src = JANITOR.read_text(encoding="utf-8")
+    body = src[src.index("    # 5. rescan, then VERIFY"):]
+    body = body[:body.index("    # 6. remove source")]
+    assert "os.rename(to_path, from_path)" in body, (
+        "import-unverified no longer reverts the rename -- files are left at the "
+        "destination while the source record points at a vacated path"
+    )
+    assert "import-unverified AND revert failed" in body, (
+        "the un-revertable case must be reported loudly with BOTH paths; it is "
+        "the one state a human has to resolve"
+    )
