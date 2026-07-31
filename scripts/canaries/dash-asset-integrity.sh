@@ -352,7 +352,12 @@ fi
 # ROOT resolves to $HOME and this is ~/scripts/maint. Overridable so a test or
 # an out-of-tree invocation can point it somewhere real (or nowhere, in which
 # case the window check falls back to its wall-clock + lockfile legs).
-export QFLIX_CANARY_DASH_MAINT_LIB="${QFLIX_CANARY_DASH_MAINT_LIB:-$ROOT/scripts/maint}"
+# `-` not `:-`: an EXPLICITLY EMPTY value must disable the lib.suppression leg,
+# which is how the leaked-lock test isolates leg 3. With `:-` the empty string
+# was treated as unset and silently replaced by the default, so that leg ran
+# anyway and CI was red from the day this canary shipped -- invisible locally,
+# because the test is posix-only and skips on the Windows workstation.
+export QFLIX_CANARY_DASH_MAINT_LIB="${QFLIX_CANARY_DASH_MAINT_LIB-$ROOT/scripts/maint}"
 
 python3 - "$@" <<"PYEOF"
 import datetime as dt
@@ -765,6 +770,49 @@ def build_dir_usable():
 # --- pause window ---------------------------------------------------------
 
 
+def _window_lock_path():
+    return Path(os.environ.get(
+        "MANITOBA_STATE_DIR",
+        str(Path.home() / ".opt" / "maint"))) / "lock"
+
+
+def _window_lock_is_leaked():
+    """True iff the window lock exists but its owning PID is gone.
+
+    ONE liveness rule, consulted by both window legs. Leg 2 asks the canonical
+    lib.suppression predicate, which is a bare existence check by design; leg 3
+    liveness-checks the PID. Without a shared rule a leaked lock made those two
+    disagree, and leg 2's answer won -- silently disabling the self-heal for as
+    long as the stale file sat there.
+
+    Conservative: anything unreadable, unparseable, or non-POSIX returns False
+    (NOT leaked), so the lock keeps its suppressing power. Wrongly declaring a
+    live lock leaked would let the canary restart the dashboard mid-maintenance,
+    which breaks an absolute operator directive; wrongly honouring a dead one
+    costs delayed healing that the window-watchdog clears at 15:00 Monday.
+    """
+    try:
+        lock = _window_lock_path()
+        if not lock.exists():
+            return False
+        lines = lock.read_text(encoding="utf-8").splitlines()
+        pid = _int_or_none(lines[0]) if lines else None
+        if not pid or pid <= 0:
+            return False
+        if os.name != "posix":
+            # os.kill(pid, 0) TERMINATES on Windows; never probe there.
+            return False
+        try:
+            os.kill(pid, 0)
+            return False          # owner alive -> a real, held lock
+        except ProcessLookupError:
+            return True           # owner gone -> leaked
+        except PermissionError:
+            return False          # exists, owned by someone else -> real
+    except Exception:
+        return False
+
+
 def window_active():
     """(active, leg). Three OR-ed legs; see the header for why
     suppression.in_pause_window is the wrong predicate here."""
@@ -779,6 +827,14 @@ def window_active():
         return True, "wallclock-mon-%02d00-%02d00-utc" % (
             WINDOW_START_HOUR_UTC, WINDOW_END_HOUR_UTC)
 
+    # lib.suppression.in_maintenance_window() is a BARE existence check by
+    # design (it is shared with the pusher and the webhook, and is deliberately
+    # simple + fail-open). But leg 3 below liveness-checks the lock's PID, so
+    # without this the canary held two contradictory notions of "is the window
+    # lock real": a LEAKED lock -- owner dead, nothing clearing it -- would let
+    # leg 2 suppress the self-heal indefinitely while leg 3 correctly ignored it.
+    # The window-watchdog clears a stale lock at 15:00 Monday, which bounds this,
+    # but that watchdog is itself a scheduled job that can stop.
     if MAINT_LIB:
         try:
             # Loaded BY PATH from MAINT_LIB, not via `from lib import ...`.
@@ -796,7 +852,7 @@ def window_active():
                 raise ImportError("no loader for " + str(_sup_path))
             _sup = importlib.util.module_from_spec(_spec)
             _spec.loader.exec_module(_sup)
-            if _sup.in_maintenance_window():
+            if _sup.in_maintenance_window() and not _window_lock_is_leaked():
                 return True, "suppression-in_maintenance_window"
         except Exception as exc:
             log("window leg suppression-unavailable=" + type(exc).__name__)
