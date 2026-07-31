@@ -45,8 +45,8 @@ prints the plan + totals, and MUTATES NOTHING. The systemd unit ships in this
 safe mode. Arm it with --execute (the ONLY flag that moves anything) once the
 dry-run plan is trusted - same ritual as the reaper.
 
-RE-HOME SEQUENCE (per auto-move title; tracked in a durable inflight ledger so a
-crash mid-move is resumable):
+RE-HOME SEQUENCE (per auto-move title; each step appended to a durable inflight
+ledger as an AUDIT TRAIL -- read step 0 before assuming it is a recovery journal):
   0. NOTE: the inflight ledger is WRITE-ONLY. _ledger_path() has exactly one
      call site (a write) and no reader, so a crash mid-move is NOT resumed
      from it -- recovery is the next scheduled run re-deriving the plan from
@@ -470,7 +470,19 @@ def is_excluded(record, idkey, tokens) -> bool:
 
 
 # ===========================================================================
-# Ledger (durable, crash-resumable).
+# Ledger (durable AUDIT TRAIL -- write-only; NOT a recovery journal).
+#
+# COUNCIL FINDING 2. This banner used to read "durable, crash-resumable", and
+# the module docstring said the same. Neither was true: there is exactly one
+# call site (the write at rehome step 0) and zero readers, so nothing ever
+# resumes from this file. Recovery is the next scheduled run re-deriving the
+# plan from live *arr state -- self-healing, but not resumption, and a reader
+# who trusted the word "resumable" would wrongly believe a crashed move gets
+# picked up where it stopped.
+#
+# The first correction fixed the docstring NOTE and left BOTH the sentence
+# above it and this banner still saying "resumable" -- the same one-surface fix
+# that has bitten this repo before. All three now agree.
 # ===========================================================================
 def _ledger_path() -> Path:
     return _log_dir() / "inflight.json"

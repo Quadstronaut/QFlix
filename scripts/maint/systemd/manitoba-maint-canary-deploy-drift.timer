@@ -1,0 +1,12 @@
+[Unit]
+Description=Manitoba canary - deploy drift (hourly)
+
+[Timer]
+OnBootSec=9min
+OnUnitActiveSec=1h
+RandomizedDelaySec=120
+Persistent=true
+Unit=manitoba-maint-canary-deploy-drift.service
+
+[Install]
+WantedBy=timers.target
