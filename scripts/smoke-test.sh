@@ -117,7 +117,8 @@ echo "5. Hardlinks"
 # where it actually has to hold. This gate now reports honestly and defers.
 HL_SAMPLE=$(sshm "find ~/media/Movies -type f -name '*.mkv' 2>/dev/null | head -5 | xargs -I{} stat -c '%h' {} 2>/dev/null | tr '\n' ' '" 2>/dev/null)
 HL_N=$(printf '%s' "$HL_SAMPLE" | wc -w | tr -d ' ')
-HL_LINKED=$(printf '%s' "$HL_SAMPLE" | tr ' ' '\n' | grep -c '^[2-9]' 2>/dev/null || echo 0)
+HL_LINKED=$(printf '%s' "$HL_SAMPLE" | tr ' ' '\n' | grep -c '^[2-9]' 2>/dev/null || true)
+HL_LINKED=${HL_LINKED:-0}   # grep -c exits 1 on no match; '|| echo 0' would CONCATENATE
 if [ "${HL_N:-0}" -eq 0 ]; then
   record "hardlink-sanity" fail "no .mkv files found under ~/media/Movies at all — library missing or path wrong"
 elif [ "${HL_LINKED:-0}" -ge 1 ]; then

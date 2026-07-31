@@ -301,7 +301,7 @@ def _notify(message: str, level: str = "info") -> None:
         from lib.notify import notify  # type: ignore
         notify(message, level)
     except Exception as _exc:
-        sys.stderr.write("quality_fallback.py: notify import failed - alerts unavailable from this script: "
+        sys.stderr.write("quality_fallback.py: notify failed - alerts unavailable from this script: "
                          + repr(_exc) + "\n")
 
 
