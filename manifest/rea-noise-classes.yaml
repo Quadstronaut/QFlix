@@ -107,7 +107,8 @@ classes:
     field: null
     prompt_clause: "Failed to create parent iterator"
     why: >-
-      Expected trailing edge of qflix-reaper's 60-day add-date retention
+      Expected trailing edge of qflix-reaper's add-date retention (45 days
+      since 2026-07-31, previously 60)
       deleting a whole series directory out from under a library scan (e.g.
       Fargo, arrId=225, reaped 2026-07-22). Plex noticing the directory it was
       about to scan is gone, not a fault.
