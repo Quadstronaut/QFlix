@@ -125,11 +125,20 @@ repo_areas:
 
   - id: A-root-config
     surface: S1
-    paths: [".gitignore", ".gitattributes", "versions.env", "Q.png"]
+    paths: [".gitignore", ".gitattributes", "versions.env", "Q.png", "renovate.json"]
     covered_by: []
     note: >-
       .gitignore is load-bearing for this regime: it is the file that put the
       alerting layer outside git. C-10's S2 registration is the guard.
+
+      renovate.json is enrolled AHEAD of the file existing. The repo was deleted
+      and recreated on 2026-08-01 to purge leaked personal data, which reset
+      Renovate's activation state and made it open a fresh onboarding PR. That
+      PR could not go green, because the partition invariant rejects any tracked
+      path with no scope area — working exactly as designed, and a good
+      demonstration that a bot cannot quietly add an unadjudicated file. An
+      unmatched pattern is harmless (the invariant runs paths -> areas, not the
+      reverse), so enrolling first is the ordering that lets the PR merge.
 
   - id: A-manifest
     surface: S1
