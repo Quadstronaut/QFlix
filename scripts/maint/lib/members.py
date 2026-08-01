@@ -91,14 +91,43 @@ def _reject_if_tracked(p: Path) -> Path:
     return p
 
 
+# Rails a household can pay on. Adding one here is the ONLY place that needs to
+# change to support a new payment route -- the gate, the ledger and the roster
+# are all rail-agnostic by construction.
+#
+# `manual` is not a fallback for "I have not decided yet" (that is `provisional`).
+# It means the operator records these payments by hand, deliberately: cash, a
+# bank transfer with no parseable receipt, a favour traded. It exists so those
+# households are still first-class rows rather than untracked exceptions.
+VALID_RAILS = {"venmo", "paypal", "patreon", "bmac", "kofi", "manual"}
+
+# Rails whose receipts arrive as email and therefore need a payer identifier to
+# match on. `manual` does not -- the operator IS the matcher.
+RAILS_NEEDING_REF = VALID_RAILS - {"manual"}
+
+
 @dataclass
 class Billing:
     holder: str
     amount_usd: Optional[float]
+    rail: Optional[str] = None
+    payer_ref: Optional[str] = None
+    note: Optional[str] = None
 
     @property
     def resolved(self) -> bool:
-        return self.amount_usd is not None
+        """Ready to enforce against.
+
+        Needs all three of: an agreed amount, a chosen rail, and -- for any rail
+        that reports by email -- the payer identifier the receipt will actually
+        carry. Missing any one of them means the reconciler cannot decide this
+        household, and a reconciler that cannot decide must not act.
+        """
+        if self.amount_usd is None or self.rail is None:
+            return False
+        if self.rail in RAILS_NEEDING_REF and not self.payer_ref:
+            return False
+        return True
 
 
 @dataclass
@@ -149,6 +178,26 @@ class Roster:
             for a in h.accounts:
                 out[a.lower()] = h
         return out
+
+    def by_payer_ref(self) -> Dict[tuple, Household]:
+        """(rail, lowercased payer_ref) -> household. What an ingester matches on.
+
+        Keyed on the rail too, because "J. Smith" on Venmo and "J. Smith" on
+        Patreon are unrelated facts and an ingester must never cross them.
+        """
+        out: Dict[tuple, Household] = {}
+        for h in self.households:
+            b = h.billing
+            if b and b.rail and b.payer_ref:
+                out[(b.rail, b.payer_ref.strip().lower())] = h
+        return out
+
+    def rails_in_use(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for h in self.households:
+            if h.billing and h.billing.rail:
+                counts[h.billing.rail] = counts.get(h.billing.rail, 0) + 1
+        return counts
 
     def unresolved(self) -> List[Household]:
         return [h for h in self.households if not h.resolved]
@@ -242,7 +291,23 @@ def load(path: Path) -> Roster:
             _require(amt is None or (isinstance(amt, (int, float)) and amt >= 0),
                      "members.yaml: household %r billing.amount_usd must be a "
                      "non-negative number or null, got %r" % (hid, amt))
-            billing = Billing(holder=holder, amount_usd=amt)
+
+            rail = billing_raw.get("rail")
+            _require(rail is None or rail in VALID_RAILS,
+                     "members.yaml: household %r billing.rail is %r; valid "
+                     "rails are %s. A typo here would silently orphan the "
+                     "household -- no ingester claims it, no receipt ever "
+                     "matches, and it reads as a permanent lapse."
+                     % (hid, rail, sorted(VALID_RAILS)))
+
+            ref = billing_raw.get("payer_ref")
+            _require(ref is None or (isinstance(ref, str) and ref.strip()),
+                     "members.yaml: household %r billing.payer_ref must be a "
+                     "non-empty string or absent" % hid)
+
+            billing = Billing(holder=holder, amount_usd=amt, rail=rail,
+                              payer_ref=(ref.strip() if isinstance(ref, str) else None),
+                              note=billing_raw.get("note"))
 
         # The contradiction check. Both readings of "exempt AND billed" are
         # defensible, which is exactly why the file may not say it.
@@ -265,6 +330,26 @@ def load(path: Path) -> Roster:
             provisional=bool(provisional),
             raw=row,
         ))
+
+    # Payer references must be unique PER RAIL. Two households sharing one means
+    # a receipt matches both, and the reconciler would credit whichever it
+    # happened to see first -- so one person pays and a different person's
+    # access is renewed, while the payer silently lapses. Scoped per rail
+    # because the same display name on Venmo and on Patreon is two different
+    # people as far as matching is concerned, and forbidding that would be a
+    # false positive.
+    seen_refs = {}
+    for h in households:
+        if not h.billing or not h.billing.payer_ref or not h.billing.rail:
+            continue
+        key = (h.billing.rail, h.billing.payer_ref.strip().lower())
+        _require(key not in seen_refs,
+                 "members.yaml: households %r and %r share the payer_ref %r on "
+                 "rail %r. A receipt would match both and credit whichever was "
+                 "read first -- one person pays, someone else's access renews, "
+                 "and the payer lapses."
+                 % (seen_refs.get(key), h.id, h.billing.payer_ref, h.billing.rail))
+        seen_refs[key] = h.id
 
     return Roster(
         version=1,
