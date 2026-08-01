@@ -56,8 +56,13 @@ def _base():
         "households": [
             {"id": "comped", "display": "Comped", "exempt": True,
              "accounts": ["free@example.com"]},
+            # Fully resolved on purpose: an amount, a rail, and the payer
+            # identifier the receipt will carry. Anything less does not resolve,
+            # so a baseline missing one of them would make every arming test
+            # below pass for the wrong reason.
             {"id": "payer", "display": "Payer", "exempt": False,
-             "billing": {"holder": "pay@example.com", "amount_usd": 50},
+             "billing": {"holder": "pay@example.com", "amount_usd": 50,
+                         "rail": "venmo", "payer_ref": "Payer Person"},
              "accounts": ["pay@example.com"]},
         ],
     }
@@ -303,3 +308,80 @@ def test_no_exemption_is_left_provisional():
     r = M.load(LIVE)
     pending = [h.id for h in r if h.provisional]
     assert pending == [], "provisional exemptions still open: " + ", ".join(pending)
+
+
+# --- multi-rail billing ---------------------------------------------------
+
+def _billing(**kw):
+    doc = _base()
+    doc["households"][1]["billing"] = dict(
+        {"holder": "pay@example.com", "amount_usd": 50}, **kw)
+    return doc
+
+
+def test_a_resolved_household_needs_amount_rail_and_payer_ref(tmp_path):
+    """All three or the reconciler cannot decide, and a reconciler that cannot
+    decide must not act. Each is checked separately so a failure names one
+    cause."""
+    # amount only
+    r = M.load(_write(tmp_path, _billing()))
+    assert not r.households[1].resolved, "no rail should not resolve"
+    # amount + rail, but a rail that reports by email and no ref
+    r = M.load(_write(tmp_path, _billing(rail="venmo")))
+    assert not r.households[1].resolved, "email rail without payer_ref must not resolve"
+    # complete
+    r = M.load(_write(tmp_path, _billing(rail="venmo", payer_ref="Some Payer")))
+    assert r.households[1].resolved
+
+
+def test_manual_rail_needs_no_payer_ref(tmp_path):
+    """`manual` means the operator is the matcher -- cash, a bank transfer with
+    no parseable receipt. Demanding a ref there would be busywork."""
+    r = M.load(_write(tmp_path, _billing(rail="manual")))
+    assert r.households[1].resolved
+
+
+def test_an_unknown_rail_is_rejected(tmp_path):
+    """A typo silently orphans the household: no ingester claims it, no receipt
+    matches, and it reads as a permanent lapse."""
+    with pytest.raises(M.MembersError, match="valid rails are"):
+        M.load(_write(tmp_path, _billing(rail="vemno", payer_ref="x")))
+
+
+def test_two_households_cannot_share_a_payer_ref_on_one_rail(tmp_path):
+    """THE MATCHING DISASTER. One receipt matching two households credits
+    whichever is read first: one person pays, someone else's access renews, and
+    the payer lapses."""
+    doc = _billing(rail="venmo", payer_ref="Same Name")
+    doc["households"][0] = {
+        "id": "other", "display": "Other", "exempt": False,
+        "billing": {"holder": "o@example.com", "amount_usd": 20,
+                    "rail": "venmo", "payer_ref": "same name"},
+        "accounts": ["o@example.com"]}
+    with pytest.raises(M.MembersError, match="share the payer_ref"):
+        M.load(_write(tmp_path, doc))
+
+
+def test_the_same_name_on_two_different_rails_is_fine(tmp_path):
+    """Scoped per rail on purpose -- one display name on Venmo and the same on
+    Patreon are unrelated facts, and forbidding it would be a false positive."""
+    doc = _billing(rail="venmo", payer_ref="Same Name")
+    doc["households"][0] = {
+        "id": "other", "display": "Other", "exempt": False,
+        "billing": {"holder": "o@example.com", "amount_usd": 20,
+                    "rail": "patreon", "payer_ref": "Same Name"},
+        "accounts": ["o@example.com"]}
+    r = M.load(_write(tmp_path, doc))
+    assert len(r.by_payer_ref()) == 2
+
+
+def test_payer_ref_lookup_is_case_and_space_insensitive(tmp_path):
+    """Receipts render names inconsistently. Treating 'jane d' as a stranger
+    would revoke someone who paid."""
+    r = M.load(_write(tmp_path, _billing(rail="venmo", payer_ref="  Jane D  ")))
+    assert ("venmo", "jane d") in r.by_payer_ref()
+
+
+def test_rails_in_use_reports_the_spread(tmp_path):
+    r = M.load(_write(tmp_path, _billing(rail="venmo", payer_ref="x")))
+    assert r.rails_in_use() == {"venmo": 1}
