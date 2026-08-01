@@ -1,0 +1,305 @@
+"""The roster decides whether real people keep access. Every rule is a refusal.
+
+The roster is the only file in this system whose contents can black out
+somebody's television. That earns it a validator whose every rule fails loudly
+rather than picking a reading, and a test file that proves each refusal actually
+refuses -- a guard nobody tested is a guard nobody has.
+
+Two classes of test here:
+
+  * INVARIANT tests build a deliberately broken roster and assert it is
+    rejected. Each one names the specific way a real person gets hurt if the
+    rule is ever relaxed.
+
+  * LIVE tests load the operator's real roster from gitignored secrets/, and
+    SKIP when it is absent (CI). A validator that has only ever seen fixtures
+    is decoration.
+
+NOTHING IN THIS FILE MAY NAME A MEMBER. Not an address, not a username, not a
+relationship. The roster itself is operator data and lives outside the repo;
+this file is public and there is a test at the bottom that enforces it.
+"""
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "scripts" / "maint"))
+
+from lib import members as M  # noqa: E402
+
+# The real roster is operator data and lives in gitignored secrets/, so CI will
+# not have it. These tests SKIP rather than fail when it is absent -- a red
+# build on a machine that legitimately has no roster teaches people to ignore
+# red builds. When the file IS present (the operator's workstation, the box)
+# they run for real.
+LIVE = M.find_roster()
+_live = pytest.mark.skipif(not LIVE.exists(),
+                           reason="no roster at %s (expected in CI)" % LIVE)
+
+
+def _write(tmp_path, doc) -> Path:
+    p = tmp_path / "members.yaml"
+    p.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    return p
+
+
+def _base():
+    """A minimal roster that PASSES. Every invariant test breaks exactly one
+    thing about this, so a failure names one cause rather than a soup."""
+    return {
+        "version": 1,
+        "armed": False,
+        "defaults": {"grace_days": 3, "paused_sections": []},
+        "households": [
+            {"id": "comped", "display": "Comped", "exempt": True,
+             "accounts": ["free@example.com"]},
+            {"id": "payer", "display": "Payer", "exempt": False,
+             "billing": {"holder": "pay@example.com", "amount_usd": 50},
+             "accounts": ["pay@example.com"]},
+        ],
+    }
+
+
+def test_the_baseline_actually_loads(tmp_path):
+    """If this ever fails, every other test in the file is vacuous."""
+    r = M.load(_write(tmp_path, _base()))
+    assert len(r.households) == 2
+    assert r.by_email()["pay@example.com"].id == "payer"
+
+
+# --- invariants ----------------------------------------------------------
+
+def test_exempt_and_billed_is_a_contradiction_not_a_preference(tmp_path):
+    """Both readings are defensible, which is why the file may not say it.
+
+    'Exempt but has a card on file' could mean comped-with-history, or could
+    mean a stale exemption on someone who now pays. Guessing bills somebody's
+    parent or comps somebody who agreed to pay.
+    """
+    doc = _base()
+    doc["households"][0]["billing"] = {"holder": "free@example.com", "amount_usd": 50}
+    with pytest.raises(M.MembersError, match="exempt AND carries a billing"):
+        M.load(_write(tmp_path, doc))
+
+
+def test_a_household_that_is_neither_exempt_nor_billed_is_rejected(tmp_path):
+    doc = _base()
+    del doc["households"][1]["billing"]
+    with pytest.raises(M.MembersError, match="not exempt and has no billing"):
+        M.load(_write(tmp_path, doc))
+
+
+def test_one_email_cannot_be_in_two_households(tmp_path):
+    """Otherwise one household's lapse and another's good standing both apply to
+    the same person, and the winner is dict iteration order."""
+    doc = _base()
+    doc["households"][1]["accounts"].append("free@example.com")
+    with pytest.raises(M.MembersError, match="cannot be in two households"):
+        M.load(_write(tmp_path, doc))
+
+
+def test_duplicate_household_ids_are_rejected(tmp_path):
+    """Ids key the pause-state file. A collision restores one household to
+    another household's pre-pause settings."""
+    doc = _base()
+    doc["households"][1]["id"] = "comped"
+    with pytest.raises(M.MembersError, match="duplicate household id"):
+        M.load(_write(tmp_path, doc))
+
+
+def test_armed_must_be_explicit_and_a_missing_switch_is_not_false(tmp_path):
+    """A missing arming switch is a typo, not a default. Defaulting it to false
+    would be 'safe' today and would silently swallow the day someone deletes the
+    line while meaning to set it true."""
+    doc = _base()
+    del doc["armed"]
+    with pytest.raises(M.MembersError, match="explicit true or false"):
+        M.load(_write(tmp_path, doc))
+
+
+def test_null_amount_is_unset_and_blocks_arming_rather_than_meaning_free(tmp_path):
+    """THE ONE THAT MATTERS. `amount_usd: null` and 'this person pays nothing'
+    are indistinguishable downstream, and null is what a forgotten field looks
+    like. So null must never resolve -- it must jam the gate."""
+    doc = _base()
+    doc["armed"] = True
+    doc["households"][1]["billing"]["amount_usd"] = None
+    r = M.load(_write(tmp_path, doc))          # structurally fine...
+    assert [h.id for h in r.unresolved()] == ["payer"]
+    armed, why = M.gate_is_armed(r)
+    assert armed is False
+    assert "payer" in why, "the blocker must be NAMED, not just counted: " + why
+
+
+def test_arming_needs_both_the_switch_and_a_clean_roster(tmp_path):
+    doc = _base()
+    doc["armed"] = True
+    r = M.load(_write(tmp_path, doc))
+    assert M.gate_is_armed(r) == (True, "armed")
+
+    doc["armed"] = False
+    r2 = M.load(_write(tmp_path, doc))
+    assert M.gate_is_armed(r2)[0] is False
+
+
+def test_exempt_households_are_always_resolved(tmp_path):
+    """An exempt household has nothing left to decide, so it must never be the
+    thing that keeps the gate disarmed."""
+    r = M.load(_write(tmp_path, _base()))
+    assert r.households[0].resolved is True
+
+
+def test_provisional_beats_exempt_and_jams_the_gate(tmp_path):
+    """'I have not decided yet' must be a state that STOPS things.
+
+    The failure this prevents: two households were once exempt with their terms
+    unconfirmed, recorded as a TODO in a comment. Since an exempt household is
+    resolved by definition, that placeholder would have sat there free forever
+    with the gate perfectly happy and nothing ever surfacing it. Undecided has
+    to jam the gate, or it is not undecided -- it is permanently yes.
+    """
+    doc = _base()
+    doc["armed"] = True
+    doc["households"][0]["provisional"] = True
+    r = M.load(_write(tmp_path, doc))
+    assert r.households[0].exempt is True
+    assert r.households[0].resolved is False, "provisional must beat exempt"
+    armed, why = M.gate_is_armed(r)
+    assert armed is False
+    assert "comped" in why, "the undecided household must be named: " + why
+
+
+def test_provisional_defaults_to_false_and_must_be_boolean(tmp_path):
+    r = M.load(_write(tmp_path, _base()))
+    assert all(h.provisional is False for h in r)
+
+    doc = _base()
+    doc["households"][0]["provisional"] = "yes"
+    with pytest.raises(M.MembersError, match="provisional"):
+        M.load(_write(tmp_path, doc))
+
+
+# --- reconciliation against live Plex ------------------------------------
+
+def test_a_live_share_missing_from_the_roster_is_surfaced(tmp_path):
+    """An unlisted share is an unbilled share. A gate that skips what it does
+    not recognise is a revenue leak that never files a bug."""
+    r = M.load(_write(tmp_path, _base()))
+    missing, absent = M.reconcile_shares(
+        r, ["pay@example.com", "free@example.com", "ghost@example.com"])
+    assert missing == ["ghost@example.com"]
+    assert absent == []
+
+
+def test_a_rostered_household_not_yet_on_plex_is_informational_only(tmp_path):
+    """Legitimate during the window between listing someone and their accepting
+    the invite. Reported, never fatal."""
+    r = M.load(_write(tmp_path, _base()))
+    missing, absent = M.reconcile_shares(r, ["pay@example.com"])
+    assert missing == []
+    assert absent == ["free@example.com"]
+
+
+def test_reconcile_is_case_insensitive_on_both_sides(tmp_path):
+    """Plex returns whatever case the user typed at signup. Treating
+    Pay@Example.com as a stranger would revoke a paying member."""
+    r = M.load(_write(tmp_path, _base()))
+    missing, _ = M.reconcile_shares(r, ["PAY@Example.COM", "Free@example.com"])
+    assert missing == []
+
+
+# --- the real file --------------------------------------------------------
+
+@_live
+def test_the_checked_in_roster_is_valid():
+    """A validator that has only ever seen fixtures is decoration."""
+    M.load(LIVE)
+
+
+@_live
+def test_the_checked_in_roster_ships_disarmed():
+    """Arming is an operator act performed with intent, never something that
+    rides along in a commit."""
+    r = M.load(LIVE)
+    assert r.armed is False, (
+        "members.yaml was committed ARMED. Arming belongs to a deliberate "
+        "operator action, not to whatever branch happened to merge."
+    )
+
+
+# Households that must never be gated, as a COUNT rather than a list.
+#
+# The obvious version of this guard named each protected account. That put real
+# addresses and family relationships into a test file, which is public. The
+# count protects the same thing -- "tidying up the roster" silently dropping an
+# exemption -- while naming nobody. Changing this number should be a deliberate
+# edit with a reason in the commit message, never a drive-by.
+EXPECTED_EXEMPT_HOUSEHOLDS = 4
+
+
+@_live
+def test_the_protected_exemptions_are_still_exempt():
+    """Regression guard on accounts that must never be gated.
+
+    Deliberately anonymous. Asserting a count catches an exemption being
+    dropped, reordered, or flipped to billing, without this file having to know
+    who any of those people are.
+    """
+    r = M.load(LIVE)
+    exempt = [h for h in r if h.exempt]
+    assert len(exempt) == EXPECTED_EXEMPT_HOUSEHOLDS, (
+        "exempt-household count changed (%d -> %d). If that was intentional, "
+        "update EXPECTED_EXEMPT_HOUSEHOLDS and say why in the commit. If it "
+        "was not, somebody just lost their free access."
+        % (EXPECTED_EXEMPT_HOUSEHOLDS, len(exempt))
+    )
+
+
+@_live
+def test_no_household_is_missing_an_account():
+    """A household with no accounts cannot be enforced either way -- it is
+    invisible to the gate and to the Plex reconcile, so it silently pays
+    nothing forever."""
+    r = M.load(LIVE)
+    assert all(h.accounts for h in r)
+
+
+def test_this_test_file_contains_no_personal_data():
+    """The repo is public. On 2026-08-01 a roster of real addresses was
+    committed and pushed, and the fix is worth an assertion rather than a
+    resolution: nothing in this file may name a member.
+
+    Scoped to this file on purpose -- it is the one that has a standing
+    temptation to hardcode a real account to make an assertion concrete.
+    """
+    import re
+    src = Path(__file__).read_text(encoding="utf-8")
+    # Strip the pattern definition below so the test does not match itself.
+    body = src.replace("PERSONAL", "")
+    hits = re.findall(
+        r"[A-Za-z0-9._%+-]+@(?:gmail|hotmail|outlook|yahoo|icloud|aol|live|protonmail)\.[a-z.]+",
+        body)
+    assert hits == [], "real address(es) present in a public test file"
+
+
+@_live
+def test_no_exemption_is_left_provisional():
+    """A provisional exemption must never survive into a merge.
+
+    Scoped to `provisional` on purpose, NOT to full resolution. The paying
+    households legitimately carry `amount_usd: null` right now -- no rail is
+    chosen, so no amount is real yet -- and gate_is_armed() already refuses to
+    arm while that is true. Asserting full resolution here would just be a red
+    build describing a decision that has not been made yet.
+
+    A provisional EXEMPTION is different: it is free access with an open
+    question attached, it costs money silently, and nothing else in the system
+    would ever surface it. That is the one that has to fail the build. If this
+    goes red, go make the decision -- do not delete the flag.
+    """
+    r = M.load(LIVE)
+    pending = [h.id for h in r if h.provisional]
+    assert pending == [], "provisional exemptions still open: " + ", ".join(pending)
