@@ -117,7 +117,29 @@ LIBRARIES = [
 ]
 
 ARR_VERSION = "v3"
-DEFAULT_THRESHOLD_DAYS = 60
+# Retention window, days since Plex addedAt. Operator decision 2026-07-31:
+# 60 -> 45.
+#
+# Why it moved. Disk sat at 82.1% (2294 of 2794 GB) and the 60-day window was
+# releasing NOTHING -- measured that day, zero items in any library were older
+# than 60 days by addedAt, because the library had been bulk-loaded: ~1593 GB
+# arrived inside a 16-day window 14-30 days prior. At the then-current ingest of
+# ~32 GB/day the remaining 500 GB of headroom was ~15 days out, while the first
+# meaningful reap under a 60-day rule was ~30 days out. The window was not wrong
+# in steady state (32 GB/day x 60d ~ 1900 GB ~ 69% of quota, which fits); it
+# simply could not respond to a burst before the quota did.
+#
+# 45 was chosen over the more aggressive options as the conservative step: it
+# frees ~124 GB now rather than the ~706 GB a 30-day window would. That is
+# roughly 4 days of headroom, so this DEFERS the wall rather than removing it --
+# recorded here so the next person does not read 45 as "solved".
+#
+# This is policy and lives in git deliberately. The on-box drop-in carries only
+# the arming flags (--execute --max-pct 100) so that a repo clone cannot delete
+# anything; a retention VALUE hidden there would leave the repo describing a
+# window nobody runs -- the exact class the deploy-drift canary now exists to
+# catch.
+DEFAULT_THRESHOLD_DAYS = 45
 DEFAULT_MAX_ITEMS = 50
 DEFAULT_MAX_PCT = 30
 DAY_SECONDS = 86400
@@ -594,6 +616,43 @@ def plex_sections(port: str, token: str):
     return out, None
 
 
+def _sum_media_parts(meta) -> int:
+    """Sum Media/Part byte sizes on one Plex metadata object.
+
+    Movies carry their parts directly. Shows do not -- see series_size_bytes.
+    """
+    total = 0
+    for media in (meta.get("Media") or []):
+        for part in (media.get("Part") or []):
+            try:
+                total += int(part.get("size") or 0)
+            except (TypeError, ValueError):
+                pass
+    return total
+
+
+def series_size_bytes(port: str, token: str, rating_key: str):
+    """Total bytes of every episode file under one show. Returns (bytes, err).
+
+    `/library/sections/<k>/all` returns shows WITHOUT Media/Part, so a show can
+    only be sized through its leaves. One extra request per candidate series;
+    the candidate set is small (tens of items) and this runs once a day, so the
+    cost is irrelevant next to reporting a deletion size that is wrong by 2x.
+    """
+    status, raw = _plex_get(
+        port, token, "/library/metadata/" + str(rating_key) + "/allLeaves")
+    if status != 200:
+        return 0, "allLeaves HTTP " + str(status)
+    try:
+        mc = _mc(json.loads(raw))
+    except Exception as exc:                                   # noqa: BLE001
+        return 0, "allLeaves JSON: " + str(exc)
+    total = 0
+    for episode in (mc.get("Metadata") or []):
+        total += _sum_media_parts(episode)
+    return total, None
+
+
 def plex_items(port: str, token: str, section_key: str):
     """Return (items, err). Each item: {ratingKey,title,year,addedAt,sizeGB}.
     sizeGB = sum of Media/Part size bytes / 1024^3, 0 if unavailable. err is None
@@ -607,13 +666,23 @@ def plex_items(port: str, token: str, section_key: str):
         return [], "section " + str(section_key) + " /all JSON: " + str(exc)
     items = []
     for meta in mc.get("Metadata", []) or []:
-        size_bytes = 0
-        for media in meta.get("Media", []) or []:
-            for part in media.get("Part", []) or []:
-                try:
-                    size_bytes += int(part.get("size") or 0)
-                except (TypeError, ValueError):
-                    pass
+        size_bytes = _sum_media_parts(meta)
+        rk = str(meta.get("ratingKey")) if meta.get("ratingKey") is not None else None
+        # A SHOW's own /all entry carries no Media/Part -- those live on the
+        # episodes -- so the sum above is always 0 for series. Every series
+        # therefore reported "0.0 GB" in the plan, and TV is 1.3T of a 2.3T
+        # library: the "N GB reclaimable" an operator would use to judge a
+        # retention change understated the truth by roughly the whole TV
+        # library (measured 2026-07-31: at a 30-day threshold the tool said
+        # 317 GB and the real on-disk figure was 706 GB).
+        if size_bytes == 0 and str(meta.get("type")) == "show" and rk:
+            size_bytes, serr = series_size_bytes(port, token, rk)
+            if serr:
+                # Loud, not silent: a 0 here is indistinguishable from a genuinely
+                # empty series, and that ambiguity is what made this defect
+                # survive. Say which series could not be sized.
+                log("WARN: could not size series '" + str(meta.get("title"))
+                    + "' (" + serr + ") - it will understate the plan total")
         try:
             added = int(meta.get("addedAt") or 0)
         except (TypeError, ValueError):
