@@ -144,7 +144,35 @@ Example: `https://quadstronaut.seedbox.example.com/sonarr/`
   - WebUI issues → restart/repair via Control Panel
   - Check `migrations.xml` not empty, verify disk I/O
 
-### Jellyseerr (Request Manager for Jellyfin/Plex/Emby)
+### Jellyseerr / "Seerr" (Request Manager for Jellyfin/Plex/Emby)
+
+> **Renamed upstream.** The project moved from `fallenbagel/jellyseerr` to
+> **`seerr-team/seerr`** and now ships as **Seerr** (docs at
+> <https://docs.seerr.dev>). The Ultra.cc app slug is `seerr`, which is why our
+> secrets are `seerr.key` / `.port` / `.urlbase`. Verified on the box
+> 2026-07-31: `/api/v1/status` reports **3.3.0**; upstream latest is **3.4.1**
+> (2026-07-30), and the instance reports `updateAvailable: true`.
+>
+> The served HTML still contains the string `overseerr` — Seerr is an Overseerr
+> fork and kept the old identifiers. **Do not use that string to identify the
+> product.** The reliable tells are Jellyfin-era fields that Overseerr never
+> had: `mediaServerType`, `jellyfinUsername`, `jellyfinUserId`,
+> `jellyfinExternalHost`.
+>
+> API surface we depend on (v3.3.0, `seerr-api.yml` in the upstream repo):
+> - `GET /api/v1/user?take=N` — list users
+> - `GET /api/v1/user/{id}` — one user, including the `permissions` bitfield
+> - `POST /api/v1/user/{id}/settings/permissions` `{permissions: N}` — the
+>   targeted lever for granting/revoking. There is **no** enabled/disabled flag;
+>   permissions are the only gate short of `DELETE`, which destroys request
+>   history.
+> - `PUT /api/v1/user` `{ids: [...], permissions: N}` — batch form.
+>
+> Permission bitfields are **per user** and are not all the configured default
+> (`settings.main.defaultPermissions`). Measured live: 12 users at `1155539104`,
+> one at `1153433760`. Anything that revokes and later restores MUST replay the
+> user's own stored value — restoring "the default" silently demotes people.
+
 - **Install**: Via Control Panel Installers
 - **Prerequisites**: Media server (Jellyfin/Plex/Emby) + at least one of (Sonarr/Radarr/Lidarr)
 - **Setup**:
@@ -339,13 +367,77 @@ Apps accessed at `/appname/` require:
 
 ## Limitations & Out-of-Scope
 
-- **TLS/SSL certs**: Ultra.cc-managed only; user cannot customize
+- **Custom domains: REJECTED, not merely absent.** Verified 2026-07-31. This is
+  stronger than "the docs don't mention it" — Ultra.cc took the feature request
+  and closed it:
+  - <https://feedback.ultra.cc/p/usage-of-custom-domains-on-nginx> — Status
+    **Rejected**. So no operator-owned domain can be pointed (CNAME or A) at a
+    slot, on any tier.
+  - <https://feedback.ultra.cc/p/server-agnostic-hostnames> — Status **Rejected**.
+    Hostnames are therefore NOT portable across a plan migration; the requester
+    reported updating ~15 integrations after theirs changed.
+  - `docs.ultra.cc` has no page or category for SSL, TLS, certificates, DNS,
+    CNAME, or bring-your-own-domain. The FAQ has none either.
+
+  **Consequence for QFlix:** nothing that needs a stable public URL may live on
+  the slot — a payment webhook receiver, an OAuth callback, or any third party's
+  registered endpoint would break on the next migration with no warning. Put
+  those on starhold-vps (operator-owned, Caddy, real certs) and have the box
+  reach OUT rather than be reached.
+- **TLS/SSL certs**: Ultra.cc-managed only; user cannot customize. Follows
+  directly from the rejected custom-domain request above — there is no primary
+  Ultra.cc statement about certificate customization specifically, so cite the
+  rejection rather than a cert policy that does not exist in writing.
 - **System OS**: Debian; user cannot modify kernel or system packages
 - **Port assignment**: Fixed; user cannot request specific ports
-- **Root access**: Not available
+- **Root access**: Not available. FAQ verbatim: *"Users do not have sudo or root
+  access."* True on every tier — there is no dedicated-server SKU in the public
+  store that changes this.
 - **Docker exec**: Not available for user-level operation
 - **Shared IPs**: All users on shared IP pool
 - **Data isolation**: Users jailed to home directory; cannot access other users
+- **No USA datacenter.** *"The Ultra Network has three network locations:
+  Singapore, Canada, and The Netherlands."* Canada is the only North American
+  option; a "USA server" cannot be bought at any price.
+
+## Plans & Migration
+
+Verified against ultra.cc plan pages 2026-07-31. Prices are EUR/month, listed as
+`disk / bandwidth`. No RAM or CPU figures are published on any plan page — that
+requires a sales ticket.
+
+### Metaliux — Canada (the North American ceiling)
+
+| Tier | Disk / Bandwidth | EUR/mo |
+|---|---|---|
+| Tin | 4 TB / 10 TB | 13.95 |
+| Iron | 6 TB / 15 TB | 16.95 |
+| Steel | 8 TB / 20 TB | 21.95 |
+| Cobalt | 10 TB / 25 TB | 26.95 |
+| Nickel | 12 TB / 30 TB | 31.95 |
+| Bronze | 16 TB / 40 TB | 41.95 |
+| Silver | 18 TB / 45 TB | 48.95 |
+| **Gold** | **22 TB / 55 TB** | **56.95** |
+
+Netherlands carries a 9th tier, **Platinum 28 TB / 70 TB at 69.95**, which is
+*not* offered in Canada. If 22 TB is ever not enough, the next step up is a
+transatlantic move, not a bigger Canadian box.
+
+### Upgrading is a redeploy, not a resize
+
+<https://docs.ultra.cc/client-area/upgrade-or-downgrade-your-service> —
+ticket-driven, two-pass data migration onto a **newly deployed service**:
+
+- Pass 1 copies data while the old slot stays live.
+- Pass 2 stops apps on the old service and syncs the delta.
+- **"custom-built applications are not migrated automatically and need to be
+  rebuilt manually."** For QFlix that is the whole maintenance stack — every
+  `manitoba-maint` timer, every canary, every Kuma push token, the dashboard,
+  the newsletter. Budget a rebuild, not a copy.
+- The username can only be changed *"while a service is being deployed"*, which
+  confirms the upgrade really is a fresh deployment. **Ask for the hostname you
+  want in the upgrade ticket** — it is the only moment it is negotiable.
+- No downtime figure is published anywhere. Ask support in the ticket.
 
 ## Connection Details
 
