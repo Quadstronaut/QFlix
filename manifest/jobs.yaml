@@ -89,7 +89,11 @@ jobs:
     kuma_monitor: "QFlix Audit Regime"
 
   # ------------------------------------------------------------- the canaries
-  # 19 canary timers, each pushing its own Kuma monitor.
+  # Every canary timer, each pushing its own Kuma monitor. The count is NOT
+  # written here on purpose: it was stale at "19" while the block held 22, and a
+  # hand-maintained number inside a ledger is the same two-policy-surface defect
+  # the ledger exists to prevent. manifest/apps.yaml `canaries:` is the count;
+  # tests/unit/test_doc_counts.py enforces every doc that quotes it.
 
   manitoba-maint-canary-movie:
     timer: scripts/maint/systemd/manitoba-maint-canary-movie.timer
@@ -121,6 +125,13 @@ jobs:
   manitoba-maint-canary-prowlarr-indexer-health:
     timer: scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.timer
     kuma_monitor: "Canary Prowlarr Indexer Health"
+  # Added 2026-08-03. Deliberately a SECOND Prowlarr timer, not a third probe
+  # bolted onto the one above: that canary reads logs and Prowlarr's health
+  # endpoint, this one reads Prowlarr's and each *arr's CONFIG. Different
+  # signal, different cadence (hourly vs every-15min), independently swappable.
+  manitoba-maint-canary-prowlarr-app-sync:
+    timer: scripts/maint/systemd/manitoba-maint-canary-prowlarr-app-sync.timer
+    kuma_monitor: "Canary Prowlarr App Sync"
   manitoba-maint-canary-hardlink-integrity:
     timer: scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer
     kuma_monitor: "Canary Hardlink Integrity"
@@ -172,6 +183,21 @@ jobs:
   manitoba-maint-canary-deploy-drift:
     timer: scripts/maint/systemd/manitoba-maint-canary-deploy-drift.timer
     kuma_monitor: "Canary Deploy Drift"
+
+  # Added 2026-08-03. Plex episodes stuck on a `local://` guid — no synopsis, no
+  # agent artwork, no air date. 30 found live across 2 sections, oldest 527 h,
+  # with nothing in the repo previously inspecting Plex match state at all.
+  manitoba-maint-canary-plex-unmatched:
+    timer: scripts/maint/systemd/manitoba-maint-canary-plex-unmatched.timer
+    kuma_monitor: "Canary Plex Unmatched"
+
+  # Added 2026-08-03. The dead-man for the ONE component that does not run on
+  # this box: the operator workstation's Random Error Audit. Its own liveness is
+  # dead-manned the same way every other canary is — it pushes, so Kuma flips it
+  # DOWN on a missed heartbeat, AND timer-liveness sees this ledger entry.
+  manitoba-maint-canary-rea-liveness:
+    timer: scripts/maint/systemd/manitoba-maint-canary-rea-liveness.timer
+    kuma_monitor: "Canary REA Liveness"
 
   # -------------------------------------------------------- adjudicated: none
   # Every entry below was reviewed on 2026-07-29 while landing the audit

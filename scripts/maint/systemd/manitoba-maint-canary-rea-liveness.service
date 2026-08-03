@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - REA liveness (workstation Random Error Audit still auditing)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push rea-liveness
+StandardOutput=journal
+StandardError=journal
