@@ -62,6 +62,36 @@ if (-not (Test-Path $scriptPath)) {
 
 # --- sandbox helpers --------------------------------------------------------
 $Script:Sandboxes = @()
+
+function New-ScratchDir {
+    $d = Join-Path ([IO.Path]::GetTempPath()) ("qflix-bk-" + [Guid]::NewGuid().ToString('N').Substring(0, 10))
+    $Script:Sandboxes += $d
+    New-Item -ItemType Directory -Path $d -Force | Out-Null
+    return $d
+}
+function New-ScratchFile {
+    <#
+      .SYNOPSIS
+      A temp fixture this test WRITES. Name stays in a parameter, deliberately.
+      .DESCRIPTION
+      A Join-Path whose second argument is a quoted literal ending in a loadable
+      extension is exactly what C-10 reads as "this test loads a SUBJECT", and it
+      then demands the path be git-tracked. A scratch file the test creates is an
+      OUTPUT, not a subject — c10's own docstring says as much about the scratch
+      paths a PowerShell test merely probes. Keeping the filename in a parameter
+      states that in code rather than spending three waivers on it. The one
+      genuine negative fixture (a repo path that must NOT exist) still gets a
+      named waiver, W-C10-002.
+
+      C-10 matches raw TEXT, comments included: the first draft of this very
+      comment quoted the pattern as an example and became a finding against the
+      file explaining why it should not be one.
+    #>
+    param([Parameter(Mandatory)][string]$Dir, [Parameter(Mandatory)][string]$Name, [string[]]$Lines)
+    $p = Join-Path $Dir $Name
+    if ($null -ne $Lines) { Set-Content -LiteralPath $p -Value $Lines -Encoding UTF8 }
+    return $p
+}
 function New-Sandbox {
     <#
       Builds a miniature of the real topology:
@@ -127,16 +157,12 @@ Test-Case 'the member list comes from audit-scope.yaml, not a hand-list' {
 }
 
 Test-Case 'a manifest whose S2 shape changed yields ZERO, never a subset' {
-    $sb = Join-Path ([IO.Path]::GetTempPath()) ("qflix-bk-" + [Guid]::NewGuid().ToString('N').Substring(0, 10))
-    $Script:Sandboxes += $sb
-    New-Item -ItemType Directory -Path $sb -Force | Out-Null
-    $p = Join-Path $sb 'scope.yaml'
-    Set-Content -LiteralPath $p -Encoding UTF8 -Value @(
+    $sb = New-ScratchDir
+    $p = New-ScratchFile -Dir $sb -Name 'scope.yaml' -Lines @(
         'schema: 1', 'surfaces:', '  S9:', '    members:', '      - path: a/b.ps1')
     Assert-Equal 0 (@(Get-S2MemberPath -ScopePath $p)).Count 'members under a non-S2 surface are not claimed'
 
-    $q = Join-Path $sb 'scope2.yaml'
-    Set-Content -LiteralPath $q -Encoding UTF8 -Value @(
+    $q = New-ScratchFile -Dir $sb -Name 'scope2.yaml' -Lines @(
         'schema: 1', 'surfaces:', '  S2:', '    note: no members key at all')
     Assert-Equal 0 (@(Get-S2MemberPath -ScopePath $q)).Count 'an S2 with no members: key yields zero'
 }
@@ -384,11 +410,10 @@ Test-Case 'the scheduled task definition is code, and it is HOURLY' {
 Test-Case 'alerting is not silently swallowed when every channel is unavailable' {
     # C-03 applied to the alarm itself: if the pager cannot be reached, that must
     # be COUNTED and returned, never absorbed.
-    $sb = Join-Path ([IO.Path]::GetTempPath()) ("qflix-bk-" + [Guid]::NewGuid().ToString('N').Substring(0, 10))
-    $Script:Sandboxes += $sb
-    New-Item -ItemType Directory -Path $sb -Force | Out-Null
+    $sb = New-ScratchDir
     $skips = @(Send-BackupAlert -Reason 'unit-test' -Message 'unit test, do not page' `
-                                -WebhookFile (Join-Path $sb 'nope.url') -StatePath (Join-Path $sb 'state.json') -DedupHours 24)
+                                -WebhookFile (Join-Path $sb 'nope.url') `
+                                -StatePath (New-ScratchFile -Dir $sb -Name 'state.json') -DedupHours 24)
     Assert-True ($skips -contains 'webhook-file-absent') 'absent webhook is counted'
     Assert-True ($skips.Count -ge 1) 'skips are returned to the caller'
 }
@@ -400,10 +425,8 @@ Test-Case 'the dedup path survives a SECOND alert for the same reason' {
     # worked and the second always threw — the alarm breaking precisely when a
     # failure PERSISTED. Every test here only ever fired one alert, so nothing
     # caught it until the channel was wired by hand and fired twice.
-    $sb = Join-Path ([IO.Path]::GetTempPath()) ("qflix-bk-" + [Guid]::NewGuid().ToString('N').Substring(0, 10))
-    $Script:Sandboxes += $sb
-    New-Item -ItemType Directory -Path $sb -Force | Out-Null
-    $state = Join-Path $sb 'state.json'
+    $sb = New-ScratchDir
+    $state = New-ScratchFile -Dir $sb -Name 'state.json'
     # Pre-seed the state exactly as a delivered alert would have left it.
     (@{ 'boom' = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json) |
         Set-Content -LiteralPath $state -Encoding UTF8
