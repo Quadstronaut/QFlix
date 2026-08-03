@@ -99,7 +99,12 @@ surfaces:
     host: mixed
     enumerability: MIXED
     note: >-
-      Kuma, the pusher, the 19 canaries, REA, and THIS AUDIT REGIME. The named
+      Kuma, the pusher, every canary in manifest/apps.yaml, REA, and THIS AUDIT
+      REGIME. (The count is deliberately NOT written here. It read "19" while
+      apps.yaml declared 22 and then 25 — a hand-maintained number inside the
+      manifest whose whole job is enumerating what gets audited, drifting from
+      the manifest it describes, and outside C-06's four-file boundary so no
+      guard could see it.) The named
       trap. Each must be watched by something that is NOT itself:
       pusher <- "Manitoba Pusher"; REA <- Send-DeadmanAlert (5 reasons, 24h
       per-reason dedup); canaries <- Kuma dead-man; audit regime <- its own Kuma
