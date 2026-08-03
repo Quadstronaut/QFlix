@@ -134,6 +134,10 @@
 # ===========================================================================
 #   0  every application was queried successfully; zero missing, zero P2
 #      violations.                          stdout: "PASS: prowlarr-app-sync ..."
+#      ALSO 0: a transport-class BROKEN state suppressed by the maintenance
+#      window.                       stdout: "SUPPRESSED: prowlarr-app-sync ..."
+#      The two are distinguishable by the leading token, on purpose — an exit 0
+#      that means "we could not look" must never wear the word PASS.
 #   1  a real finding — intended-but-absent indexer(s), and/or a MAGNET_REQUIRED
 #      indexer whose preferMagnetUrl is still false.
 #   2  BROKEN, could not establish anything: secrets unreadable, Prowlarr
@@ -175,6 +179,41 @@
 # argument the 2026-08-03 quality-fallback audit made against adding one there.
 #
 # ===========================================================================
+# MAINTENANCE WINDOW — what is suppressed, and what is emphatically not
+# ===========================================================================
+# The Monday 11:00-15:00 UTC window (scripts/maint/lib/window.py) stops,
+# upgrades and restarts apps ON PURPOSE. "Prowlarr unreachable" then is the
+# expected state, and paging on it is a guaranteed weekly false red.
+#
+# THE LINE IS DRAWN ON THE FAILURE REASON, NOT ON THE STAGE. Only the two
+# http_json() call sites opt in (fail(..., reason=...)), and only when
+# is_transport_reason() says the reason is transport-class:
+#     transport-*  (urlopen raised: refused/timeout/reset/DNS)
+#     http-5xx     (a half-started service behind its own proxy)
+#     non-json-body (the "Application is starting up" HTML page)
+# Everything else pages exactly as it would at 03:00 on a Thursday:
+#     http-4xx     an ANSWER — a wrong key or a wrong urlbase. A restart does
+#                  not change a key, so this is the same config fault in-window
+#                  as out. NOT suppressed.
+#     not-a-list   an API contract change. NOT suppressed.
+#     config-missing / no-apps / no-indexers / no-intent / unknown-app / the two
+#     arr-down legs that fire BEFORE any request (no baseUrl, no local key) /
+#     missing / magnet-pref-off / probe-error — none of these ever pass a
+#     `reason`, so no window state can silence them. A MISSING INDEXER IS STILL
+#     A MISSING INDEXER AT 12:00 UTC.
+#
+# Suppression is COUNTED and LOGGED, never silent: stdout carries
+# `window_suppressed=1 suppressed_stage=... window_leg=...` (cli.py forwards
+# stdout verbatim as the Kuma msg= on exit 0, so the count lands in the
+# monitor's own history) and the identical line goes to stderr for journald.
+# Under --json the finding object gains a `window_suppressed` block.
+#
+# Fail direction is OPEN — an undeterminable window does NOT suppress. This
+# gate silences an alert, so a false silence hides a real outage while a false
+# page costs one glance. dash-asset-integrity.sh fails CLOSED because its gate
+# guards an unattended RESTART, where those costs invert.
+#
+# ===========================================================================
 # STAGE labels (one line on stderr -> Kuma msg=)
 # ===========================================================================
 #   prowlarr-appsync-config-missing   ~/secrets/prowlarr.{port,key} unreadable
@@ -201,11 +240,31 @@
 #                                           Empty string disables P2 entirely.
 #   QFLIX_CANARY_APPSYNC_TIMEOUT_S          per-request timeout, default 15
 #   QFLIX_CANARY_APPSYNC_RETRIES            transport retries per request, 1
+#   QFLIX_CANARY_APPSYNC_FORCE_WINDOW       "1" force in-window, "0" force out,
+#                                           "" (default) measure. Tests only.
+#   QFLIX_CANARY_APPSYNC_MAINT_LIB          dir holding lib/suppression.py for
+#                                           window leg (b); default $ROOT/scripts/
+#                                           maint. EXPLICITLY EMPTY disables it.
+#   MANITOBA_STATE_DIR                      window lockfile dir, default
+#                                           ~/.opt/maint (legs b and c)
 #
 # Argv:  --json   print the full finding object on stdout (same exit code).
 set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+
+# Where lib.suppression lives, for the canonical maintenance-window predicate.
+# On the box ROOT resolves to $HOME and this is ~/scripts/maint. Same knob, same
+# reasoning, as scripts/canaries/dash-asset-integrity.sh:351-360 -- including
+# `-` and NOT `:-`: an EXPLICITLY EMPTY value must disable the lib.suppression
+# leg so a test can isolate the wall-clock and lockfile legs. With `:-` the
+# empty string reads as unset and is silently replaced by the default, which is
+# how the equivalent test went green against the wrong leg on the dash canary.
+export QFLIX_CANARY_APPSYNC_MAINT_LIB="${QFLIX_CANARY_APPSYNC_MAINT_LIB-$ROOT/scripts/maint}"
 
 exec python3 - "$@" <<'PY'
+import datetime as dt
+import importlib.util
 import json
 import os
 import re
@@ -213,6 +272,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 EXIT_OK, EXIT_FINDING, EXIT_BROKEN = 0, 1, 2
 
@@ -228,6 +288,13 @@ _mag = os.environ.get("QFLIX_CANARY_APPSYNC_MAGNET_REQUIRED")
 if _mag is None:
     _mag = "Knaben,Tokyo Toshokan"
 MAGNET_REQUIRED = [s.strip() for s in _mag.split(",") if s.strip()]
+
+# --- maintenance window ----------------------------------------------------
+# "1" forces in-window, "0" forces out-of-window, "" (default) means measure.
+FORCE_WINDOW = (os.environ.get("QFLIX_CANARY_APPSYNC_FORCE_WINDOW") or "").strip()
+MAINT_LIB = os.environ.get("QFLIX_CANARY_APPSYNC_MAINT_LIB") or ""
+WINDOW_START_HOUR_UTC = 11
+WINDOW_END_HOUR_UTC = 15
 
 # Prowlarr application implementation -> the *arr's API version. NEVER default:
 # guessing /api/v3 at a Readarr would 404 and read as "every indexer missing",
@@ -279,7 +346,221 @@ def _join_capped(parts, limit, sep=";"):
         used -= len(last) + (len(sep) if out else 0)
 
 
-def fail(stage, msg, code=EXIT_FINDING, detail=None):
+# ===========================================================================
+# MAINTENANCE WINDOW
+# ===========================================================================
+# During the Monday 11:00-15:00 UTC window (scripts/maint/lib/window.py) apps
+# are stopped, upgraded and restarted ON PURPOSE, so Prowlarr or an *arr being
+# unreachable is the EXPECTED state, not a fault. Suppress that -- and ONLY
+# that. See is_transport_reason() for exactly where the line is drawn.
+#
+# FAIL DIRECTION: OPEN. This gate silences an ALERT, so if the window state
+# cannot be determined the canary does NOT suppress and pages as normal. That
+# is the OPPOSITE of dash-asset-integrity.sh, which fails CLOSED -- but that
+# canary's gate guards a MUTATION (an unattended restart), where the costs
+# invert: a false restart breaks an absolute operator directive, while a false
+# page here costs one operator glance and a false silence hides a real outage.
+#
+# In production `manitoba-maint canary push` already short-circuits every
+# canary during the window (scripts/maint/lib/cli.py, in_maintenance_window()
+# -> push UP "[maint-window: upgrades in progress]" and skip the run). This
+# in-script gate is the second, independent leg -- it covers a direct operator
+# invocation, the installer's verify step, a systemd ExecStart that calls the
+# script rather than the CLI, and the case where cli.py's own check is bypassed.
+# Unlike cli.py it still RUNS the checks and still reports the CONFIG verdict;
+# it suppresses only the transport-class BROKEN states.
+
+
+def _window_lock_path():
+    return Path(os.environ.get(
+        "MANITOBA_STATE_DIR",
+        str(Path.home() / ".opt" / "maint"))) / "lock"
+
+
+def _window_lock_is_leaked():
+    """True iff the window lock exists but its owning PID is gone.
+
+    ONE liveness rule shared by both lockfile-consulting legs. Leg 2 asks the
+    canonical lib.suppression predicate, which is a BARE existence check by
+    design; leg 3 liveness-checks the PID. Without a shared rule a leaked lock
+    makes them disagree and leg 2 wins -- suppressing for as long as the stale
+    file sits there. Same defect, same fix, as dash-asset-integrity.sh.
+
+    Anything unreadable/unparseable/non-POSIX returns False (NOT leaked), which
+    keeps the lock's suppressing power. os.kill(pid, 0) TERMINATES on Windows,
+    so it is never called there.
+    """
+    try:
+        lock = _window_lock_path()
+        if not lock.exists():
+            return False
+        lines = lock.read_text(encoding="utf-8").splitlines()
+        pid = int(lines[0].strip()) if lines and lines[0].strip() else 0
+        if pid <= 0 or os.name != "posix":
+            return False
+        try:
+            os.kill(pid, 0)
+            return False          # owner alive -> a real, held lock
+        except ProcessLookupError:
+            return True           # owner gone -> leaked
+        except PermissionError:
+            return False          # exists, owned by someone else -> real
+    except Exception:
+        return False
+
+
+def window_active():
+    """(active, leg). Three OR-ed legs, mirroring dash-asset-integrity.sh:816
+    and scripts/maint/qflix-torrent-janitor.py:
+
+      (a) wall clock Mon 11:00-15:00 UTC -- authoritative because the calendar
+          lives only in the units (manitoba-maint-window.timer OnCalendar=Mon
+          11:00 UTC, ...-watchdog.timer 15:00 UTC), and this leg still protects
+          if the orchestrator crashed before ever opening the lock;
+      (b) the canonical lib.suppression.in_maintenance_window() predicate;
+      (c) a direct live-PID lockfile read, so the gate survives lib being
+          unimportable mid-deploy.
+
+    Raises nothing: the caller treats an exception as NOT-in-window (fail open).
+    """
+    if FORCE_WINDOW == "1":
+        return True, "forced-on"
+    if FORCE_WINDOW == "0":
+        return False, "forced-off"
+
+    now = dt.datetime.now(dt.timezone.utc)
+    if (now.weekday() == 0
+            and WINDOW_START_HOUR_UTC <= now.hour < WINDOW_END_HOUR_UTC):
+        return True, "wallclock-mon-%02d00-%02d00-utc" % (
+            WINDOW_START_HOUR_UTC, WINDOW_END_HOUR_UTC)
+
+    if MAINT_LIB:
+        try:
+            # Loaded BY PATH, not `from lib import suppression`. A bare package
+            # import resolves against the whole sys.path, so an ambient
+            # PYTHONPATH could answer this leg from a DIFFERENT copy of the
+            # maintenance library than the one we were pointed at -- silently.
+            _sup_path = Path(MAINT_LIB) / "lib" / "suppression.py"
+            _spec = importlib.util.spec_from_file_location(
+                "_appsync_canary_suppression", str(_sup_path))
+            if _spec is None or _spec.loader is None:
+                raise ImportError("no loader for %s" % _sup_path)
+            _sup = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_sup)
+            if _sup.in_maintenance_window() and not _window_lock_is_leaked():
+                return True, "suppression-in_maintenance_window"
+        except Exception as exc:                      # noqa: BLE001 - boundary
+            sys.stderr.write("window leg suppression-unavailable=%s\n"
+                             % type(exc).__name__)
+
+    try:
+        lock = _window_lock_path()
+        if lock.exists():
+            lines = lock.read_text(encoding="utf-8").splitlines()
+            pid = int(lines[0].strip()) if lines and lines[0].strip() else 0
+            if pid > 0:
+                if os.name != "posix":
+                    return True, "lock-present"
+                try:
+                    os.kill(pid, 0)
+                    return True, "lock-live-pid"
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    return True, "lock-live-pid"
+    except Exception as exc:                          # noqa: BLE001 - boundary
+        sys.stderr.write("window leg lock-unreadable=%s\n" % type(exc).__name__)
+
+    return False, "clear"
+
+
+def is_transport_reason(reason):
+    """WHERE THE LINE IS DRAWN, and it is drawn on the REASON, not the stage.
+
+    Suppressible during the window (the app is being cycled on purpose):
+      transport-*    urlopen raised -- ConnectionRefused / timeout / DNS / reset.
+                     The literal signature of a unit that is stopped right now.
+      http-5xx       the service answered, but as a server error. A half-started
+                     *arr behind its own reverse proxy returns 502/503 for the
+                     seconds-to-minutes it takes to come up.
+      non-json-body  a 200 whose body is not JSON -- the "Application is
+                     starting up" HTML page. Included deliberately: it is
+                     unreachability that happens to arrive with a status code.
+
+    NOT suppressible -- these still page at 12:00 UTC on a Monday:
+      http-4xx       an ANSWER. 401/403 is a wrong/missing API key, 404 is a
+                     wrong urlbase or API version. A restart does not change a
+                     key or a path, so a 4xx in-window is the same config fault
+                     it is out-of-window.
+      not-a-list     valid JSON of the wrong shape -- an API contract change.
+      everything else, by construction: this predicate is only ever consulted
+      at the two http_json() failure sites. Every other exit -- config-missing,
+      no-apps, no-indexers, no-intent, unknown-app, the two arr-down legs that
+      fire BEFORE any request is made (no baseUrl, no local key), missing,
+      magnet-pref-off and probe-error -- never reaches it and therefore cannot
+      be suppressed by any window state.
+
+    A missing indexer is still a missing indexer at 12:00 UTC. THAT is the rule
+    this function exists to enforce, and it enforces it by only ever being asked
+    about transport.
+    """
+    r = str(reason or "")
+    if r.startswith("transport-"):
+        return True
+    if r == "non-json-body":
+        return True
+    m = re.match(r"^http-(\d{3})$", r)
+    return bool(m and 500 <= int(m.group(1)) <= 599)
+
+
+def suppress(stage, msg, leg, detail=None):
+    """Emit the window suppression -- COUNTED and LOGGED, never silent.
+
+    COUNTED: the stdout line carries `window_suppressed=1` and names the stage
+    and reason that were suppressed, so it is a machine-readable tally rather
+    than a shrug. cli.py takes stdout verbatim as the Kuma msg= whenever the
+    script exits zero, so the count lands in the monitor's own history -- which
+    is why this canary still needs no durable logfile of its own (see the
+    EXECUTION MODEL header). The wording here deliberately avoids the literal
+    "exit"+"0" pair: tests/unit/audit/test_c09_silent_exit.py cross-checks the
+    audit's enumeration of clean-exit SITES against a regex over non-comment
+    lines, and that regex cannot tell a Python docstring inside a heredoc from
+    code, so prose containing it inflates the reference count by one and fails
+    a test about something else entirely.
+    LOGGED: the same fact is also written to stderr, which the systemd unit
+    sends to journald, so it survives independently of Kuma retention.
+    """
+    line = ("SUPPRESSED: prowlarr-app-sync window_suppressed=1 "
+            "suppressed_stage=%s class=transport window_leg=%s msg=%s"
+            % (stage, leg, msg))
+    if WANT_JSON and detail is not None:
+        detail = dict(detail)
+        detail["window_suppressed"] = {
+            "count": 1, "stage": stage, "reason": msg, "leg": leg,
+            "class": "transport",
+        }
+        print(json.dumps(detail, indent=2, sort_keys=True))
+    sys.stderr.write(line + "\n")
+    print(line)
+    sys.exit(EXIT_OK)
+
+
+def fail(stage, msg, code=EXIT_FINDING, detail=None, reason=None):
+    """`reason` is the raw http_json() failure string. Supplying it OPTS THIS
+    EXIT IN to window suppression -- and only if the reason is transport-class.
+    Every call site that omits it pages regardless of the window, which is the
+    safe default and the reason this is opt-in rather than opt-out."""
+    if reason is not None and is_transport_reason(reason):
+        try:
+            active, leg = window_active()
+        except Exception as exc:                      # noqa: BLE001 - boundary
+            # Fail OPEN: an undeterminable window must never silence a real
+            # outage. Named on stderr so the indeterminacy is not itself silent.
+            sys.stderr.write("window determination FAILED (%s), NOT suppressing\n"
+                             % type(exc).__name__)
+            active, leg = False, "indeterminate"
+        if active:
+            suppress(stage, msg, leg, detail=detail)
     if WANT_JSON and detail is not None:
         print(json.dumps(detail, indent=2, sort_keys=True))
     sys.stderr.write("STAGE=%s msg=%s\n" % (stage, msg))
@@ -367,14 +648,16 @@ def main():
 
     ok, indexers = http_json(base + "/api/v1/indexer", key)
     if not ok or not isinstance(indexers, list):
+        reason = indexers if not ok else "not-a-list"
         fail("prowlarr-appsync-prowlarr-down",
-             "indexer-api-%s" % _slug(indexers if not ok else "not-a-list"),
-             EXIT_BROKEN)
+             "indexer-api-%s" % _slug(reason),
+             EXIT_BROKEN, reason=reason)
     ok, apps = http_json(base + "/api/v1/applications", key)
     if not ok or not isinstance(apps, list):
+        reason = apps if not ok else "not-a-list"
         fail("prowlarr-appsync-prowlarr-down",
-             "applications-api-%s" % _slug(apps if not ok else "not-a-list"),
-             EXIT_BROKEN)
+             "applications-api-%s" % _slug(reason),
+             EXIT_BROKEN, reason=reason)
 
     enabled = [i for i in indexers if i.get("enable")]
     skip_disabled = len(indexers) - len(enabled)
@@ -442,10 +725,10 @@ def main():
         ok, arr_indexers = http_json(
             "%s/api/%s/indexer" % (arr_url, api_v), arr_key)
         if not ok or not isinstance(arr_indexers, list):
+            reason = arr_indexers if not ok else "not-a-list"
             fail("prowlarr-appsync-arr-down",
-                 "app-%s-%s" % (_slug(name),
-                                _slug(arr_indexers if not ok else "not-a-list")),
-                 EXIT_BROKEN, detail=report)
+                 "app-%s-%s" % (_slug(name), _slug(reason)),
+                 EXIT_BROKEN, detail=report, reason=reason)
 
         app_tags = set(app.get("tags") or [])
         app_cats = set(fm.get("syncCategories") or []) | set(
