@@ -5,12 +5,16 @@ WHY (diagnosed 2026-08-02/03): the canary was GREEN through a real, sustained
 on 2026-08-02 while every grab from Knaben was failing -- for two reasons that
 are both numbers in files rather than logic:
 
-  1. THE WINDOW DID NOT COVER THE TIMER. The unit is OnCalendar=*:0/15 with
-     RandomizedDelaySec=60, so consecutive runs land up to 15m+60s apart, and
-     the script looked back only 10m. That is at least five minutes of every
-     cycle unobserved, and these bursts are minutes long. Measured live: the
-     same LogsQL query returned n=0 at start=10m while the 24h buckets above
-     were in the record.
+  1. THE WINDOW COVERED NEITHER OF THE TWO TERMS THAT MATTER. The first fix
+     sized it against the TIMER alone (OnCalendar=*:0/15 + RandomizedDelaySec=60
+     -> 17m worst-case run spacing) and that is only half of it. vlogs is a
+     5-minute BATCH ingest (qflix-vlogs-ingest.timer, OnUnitActiveSec=5min +
+     RandomizedDelaySec=30), so an event at T is not queryable until ~T+6m and
+     a window of W only sees it from a tick landing in [T+lag, T+W]. Coverage
+     of every T therefore requires W >= spacing + lag, not W >= spacing.
+     Measured from Kuma heartbeat history on 2026-08-02 (UTC): the 5m bucket
+     at 02:15 held 334 lines and the 02:30:16 run looked at [02:20, 02:30] --
+     that burst was never inside ANY window.
 
   2. THREE SURFACES, TWO VALUES. The script header said "default 25",
      manifest/apps.yaml said "(default 25)", and the code said `:-40`. No
@@ -23,12 +27,10 @@ are both numbers in files rather than logic:
 These tests pin the numbers, not the prose. Both faults are single-token edits
 away from returning and neither would fail any other test in this suite.
 
-DELIBERATELY NOT ASSERTED HERE, and handed to whoever registers the new
-prowlarr-app-sync canary: manifest/apps.yaml's prowlarr-indexer-health comment
-still says "in a 10-min window". Its THRESHOLD leg is asserted below and now
-agrees; the window phrase needs the same one-word edit
-("10-min window" -> "20-min window") in the same commit that adds the manifest
-entry. This track does not edit shared manifests.
+Probe 1 also used to fold EVERY data-source failure into a zero -- an
+unreachable vlogs, an unreachable Prowlarr and a genuinely quiet stack all
+printed the same "prowlarr-indexer-flowing 429_count=0" and exited 0. The
+exit-2 leg is asserted below so that cannot come back either.
 """
 from __future__ import annotations
 
@@ -85,34 +87,44 @@ def _timer_worst_case_spacing_minutes():
 # ---------------------------------------------------------------------------
 
 
-def test_the_lookback_window_covers_the_timers_worst_case_run_spacing():
-    """The load-bearing invariant. If the window is shorter than the gap
-    between runs, a burst that starts and ends inside that gap is never
-    counted -- and the canary reports PASS with the incident in the logs."""
+def test_the_lookback_window_covers_run_spacing_PLUS_ingest_lag():
+    """The load-bearing invariant, in its corrected form.
+
+    A burst at time T is queryable only from T+lag, and only stays inside the
+    window until T+WINDOW. For EVERY T to be seen by SOME tick, the visible
+    interval (WINDOW - lag) must be at least the gap between ticks. Sizing the
+    window against the timer alone leaves the ingest-lag hole, which is what
+    the first fix missed."""
     window = _minutes(_code_default("PROWLARR_CASCADE_WINDOW"))
     spacing = _timer_worst_case_spacing_minutes()
-    assert window >= spacing, (
-        "window=%dm does not cover the timer's worst-case run spacing of "
-        "%.1fm -- every cycle has a %.1f-minute blind gap"
-        % (window, spacing, spacing - window))
+    lag_budget = int(_code_default("PROWLARR_INGEST_LAG_BUDGET_MIN"))
+    assert window >= spacing + lag_budget, (
+        "window=%dm < run-spacing %.1fm + ingest-lag budget %dm -- a burst can "
+        "land in the hole between what is queryable and what is still in the "
+        "window" % (window, spacing, lag_budget))
 
 
-def test_the_invariant_has_teeth_the_shipped_10m_window_violated_it():
-    """MUTATION PROOF. The value this canary shipped with is run through the
-    same predicate and must FAIL it, so the assertion above is known to
-    discriminate rather than being trivially true for any number."""
-    spacing = _timer_worst_case_spacing_minutes()
-    assert 10 < spacing, (
-        "the original 10m window would satisfy the invariant, which means the "
-        "invariant cannot be what caught the 2026-08-02 miss")
+def test_the_invariant_has_teeth_both_shipped_windows_violated_it():
+    """MUTATION PROOF. Both values this canary shipped with -- the original 10m
+    and the timer-only 20m -- are run through the same predicate and must FAIL
+    it, so a green result above is discriminating rather than trivially true."""
+    required = _timer_worst_case_spacing_minutes() + int(
+        _code_default("PROWLARR_INGEST_LAG_BUDGET_MIN"))
+    assert 10 < required, "the original 10m window would satisfy the invariant"
+    assert 20 < required, (
+        "the 20m window (sized against the timer alone) would satisfy the "
+        "invariant, so the invariant cannot be what caught the ingest-lag hole")
 
 
-def test_the_window_overlaps_rather_than_merely_touching():
-    """Exactly equal would leave zero margin for a slow run or a clock nudge.
-    A couple of minutes of deliberate overlap costs at most a repeated DOWN on
-    one burst, which Kuma collapses into a single incident."""
-    window = _minutes(_code_default("PROWLARR_CASCADE_WINDOW"))
-    assert window - _timer_worst_case_spacing_minutes() >= 2
+def test_the_lag_budget_itself_is_asserted_not_assumed():
+    """An unmeasured assumption inside a watchdog is the thing the watchdog was
+    supposed to remove. The script must MEASURE ingest lag and refuse to report
+    a clean count when the measurement exceeds the budget."""
+    body = _script()
+    assert "PROWLARR_INGEST_LAG_BUDGET_MIN" in body
+    assert "prowlarr-vlogs-lagging" in body, (
+        "no stage label for an over-budget ingest lag -- a zero count under a "
+        "stale index would still print flowing")
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +171,36 @@ def test_the_header_says_the_count_is_log_lines_not_events():
     header = _header().lower()
     assert "lines" in header and "not events" in header, (
         "the header must state that Probe 1 counts LOG LINES, not events")
+
+
+def test_no_data_source_failure_is_folded_into_a_zero():
+    """RULE 5. `|| RAW=""` and `|| HEALTH="[]"` turned an unreachable vlogs and
+    an unreachable Prowlarr into a count of zero, i.e. into a green push. The
+    canary must have a BROKEN state and must not default either payload."""
+    body = _script()
+    assert 'RAW=""' not in body, "vlogs failure is still defaulted to an empty body"
+    assert 'HEALTH="[]"' not in body, "Prowlarr failure is still defaulted to []"
+    for stage in ("prowlarr-vlogs-unreachable", "prowlarr-health-unreachable",
+                  "prowlarr-vlogs-no-data"):
+        assert stage in body, "missing BROKEN stage label %s" % stage
+    assert "exit 2" in body, "the script has no exit-2 state at all"
+
+
+def test_the_header_documents_the_broken_exit():
+    header = _header()
+    assert re.search(r"^#\s+2 —", header, re.M), (
+        "the Exits block must document exit 2, or the 1-vs-2 split is invisible "
+        "to the next reader")
+
+
+def test_config_missing_is_broken_not_a_finding():
+    """An unreadable secret means the canary asserted NOTHING. Exiting 1 there
+    makes it indistinguishable from a real cascade."""
+    body = _script()
+    m = re.search(r"STAGE=prowlarr-canary-config-missing.*?\n(.*?\n)?\s*exit (\d)",
+                  body, re.S)
+    assert m and m.group(2) == "2", (
+        "config-missing must exit 2, not %s" % (m.group(2) if m else "?"))
 
 
 def test_the_header_points_at_the_module_that_owns_the_config_faults():
