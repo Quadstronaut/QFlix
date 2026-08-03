@@ -126,6 +126,22 @@
 #   P3 VERDICT    the recorded outcome. `fail reason=<x>` -> RED, same day,
 #                 age-independent. This is the predicate that catches the 18
 #                 all_models_noop runs, and no cadence assumption is involved.
+#   P5 NON-VACUOUS  a run that produced NO verdict is not evidence REA audited.
+#                 Three recorded shapes are runs-without-verdicts: `SKIPPED`
+#                 (the concurrency lock held), `suppressed n=` (the writer
+#                 picked the noise line), and the three `dryrun_*` outcomes.
+#                 Each refreshes BOTH age predicates -- the writer stamps a
+#                 fresh line every run -- so P1 and P2 are green through them
+#                 forever. Verified against the shipped script: 90 simulated
+#                 days of SKIPPED / dryrun_heartbeat / suppressed with a fresh
+#                 stamp each time exited 0 on all 12 runs. A wedged lock, or
+#                 REA left in -DryRun, was therefore a permanently green
+#                 watchdog. So the streak is CLOCKED: the same vacuity-clock
+#                 shape scripts/canaries/hardlink-integrity.sh already uses.
+#                 Below MAX_VACUOUS_H the run still passes and SAYS how long it
+#                 has been blind; past it, the blindness itself is the alert.
+#                 Any real verdict clears the clock.
+#
 #   P4 PRESENT    no heartbeat file at all -> exit 2, NEVER green. "Nothing
 #                 watches REA" with a green light is strictly worse than
 #                 nothing — that is the tdarr-healthcheck class (ran 100% dead
@@ -151,6 +167,8 @@
 # STAGE LABELS (stderr -> Kuma msg=)
 # ============================================================================
 #   rea-not-auditing        P3: last recorded run failed (`fail reason=<x>`)
+#   rea-no-verdict-streak   P5: REA has been running without ever producing a
+#                           verdict for longer than MAX_VACUOUS_H
 #   rea-unreached           P1: no REA contact within MAX_SILENCE_H
 #   rea-verdict-stale       P2: REA still reaches the box but its verdict froze
 #   rea-heartbeat-absent    P4: contract file does not exist (writer not wired)
@@ -175,6 +193,8 @@
 #   QFLIX_CANARY_REA_MAX_SILENCE_H  P1/P2 threshold in hours. default 336
 #   QFLIX_CANARY_REA_NOW            epoch seconds override for "now"
 #   QFLIX_CANARY_REA_REASON_TABLE   path to rea-noise-classes.yaml (label only)
+#   QFLIX_CANARY_REA_MAX_VACUOUS_H  P5 threshold in hours. default 168 (7 d)
+#   QFLIX_CANARY_REA_VACUITY        P5 streak file. default beside the heartbeat
 #
 # EXECUTION MODEL — runs LOCALLY on the box, no sshm hop. The subject is a file
 # on the box's own filesystem; `sshm` there is just `bash -c` (scripts/lib/ssh.sh)
@@ -205,6 +225,12 @@ set -uo pipefail
 HB="${QFLIX_CANARY_REA_HEARTBEAT:-$HOME/.opt/maint/rea/heartbeat}"
 MAX_SILENCE_H="${QFLIX_CANARY_REA_MAX_SILENCE_H:-336}"
 NOW="${QFLIX_CANARY_REA_NOW:-$(date -u +%s)}"
+# P5. 168h (7 d) rather than the 336h age cap: a held concurrency lock and a
+# forgotten -DryRun are hours-to-days conditions, not fortnight ones, and REA
+# fires several times in a week (p95 inter-run gap 101.9h). Sits BESIDE the
+# heartbeat so the whole contract is one directory.
+MAX_VACUOUS_H="${QFLIX_CANARY_REA_MAX_VACUOUS_H:-168}"
+VACUITY="${QFLIX_CANARY_REA_VACUITY:-$(dirname "$HB")/vacuity}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -227,6 +253,36 @@ pass() { printf 'PASS%s: rea-liveness — %s %s\n' "$1" "$2" "$(skip_str)"; exit
 # because `${var//<empty pattern>/~}` in bash inserts the replacement between
 # EVERY character, which would turn a Kuma message into confetti.
 tilde() { if [ -n "${HOME:-}" ]; then printf '%s' "${1//$HOME/\~}"; else printf '%s' "$1"; fi; }
+
+# --- P5 vacuity clock -------------------------------------------------------
+# Same shape as scripts/canaries/hardlink-integrity.sh: the streak start is
+# persisted, a real verdict clears it, and only the STREAK -- never a single
+# run -- can red. VACUOUS_H is folded into the PASS line so a blind streak is
+# visible long before it becomes an alert.
+VACUOUS_H=0
+vac_clear() { rm -f "$VACUITY" 2>/dev/null || true; }
+vac_check() {
+  local since
+  since=$(cat "$VACUITY" 2>/dev/null)
+  case "x${since:-}" in
+    x|x*[!0-9]*) since="" ;;
+  esac
+  # A future timestamp is clock skew or a bad write; treating it as the start
+  # of the streak is the only reading that cannot silently never trip.
+  if [ -z "$since" ] || [ "$since" -gt "$NOW" ]; then
+    since=$NOW
+    mkdir -p "$(dirname "$VACUITY")" 2>/dev/null
+    # Cannot persist -> cannot ever trip. Say so out loud (and count it) rather
+    # than degrading into the exact blindness this clock exists for.
+    printf '%s\n' "$since" > "$VACUITY" 2>/dev/null \
+      || skip "vacuity-state-unwritable-blind-timer-cannot-arm"
+  fi
+  VACUOUS_H=$(( (NOW - since) / 3600 ))
+  if [ "$VACUOUS_H" -ge "$MAX_VACUOUS_H" ]; then
+    die rea-no-verdict-streak \
+      "rea-has-produced-no-verdict-for-${VACUOUS_H}h>cap=${MAX_VACUOUS_H}h:last=$1" 1
+  fi
+}
 
 # --- P4 PRESENT -----------------------------------------------------------
 [ -e "$HB" ] || die rea-heartbeat-absent \
@@ -328,12 +384,19 @@ PY
     O=${REST##*outcome=}; O=${O%% *}
     case "$O" in
       heartbeat|silent|error_post)
-        : ;;                                   # a real, completed audit
+        vac_clear ;;                           # a real, completed audit
       discord_post_failed|deadman_post_failed)
+        # The AUDIT completed; only the notification did not. That is a real
+        # verdict, so it clears the streak.
         skip "notify-failed:$O"
-        WARN="-WARN" ;;                        # audited fine, could not notify
+        vac_clear
+        WARN="-WARN" ;;
       dryrun_heartbeat|dryrun_error|dryrun_deadman)
+        # A dev run posts nothing and proves nothing about production. 9 of
+        # REA's 72 recorded runs are dryrun_*; a forgotten -DryRun would keep
+        # both age predicates fresh forever.
         skip "dry-run-not-a-production-audit:$O"
+        vac_check "outcome=$O"
         WARN="-WARN" ;;
       *)
         die rea-heartbeat-malformed "unrecognised-outcome-token:outcome=$O" 2 ;;
@@ -342,14 +405,18 @@ PY
 
   SKIPPED*)
     # Concurrent-run lock skip. Not a verdict at all, so it must not be counted
-    # as evidence REA audited anything.
+    # as evidence REA audited anything — and a WEDGED lock produces this shape
+    # on every run, indefinitely, with a fresh stamp each time.
     skip "lock-skip-no-verdict"
+    vac_check "SKIPPED"
     WARN="-WARN" ;;
 
   suppressed\ n=*)
     # REA's noise-suppressor line, which immediately PRECEDES the terminal line
-    # in audit.log. Getting it here means the writer picked the wrong line.
+    # in audit.log. Getting it here means the writer picked the wrong line —
+    # and it will keep picking the wrong line until someone fixes the writer.
     skip "writer-wrote-suppression-line-not-terminal-line"
+    vac_check "suppressed"
     WARN="-WARN" ;;
 
   *)
@@ -364,4 +431,6 @@ if [ "$VERDICT_AGE" -gt "$MAX_S" ]; then
     "rea-reached-${REACH_H}h-ago-but-its-last-verdict-is-${VERDICT_H}h-old>cap=${MAX_SILENCE_H}h" 1
 fi
 
-pass "$WARN" "reached=${REACH_H}h-ago verdict=${VERDICT_H}h-old cap=${MAX_SILENCE_H}h [$REST]"
+BLIND=""
+[ "$VACUOUS_H" -gt 0 ] && BLIND=" blind=${VACUOUS_H}h/${MAX_VACUOUS_H}h"
+pass "$WARN" "reached=${REACH_H}h-ago verdict=${VERDICT_H}h-old cap=${MAX_SILENCE_H}h${BLIND} [$REST]"

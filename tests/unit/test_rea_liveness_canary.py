@@ -454,3 +454,106 @@ def test_reason_table_still_carries_the_five_reasons():
     d = yaml.safe_load(REASON_TABLE.read_text(encoding="utf-8")) or {}
     assert set(d.get("deadman_reasons") or []) == {
         "tunnel_timeout", "no_models", "ssh_fail", "blob_parse", "all_models_noop"}
+
+
+# ---------------------------------------------------------------------------
+# 6. P5 -- a run that produced NO VERDICT is not evidence REA audited
+#    (arbiter fix 2026-08-03)
+# ---------------------------------------------------------------------------
+
+NON_VERDICT = [
+    ("SKIPPED another run holds the lock", "SKIPPED"),
+    ("ok findings=0 models=3/3 duration=44s outcome=dryrun_heartbeat", "dryrun"),
+    ("suppressed n=12", "suppressed"),
+]
+
+
+def _vac_run(tmp_path, tail, *, now, vac_file):
+    """One simulated REA run: the writer stamps a FRESH line every time, which
+    is precisely why both age predicates stay green through these shapes."""
+    from datetime import datetime, timezone
+    stamp = datetime.fromtimestamp(now - HOUR, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00")
+    hb = _hb(tmp_path, "%s %s\n" % (stamp, tail))
+    env = dict(os.environ)
+    env["QFLIX_CANARY_REA_NOW"] = str(now)
+    env["QFLIX_CANARY_REA_HEARTBEAT"] = str(hb)
+    env["QFLIX_CANARY_REA_VACUITY"] = str(vac_file)
+    os.utime(hb, (now - HOUR, now - HOUR))
+    return subprocess.run(["bash", str(SCRIPT)], env=env,
+                          capture_output=True, text=True, timeout=60)
+
+
+@pytest.mark.parametrize("tail,label", NON_VERDICT,
+                         ids=[l for _, l in NON_VERDICT])
+def test_a_non_verdict_streak_eventually_reds(tmp_path, tail, label):
+    """THE DEFECT: these three shapes refresh mtime AND the content stamp, so
+    P1 and P2 are green through them forever. Measured on the shipped script
+    before this fix: 90 simulated days of the same shape, exit 0 every run.
+
+    A wedged concurrency lock and a forgotten -DryRun are therefore permanently
+    green watchdogs -- the exact self-diagnosis dependency the header rejects
+    option (c) for."""
+    vac = tmp_path / "vacuity"
+    first = _vac_run(tmp_path, tail, now=NOW, vac_file=vac)
+    assert first.returncode == 0, first.stderr          # day 0 still passes
+    assert vac.exists(), "the blind timer never armed"
+
+    later = _vac_run(tmp_path, tail, now=NOW + 8 * 24 * HOUR, vac_file=vac)
+    assert later.returncode == 1, (later.returncode, later.stdout, later.stderr)
+    assert _stage(later) == "rea-no-verdict-streak", later.stderr
+    # The alert must name the shape it has been stuck in, or the operator
+    # cannot tell a wedged lock from a forgotten dry-run.
+    assert "last=" in later.stderr, later.stderr
+    assert _skips(later) is not None and _skips(later) != "0", later.stderr
+
+
+@pytest.mark.parametrize("tail,label", NON_VERDICT,
+                         ids=[l for _, l in NON_VERDICT])
+def test_the_streak_is_visible_long_before_it_alerts(tmp_path, tail, label):
+    """Rule 4 in spirit: a suppression the operator cannot see becomes
+    permanent by accident. The PASS line must carry the blind age."""
+    vac = tmp_path / "vacuity"
+    _vac_run(tmp_path, tail, now=NOW, vac_file=vac)
+    mid = _vac_run(tmp_path, tail, now=NOW + 3 * 24 * HOUR, vac_file=vac)
+    assert mid.returncode == 0, mid.stderr
+    assert "blind=72h/168h" in mid.stdout, mid.stdout
+    assert "PASS-WARN" in mid.stdout, mid.stdout
+
+
+@pytest.mark.parametrize("outcome", ["heartbeat", "silent", "error_post",
+                                     "discord_post_failed"])
+def test_a_real_verdict_clears_the_streak(tmp_path, outcome):
+    """MUTATION PROOF for the clock: the streak must be a STREAK. One genuine
+    audit in the middle resets it, so a canary that reds after a week of
+    dry-runs does not also red on an operator who dry-ran twice."""
+    vac = tmp_path / "vacuity"
+    _vac_run(tmp_path, "SKIPPED lock", now=NOW, vac_file=vac)
+    assert vac.exists()
+    good = _vac_run(tmp_path,
+                    "ok findings=1 models=3/3 duration=40s outcome=%s" % outcome,
+                    now=NOW + HOUR, vac_file=vac)
+    assert good.returncode == 0, good.stderr
+    assert not vac.exists(), "a real verdict did not clear the blind timer"
+    after = _vac_run(tmp_path, "SKIPPED lock", now=NOW + 8 * 24 * HOUR,
+                     vac_file=vac)
+    assert after.returncode == 0, (after.stdout, after.stderr)
+
+
+def test_the_streak_cap_is_shorter_than_the_silence_cap():
+    """A held lock and a forgotten -DryRun are hours-to-days conditions. Using
+    the 336h age cap for them would make the fast predicate the slow one."""
+    body = SCRIPT.read_text(encoding="utf-8")
+    vac = int(re.search(r"QFLIX_CANARY_REA_MAX_VACUOUS_H:-(\d+)", body).group(1))
+    sil = int(re.search(r"QFLIX_CANARY_REA_MAX_SILENCE_H:-(\d+)", body).group(1))
+    assert 0 < vac < sil, (vac, sil)
+
+
+def test_an_unwritable_blind_timer_is_a_counted_skip_not_silence(tmp_path):
+    """Cannot persist -> cannot ever trip. That must be said out loud, the same
+    way hardlink-integrity.sh says it, or the clock fails open in silence."""
+    vac = tmp_path / "nodir" / "sub" / "vacuity"
+    (tmp_path / "nodir").write_text("not a directory", encoding="utf-8")
+    res = _vac_run(tmp_path, "SKIPPED lock", now=NOW, vac_file=vac)
+    assert res.returncode == 0, res.stderr
+    assert "vacuity-state-unwritable" in (res.stdout + res.stderr), res.stdout
