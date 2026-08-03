@@ -598,7 +598,7 @@ canaries:
     # Detects two recurring patterns surfaced by the 2026-05-09 and
     # 2026-05-16 audits that nothing previously alerted on:
     #   - prowlarr-429-cascade : >threshold (default 25) HTTP 429s from
-    #     the *arr stack in a 20-min window — single upstream indexer
+    #     the *arr stack in a 45-min window — single upstream indexer
     #     disable rippling across sonarr/sonarr2/radarr/radarr2
     #   - indexer-rss-stale : Prowlarr health endpoint reports chronic
     #     indexer-down warnings (matches the nekoBT-since-2026-05-12
@@ -606,17 +606,28 @@ canaries:
     # Detect-and-notify only. The FlareSolverr canary already handles
     # listener-failure restarts upstream of this.
     #
-    # WINDOW RETUNED 10m -> 20m ON 2026-08-03. The timer is OnCalendar=*:0/15
-    # with RandomizedDelaySec=60, so consecutive runs land up to 17m apart and a
-    # 10m lookback left >=5 minutes of every cycle unobserved. On 2026-08-02 the
-    # Knaben 403->500->backoff->429 chain produced 10-minute buckets of
-    # 234/177/126/108/86/79 lines and this canary stayed exit 0 through all of
-    # them. The count is LOG LINES, not events: one failed grab emits ~10
-    # matching stack-trace records, so 25 is ~2-3 real failures. Both numbers are
-    # pinned against this file and the real timer by
+    # WINDOW RETUNED 10m -> 20m -> 45m ON 2026-08-03. TWO terms, and the 20m
+    # step only closed one of them. (1) run spacing: OnCalendar=*:0/15 with
+    # RandomizedDelaySec=60 puts consecutive runs up to 17m apart. (2) INGEST
+    # LAG: vlogs is a 5-minute batch (qflix-vlogs-ingest.timer,
+    # OnUnitActiveSec=5min), so an event at T is not queryable until ~T+6m and
+    # is only visible to a tick in [T+lag, T+WINDOW]. Coverage of every T needs
+    # WINDOW >= spacing + lag, hence 17 + 25 -> 45m. Evidence: on 2026-08-02 the
+    # 5m bucket at 02:15 UTC held 334 lines and the 02:30:16 run looked at
+    # [02:20, 02:30] — that burst was in no window at all, and the canary
+    # reported 429_count=0 on four consecutive heartbeats.
+    # The lag budget is now MEASURED each run and an over-budget lag exits 2
+    # (cannot assert) instead of printing a meaningless zero; likewise an
+    # unreachable vlogs or Prowlarr, both of which previously defaulted into a
+    # zero and a green push. The count is LOG LINES, not events: one failed grab
+    # emits ~10 matching stack-trace records, so 25 is ~2-3 real failures. All
+    # of it is pinned against this file and the real timer by
     # tests/unit/test_prowlarr_indexer_health_tuning.py, which exists because
     # the threshold previously read 25 here and in the script header while the
     # code said 40 — the two-policy-surface defect, three surfaces deep.
+    #
+    # EXPECT THIS RED UNTIL THE RUNBOOK LANDS. The Knaben / Tokyo Toshokan grab
+    # cascade is live: docs/prowlarr-indexer-remediation-2026-08-03.md.
     #
     # NOT IN SCOPE HERE, deliberately: both probes are LOG- and HEALTH-derived,
     # and Prowlarr /api/v1/health is [] for config faults. Indexer-sync
