@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """qflix-torrent-janitor — purge completed, *arr-UNTRACKED seeding leftovers.
 
-WHY: On a box where EVERYTHING is purged after 60 days (qflix-reaper), a
+WHY: On a box where EVERYTHING is purged on an add-date window (qflix-reaper —
+DEFAULT_THRESHOLD_DAYS, currently 45), a
 completed torrent that the *arr already imported and dropped from its queue can
 sit in qBittorrent seeding FOREVER — nobody deletes it. The 2026-07-27 audit
 found ~40 GB of these (a 34 GB BDRemux + a 6 GB anime movie, both `arr=null`,

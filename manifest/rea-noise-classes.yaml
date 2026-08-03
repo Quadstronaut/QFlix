@@ -116,11 +116,15 @@ classes:
       moved 60 -> 45 by operator decision 2026-07-31; the on-box systemd
       drop-in carries only the arming flags and passes no --threshold-days, so
       that repo constant IS the live window (re-verified read-only against the
-      box 2026-08-03). The remaining stale copies, all TRACKED and all still
-      saying 60 as of this commit, are: scripts/maint/systemd/
-      manitoba-maint-reaper.service:2 (Description), scripts/maint/
-      qflix-reaper.py module docstring, and that file's --threshold-days help
-      string, which reads "Default 60." on an argument whose default is 45.
+      box 2026-08-03). The four tracked prose copies that still said 60 were
+      corrected 2026-08-03 and, where possible, made incapable of rotting
+      again: the --threshold-days help string now interpolates %(default)s
+      from the constant rather than restating it, and the reaper docstring,
+      the systemd unit Description and the torrent-janitor docstring no longer
+      name a number at all. The 60s that REMAIN in the tree are historical and
+      correct: Maintainerr's own rule really was 60 days (scripts/configure/
+      27b, manifest/apps.yaml) and the 2026-05-07 design spec records what was
+      true when it was written.
     added: 2026-07-28
 
   - id: external-indexer-5xx-html
