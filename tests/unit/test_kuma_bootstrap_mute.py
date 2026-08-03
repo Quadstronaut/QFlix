@@ -45,13 +45,31 @@ def mod():
 
 
 class FakeApi:
-    """Minimal stand-in. `monitors` is the list the real client would cache."""
+    """Minimal stand-in for the two reads the verifier makes.
 
-    def __init__(self, monitors):
+    `monitors` is the STALE list the real client caches (get_monitors reads
+    `_get_event_data(MONITOR_LIST)`). `live` is what the SERVER would answer to
+    `get_monitor(id)` (`_call('getMonitor', id)` — a real round trip). Leaving
+    `live` unset means the server agrees with the cache, which is the ordinary
+    case; setting it models the create-run lag that produced the false FATAL.
+    """
+
+    def __init__(self, monitors, live=None):
         self._monitors = monitors
+        self._live = live or {}
+        self.live_reads = []
 
     def get_monitors(self):
         return self._monitors
+
+    def get_monitor(self, mid):
+        self.live_reads.append(mid)
+        if mid in self._live:
+            return self._live[mid]
+        for m in self._monitors:
+            if m["id"] == mid:
+                return m
+        raise RuntimeError(f"no such monitor {mid}")
 
 
 def _mon(mid, name, channels, active=True):
@@ -120,6 +138,55 @@ def test_verifier_does_not_crash_the_run_when_kuma_is_unreadable(mod):
 def test_result_is_sorted_so_output_is_stable(mod):
     api = FakeApi([_mon(1, "Zeta", []), _mon(2, "Alpha", []), _mon(3, "Mid", [])])
     assert mod._mute_monitor_names(api) == ["Alpha", "Mid", "Zeta"]
+
+
+def test_stale_cache_accusation_is_dropped_when_the_server_says_wired(mod):
+    """The false FATAL of 2026-08-03, pinned.
+
+    Bootstrap created monitors 115/116/117, attached channels [1, 2] to each
+    (its own [notify] lines said so), then reported all three mute and exited 1
+    — because the verifier re-read `get_monitors()`, the same client-side cache
+    the write had not yet propagated into. kuma.db showed 2 channels on each.
+    The retry re-read that identical cache, so it could never clear.
+
+    The cache may accuse; only the server convicts.
+    """
+    api = FakeApi(
+        monitors=[_mon(115, "Canary Prowlarr App Sync", []),
+                  _mon(116, "Canary Plex Unmatched", []),
+                  _mon(117, "Canary REA Liveness", [])],
+        live={115: _mon(115, "Canary Prowlarr App Sync", [1, 2]),
+              116: _mon(116, "Canary Plex Unmatched", [1, 2]),
+              117: _mon(117, "Canary REA Liveness", [1, 2])},
+    )
+    assert mod._mute_monitor_names(api) == []
+
+
+def test_a_monitor_the_server_agrees_is_mute_still_fails(mod):
+    """The live confirm must not become a blanket amnesty."""
+    api = FakeApi(monitors=[_mon(110, "Canary Dash Asset Integrity", [])])
+    assert mod._mute_monitor_names(api) == ["Canary Dash Asset Integrity"]
+    assert api.live_reads == [110], "the accusation was never checked live"
+
+
+def test_a_monitor_the_server_cannot_answer_for_stays_accused(mod):
+    """Unverifiable is not innocent. A read failure must not launder a mute
+    monitor into a clean run — that is the exact silence this guard exists to
+    break."""
+    class HalfBroken(FakeApi):
+        def get_monitor(self, mid):
+            raise RuntimeError("socket closed")
+
+    api = HalfBroken(monitors=[_mon(9, "Canary Ghost", [])])
+    assert mod._mute_monitor_names(api) == ["Canary Ghost"]
+
+
+def test_wired_monitors_cost_no_server_round_trips(mod):
+    """Only the accused are re-read. A live read per monitor would be ~70 extra
+    socket calls on every install for no added signal."""
+    api = FakeApi(monitors=[_mon(1, "Plex", [1, 2]), _mon(2, "Sonarr", [1, 2])])
+    assert mod._mute_monitor_names(api) == []
+    assert api.live_reads == []
 
 
 def test_main_asserts_before_returning_success(mod):

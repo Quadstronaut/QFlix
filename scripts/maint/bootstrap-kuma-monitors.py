@@ -302,6 +302,73 @@ def _ensure_notifications_attached(api) -> int:
     return fixed
 
 
+def _live_push_token(api, monitor):
+    """Ask the SERVER for `monitor`'s pushToken. None if it cannot be had.
+
+    Same cache problem as _confirm_mute_live, different casualty: on the run
+    that CREATES a monitor, `get_monitors()` returns it without a pushToken, so
+    the token map was written with that key absent and the run ended FATAL. The
+    documented remedy was "re-run this script" — every new canary therefore
+    needed two installer passes, and an operator who ran it once and stopped
+    shipped exactly the tokenless canary the FATAL exists to prevent (a push to
+    a tokenless monitor exits 0 while the monitor sits DOWN forever).
+
+    A single `getMonitor` round trip has the token the moment it exists."""
+    mid = (monitor or {}).get("id")
+    if mid is None:
+        return None
+    try:
+        return api.get_monitor(mid).get("pushToken") or None
+    except Exception as exc:
+        print(f"  [warn] could not read pushToken for id={mid} live: {exc}")
+        return None
+
+
+def _resolve_token(api, fresh, created_tokens, mon_name):
+    """Push token for `mon_name`, cheapest source first: cached list, then the
+    add-response captured this run, then a live server read. None if all three
+    come up empty — which is a real missing token, not cache lag."""
+    m = fresh.get(mon_name)
+    if m and m.get("pushToken"):
+        return m["pushToken"]
+    if created_tokens.get(mon_name):
+        return created_tokens[mon_name]
+    return _live_push_token(api, m)
+
+
+def _channel_ids(monitor) -> set:
+    """The attached channel ids in either shape Kuma returns ({id: bool} or list)."""
+    raw = monitor.get("notificationIDList") or {}
+    if isinstance(raw, dict):
+        return {int(k) for k, v in raw.items() if v}
+    return set(raw)
+
+
+def _confirm_mute_live(api, mid):
+    """Ask the SERVER whether monitor `mid` really has no channels.
+
+    Returns True (mute), False (has channels), or None (could not ask).
+
+    WHY THIS EXISTS: `api.get_monitors()` is `_get_event_data(MONITOR_LIST)` —
+    a client-side cache refreshed by socket events. `api.get_monitor(id)` is
+    `_call('getMonitor', id)` — an actual round trip. On the run that CREATES a
+    monitor, the cache does not reflect the notificationIDList that this same
+    run just wrote, so the cache-only verifier below reported the monitor mute
+    immediately after printing its own `[notify] ... + channels [1, 2]` success
+    line. The retry then re-read the identical cache and could never clear it,
+    so the run ended FATAL every single time a monitor was created — observed
+    2026-08-03 on monitors 115/116/117, where kuma.db showed 2 channels each.
+
+    A guard that cries wolf on exactly the run it exists to protect trains the
+    operator to ignore it, which is how a genuinely mute monitor gets waved
+    through. So the cache may only ACCUSE; the server convicts."""
+    try:
+        return not _channel_ids(api.get_monitor(mid))
+    except Exception as exc:
+        print(f"  [warn] could not confirm id={mid} against the server: {exc}")
+        return None
+
+
 def _mute_monitor_names(api) -> list:
     """Names of active monitors carrying ZERO notification channels.
 
@@ -309,7 +376,12 @@ def _mute_monitor_names(api) -> list:
     _ensure_notifications_attached so the check is independent of the code that
     is supposed to have done the work — a verifier that reuses the actor's view
     of the world cannot catch the actor missing a monitor entirely, which is the
-    failure it exists to catch."""
+    failure it exists to catch.
+
+    Enumeration still comes from the cached list (there is no other way to learn
+    that a monitor exists), but every accusation is re-checked live — see
+    _confirm_mute_live. An unconfirmable monitor stays ACCUSED: the whole point
+    of the check is to fail loud on what it cannot vouch for."""
     mute = []
     try:
         monitors = api.get_monitors()
@@ -319,11 +391,17 @@ def _mute_monitor_names(api) -> list:
     for m in monitors:
         if not m.get("active", True):
             continue
-        raw = m.get("notificationIDList") or {}
-        current = ({int(k) for k, v in raw.items() if v} if isinstance(raw, dict)
-                   else set(raw))
-        if not current:
-            mute.append(m.get("name", f"id={m.get('id')}"))
+        if _channel_ids(m):
+            continue
+        name = m.get("name", f"id={m.get('id')}")
+        mid = m.get("id")
+        live = _confirm_mute_live(api, mid) if mid is not None else None
+        if live is False:
+            # Cache lag, not a mute monitor. Say so — silence here would look
+            # like the check never ran.
+            print(f"  [stale-cache]{name:32s} cache said mute; server says wired")
+            continue
+        mute.append(name)
     return sorted(mute)
 
 
@@ -530,23 +608,19 @@ def main() -> int:
     for app in manifest.apps():
         if not app.kuma_monitor:
             continue
-        m = fresh.get(app.kuma_monitor)
-        if m and m.get("pushToken"):
-            tokens[app.name] = m["pushToken"]
-        elif created_tokens.get(app.kuma_monitor):
-            tokens[app.name] = created_tokens[app.kuma_monitor]
+        tok = _resolve_token(api, fresh, created_tokens, app.kuma_monitor)
+        if tok:
+            tokens[app.name] = tok
         else:
             missing.append((app.name, app.kuma_monitor))
     # Canary tokens use `canary-<name>` so cli.py canary-push can find them.
     for canary in manifest.canaries():
         if not canary.kuma_monitor:
             continue
-        m = fresh.get(canary.kuma_monitor)
         key = f"canary-{canary.name}"
-        if m and m.get("pushToken"):
-            tokens[key] = m["pushToken"]
-        elif created_tokens.get(canary.kuma_monitor):
-            tokens[key] = created_tokens[canary.kuma_monitor]
+        tok = _resolve_token(api, fresh, created_tokens, canary.kuma_monitor)
+        if tok:
+            tokens[key] = tok
         else:
             missing.append((key, canary.kuma_monitor))
 
@@ -555,11 +629,9 @@ def main() -> int:
     # from kuma-push-tokens.json. Monitor NAME != token KEY for these (e.g.
     # "QFlix Reaper" -> "qflix-reaper"), so they're captured separately.
     for _mon_name, _token_key in STANDALONE_SELF_PUSH_MONITORS.items():
-        m = fresh.get(_mon_name)
-        if m and m.get("pushToken"):
-            tokens[_token_key] = m["pushToken"]
-        elif created_tokens.get(_mon_name):
-            tokens[_token_key] = created_tokens[_mon_name]
+        tok = _resolve_token(api, fresh, created_tokens, _mon_name)
+        if tok:
+            tokens[_token_key] = tok
         else:
             missing.append((_token_key, _mon_name))
 
@@ -578,8 +650,9 @@ def main() -> int:
         mtype = str(m.get("type", "")).lower()
         if not mtype.endswith("push"):
             continue
-        if m.get("pushToken"):
-            tokens[ext_name] = m["pushToken"]
+        tok = m.get("pushToken") or _live_push_token(api, m)
+        if tok:
+            tokens[ext_name] = tok
         else:
             missing.append((ext_name, ext_name))
 
@@ -595,7 +668,11 @@ def main() -> int:
         # from _add_push_monitor's re-fetch is the authoritative copy.
         tokens["manitoba-pusher"] = pusher_create_token
     else:
-        missing.append(("manitoba-pusher", pusher_monitor))
+        _tok = _live_push_token(api, pusher_m)
+        if _tok:
+            tokens["manitoba-pusher"] = _tok
+        else:
+            missing.append(("manitoba-pusher", pusher_monitor))
 
     # Fleet aggregate token — keyed "qflix-fleet" so push_once() can find it.
     # The pusher pushes status=up/down here each cycle; if no push arrives
@@ -606,7 +683,11 @@ def main() -> int:
     elif fleet_create_token:
         tokens["qflix-fleet"] = fleet_create_token
     else:
-        missing.append(("qflix-fleet", fleet_monitor))
+        _tok = _live_push_token(api, fleet_m)
+        if _tok:
+            tokens["qflix-fleet"] = _tok
+        else:
+            missing.append(("qflix-fleet", fleet_monitor))
 
     # A missing token is FATAL, not a warning. It used to print [warn] and let
     # the run report success; the installer then deployed a token file with that
@@ -622,7 +703,13 @@ def main() -> int:
         for app_name, mon_name in missing:
             print(f"  - {app_name} ({mon_name})")
         print("Their consumers would exit 0 while pushing nothing.")
-        print("Re-run this script; the token is generated at monitor creation.")
+        # Was "Re-run this script" — accurate when the only token source was the
+        # racing monitor cache. _resolve_token now also asks the server directly,
+        # so reaching here means the token genuinely is not there and a re-run is
+        # a guess, not a fix. Say what to actually look at.
+        print("The cached list, this run's create response AND a live getMonitor")
+        print("all came up empty — check the monitor exists and is PUSH-typed in")
+        print("the Kuma UI, then re-run.")
 
     # Persist tokens for the push-loop service.
     out.write_text(json.dumps(tokens, indent=2, sort_keys=True))
