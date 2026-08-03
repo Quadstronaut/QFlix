@@ -229,9 +229,25 @@ def test_operator_unmonitor_mid_fallback_restores():
     assert "radarr:1001" not in state
 
 
-def test_deleted_movie_drops():
+def test_deleted_movie_drops_but_says_so_when_it_was_in_fallback():
+    """A movie that genuinely leaves radarr while still on a fallback profile
+    cannot be restored -- it is gone -- but dropping the record threw away the
+    only copy of its real profile id in SILENCE. Report-only action, warning
+    level, no write."""
     state = {"radarr:1001": {"movie_id": 1, "days": 6, "stage": 1,
                              "original_profile_id": 7,
+                             "last_counted": "2026-06-05", "parked": False,
+                             "title": "Movie"}}
+    acts = qf.plan_movies("radarr", [], {}, FB, state, TODAY, NOW)
+    assert [a["action"] for a in acts] == ["orphaned_in_fallback"]
+    assert acts[0]["to_profile"] == 7
+    assert state == {}
+
+
+def test_deleted_stage_zero_movie_drops_silently():
+    """At stage 0 nothing was changed in radarr, so there is nothing to say."""
+    state = {"radarr:1001": {"movie_id": 1, "days": 2, "stage": 0,
+                             "original_profile_id": None,
                              "last_counted": "2026-06-05", "parked": False,
                              "title": "Movie"}}
     acts = qf.plan_movies("radarr", [], {}, FB, state, TODAY, NOW)
@@ -571,3 +587,160 @@ def test_bootstrap_creates_and_updates():
             nm = item["quality"]["name"] if item.get("quality") else item["name"]
             if nm in qf.BANNED:
                 assert item["allowed"] is False
+
+
+# ---------------------------------------------------------------------------
+# A failed fetch must not look like an empty one (arbiter fix 2026-08-03)
+# ---------------------------------------------------------------------------
+
+def test_tv_fetch_failure_does_not_wipe_the_day_counters(tmp_path, monkeypatch):
+    """THE DEFECT: _fetch_paged swallowed every non-200 and returned [], so a
+    transient 500 from Sonarr on /wanted/missing was indistinguishable from
+    "nothing is missing". plan_tv then pruned every state key not in the
+    fetched set -- wiping ALL TV day counters and alerted flags for that
+    instance -- and the run still exited 0 / Kuma green.
+
+    Measured on the real module before the fix, with radarr/radarr2 healthy and
+    only the sonarrs answering 500:
+        TV before        {'sonarr2:7001': 13, 'sonarr:9001': 14, 'sonarr:9002': 9}
+        TV after         {}
+        _run_had_failures  False
+    The wipe was durable -- save_state persisted the emptied dict."""
+    _isolate_notify(monkeypatch, tmp_path)
+    broken = {("GET", "/wanted/missing"): (500, {"error": "boom"})}
+    clients = {"radarr": FakeClient(_radarr_routes([], [])),
+               "radarr2": FakeClient(_radarr_routes([], [])),
+               "sonarr": FakeClient(broken),
+               "sonarr2": FakeClient(_empty_tv_routes())}
+    state_path = tmp_path / "state.json"
+    before = {"movies": {},
+              "tv": {"sonarr:9001": {"days": 14, "last_counted": "2026-06-05",
+                                     "alerted": True, "parked": False},
+                     "sonarr:9002": {"days": 9, "last_counted": "2026-06-05",
+                                     "alerted": True, "parked": False}}}
+    qf.save_state(state_path, before)
+    res = qf.run(client_factory=lambda slug: clients[slug],
+                 state_path=state_path, now=NOW, dry_run=False)
+
+    after = qf.load_state(state_path)["tv"]
+    assert after == before["tv"], ("counters were pruned on unverified data",
+                                   after)
+    assert res["tv_per_arr"]["sonarr"]["status"] == "failed-wanted-missing"
+    assert qf._run_had_failures(res) is True, res
+    assert clients["sonarr"].writes == []
+
+
+def test_a_healthy_tv_instance_still_prunes(tmp_path, monkeypatch):
+    """MUTATION PROOF. The prune is correct behaviour on VERIFIED data -- an
+    episode that was grabbed must leave the state -- so the fix must not be a
+    blanket "never prune"."""
+    _isolate_notify(monkeypatch, tmp_path)
+    clients = {"radarr": FakeClient(_radarr_routes([], [])),
+               "radarr2": FakeClient(_radarr_routes([], [])),
+               "sonarr": FakeClient(_tv_routes([])),
+               "sonarr2": FakeClient(_empty_tv_routes())}
+    state_path = tmp_path / "state.json"
+    qf.save_state(state_path, {"movies": {}, "tv": {
+        "sonarr:9001": {"days": 14, "last_counted": "2026-06-05",
+                        "alerted": True, "parked": False}}})
+    res = qf.run(client_factory=lambda slug: clients[slug],
+                 state_path=state_path, now=NOW, dry_run=False)
+    assert qf.load_state(state_path)["tv"] == {}
+    assert qf._run_had_failures(res) is False, res
+
+
+def test_movie_wanted_missing_failure_is_also_a_failure(tmp_path, monkeypatch):
+    _isolate_notify(monkeypatch, tmp_path)
+    routes = dict(_radarr_routes([], []))
+    routes[("GET", "/wanted/missing")] = (503, {"error": "boom"})
+    clients = _mk_clients(routes)
+    res = qf.run(client_factory=lambda slug: clients[slug],
+                 state_path=tmp_path / "state.json", now=NOW, dry_run=False)
+    assert res["per_arr"]["radarr"]["status"] == "failed-wanted-missing"
+    assert qf._run_had_failures(res) is True
+    assert clients["radarr"].writes == []
+
+
+def test_a_mid_pagination_failure_is_not_a_complete_answer():
+    """Partial data must never be treated as the whole set -- it is the prune
+    input."""
+    class _Paging:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, path, **kw):
+            self.calls += 1
+            if self.calls == 1:
+                return 200, {"records": [{"id": 1}], "totalRecords": 5}
+            return 500, {"error": "boom"}
+
+    ok, records = qf._fetch_paged(_Paging(), "/wanted/missing", page_size=1)
+    assert ok is False
+    assert len(records) == 1
+
+
+# ---------------------------------------------------------------------------
+# Re-add must not strand a movie on a fallback profile (arbiter fix)
+# ---------------------------------------------------------------------------
+
+def test_a_readded_movie_keeps_its_stage_and_original_profile():
+    """THE DEFECT: Phase 1 looked the record up by movie_id only, so a
+    delete-and-re-add (operator cleanup, a declined/re-made Seerr request)
+    dropped a stage-2 record while the movie was still sitting on QFlix
+    Fallback SD. original_profile_id -- the only record of its real profile --
+    went with it, Phase 2 re-created the record at stage 0 in the SAME run, and
+    five days later recorded the FALLBACK profile as the original. Every future
+    restore then pinned the movie to SD.
+
+    Reproduced end to end before the fix: real profile 4, radarr on 12, the
+    module recorded original_profile_id=12."""
+    readded = mk_movie(mid=981, tmdb=603, profile=91)   # new id, still on SD
+    state = {"radarr:603": {"movie_id": 500, "days": 12, "stage": 2,
+                            "original_profile_id": 4,
+                            "last_counted": "2026-06-05", "parked": False,
+                            "title": "The Matrix"}}
+    acts = qf.plan_movies("radarr", [readded], {981: readded}, FB, state,
+                          TODAY, NOW)
+    rec = state["radarr:603"]
+    assert rec["stage"] == 2, "the re-add reset the stage"
+    assert rec["original_profile_id"] == 4, "the real profile was lost"
+    assert rec["movie_id"] == 981, "the record still points at the dead id"
+    assert [a["action"] for a in acts] == [], acts
+
+
+def test_the_readd_fix_does_not_resurrect_a_genuine_deletion():
+    """MUTATION PROOF: same record, movie absent from radarr entirely."""
+    state = {"radarr:603": {"movie_id": 500, "days": 12, "stage": 2,
+                            "original_profile_id": 4,
+                            "last_counted": "2026-06-05", "parked": False,
+                            "title": "The Matrix"}}
+    acts = qf.plan_movies("radarr", [], {}, FB, state, TODAY, NOW)
+    assert state == {}
+    assert [a["action"] for a in acts] == ["orphaned_in_fallback"]
+
+
+# ---------------------------------------------------------------------------
+# --emit-json is READ-ONLY (arbiter fix)
+# ---------------------------------------------------------------------------
+
+def test_emit_json_issues_no_arr_writes(tmp_path, monkeypatch):
+    """Everywhere else under scripts/mcp/ --emit-json means "read and print
+    JSON". Here it ran the full LIVE mutation path and always exited 0."""
+    _isolate_notify(monkeypatch, tmp_path)
+    due = mk_movie(mid=1, profile=7)
+    clients = _mk_clients(_radarr_routes([due], [due]))
+    state_path = tmp_path / "state.json"
+    qf.save_state(state_path, {"movies": {
+        "radarr:1001": {"movie_id": 1, "days": 4, "stage": 0,
+                        "original_profile_id": None,
+                        "last_counted": "2026-06-05", "parked": False,
+                        "title": "Movie"}}, "tv": {}})
+    monkeypatch.setattr(qf, "ArrClient", lambda slug, ver: clients[slug])
+    monkeypatch.setattr(qf, "STATE_PATH", state_path)
+    monkeypatch.setattr(sys, "argv", ["quality_fallback.py", "--emit-json"])
+    rc = qf.main()
+    assert rc == 0
+    assert all(c.writes == [] for c in clients.values()), {
+        s: c.writes for s, c in clients.items()}
+    # And the counters must not have advanced on disk either.
+    assert qf.load_state(state_path)["movies"]["radarr:1001"]["days"] == 4
