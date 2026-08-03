@@ -1,0 +1,14 @@
+[Unit]
+Description=Manitoba canary — Plex unmatched items (hourly)
+
+[Timer]
+# Hourly, not every-15min. The defect is measured in days (the live findings
+# were 76h to 527h old) and each run pulls ~1 MB per TV section off Plex, so a
+# tighter cadence buys nothing and costs a scan of the whole episode table.
+# Offset off :00 so it does not land on top of the other hourly canaries.
+OnCalendar=*:07
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
