@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — Prowlarr app-sync integrity + grab-path regression lock
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push prowlarr-app-sync
+StandardOutput=journal
+StandardError=journal
