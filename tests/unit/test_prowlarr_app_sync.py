@@ -303,6 +303,12 @@ def _run(secrets_dir, args=(), **env_extra):
     env = dict(os.environ)
     env["MANITOBA_SECRETS"] = str(secrets_dir)
     env["QFLIX_CANARY_APPSYNC_TIMEOUT_S"] = "10"
+    # PIN THE WINDOW OUT by default. The canary's wall-clock leg reads the real
+    # UTC clock, so without this pin every transport-class test below (Prowlarr
+    # unreachable, *arr 500, non-JSON body) would flip from exit 2 to a
+    # suppressed exit 0 for four hours every Monday -- a suite whose verdict
+    # depends on the day of the week. The window tests set it explicitly.
+    env["QFLIX_CANARY_APPSYNC_FORCE_WINDOW"] = "0"
     for k, v in env_extra.items():
         if v is None:
             env.pop(k, None)
@@ -892,3 +898,319 @@ def test_a_magnet_only_finding_also_stays_inside_the_kuma_budget(
     line = [ln for ln in r.stderr.splitlines() if ln.strip()][0]
     assert len(line) <= 200, (len(line), line)
     assert "intended=" in line, line
+
+
+# ===========================================================================
+# 7. MAINTENANCE WINDOW — suppress the transport, never the config
+# ===========================================================================
+# The Monday 11:00-15:00 UTC window stops/upgrades/restarts apps on purpose, so
+# "Prowlarr unreachable" then is expected, not a fault. Every test in this
+# section is a PAIR: the same fixture in-window and out-of-window, because a
+# suppression that fires unconditionally is indistinguishable from a canary
+# that was quietly switched off.
+
+
+def _closed_port():
+    """A port nothing is listening on -- connect() gets refused immediately."""
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def _in_wallclock_window():
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    return now.weekday() == 0 and 11 <= now.hour < 15
+
+
+# --- transport: suppressed in-window, pages out-of-window -------------------
+
+
+def test_prowlarr_unreachable_is_suppressed_in_window(tmp_path):
+    """THE FIX. Prowlarr is mid-restart, connect() is refused, and at 12:00 on a
+    Monday that is exactly what the window is doing to it."""
+    r = _run(_secrets(tmp_path, _closed_port()),
+             QFLIX_CANARY_APPSYNC_TIMEOUT_S="2",
+             QFLIX_CANARY_APPSYNC_FORCE_WINDOW="1")
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert r.stdout.startswith("SUPPRESSED: prowlarr-app-sync"), r.stdout
+    assert "window_suppressed=1" in r.stdout, r.stdout
+    assert "suppressed_stage=prowlarr-appsync-prowlarr-down" in r.stdout, r.stdout
+    assert "class=transport" in r.stdout, r.stdout
+    # An exit 0 that means "we could not look" must never wear the word PASS.
+    assert not r.stdout.startswith("PASS"), r.stdout
+
+
+def test_the_identical_failure_pages_out_of_window(tmp_path):
+    """The other half of the pair. Without this the test above is satisfied by
+    a canary that suppresses everything, always."""
+    r = _run(_secrets(tmp_path, _closed_port()),
+             QFLIX_CANARY_APPSYNC_TIMEOUT_S="2",
+             QFLIX_CANARY_APPSYNC_FORCE_WINDOW="0")
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert _stage(r) == "prowlarr-appsync-prowlarr-down", r.stderr
+    assert "SUPPRESSED" not in r.stdout, r.stdout
+    assert "window_suppressed" not in r.stdout, r.stdout
+
+
+def test_an_arr_5xx_is_suppressed_in_window_but_not_outside_it(tmp_path, stack):
+    """A half-started *arr behind its own proxy answers 502/503. 5xx is the
+    service saying "not yet", which during the window is the truth."""
+    s = _wire(stack(), arr_status=503)
+    secrets = _secrets(tmp_path, s.port)
+    inside = _run(secrets, QFLIX_CANARY_APPSYNC_FORCE_WINDOW="1")
+    assert inside.returncode == 0, (inside.stdout, inside.stderr)
+    assert "suppressed_stage=prowlarr-appsync-arr-down" in inside.stdout
+    assert "http-503" in inside.stdout, inside.stdout
+
+    outside = _run(secrets, QFLIX_CANARY_APPSYNC_FORCE_WINDOW="0")
+    assert outside.returncode == 2, (outside.stdout, outside.stderr)
+    assert _stage(outside) == "prowlarr-appsync-arr-down", outside.stderr
+
+
+def test_a_non_json_body_is_suppressed_in_window_but_not_outside_it(
+        tmp_path, stack):
+    """The "Application is starting up" HTML page: unreachability that happens
+    to arrive with a 200. Suppressed in-window, deliberately -- and still the
+    hard BROKEN it always was the rest of the week."""
+    s = stack()
+    _wire(s)
+    s.route("/prowlarr/api/v1/indexer", b"<html>starting up</html>", key=PROW_KEY)
+    secrets = _secrets(tmp_path, s.port)
+    inside = _run(secrets, QFLIX_CANARY_APPSYNC_FORCE_WINDOW="1")
+    assert inside.returncode == 0, (inside.stdout, inside.stderr)
+    assert "non-json-body" in inside.stdout, inside.stdout
+
+    outside = _run(secrets, QFLIX_CANARY_APPSYNC_FORCE_WINDOW="0")
+    assert outside.returncode == 2, (outside.stdout, outside.stderr)
+    assert _stage(outside) == "prowlarr-appsync-prowlarr-down", outside.stderr
+
+
+# --- the line: config faults are NOT suppressed, in-window or out -----------
+
+
+def test_a_missing_indexer_still_pages_at_1200_utc_on_a_monday(tmp_path, stack):
+    """THE LINE. A missing indexer is a config fault: it was missing before the
+    window opened and it will be missing after it closes. Restarting Radarr does
+    not add LimeTorrents to it. If the window could silence THIS, the canary
+    would be blind for four hours a week to the exact fault it was built for --
+    the one that already ran ten weeks unnoticed."""
+    s = _wire(stack())
+    r = _run(_secrets(tmp_path, s.port), QFLIX_CANARY_APPSYNC_FORCE_WINDOW="1")
+    assert r.returncode == 1, (r.returncode, r.stdout, r.stderr)
+    assert _stage(r) == "prowlarr-appsync-missing", r.stderr
+    assert "Radarr:LimeTorrents" in r.stderr, r.stderr
+    assert "SUPPRESSED" not in r.stdout, r.stdout
+
+
+def test_a_4xx_is_an_answer_and_still_pages_in_window(tmp_path, stack):
+    """THE LINE, drawn inside the transport classifier itself. 401 is not a
+    transport failure -- it is the service answering, correctly, that the key is
+    wrong. A restart does not change an API key, so a 401 at 12:00 UTC on Monday
+    is the same misconfiguration it would be at 03:00 on Thursday."""
+    s = _wire(stack())
+    r = _run(_secrets(tmp_path, s.port, prowlarr_key="wrong"),
+             QFLIX_CANARY_APPSYNC_FORCE_WINDOW="1")
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert _stage(r) == "prowlarr-appsync-prowlarr-down", r.stderr
+    assert "http-401" in r.stderr, r.stderr
+    assert "SUPPRESSED" not in r.stdout, r.stdout
+
+
+def test_a_valid_json_body_of_the_wrong_shape_still_pages_in_window(
+        tmp_path, stack):
+    """not-a-list is an API contract change, not a blip. Suppressing it would
+    let a Prowlarr major version quietly disable this canary for four hours and
+    then page confusingly at 15:01."""
+    s = stack()
+    _wire(s)
+    s.route("/prowlarr/api/v1/applications", {"error": "nope"}, key=PROW_KEY)
+    r = _run(_secrets(tmp_path, s.port), QFLIX_CANARY_APPSYNC_FORCE_WINDOW="1")
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert _stage(r) == "prowlarr-appsync-prowlarr-down", r.stderr
+    assert "not-a-list" in r.stderr, r.stderr
+
+
+def test_no_config_fault_is_suppressible_by_any_window_state(tmp_path, stack):
+    """Sweeps every non-transport exit the script has. Each is driven in-window
+    and must produce its own STAGE, never a suppression. A per-case list rather
+    than a spot check, because the suppression is opt-in per call site and a
+    future edit adding a `reason=` to the wrong one is exactly the silent
+    regression this asserts against."""
+    cases = []
+
+    def _dir(tag):
+        d = tmp_path / tag
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    s1 = _wire(stack())
+    cases.append(("prowlarr-appsync-config-missing", 2,
+                  _secrets(_dir("a"), s1.port, omit=("prowlarr.key",))))
+
+    s2 = stack()
+    _wire(s2, apps=[])
+    cases.append(("prowlarr-appsync-no-apps", 2,
+                  _secrets(_dir("b"), s2.port)))
+
+    s3 = stack()
+    _wire(s3, indexers=[dict(i, enable=False) for i in live_indexers()])
+    cases.append(("prowlarr-appsync-no-indexers", 2,
+                  _secrets(_dir("c"), s3.port)))
+
+    s4 = stack()
+    _wire(s4, apps=[application(2, "Mystery", "Sonarr4", [3], "radarr",
+                                MOVIE_CATS, base=s4.base)],
+          arr_lists={"radarr": []})
+    cases.append(("prowlarr-appsync-unknown-app", 2,
+                  _secrets(_dir("d"), s4.port)))
+
+    s5 = _wire(stack())
+    keys = dict(ARR_KEYS)
+    keys.pop("radarr")
+    cases.append(("prowlarr-appsync-arr-down", 2,
+                  _secrets(_dir("e"), s5.port, arr_keys=keys)))
+
+    s6 = _wire(stack(), arr_lists=live_arr_lists(limetorrents_in_radarr=True))
+    cases.append(("prowlarr-appsync-magnet-pref-off", 1,
+                  _secrets(_dir("f"), s6.port)))
+
+    for stage, code, secrets in cases:
+        r = _run(secrets, QFLIX_CANARY_APPSYNC_FORCE_WINDOW="1")
+        assert r.returncode == code, (stage, r.returncode, r.stdout, r.stderr)
+        assert _stage(r) == stage, (stage, r.stderr)
+        assert "SUPPRESSED" not in r.stdout, (stage, r.stdout)
+        assert "window_suppressed" not in r.stdout, (stage, r.stdout)
+
+
+# --- counted and logged, never silent --------------------------------------
+
+
+def test_the_suppression_is_counted_and_logged_on_both_streams(tmp_path):
+    """Operator law: a suppression that leaves no trace is indistinguishable
+    from a canary that stopped running. stdout carries the count into Kuma
+    (cli.py forwards stdout verbatim as msg= on exit 0); stderr carries the same
+    line into journald, so it survives independently of Kuma retention."""
+    r = _run(_secrets(tmp_path, _closed_port()),
+             QFLIX_CANARY_APPSYNC_TIMEOUT_S="2",
+             QFLIX_CANARY_APPSYNC_FORCE_WINDOW="1")
+    assert r.returncode == 0
+    for stream_name, stream in (("stdout", r.stdout), ("stderr", r.stderr)):
+        assert "window_suppressed=1" in stream, (stream_name, stream)
+        assert "suppressed_stage=prowlarr-appsync-prowlarr-down" in stream, (
+            stream_name, stream)
+        assert "window_leg=forced-on" in stream, (stream_name, stream)
+    # And the Kuma msg= budget still holds -- cli.py truncates at 200.
+    line = [ln for ln in r.stdout.splitlines() if ln.strip()][0]
+    assert len(line) <= 200, (len(line), line)
+
+
+def test_the_json_detail_carries_the_suppression_block(tmp_path, stack):
+    """--json is the operator's full-detail surface. A suppression that only
+    existed in the one-line message would be invisible exactly where someone is
+    looking hardest."""
+    s = _wire(stack(), arr_status=503)
+    r = _run(_secrets(tmp_path, s.port), args=("--json",),
+             QFLIX_CANARY_APPSYNC_FORCE_WINDOW="1")
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    payload = json.loads(r.stdout.split("\nSUPPRESSED:")[0])
+    block = payload["window_suppressed"]
+    assert block["count"] == 1, block
+    assert block["stage"] == "prowlarr-appsync-arr-down", block
+    assert block["class"] == "transport", block
+    assert block["leg"] == "forced-on", block
+
+
+# --- the real mechanism, not just the test knob ----------------------------
+
+
+@pytest.mark.skipif(os.name != "posix",
+                    reason="the lockfile leg liveness-checks a PID via kill(0)")
+def test_a_live_lockfile_suppresses_without_the_force_knob(tmp_path):
+    """FORCE_WINDOW is a test affordance; the lockfile is the production
+    mechanism. If only the knob were tested, the canary could ship with a window
+    gate that never fires in production and every test would still be green."""
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "lock").write_text("%d\n2026-08-03T11:00:00Z\n" % os.getpid(),
+                                encoding="utf-8")
+    r = _run(_secrets(tmp_path, _closed_port()),
+             QFLIX_CANARY_APPSYNC_TIMEOUT_S="2",
+             QFLIX_CANARY_APPSYNC_FORCE_WINDOW=None,
+             MANITOBA_STATE_DIR=str(state))
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert "window_suppressed=1" in r.stdout, r.stdout
+    # Either the canonical lib.suppression leg or the direct lockfile leg may
+    # answer first; both are the lockfile, and neither is the wall clock.
+    assert ("window_leg=suppression-in_maintenance_window" in r.stdout
+            or "window_leg=lock-live-pid" in r.stdout), r.stdout
+
+
+@pytest.mark.skipif(os.name != "posix",
+                    reason="the lockfile leg liveness-checks a PID via kill(0)")
+def test_the_lockfile_leg_still_works_with_the_maint_lib_unavailable(tmp_path):
+    """Leg (c) in isolation: mid-deploy, scripts/maint may not be importable.
+    The gate must survive that, which is the whole reason it has three legs."""
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "lock").write_text("%d\n" % os.getpid(), encoding="utf-8")
+    r = _run(_secrets(tmp_path, _closed_port()),
+             QFLIX_CANARY_APPSYNC_TIMEOUT_S="2",
+             QFLIX_CANARY_APPSYNC_FORCE_WINDOW=None,
+             QFLIX_CANARY_APPSYNC_MAINT_LIB="",
+             MANITOBA_STATE_DIR=str(state))
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert "window_leg=lock-live-pid" in r.stdout, r.stdout
+
+
+@pytest.mark.skipif(os.name != "posix",
+                    reason="the lockfile leg liveness-checks a PID via kill(0)")
+def test_a_leaked_lock_does_not_suppress(tmp_path):
+    """A lock whose owner died is not a window -- it is litter. Honouring it
+    would mute this canary until the Monday 15:00 watchdog swept it, which on a
+    Tuesday is six days of silence."""
+    if _in_wallclock_window():
+        pytest.skip("wall-clock leg is legitimately in-window right now")
+    dead = subprocess.Popen(["python3", "-c", "pass"])
+    dead.wait()
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "lock").write_text("%d\n" % dead.pid, encoding="utf-8")
+    r = _run(_secrets(tmp_path, _closed_port()),
+             QFLIX_CANARY_APPSYNC_TIMEOUT_S="2",
+             QFLIX_CANARY_APPSYNC_FORCE_WINDOW=None,
+             MANITOBA_STATE_DIR=str(state))
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert _stage(r) == "prowlarr-appsync-prowlarr-down", r.stderr
+
+
+def test_an_unusable_maint_lib_fails_OPEN_and_still_pages(tmp_path):
+    """FAIL DIRECTION. This gate silences an alert, so anything it cannot
+    determine must resolve to "page", not to "stay quiet". Points leg (b) at a
+    path with no suppression.py and gives leg (c) no lock: the canary must
+    report the outage and name the unavailable leg rather than swallow it."""
+    if _in_wallclock_window():
+        pytest.skip("wall-clock leg is legitimately in-window right now")
+    state = tmp_path / "empty-state"
+    state.mkdir()
+    r = _run(_secrets(tmp_path, _closed_port()),
+             QFLIX_CANARY_APPSYNC_TIMEOUT_S="2",
+             QFLIX_CANARY_APPSYNC_FORCE_WINDOW=None,
+             QFLIX_CANARY_APPSYNC_MAINT_LIB=str(tmp_path / "nowhere"),
+             MANITOBA_STATE_DIR=str(state))
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert _stage(r) == "prowlarr-appsync-prowlarr-down", r.stderr
+    assert "suppression-unavailable" in r.stderr, r.stderr
+
+
+def test_the_window_knobs_are_documented_in_the_header():
+    """Same contract the STAGE-label test enforces: a knob that exists only in
+    code is a knob nobody knows to reach for."""
+    src = SCRIPT.read_text(encoding="utf-8")
+    header = src.split("set -uo pipefail", 1)[0]
+    for knob in ("QFLIX_CANARY_APPSYNC_FORCE_WINDOW",
+                 "QFLIX_CANARY_APPSYNC_MAINT_LIB",
+                 "MANITOBA_STATE_DIR"):
+        assert knob in header, knob
