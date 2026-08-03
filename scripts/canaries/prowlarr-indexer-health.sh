@@ -70,12 +70,12 @@ RES=$(sshm '
 set -uo pipefail
 SECRETS=~/secrets
 # 25, reconciled 2026-08-03. The code said 40 while BOTH doc surfaces (this
-# script's header and manifest/apps.yaml) said 25 — three surfaces, two values,
+# script header and manifest/apps.yaml) said 25 — three surfaces, two values,
 # the "prompt and rules are two policy surfaces" failure again. Reconciled DOWN
 # to the documented 25 because it is the more sensitive of the two and this
 # probe has never once fired. Counts LOG LINES (~10 per grab failure).
 THRESHOLD=${PROWLARR_CASCADE_429_THRESHOLD:-25}
-# 20m, widened from 10m 2026-08-03: must exceed the timer's worst-case run
+# 20m, widened from 10m 2026-08-03: must exceed the worst-case timer run
 # spacing (OnCalendar=*:0/15 + 2x RandomizedDelaySec=60 = 17m) or bursts fall
 # into the gap between ticks. See the header.
 WINDOW=${PROWLARR_CASCADE_WINDOW:-20m}
