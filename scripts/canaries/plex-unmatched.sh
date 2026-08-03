@@ -369,17 +369,28 @@ def _join_capped(parts, limit, sep=";"):
 
     A plain `[:limit]` slice cuts mid-token — the first draft of this canary
     emitted `... S1E2 5` where the age was `527.0h`, which reads as a different
-    (and wrong) number rather than as an obvious truncation."""
+    (and wrong) number rather than as an obvious truncation.
+
+    The marker counts against the budget as well: a "+N more" that overflows is
+    itself sliced by cli.py, which reintroduces exactly the mid-token cut."""
+    parts = list(parts)
     out = []
     used = 0
-    for i, part in enumerate(parts):
+    for part in parts:
         cost = len(part) + (len(sep) if out else 0)
         if used + cost > limit:
-            return sep.join(out) + ("%s+%d more" % (sep, len(parts) - i) if out
-                                    else "+%d more" % (len(parts) - i))
+            break
         out.append(part)
         used += cost
-    return sep.join(out)
+    else:
+        return sep.join(out)
+    while True:
+        dropped = len(parts) - len(out)
+        marker = ("%s+%d more" % (sep, dropped)) if out else "+%d more" % dropped
+        if not out or used + len(marker) <= limit:
+            return sep.join(out) + marker
+        last = out.pop()
+        used -= len(last) + (len(sep) if out else 0)
 
 report = {
     "canary": "plex-unmatched",
