@@ -136,6 +136,12 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-kometa-deploy-drift.timer \
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.service \
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.timer \
+    scripts/maint/systemd/manitoba-maint-canary-prowlarr-app-sync.service \
+    scripts/maint/systemd/manitoba-maint-canary-prowlarr-app-sync.timer \
+    scripts/maint/systemd/manitoba-maint-canary-plex-unmatched.service \
+    scripts/maint/systemd/manitoba-maint-canary-plex-unmatched.timer \
+    scripts/maint/systemd/manitoba-maint-canary-rea-liveness.service \
+    scripts/maint/systemd/manitoba-maint-canary-rea-liveness.timer \
     scripts/maint/systemd/manitoba-maint-flaresolverr-canary.service \
     scripts/maint/systemd/manitoba-maint-flaresolverr-canary.timer \
     scripts/maint/flaresolverr-canary.py \
@@ -219,9 +225,13 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/tdarr-healthcheck.sh \
     scripts/canaries/ucc-gate-stuck.sh \
     scripts/canaries/dash-asset-integrity.sh \
+    scripts/canaries/prowlarr-app-sync.sh \
+    scripts/canaries/plex-unmatched.sh \
+    scripts/canaries/rea-liveness.sh \
     scripts/configure/55-kometa-install.sh \
     manifest/apps.yaml \
     manifest/jobs.yaml \
+    manifest/rea-noise-classes.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
 
 # Move staged files into the right places (idempotent — overwrites).
@@ -325,6 +335,14 @@ cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.
 cp -f   "$STG"/manifest/jobs.yaml                 ~/.opt/maint/jobs.yaml
+# rea-noise-classes.yaml carries `deadman_reasons` — the vocabulary of REA
+# failure reasons, mirrored from qflix-rea.ps1's $Script:DeadmanReasons for
+# audit detector C-09. The rea-liveness canary reads it to LABEL a failure
+# reason known-vs-drift. It degrades gracefully when absent (still reds on a
+# fail, and counts the degradation as `reason-table-unavailable`), but staging
+# it costs one file and restores the enrichment — and keeps the box's copy from
+# drifting away from the PowerShell constant it mirrors.
+cp -f   "$STG"/manifest/rea-noise-classes.yaml    ~/.opt/maint/rea-noise-classes.yaml
 rm -rf  "$STG"
 STAGE
 
@@ -458,6 +476,12 @@ for unit in \
     manitoba-maint-canary-kometa-deploy-drift.timer \
     manitoba-maint-canary-prowlarr-indexer-health.service \
     manitoba-maint-canary-prowlarr-indexer-health.timer \
+    manitoba-maint-canary-prowlarr-app-sync.service \
+    manitoba-maint-canary-prowlarr-app-sync.timer \
+    manitoba-maint-canary-plex-unmatched.service \
+    manitoba-maint-canary-plex-unmatched.timer \
+    manitoba-maint-canary-rea-liveness.service \
+    manitoba-maint-canary-rea-liveness.timer \
     manitoba-maint-flaresolverr-canary.service \
     manitoba-maint-flaresolverr-canary.timer \
     manitoba-maint-canary-hardlink-integrity.service \
@@ -552,6 +576,28 @@ systemctl --user enable --now manitoba-maint-canary-kometa-deploy-drift.timer
 # prowlarr-indexer-health: 429-cascade and chronic-RSS-stale detector.
 # Detect-only — never disables an indexer or restarts FlareSolverr.
 systemctl --user enable --now manitoba-maint-canary-prowlarr-indexer-health.timer
+# prowlarr-app-sync: the CONFIG half of the same surface — every indexer
+# Prowlarr intends to sync is actually present in that *arr, and the two
+# indexers with a diagnosed 403'ing proxy download path still prefer magnets.
+# Deliberately a separate timer from the canary above: that one reads logs and
+# Prowlarr /api/v1/health, which is `[]` for both faults here.
+# EXPECT THIS RED on the first tick until step 1 of
+# docs/prowlarr-indexer-remediation-2026-08-03.md is applied — the red IS the
+# acceptance test for that runbook.
+systemctl --user enable --now manitoba-maint-canary-prowlarr-app-sync.timer
+# plex-unmatched: episodes stuck on a `local://` guid (scanner beat the agent
+# match), so the member gets no synopsis, no artwork and no air date. Detect
+# only — the remedy destroys ratingKeys and watch state, so it stays an operator
+# decision. Expect ~30 aged findings on the first live run; that is the audit's
+# measured backlog, not a canary fault.
+systemctl --user enable --now manitoba-maint-canary-plex-unmatched.timer
+# rea-liveness: the dead-man for the operator workstation's Random Error Audit,
+# the one component that does not run on this box and has never been watched.
+# The judgement runs HERE so the alarm never depends on REA being healthy enough
+# to diagnose itself. UNTIL the writer half lands in qflix-rea.ps1 this exits 2
+# with STAGE=rea-heartbeat-absent — accurate, actionable, and pushed every hour,
+# which is the point. Land the writer first if you want to deploy into green.
+systemctl --user enable --now manitoba-maint-canary-rea-liveness.timer
 # flaresolverr-canary: probes /  and /v1 every 5 min. On failure, calls
 # `app-flaresolverr restart` (capped 3/hour) and waits up to 120s for
 # Chromium subprocess to come back. Catches the silent-socket-stall mode
@@ -812,7 +858,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health tautulli-plex-link quota hardlink-integrity plex-transcoder newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity plex-transcoder plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"

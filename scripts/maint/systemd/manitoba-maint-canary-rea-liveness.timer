@@ -1,0 +1,15 @@
+[Unit]
+Description=Manitoba canary - REA liveness (hourly)
+
+[Timer]
+# Hourly is generous relative to the predicates: P1/P2 carry a 336h cap and P3
+# only changes when REA itself runs (median gap between REA runs is measured in
+# days). The probe is a stat plus a single-line read, so the cheap cadence buys
+# a same-hour surface for P3 at no cost. Persistent=true so a box reboot does
+# not silently skip the window in which REA last failed.
+OnCalendar=hourly
+RandomizedDelaySec=240
+Persistent=true
+
+[Install]
+WantedBy=timers.target

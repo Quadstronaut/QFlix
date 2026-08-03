@@ -598,16 +598,62 @@ canaries:
     # Detects two recurring patterns surfaced by the 2026-05-09 and
     # 2026-05-16 audits that nothing previously alerted on:
     #   - prowlarr-429-cascade : >threshold (default 25) HTTP 429s from
-    #     the *arr stack in a 10-min window — single upstream indexer
+    #     the *arr stack in a 20-min window — single upstream indexer
     #     disable rippling across sonarr/sonarr2/radarr/radarr2
     #   - indexer-rss-stale : Prowlarr health endpoint reports chronic
     #     indexer-down warnings (matches the nekoBT-since-2026-05-12
     #     case from WARN.md)
     # Detect-and-notify only. The FlareSolverr canary already handles
     # listener-failure restarts upstream of this.
+    #
+    # WINDOW RETUNED 10m -> 20m ON 2026-08-03. The timer is OnCalendar=*:0/15
+    # with RandomizedDelaySec=60, so consecutive runs land up to 17m apart and a
+    # 10m lookback left >=5 minutes of every cycle unobserved. On 2026-08-02 the
+    # Knaben 403->500->backoff->429 chain produced 10-minute buckets of
+    # 234/177/126/108/86/79 lines and this canary stayed exit 0 through all of
+    # them. The count is LOG LINES, not events: one failed grab emits ~10
+    # matching stack-trace records, so 25 is ~2-3 real failures. Both numbers are
+    # pinned against this file and the real timer by
+    # tests/unit/test_prowlarr_indexer_health_tuning.py, which exists because
+    # the threshold previously read 25 here and in the script header while the
+    # code said 40 — the two-policy-surface defect, three surfaces deep.
+    #
+    # NOT IN SCOPE HERE, deliberately: both probes are LOG- and HEALTH-derived,
+    # and Prowlarr /api/v1/health is [] for config faults. Indexer-sync
+    # integrity and the broken proxy download path are the prowlarr-app-sync
+    # canary's concern, per the compartmentalize design law.
     kuma_monitor: "Canary Prowlarr Indexer Health"
     script: "scripts/canaries/prowlarr-indexer-health.sh"
     schedule: "every-15min"
+  prowlarr-app-sync:
+    # Config-drift detector for the Prowlarr -> *arr handoff. Both probes are
+    # invisible to prowlarr-indexer-health.sh above, and NOT because it is
+    # mistuned — because Prowlarr's /api/v1/health is `[]` for both faults, so
+    # its numerator is structurally zero. A permanent, deterministic,
+    # operator-fixable fault must not sit behind a burst threshold that is green
+    # 99% of the time; that is exactly how fault (a) below hid for ten weeks.
+    #   - prowlarr-appsync-missing : an indexer Prowlarr INTENDS to sync
+    #     (enabled + tag-intersect + category-intersect) is absent from that
+    #     *arr. LimeTorrents has been missing from Radarr since at least
+    #     2026-05-22 — Prowlarr re-POSTs it every 6 h, Radarr's add-time RSS
+    #     validation returns 400 because the bundled `limetorrents` Cardigann
+    #     definition maps every /latest100 row to 8000/5000 and none to 2000,
+    #     and Prowlarr gives up. Radarr /health was [] the whole time.
+    #   - prowlarr-appsync-magnet-pref-off : a diagnosed indexer (Knaben, Tokyo
+    #     Toshokan) still has preferMagnetUrl=false, so the *arr prefers a proxy
+    #     downloadUrl that 403s -> 500 -> Prowlarr's own 15-min failure backoff
+    #     -> 429 -> Radarr logs "API Grab Limit reached" (a mislabel: no grab
+    #     limit is configured anywhere) and the grab silently fails.
+    # Every intentional exclusion is COUNTED and NAMED (skip_disabled /
+    # skip_notag / skip_nocat / orphan) so a regression shows up as a MOVE
+    # between buckets rather than an absence.
+    # Detect-and-notify only; the fix is a Prowlarr UI checkbox. Runbook:
+    # docs/prowlarr-indexer-remediation-2026-08-03.md.
+    # EXPECT IT RED ON ARRIVAL until step 1 of that runbook is applied — that is
+    # the acceptance test for the remediation, not a canary bug.
+    kuma_monitor: "Canary Prowlarr App Sync"
+    script: "scripts/canaries/prowlarr-app-sync.sh"
+    schedule: "hourly"
   hardlink-integrity:
     # Sample the 20 most-recently-modified video files across Movies + TV
     # Shows + Anime and assert linkcount >= 2 (= the *arr import used
@@ -934,3 +980,82 @@ canaries:
     kuma_monitor: "Canary Dash Asset Integrity"
     script: "scripts/canaries/dash-asset-integrity.sh"
     schedule: "every-15min"
+
+  plex-unmatched:
+    # Plex episodes stuck on a `local://` guid: the scanner created the episode
+    # row seconds BEFORE the show/season got its remote agent match, and Plex
+    # never revisited the stub. The member sees a correct-but-bare entry — no
+    # synopsis, no agent artwork (just a frame-grab thumbnail), no air date.
+    #
+    # Measured live 2026-08-03: 30 episodes across 2 sections — three COMPLETE
+    # first seasons (What We Do in the Shadows S1, Squid Game S1, Monster (2022)
+    # S1) plus one stray anime file — the oldest 527 h old. Sibling seasons of
+    # the same series matched fine, so this is a per-season race, not a bad
+    # filename and not a missing *arr record (Sonarr has all four complete).
+    #
+    # ZERO prior coverage: `git grep -nE "local://|unmatched|fix.?match|guid"`
+    # over scripts/ tests/ manifest/ returned nothing that inspects Plex match
+    # state. qflix-reaper's "orphan" is a different concept entirely (a Plex
+    # item with no backing *arr record, inside the DELETE path) and would never
+    # see these — all 30 have complete Sonarr records.
+    #
+    # NOT self-healing: all 29 TV items were refreshed 15 days after add and are
+    # still local://, and /library/metadata/{rk}/matches returns 0 candidates at
+    # episode level. DETECTION ONLY — the sole working remedy is unmatch+rematch
+    # at SERIES level, which recreates every episode row and discards
+    # ratingKeys, watch state and Tautulli history. That stays an operator
+    # decision with a named blast radius, not an automation.
+    #
+    # Grace window, not a raw count: a genuinely new import is legitimately
+    # local:// for the seconds-to-minutes between scan and agent match, so
+    # count>0 would flap on every Sonarr import. Alerts on items older than
+    # PLEX_UNMATCHED_GRACE_HOURS (default 6) — two orders of magnitude below the
+    # 76-527 h the real findings carry. Deliberately NOT a percentage: 1/63 in
+    # the Anime library is a whole stuck season and any ratio floor hides it.
+    # Sub-grace items are counted and printed, never silently dropped.
+    #
+    # Hourly: the defect is measured in days and each run pulls ~1 MB per show
+    # library (382 episodes in 963 KB / 0.12 s measured), so a tighter cadence
+    # buys nothing.
+    kuma_monitor: "Canary Plex Unmatched"
+    script: "scripts/canaries/plex-unmatched.sh"
+    schedule: "hourly"
+
+  rea-liveness:
+    # The one QFlix component that does NOT run on the box: qflix-rea.ps1 (the
+    # Random Error Audit) lives on the operator workstation, is gitignored, and
+    # is therefore invisible even to deploy-drift. Every QFlix audit to date was
+    # seedbox-scoped, so REA has NEVER been audited and nothing has ever watched
+    # whether it still runs. Measured over its whole life (72 runs,
+    # 2026-05-11..2026-08-03): 20 runs — 28% — failed with ZERO notification
+    # anywhere (18 all_models_noop, 1 no_secrets, 1 ssh_fail).
+    #
+    # ASYMMETRY IS THE WHOLE POINT. The judgement runs HERE, on the box, against
+    # a heartbeat REA writes over the SSH hop it already makes — so the alarm
+    # never depends on REA being well enough to diagnose itself. A Kuma push
+    # monitor was the obvious alternative and loses for exactly that reason: to
+    # distinguish "ran and audited" from "ran, exited 0, audited nothing" REA
+    # would have to WITHHOLD its own push, i.e. be healthy enough to correctly
+    # report itself unhealthy. All 20 silent failures above would have been
+    # GREEN under a push monitor.
+    #
+    # DEPLOY ORDERING IS LOAD-BEARING. Until the operator lands the writer half
+    # in qflix-rea.ps1 (a two-line addition to the bash heredoc REA already
+    # sends — see the script header and the track handoff), this canary exits 2
+    # with STAGE=rea-heartbeat-absent, msg
+    # "writer-not-wired-nothing-is-watching-rea". That is the TRUTH, loudly:
+    # nothing watches REA today. It is NOT the 2026-07-29 class of a monitor
+    # created with nothing pushing to it — the timer fires and pushes an
+    # accurate, actionable reason every hour. Preferably land the writer first
+    # and deploy into a green state.
+    #
+    # Threshold is measured, not guessed. REA is ONLOGON-triggered on a personal
+    # PC, so 71 real inter-run gaps: max 275 h, p95 102 h. False fires over that
+    # history — 72 h: 6, 168 h: 1, 336 h: 0. Default cap is 336 h, which makes
+    # the AGE predicate slow (up to two weeks) and honest; the VERDICT predicate
+    # is the fast one and reds the same hour REA records a failure. An
+    # unrecognised outcome token fails CLOSED (exit 2), because a watchdog that
+    # green-lights vocabulary it does not understand is not a watchdog.
+    kuma_monitor: "Canary REA Liveness"
+    script: "scripts/canaries/rea-liveness.sh"
+    schedule: "hourly"
