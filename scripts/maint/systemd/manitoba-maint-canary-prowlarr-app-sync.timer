@@ -1,0 +1,16 @@
+[Unit]
+Description=Manitoba canary — Prowlarr app-sync integrity (hourly)
+
+[Timer]
+# Hourly, not every-15min: both predicates are CONFIG state, not a burst.
+# An indexer missing from an *arr stays missing until an operator fixes it
+# (LimeTorrents has been absent from Radarr for ~10 weeks), and
+# preferMagnetUrl does not flap. Prowlarr's own ApplicationIndexerSync runs on
+# a 6-hour cycle, so hourly already samples six times per sync attempt while
+# costing six API calls an hour instead of twenty-four.
+OnCalendar=hourly
+RandomizedDelaySec=180
+Persistent=true
+
+[Install]
+WantedBy=timers.target

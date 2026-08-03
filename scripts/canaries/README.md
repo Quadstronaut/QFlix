@@ -25,7 +25,10 @@ request id and skips the cleanup step.
 - `movie.sh`              — Seerr → Radarr push test (creates+deletes a request, verifies externalServiceId)
 - `anime.sh`              — Seerr → Sonarr2 push test (same pattern, tv mediaType, seasons:[1])
 - `mobile-ux.sh`          — render-time check on the QFlix Dashboard public root (200 + `data-qflix-dash` marker, HTML <512KB); repointed off the retired Homarr board 2026-06-27
-- `prowlarr-indexer-health.sh` — detects *arr→Prowlarr 429 cascades + chronically-unavailable indexers (detect-and-notify)
+- `prowlarr-indexer-health.sh` — detects *arr→Prowlarr 429 cascades + chronically-unavailable indexers (detect-and-notify). Both probes are LOG- and HEALTH-derived. Retuned 2026-08-03: the lookback went 10m → **20m** because the timer is `OnCalendar=*:0/15` with `RandomizedDelaySec=60`, so runs land up to 17m apart and ≥5 minutes of every cycle went unobserved — the 2026-08-02 Knaben cascade produced 10-minute buckets of 234/177/126/108/86/79 and this canary stayed exit 0 through all of them. The threshold reconciled to **25** across all three surfaces (script header, script code, `manifest/apps.yaml`); it had read 25/40/25, the two-policy-surface defect three surfaces deep. The count is log **LINES**, not events — one failed grab emits ~10 stack-trace records, so 25 is ~2–3 real failures. `tests/unit/test_prowlarr_indexer_health_tuning.py` pins both numbers against the real timer file.
+- `prowlarr-app-sync.sh` — whether the indexers Prowlarr **believes** it syncs are actually **in** each *arr, and whether the two indexers with a diagnosed broken proxy download path still have `Prefer Magnet URL` ticked. `prowlarr-indexer-health.sh` cannot see either, and not because it is mistuned: both of its probes are log/health-derived and Prowlarr's `/api/v1/health` is `[]` for both faults, so the numerator is structurally **zero**. Found LimeTorrents absent from Radarr since at least 2026-05-22 — Prowlarr re-POSTs it every 6 h, Radarr's add-time RSS validation returns 400 because the bundled `limetorrents` definition maps every `/latest100` row to 8000/5000 and none to 2000, and it gives up. Every intentional exclusion is counted and named (`skip_disabled` / `skip_notag` / `skip_nocat` / `orphan`) so a regression shows as a **move** between buckets, not an absence. Exit 0 clean / 1 finding / **2 broken** — zero applications or an unreachable *arr can never read as a clean pass. Remediation is operator-only: [`docs/prowlarr-indexer-remediation-2026-08-03.md`](../../docs/prowlarr-indexer-remediation-2026-08-03.md). **Red on arrival** until step 1 of that runbook is applied; that red is the runbook's acceptance test.
+- `plex-unmatched.sh` — Plex library items stuck on a `local://` guid (the scanner created the episode row before the agent match landed, or a filename shape Plex mis-parsed): the member sees a correct title with no synopsis, no agent artwork and no air date. Discovers `show` sections from `/library/sections` (movie sections are skipped, **counted and named**), walks `/library/sections/{id}/all?type=4` paginated, counts `local://` guids and ages them. Alerts on any item older than `PLEX_UNMATCHED_GRACE_HOURS` (default 6) — a fresh import is legitimately `local://` for minutes, so a raw count>0 flaps, and a *percentage* floor would hide 1/63 in the Anime library. Exit 0 clean / 1 stuck / **2 could-not-assert** (a section reporting `totalSize`>0 with an empty `Metadata` is BROKEN, not clean — that guard is mutation-proved: remove it and broken renders as clean). Detect-only: a metadata refresh does not fix these (proved — refreshed 15 days after add, still `local://`) and the episode-level `/matches` API returns 0 candidates, so the only working remedy is unmatch+rematch at *series* level, which discards ratingKeys and watch state.
+- `rea-liveness.sh` — the dead-man for the operator workstation's Random Error Audit, the **one** QFlix component that does not run on this box. `qflix-rea.ps1` is gitignored and workstation-resident, so it is invisible even to `deploy-drift.sh`, and every QFlix audit to date was seedbox-scoped — the auditor was the blind spot. Over its whole life (72 runs, 2026-05-11..2026-08-03) **20 runs — 28% — failed with zero notification anywhere**. All judgement happens HERE, on the box, against a heartbeat REA writes over the SSH hop it already makes, so the alarm never depends on REA being well enough to diagnose itself; that is why a Kuma push monitor was rejected as the design (it would have been green for all 20). Three predicates: heartbeat age vs a measured 336 h cap (71 real inter-run gaps: max 275 h, p95 102 h; false fires 72 h→6, 168 h→1, 336 h→0), verdict staleness while REA is still reaching the box, and the recorded outcome of the last run. An unrecognised outcome token fails **CLOSED** (exit 2). **Requires a writer half in `qflix-rea.ps1`** — until it lands this exits 2 with `STAGE=rea-heartbeat-absent`, which is the truth stated loudly rather than a silent pass on absence.
 - `quota.sh`              — Ultra.cc per-user disk quota thresholds (80% warn / 90% critical+reclaim / 98% fail)
 - `vlogs-stall.sh`        — VictoriaLogs reachable + non-zero ingest in last 15 min
 - `sab-stall.sh`          — SABnzbd flowing: queue speed 0 while active jobs wait >10 min (dead provider/creds), OR any slot-level Paused job pinned >24 h (the 2026-07-19 wedged-queue-object class). Both invisible to the app monitor, which only sees SAB's web UI answering.
@@ -69,6 +72,29 @@ request id and skips the cleanup step.
   `PASS-WARN`, not a failure — a canary legitimately exits non-zero to report ITS subject down, and
   that already has its own monitor. Jobs whose intended terminal state is "gone" opt out with
   `may_be_absent: true` in the ledger.
+
+- `prowlarr-appsync-missing` / `prowlarr-appsync-magnet-pref-off` — `prowlarr-app-sync.sh`: an
+  indexer Prowlarr intends to sync (enabled **and** tag-intersecting **and** category-intersecting)
+  is not present in that *arr, or a diagnosed indexer still prefers the proxy download URL over its
+  magnet. Both are exit 1. The BROKEN set is exit 2 and each names its stage:
+  `prowlarr-appsync-no-apps` (zero applications — "nothing is missing" would be trivially true),
+  `prowlarr-appsync-no-indexers`, `prowlarr-appsync-prowlarr-down`, `prowlarr-appsync-arr-down`,
+  `prowlarr-appsync-unknown-app`, `prowlarr-appsync-config-missing`, `prowlarr-appsync-probe-error`.
+- `plex-unmatched-stuck` — `plex-unmatched.sh`: at least one Plex episode has sat on a `local://`
+  guid past the grace window. Exit 2 covers the cases where the canary asserted **nothing**:
+  `plex-sections-unreachable` / `plex-section-unreachable` (Plex or a section did not answer),
+  `plex-no-show-sections` (nothing to scan — an empty section list is not a clean library),
+  `plex-section-truncated` (a section declared `totalSize`>0 and handed back no `Metadata`, i.e.
+  empty-because-broken wearing empty-because-clean's clothes), `plex-unmatched-config-missing`.
+  A clean run prints `plex-unmatched-clean` and always reports the suppressed sub-grace count.
+- `rea-not-auditing` / `rea-unreached` / `rea-verdict-stale` — `rea-liveness.sh`: the workstation
+  audit's last run failed, it has not reached the box inside the 336 h cap, or it is still reaching
+  the box while its last verdict has frozen (the wedge a heartbeat-only signal cannot see). Exit 2
+  is reserved for "this canary cannot assert anything": `rea-heartbeat-absent` (the writer half is
+  not wired in `qflix-rea.ps1` — nothing is watching REA, said out loud rather than passed over),
+  `rea-heartbeat-empty` / `rea-heartbeat-malformed` / `rea-heartbeat-unreadable`, and any outcome
+  token the canary does not recognise, because a watchdog that green-lights vocabulary it does not
+  understand is not a watchdog.
 
 ## Exit codes
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — Plex unmatched items (episodes stuck on a local:// guid: no synopsis, no agent artwork)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push plex-unmatched
+StandardOutput=journal
+StandardError=journal
