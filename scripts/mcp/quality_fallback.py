@@ -20,8 +20,9 @@ API ground truth: deployed Radarr 6.1.1.10360 / Sonarr 4.0.17.2952 (see the
 implementation plan's "RTFM ground truth" section).
 
 Modes: --cron | --emit-json | --dry-run | --bootstrap-profiles
-       (--emit-json runs LIVE like --cron, JSON to stdout; --dry-run is the
-        read-only mode: no arr writes, no state writes, no notifications)
+       --cron is the ONLY live path. --emit-json and --dry-run are both
+       read-only (no arr writes, no state writes, no notifications); the only
+       difference is that --emit-json is the name the MCP layer uses.
 Args:  --slug <name>  (limit to one instance)
 """
 from __future__ import annotations
@@ -150,14 +151,33 @@ def plan_movies(slug: str, missing: list, movies_by_id: dict, fb_ids: dict,
 
     state keys: f"{slug}:{tmdbId}" -> {movie_id, days, stage,
         original_profile_id, last_counted, parked, title}
-    (If a movie is deleted and re-added in radarr, the keyed tmdbId record
-    keeps the old movie_id; Phase 1 misses the lookup and drops the record —
-    benign, counters restart next cycle.)
+
+    RE-ADD IS RESOLVED BY tmdbId, NOT BY movie_id. The previous note here said
+    a delete-and-re-add merely dropped the record and was "benign, counters
+    restart next cycle". That is true at stage 0 and WRONG at stage >= 1: the
+    movie is still sitting on the degraded fallback profile, original_profile_id
+    is the only record of its real profile, and dropping the record threw it
+    away with no restore_* action emitted. Phase 2 then re-created the record at
+    stage 0 in the SAME run and, five days later, recorded the FALLBACK profile
+    as that movie's "original" — so every future restore pinned the movie to SD.
+    Reproduced end to end: stage 2, real profile 4 (HD Bluray + WEB), radarr on
+    12 (QFlix Fallback SD); after a re-add the module recorded 12 as the
+    original. tmdbId is the stable key and it is already in the state key, so
+    the re-add is now a no-op that keeps stage and original_profile_id.
+
+    A GENUINE disappearance at stage >= 1 is still unrecoverable by automation
+    (the movie is gone), but it is no longer silent: it emits an
+    `orphaned_in_fallback` action, which writes nothing and notifies at
+    warning level with the profile id that was orphaned.
+
     Returns actions: [{action, movie_id, key, title, to_profile}].
-    action in {promote, deepen, park, restore_grabbed, restore_operator}.
+    action in {promote, deepen, park, restore_grabbed, restore_operator,
+               orphaned_in_fallback}.
     """
     actions: list = []
     prefix = f"{slug}:"
+    movies_by_tmdb = {str(m.get("tmdbId")): m for m in movies_by_id.values()
+                      if m.get("tmdbId") is not None}
     # Keys dropped for operator override this run: Phase 2 must not
     # immediately re-create them (the movie is still in the missing list);
     # counting restarts on the NEXT run instead.
@@ -167,7 +187,17 @@ def plan_movies(slug: str, missing: list, movies_by_id: dict, fb_ids: dict,
     for key in [k for k in state if k.startswith(prefix)]:
         rec = state[key]
         m = movies_by_id.get(rec["movie_id"])
-        if m is None:                       # deleted from radarr
+        if m is None:
+            # Re-added under a new movie id? Same tmdbId, same record.
+            m = movies_by_tmdb.get(key[len(prefix):])
+            if m is not None:
+                rec["movie_id"] = m["id"]
+        if m is None:                       # genuinely gone from radarr
+            if rec["stage"] >= 1 and not rec["parked"]:
+                actions.append({"action": "orphaned_in_fallback",
+                                "movie_id": rec["movie_id"], "key": key,
+                                "title": rec["title"],
+                                "to_profile": rec["original_profile_id"]})
             del state[key]
             continue
         if rec["parked"]:
@@ -305,19 +335,31 @@ def _notify(message: str, level: str = "info") -> None:
                          + repr(_exc) + "\n")
 
 
-def _fetch_paged(client, path: str, page_size: int = 1000) -> list:
-    """Drain a paged wanted/* endpoint. One page covers today's library
-    sizes; loop is future-proofing. NOTE: totalRecords reflects the
-    monitored=true-filtered set, so the termination compare is sound."""
+def _fetch_paged(client, path: str, page_size: int = 1000) -> tuple:
+    """Drain a paged wanted/* endpoint. Returns (ok, records).
+
+    IT RETURNS A FLAG BECAUSE A FAILED FETCH USED TO LOOK LIKE AN EMPTY ONE.
+    This swallowed every non-200 and returned the partial list, so a transient
+    500 from Sonarr on /wanted/missing was indistinguishable from "nothing is
+    missing". plan_tv then pruned every state key not in `seen` — wiping ALL TV
+    day-counters for that instance — and the run still exited 0 / Kuma green.
+    Consequences were durable: the day-15 park could never converge on a flaky
+    Sonarr, and the lost `alerted` flags re-fired the day-5 digest for every
+    episode already past 5 days. The movie path had an explicit
+    `failed-movie-list` guard for exactly this on GET /movie; the TV path had
+    no equivalent anywhere.
+
+    A mid-pagination failure is also NOT ok: partial data must never prune.
+    """
     records, page = [], 1
     while True:
         code, body = client.get(path, query=f"page={page}&pageSize={page_size}&monitored=true")
         if code != 200 or not isinstance(body, dict):
-            return records
+            return False, records
         batch = body.get("records") or []
         records.extend(batch)
         if len(records) >= int(body.get("totalRecords") or 0) or not batch:
-            return records
+            return True, records
         page += 1
 
 
@@ -369,6 +411,10 @@ _ACTION_NOTIFY = {
                                 "the profile allows)"),
     "restore_operator": ("info", "fallback released: operator unmonitored {title}; "
                                  "original profile restored"),
+    "orphaned_in_fallback": ("warning",
+                             "{title} vanished from radarr while still on a "
+                             "fallback profile; its original profile id is "
+                             "lost and nothing was restored"),
 }
 
 
@@ -376,6 +422,10 @@ def _apply_movie_action(client, act: dict) -> bool:
     """Execute one planned action. Returns True on success. Only ever writes
     qualityProfileId and (on park) monitored — nothing else, by design."""
     mid = act["movie_id"]
+    if act["action"] == "orphaned_in_fallback":
+        # Report-only: the movie no longer exists, so there is nothing to write
+        # to. It is an action solely so the notification path carries it.
+        return True
     if act["action"] == "park":
         # one editor call: restore profile AND unmonitor (controller
         # null-skips everything else — verified at deployed tag)
@@ -423,7 +473,11 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
                 _notify(f"quality_fallback: fallback profiles missing on {s}; "
                         f"run --bootstrap-profiles", "error")
             continue
-        missing = _fetch_paged(client, "/wanted/missing")
+        ok, missing = _fetch_paged(client, "/wanted/missing")
+        if not ok:
+            # Never plan against unverified data. Non-ok status -> exit 1.
+            out["per_arr"][s] = {"status": "failed-wanted-missing"}
+            continue
         # full library needed: a grabbed movie has LEFT wanted/missing, so
         # reconcile must read it from /movie. O(library) daily, fine today.
         code, all_movies = client.get("/movie")
@@ -460,11 +514,23 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
     # ---- TV: day-5 digest + day-15 park (unmonitor) ----------------------
     digest_all: list = []
     parks_all: list = []
+    # TV statuses live in their own dict rather than per_arr: per_arr is the
+    # movie shape (status/actions/in_fallback) and consumers key off it. Both
+    # are folded into _run_had_failures, so a TV fetch failure exits 1.
+    tv_per_arr: dict = {}
     for s in TV_ARRS:
         if slug and s != slug:
             continue
         client = client_factory(s)
-        missing = _fetch_paged(client, "/wanted/missing")
+        ok, missing = _fetch_paged(client, "/wanted/missing")
+        if not ok:
+            # THE PRUNE IS THE DANGEROUS PART. plan_tv deletes every state key
+            # not in the fetched set, so calling it with a partial or empty
+            # result silently wipes this instance's day counters and alerted
+            # flags. Skip the instance entirely and go red.
+            tv_per_arr[s] = {"status": "failed-wanted-missing"}
+            continue
+        tv_per_arr[s] = {"status": "ok"}
         if dry_run:
             scratch = copy.deepcopy(state["tv"])
             plan = plan_tv(s, missing, scratch, today, now)
@@ -487,6 +553,7 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
             parks_all.append(p)
     out["tv_digest"] = digest_all
     out["tv_parks"] = parks_all
+    out["tv_per_arr"] = tv_per_arr
 
     if (digest_all or parks_all) and not dry_run:
         # map (slug, series_id) -> series title, once per slug touched
@@ -534,7 +601,12 @@ def _run_had_failures(res: dict) -> bool:
         or any(not a.get("ok", True) for a in r.get("actions", []))
         for r in res.get("per_arr", {}).values())
     tv_bad = any(not p.get("ok", True) for p in res.get("tv_parks", []))
-    return movie_bad or tv_bad
+    # A TV instance whose /wanted/missing never answered is a failure even
+    # though it planned nothing: silence there used to be indistinguishable
+    # from "nothing is missing".
+    tv_fetch_bad = any(r.get("status") != "ok"
+                       for r in res.get("tv_per_arr", {}).values())
+    return movie_bad or tv_bad or tv_fetch_bad
 
 
 def main() -> int:
@@ -556,7 +628,13 @@ def main() -> int:
         sys.stdout.write("\n")
         return 0
 
-    res = run(dry_run=args.dry_run, slug=args.slug)
+    # --emit-json IS READ-ONLY. Everywhere else under scripts/mcp/ (logs.py,
+    # collect.py, unstick.py, missing.py, app_status.py) --emit-json means
+    # "read and print JSON", and scripts/local/qflix-mcp/qflix_mcp.py wires it
+    # that way for its read tools. Here it used to run the full LIVE mutation
+    # path and always exit 0 — a loaded footgun for the next MCP read tool that
+    # follows the house pattern. --cron is now the ONLY live path.
+    res = run(dry_run=args.dry_run or args.emit_json, slug=args.slug)
     if args.emit_json or args.dry_run:
         # JSON mode always exits 0 — the body carries failure detail (same
         # rationale as missing.py: a nonzero exit makes MCP discard the body).
