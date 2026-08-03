@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pytest
+
 HERE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(HERE / "scripts" / "mcp"))
 
@@ -213,3 +215,198 @@ def test_run_covers_both_tv_instances():
     assert set(res["per_arr"]) == {"sonarr", "sonarr2"}
     assert res["per_arr"]["sonarr"]["episodes_unmonitored"] == 1
     assert res["per_arr"]["sonarr2"]["episodes_unmonitored"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Blast rails: cap, exclusions, escalation (arbiter fix 2026-08-03)
+# ---------------------------------------------------------------------------
+#
+# WHY: this was the only *arr-mutating script in the repo with NONE of the three
+# safety mechanisms the others carry. Counted across the four mutators:
+#     specials_policy.py       exclude=0   cap=0   --execute=0
+#     quality_fallback.py      exclude=0   cap=6   --execute=0
+#     qflix-reaper.py          exclude=16  cap=21  --execute=14
+#     qflix-torrent-janitor.py exclude=10  cap=20  --execute=7
+# And it is CONVERGENT -- it re-asserts daily -- so an operator exception had no
+# lever short of disabling the timer for all 38 series.
+
+
+def _many_specials(n, series_id=1, tvdb=7001, title="Ted Lasso"):
+    """A series whose Season 0 holds n monitored episodes -- the shape an
+    upstream TheTVDB reclassification produces on Sonarr's nightly refresh."""
+    s = {"id": series_id, "title": title, "tvdbId": tvdb,
+         "seasons": [{"seasonNumber": 0, "monitored": True,
+                      "statistics": {"totalEpisodeCount": n}},
+                     {"seasonNumber": 1, "monitored": True}]}
+    eps = [{"id": 1000 * series_id + i, "seasonNumber": 0, "monitored": True}
+           for i in range(n)]
+    return s, eps
+
+
+class _Recorder:
+    def __init__(self, series, episodes_by_series):
+        self.series = series
+        self.eps = episodes_by_series
+        self.writes = []
+
+    def get(self, path, query=None, **kw):
+        if path == "/series":
+            return 200, self.series
+        if path == "/episode":
+            sid = int(str(query).split("=")[-1])
+            return 200, self.eps.get(sid, [])
+        return 404, {}
+
+    def put(self, path, *, body=None, **kw):
+        self.writes.append((path, body))
+        return 202, {}
+
+
+def test_a_mass_reclassification_is_capped_and_the_overflow_is_deferred():
+    """Before this, ONE run could unmonitor an unbounded number of episodes.
+    Reproduced on the real enforce_instance with a 24-episode season plus 7
+    operator-monitored specials: 31 unmonitored in a single run, largest single
+    episodeIds batch 24, zero cap constants in the module."""
+    s1, e1 = _many_specials(24, series_id=1, tvdb=7001, title="Big Show")
+    s2, e2 = _many_specials(24, series_id=2, tvdb=7002, title="Other Show")
+    s3, e3 = _many_specials(24, series_id=3, tvdb=7003, title="Third Show")
+    client = _Recorder([s1, s2, s3], {1: e1, 2: e2, 3: e3})
+    res = sp.enforce_instance(client, dry_run=False)
+    assert res["episodes_unmonitored"] <= sp.MAX_UNMONITORS_PER_RUN, res
+    assert res["deferred_count"] >= 1, res
+    assert res["deferred"], "the deferral must be NAMED, not just counted"
+    touched = {p for p, _b in client.writes}
+    assert "/episode/monitor" in touched
+
+
+def test_the_deferred_work_is_picked_up_by_the_next_run():
+    """DEFER, not abort: convergence must still reach the same end state, just
+    across more runs. Otherwise the cap would stall the janitor permanently."""
+    s1, e1 = _many_specials(60, series_id=1, tvdb=7001, title="Huge Show")
+    s2, e2 = _many_specials(3, series_id=2, tvdb=7002, title="Small Show")
+    client = _Recorder([s1, s2], {1: e1, 2: e2})
+    first = sp.enforce_instance(client, dry_run=False)
+    assert first["deferred"] == ["Small Show"], first
+
+    # The next run sees the first series already converged.
+    s1["seasons"][0]["monitored"] = False
+    s1["seasons"][0]["statistics"] = {"totalEpisodeCount": 60}
+    for e in e1:
+        e["monitored"] = False
+    second = sp.enforce_instance(_Recorder([s1, s2], {1: e1, 2: e2}),
+                                 dry_run=False)
+    assert second["deferred_count"] == 0
+    assert "Small Show" in [c["title"] for c in second["changes"]]
+
+
+def test_an_excluded_series_survives_convergence(tmp_path):
+    """The whole point of an exclusion on a CONVERGENT janitor: it must still
+    hold on the second run, and the third, and forever."""
+    s1, e1 = _many_specials(4, series_id=1, tvdb=7001, title="Ted Lasso")
+    exclude = tmp_path / "specials_policy.exclude"
+    exclude.write_text("# operator keeps these specials\n7001\n",
+                       encoding="utf-8")
+    tokens = sp.load_exclusions(exclude)
+    for _ in range(3):
+        client = _Recorder([s1], {1: e1})
+        res = sp.enforce_instance(client, dry_run=False, exclusions=tokens)
+        assert client.writes == [], client.writes
+        assert res["excluded"] == ["Ted Lasso"], res
+        assert res["episodes_unmonitored"] == 0
+
+
+def test_exclusion_matches_by_title_too(tmp_path):
+    s1, _e1 = _many_specials(4, series_id=1, tvdb=7001, title="Ted Lasso")
+    exclude = tmp_path / "x.exclude"
+    exclude.write_text("Ted Lasso\n", encoding="utf-8")
+    assert sp._is_excluded(s1, sp.load_exclusions(exclude)) is True
+
+
+def test_exclusions_discriminate(tmp_path):
+    """MUTATION PROOF: a non-matching entry must not accidentally exclude
+    everything."""
+    s1, e1 = _many_specials(4, series_id=1, tvdb=7001, title="Ted Lasso")
+    exclude = tmp_path / "x.exclude"
+    exclude.write_text("9999\n", encoding="utf-8")
+    client = _Recorder([s1], {1: e1})
+    res = sp.enforce_instance(client, dry_run=False,
+                              exclusions=sp.load_exclusions(exclude))
+    assert res["excluded"] == []
+    assert res["episodes_unmonitored"] == 4
+
+
+def test_a_missing_exclude_file_is_normal_but_an_unreadable_one_is_not(tmp_path):
+    """No file means no exceptions. A file that EXISTS and cannot be read must
+    not quietly become "there are no exceptions"."""
+    assert sp.load_exclusions(tmp_path / "nope") == set()
+    bad = tmp_path / "isadir.exclude"
+    bad.mkdir()
+    with pytest.raises(OSError):
+        sp.load_exclusions(bad)
+
+
+def test_comments_and_blanks_are_ignored(tmp_path):
+    f = tmp_path / "x.exclude"
+    f.write_text("# a comment\n\n7001  # trailing\n   \n7002\n",
+                 encoding="utf-8")
+    assert sp.load_exclusions(f) == {"7001", "7002"}
+
+
+def test_emit_json_issues_no_arr_writes(monkeypatch, tmp_path):
+    """--emit-json means "read and print JSON" everywhere else under
+    scripts/mcp/. Here it ran the full live mutation path and exited 0."""
+    s1, e1 = _many_specials(4, series_id=1, tvdb=7001)
+    clients = {"sonarr": _Recorder([s1], {1: e1}),
+               "sonarr2": _Recorder([], {})}
+    monkeypatch.setattr(sp, "ArrClient", lambda slug, ver: clients[slug])
+    monkeypatch.setattr(sp, "EXCLUDE_PATH", tmp_path / "none.exclude")
+    monkeypatch.setattr(sys, "argv", ["specials_policy.py", "--emit-json"])
+    assert sp.main() == 0
+    assert clients["sonarr"].writes == [], clients["sonarr"].writes
+
+
+def test_dry_run_still_writes_nothing(tmp_path):
+    s1, e1 = _many_specials(4, series_id=1, tvdb=7001)
+    client = _Recorder([s1], {1: e1})
+    res = sp.enforce_instance(client, dry_run=True)
+    assert client.writes == []
+    assert res["episodes_unmonitored"] == 4      # planned, not applied
+
+
+def test_a_loud_run_escalates_the_notification(monkeypatch, tmp_path):
+    """A mass unmonitor must not read like a Tuesday."""
+    s1, e1 = _many_specials(sp.LOUD_UNMONITORS, series_id=1, tvdb=7001)
+    clients = {"sonarr": _Recorder([s1], {1: e1}),
+               "sonarr2": _Recorder([], {})}
+    seen = []
+    monkeypatch.setattr(sp, "ArrClient", lambda slug, ver: clients[slug])
+    monkeypatch.setattr(sp, "EXCLUDE_PATH", tmp_path / "none.exclude")
+    monkeypatch.setattr(sp, "_notify", lambda msg, level="info": seen.append(level))
+    monkeypatch.setattr(sys, "argv", ["specials_policy.py", "--cron"])
+    sp.main()
+    assert "warning" in seen, seen
+
+
+def test_a_small_run_stays_quiet(monkeypatch, tmp_path):
+    """MUTATION PROOF for the escalation: routine convergence stays info."""
+    s1, e1 = _many_specials(2, series_id=1, tvdb=7001)
+    clients = {"sonarr": _Recorder([s1], {1: e1}),
+               "sonarr2": _Recorder([], {})}
+    seen = []
+    monkeypatch.setattr(sp, "ArrClient", lambda slug, ver: clients[slug])
+    monkeypatch.setattr(sp, "EXCLUDE_PATH", tmp_path / "none.exclude")
+    monkeypatch.setattr(sp, "_notify", lambda msg, level="info": seen.append(level))
+    monkeypatch.setattr(sys, "argv", ["specials_policy.py", "--cron"])
+    sp.main()
+    assert seen == ["info"], seen
+
+
+def test_a_single_series_bigger_than_the_cap_still_converges():
+    """FORWARD PROGRESS. A cap that defers the very first series would stall the
+    janitor permanently on any series holding more specials than the cap."""
+    s1, e1 = _many_specials(sp.MAX_UNMONITORS_PER_RUN + 10, series_id=1,
+                            tvdb=7001, title="Enormous Show")
+    client = _Recorder([s1], {1: e1})
+    res = sp.enforce_instance(client, dry_run=False)
+    assert res["deferred_count"] == 0, res
+    assert res["episodes_unmonitored"] == sp.MAX_UNMONITORS_PER_RUN + 10
