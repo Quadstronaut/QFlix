@@ -130,14 +130,26 @@ def test_python_subjects_resolve_to_tracked_files(ctx, ledgers):
     assert result.metrics["subjects_unresolved"] == 0
 
 
-def test_the_only_waived_subject_is_a_deliberate_negative_fixture(ledgers):
+def test_every_waived_subject_is_a_deliberate_negative_fixture(ledgers):
     """Guard against the waiver list quietly growing. Every C-10 waiver has to
-    be re-read by a human, and there should be exactly one."""
+    be re-read by a human, and the count is PINNED so growing it is an edit here.
+
+    Both entries are the same shape and it is the only shape allowed: a
+    repo-relative path that must NOT exist, because the assertion it serves is
+    that a loader THROWS on a missing prerequisite instead of returning an empty
+    table (W-C10-001, the REA noise rules) or an empty list (W-C10-002, the
+    audit-scope S2 member list the backup script reads). Either empty value would
+    make the caller do nothing and report success.
+
+    2 as of 2026-08-03. A temp fixture a test merely WRITES does not belong here
+    and must not be waived — see New-ScratchFile in
+    tests/local-llm/test-backup-untracked.ps1 for the alternative.
+    """
     c10 = next(c for c in ledgers.classes if c.id == "C-10")
-    assert len(c10.waivers) == 1
-    w = c10.waivers[0]
-    assert "does-not-exist" in w["match"]["instance_id"]
-    assert "NEGATIVE fixture" in w["reason"]
+    assert len(c10.waivers) == 2
+    for w in c10.waivers:
+        assert "does-not-exist" in w["match"]["instance_id"], w["id"]
+        assert "NEGATIVE fixture" in w["reason"], w["id"]
 
 
 def test_workflow_file_really_contains_a_pwsh_job(repo):
