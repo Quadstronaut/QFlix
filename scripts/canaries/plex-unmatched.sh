@@ -81,6 +81,8 @@
 #   plex-section-truncated         section declared N items, fewer  (BROKEN)
 #                                  arrived — an empty Metadata on a
 #                                  totalSize>0 section is BROKEN, not clean
+#   plex-no-episodes               every show section returned ZERO  (BROKEN)
+#                                  episodes — see the denominator note
 #   plex-unmatched-stuck           aged local:// items found        (RED)
 #
 # Exits — empty-because-clean is distinguishable from empty-because-broken:
@@ -337,6 +339,37 @@ for key, title in show_sections:
         "aged": section_aged,
         "under_grace": section_grace,
     })
+
+# --- 3. THE DENOMINATOR MUST BE REAL --------------------------------------
+# The per-section truncation guard is conditioned on `declared > 0`, so a
+# section reporting totalSize=0 walks straight past it. That is not a
+# hypothetical shape: if the `type=4` episode filter ever stops matching (a
+# Plex schema or version change), every show section returns
+# {"totalSize":0,"size":0,"Metadata":[]} and this canary exits 0 with
+# episodes=0 — asserting nothing while printing "clean". The original mutation
+# test used declared=382 and so never exercised the declared=0 path.
+#
+# "Zero episodes" alone cannot decide it, because a genuinely empty new library
+# looks identical. So ASK A SECOND QUESTION, and one that does not depend on
+# the thing under suspicion: re-list the section with NO type filter at all. If
+# the library holds items but our type=4 query found no episodes, the filter or
+# the schema moved and this canary is blind. If the library is empty too, it is
+# an empty library and that is a content state, not a fault.
+#
+# Costs one extra HTTP call per EMPTY section only — zero on a normal run.
+for _s in per_section:
+    if _s["episodes"] or _s["declared"]:
+        continue
+    _doc = _get_or_broken(
+        "/library/sections/%s/all" % urllib.parse.quote(str(_s["key"])),
+        "plex-section-unreachable",
+        headers={"X-Plex-Container-Start": 0, "X-Plex-Container-Size": 1},
+    )
+    _held = int((_doc.get("MediaContainer") or {}).get("totalSize") or 0)
+    if _held > 0:
+        _broken("plex-no-episodes",
+                "section=%s-holds=%d-items-but-type4-returned-0-episodes"
+                % (_short(_s["section"], 40), _held))
 
 aged_items.sort(key=lambda r: (-(r["ageHours"] or 1e9), r["series"], r["season"] or 0,
                                r["episode"] or 0))
