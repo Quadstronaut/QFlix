@@ -74,10 +74,13 @@ HOUR = 3600
 
 
 def _run(hb_path: Path | None, *, now: int = NOW, mtime_age_h: float = 1.0,
-         max_h: int | None = None, reason_table: str | None = None):
+         max_h: int | None = None, reason_table: str | None = None,
+         extra_env: dict[str, str] | None = None):
     """Run the canary against a heartbeat file whose mtime is `mtime_age_h`
     hours before `now`. `hb_path=None` exercises the absent-file path."""
     env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
     env["QFLIX_CANARY_REA_NOW"] = str(now)
     env["QFLIX_CANARY_REA_HEARTBEAT"] = str(hb_path) if hb_path else "/nonexistent/rea/heartbeat"
     if max_h is not None:
@@ -182,6 +185,87 @@ def test_all_models_noop_is_the_case_that_justifies_this_canary(tmp_path):
     assert "all_models_noop" in res.stderr
     # It is a KNOWN reason: present in manifest/rea-noise-classes.yaml.
     assert "(known)" in res.stderr, res.stderr
+
+
+# ---------------------------------------------------------------------------
+# The reason table must read the same on the box and on the CI runner.
+#
+# The canary shells out to a bare `python3` to read manifest/rea-noise-classes.
+# yaml. On the box that interpreter has PyYAML; on the GitHub runner it does
+# not, because tests/run.sh installs PyYAML into tests/.venv and the subprocess
+# never sees it. The label therefore degraded to `unknown-to-table` on CI ONLY,
+# and test_all_models_noop_is_the_case_that_justifies_this_canary was red on
+# every push for a day while passing on the workstation. These tests pin the
+# environment-independence, because the original test cannot: it passes for the
+# wrong reason wherever PyYAML happens to be installed.
+# ---------------------------------------------------------------------------
+def _no_pyyaml(tmp_path: Path) -> dict[str, str]:
+    """A PYTHONPATH whose `yaml` shadows the real one and refuses to import —
+    the CI runner's condition, reproduced deterministically."""
+    d = tmp_path / "no-pyyaml"
+    d.mkdir(exist_ok=True)
+    (d / "yaml.py").write_text(
+        'raise ModuleNotFoundError("No module named \'yaml\'")\n', encoding="utf-8")
+    return {"PYTHONPATH": str(d)}
+
+
+# The five reasons mirrored from $Script:DeadmanReasons, plus the two the
+# canary hard-codes because they are real `fail reason=` values deliberately
+# absent from that list.
+REAL_REASONS = ["tunnel_timeout", "no_models", "ssh_fail", "blob_parse",
+                "all_models_noop", "ollama_down", "no_secrets"]
+
+
+@pytest.mark.parametrize("reason", REAL_REASONS)
+def test_known_reasons_label_identically_with_and_without_pyyaml(tmp_path, reason):
+    hb = _hb(tmp_path, f"2026-08-03T02:00:00+00:00 fail reason={reason} models=4\n")
+    with_yaml = _run(hb, mtime_age_h=1.0)
+    without = _run(hb, mtime_age_h=1.0, extra_env=_no_pyyaml(tmp_path))
+    assert with_yaml.returncode == 1 and without.returncode == 1
+    assert f"reason={reason}(known)" in with_yaml.stderr, with_yaml.stderr
+    assert f"reason={reason}(known)" in without.stderr, without.stderr
+
+
+def test_the_stdlib_fallback_is_counted_and_named_not_silent(tmp_path):
+    """Rule 4: a degraded read is still a read the operator must be able to
+    see. The label is correct AND the substitution is on the wire."""
+    hb = _hb(tmp_path, "2026-08-03T02:00:00+00:00 fail reason=all_models_noop models=4\n")
+    res = _run(hb, mtime_age_h=1.0, extra_env=_no_pyyaml(tmp_path))
+    assert "(known)" in res.stderr, res.stderr
+    assert _skips(res) == "1(reason-table-read-without-pyyaml)", res.stderr
+
+
+def test_the_fallback_still_reports_vocabulary_drift(tmp_path):
+    """The fallback must not be a rubber stamp: a reason absent from the table
+    is still `unknown-to-table` when PyYAML is missing."""
+    hb = _hb(tmp_path, "2026-08-03T02:00:00+00:00 fail reason=brand_new_reason models=4\n")
+    res = _run(hb, mtime_age_h=1.0, extra_env=_no_pyyaml(tmp_path))
+    assert "reason=brand_new_reason(unknown-to-table)" in res.stderr, res.stderr
+
+
+def test_a_corrupt_table_does_not_fall_back_to_a_laxer_reader(tmp_path):
+    """PyYAML validates the WHOLE document. If it fails ON the table, that is a
+    real corruption and must stay `unparseable` — falling back to a reader that
+    only greps one key would convert a broken manifest into a confident label."""
+    bad = tmp_path / "corrupt.yaml"
+    bad.write_text("deadman_reasons:\n  - tunnel_timeout\n  - all_models_noop\n"
+                   ":::: not: [valid\n", encoding="utf-8")
+    hb = _hb(tmp_path, "2026-08-03T02:00:00+00:00 fail reason=all_models_noop models=4\n")
+    res = _run(hb, mtime_age_h=1.0, reason_table=str(bad))
+    assert "(unknown-to-table)" in res.stderr, res.stderr
+    assert _skips(res) == "1(reason-table-unparseable)", res.stderr
+
+
+def test_the_fallback_stops_at_the_next_top_level_key(tmp_path):
+    """It reads ONE flat list. A scalar under a neighbouring key must not leak
+    into the known vocabulary — that would mislabel real drift as known."""
+    tbl = tmp_path / "table.yaml"
+    tbl.write_text("deadman_reasons:\n  - tunnel_timeout\n"
+                   "other_key:\n  - not_a_deadman_reason\n", encoding="utf-8")
+    hb = _hb(tmp_path, "2026-08-03T02:00:00+00:00 fail reason=not_a_deadman_reason m=1\n")
+    res = _run(hb, mtime_age_h=1.0, reason_table=str(tbl),
+               extra_env=_no_pyyaml(tmp_path))
+    assert "reason=not_a_deadman_reason(unknown-to-table)" in res.stderr, res.stderr
 
 
 def test_warn_states_are_reported_as_warn_not_as_clean(tmp_path):
