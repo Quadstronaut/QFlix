@@ -1,0 +1,6 @@
+{
+  "week_of": "2026-08-03",
+  "generated_at": "2026-08-03T14:16:06Z",
+  "since": "2026-07-27T14:16:06Z",
+  "html": "<p>Behind the scenes this week, we cleared a snag that was quietly blocking one of our download sources, so new titles can reach the library faster. We also closed a sneaky bug that could leave a re-added movie stuck looking worse than it should, and rolled out a fresh batch of automated health checks that keep watch around the clock so problems get caught before they ever reach your screen.</p><p>A few more reliability tune-ups round things out. 🔧</p>"
+}
