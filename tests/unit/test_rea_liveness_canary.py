@@ -243,15 +243,46 @@ def test_the_fallback_still_reports_vocabulary_drift(tmp_path):
     assert "reason=brand_new_reason(unknown-to-table)" in res.stderr, res.stderr
 
 
+def _pyyaml_env() -> dict[str, str] | None:
+    """An env in which the canary's `python3` subprocess CAN import yaml.
+
+    pytest itself runs from tests/.venv, which has PyYAML; the bare `python3`
+    the canary shells out to may not (the CI runner's does not). Lending the
+    subprocess our own site-packages is what lets the corrupt-table property be
+    exercised on both machines instead of only where PyYAML happens to be
+    ambient. Probed with a real subprocess rather than assumed, so a version
+    mismatch skips instead of reddening the build for the wrong reason.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return None
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(yaml.__file__).resolve().parents[1])
+    probe = subprocess.run(["python3", "-c", "import yaml"], env=env,
+                           capture_output=True, text=True, timeout=60)
+    return {"PYTHONPATH": env["PYTHONPATH"]} if probe.returncode == 0 else None
+
+
 def test_a_corrupt_table_does_not_fall_back_to_a_laxer_reader(tmp_path):
     """PyYAML validates the WHOLE document. If it fails ON the table, that is a
     real corruption and must stay `unparseable` — falling back to a reader that
-    only greps one key would convert a broken manifest into a confident label."""
+    only greps one key would convert a broken manifest into a confident label.
+
+    This is the ONE property that needs PyYAML present to hold: with no PyYAML
+    at all there is no validator, so the awk reader is the only reader and a
+    corrupt table does get read leniently — named on the wire by the
+    `reason-table-read-without-pyyaml` skip. The box has PyYAML (yaml 6.0.3 on
+    /usr/bin/python3), which is where the guarantee has to hold.
+    """
+    env = _pyyaml_env()
+    if env is None:
+        pytest.skip("no python3 that can import yaml — the property is untestable here")
     bad = tmp_path / "corrupt.yaml"
     bad.write_text("deadman_reasons:\n  - tunnel_timeout\n  - all_models_noop\n"
                    ":::: not: [valid\n", encoding="utf-8")
     hb = _hb(tmp_path, "2026-08-03T02:00:00+00:00 fail reason=all_models_noop models=4\n")
-    res = _run(hb, mtime_age_h=1.0, reason_table=str(bad))
+    res = _run(hb, mtime_age_h=1.0, reason_table=str(bad), extra_env=env)
     assert "(unknown-to-table)" in res.stderr, res.stderr
     assert _skips(res) == "1(reason-table-unparseable)", res.stderr
 
