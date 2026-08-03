@@ -302,6 +302,25 @@ classes:
           anything, so it can never be git-tracked. Reviewed with C-09 in mind:
           this is the loader refusing to run on a missing prerequisite, which is
           the behaviour that class demands.
+      - id: W-C10-002
+        match:
+          instance_id: "tests/local-llm/test-backup-untracked.ps1->manifest/does-not-exist.yaml"
+        owner: operator
+        date: 2026-08-03
+        reason: >-
+          Deliberate NEGATIVE fixture, not a real subject — the same shape and
+          the same class of assertion as W-C10-001, on a different subject.
+          backup-untracked.ps1 reads the list of load-bearing untracked files
+          from manifest/audit-scope.yaml; the test asserts Get-S2MemberPath
+          THROWS when that manifest is absent, rather than returning an empty
+          list. An empty list would back up NOTHING and report a clean run —
+          which is the exact failure this whole script was written to end (the
+          mirror was 22h stale on 2026-08-03 and every surface said success).
+          The path must not exist for the assertion to mean anything, so it can
+          never be git-tracked. The test's other temp fixtures are NOT waived:
+          they are built through New-ScratchFile, which keeps the filename in a
+          parameter, because a scratch file the test writes is an output rather
+          than a subject and should not cost a waiver.
 
   # ------------------------------------------------------------------ RESIDUAL
   # These CANNOT be decided from the repo. They are named here so their absence
