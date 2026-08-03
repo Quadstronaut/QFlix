@@ -107,11 +107,20 @@ classes:
     field: null
     prompt_clause: "Failed to create parent iterator"
     why: >-
-      Expected trailing edge of qflix-reaper's add-date retention (45 days
-      since 2026-07-31, previously 60)
-      deleting a whole series directory out from under a library scan (e.g.
-      Fargo, arrId=225, reaped 2026-07-22). Plex noticing the directory it was
-      about to scan is gone, not a fault.
+      Expected trailing edge of qflix-reaper's add-date retention deleting a
+      whole series directory out from under a library scan (e.g. Fargo,
+      arrId=225, reaped 2026-07-22). Plex noticing the directory it was about
+      to scan is gone, not a fault. THE WINDOW IS 45 DAYS, NOT 60 - restated
+      because the prose copies of this number have drifted before. Single
+      source of truth is DEFAULT_THRESHOLD_DAYS in scripts/maint/qflix-reaper.py,
+      moved 60 -> 45 by operator decision 2026-07-31; the on-box systemd
+      drop-in carries only the arming flags and passes no --threshold-days, so
+      that repo constant IS the live window (re-verified read-only against the
+      box 2026-08-03). The remaining stale copies, all TRACKED and all still
+      saying 60 as of this commit, are: scripts/maint/systemd/
+      manitoba-maint-reaper.service:2 (Description), scripts/maint/
+      qflix-reaper.py module docstring, and that file's --threshold-days help
+      string, which reads "Default 60." on an argument whose default is 45.
     added: 2026-07-28
 
   - id: external-indexer-5xx-html
@@ -150,6 +159,196 @@ classes:
       negative lookahead into never firing.
     added: 2026-07-29
 
+  - id: plex-client-profile-extra
+    title: Plex ClientProfileExtra "missing or invalid type parameter"
+    rx: '(?i)clientprofileextra:\s*missing or invalid type parameter'
+    field: null
+    prompt_clause: 'Plex "ClientProfileExtra: missing or invalid type parameter"'
+    why: >-
+      PMS logs this at ERROR level, ~5x per transcode-decision request, when a
+      client profile-extra directive block carries a directive it cannot read.
+      130 ERROR lines corpus-wide 2026-08-03, all under [Req#*/Transcode],
+      against ZERO "Transcoder terminated" / "Transcode failed" / "Error opening"
+      lines in the whole PMS log - playback is unaffected, so it is not an
+      operator page. NOT unconditionally benign: log coverage is continuous
+      Jun 29 - Aug 03 with no rotation gap, and the class was at ZERO for eleven
+      consecutive days (Jul 22 - Aug 01) then 65 on Aug 02 and 45 on Aug 03
+      against flat total log volume. That is an ONSET, and this table has no rate
+      dimension, so the rate signal is carried OUTSIDE this rule - by the
+      collector's "# collector-suppressed:" census line and by follow-up FU-1
+      (an on-box class-rate canary). If a member reports a device that will not
+      play, UN-SUPPRESS THIS CLASS FIRST. Scoped to the exact message so a
+      different ClientProfileExtra failure still pages.
+    added: 2026-08-03
+
+  - id: plex-metadata-agent-pseudo-identifier
+    title: Plex metadata-agent lookup on a PSEUDO-identifier (library / iva)
+    rx: '(?i)unable to find metadata agent provider for identifier\s+\W?(?:library|iva)\b'
+    field: null
+    prompt_clause: "naming the PSEUDO-identifiers 'library' or 'iva'"
+    why: >-
+      MetadataAgentManager/getAgent resolving an identifier that is a SCOPE name,
+      not an agent name. Proven, not assumed: identifier 'library' resolves to 4
+      metadata_items rows all at library_section_id = -2 (Plex's synthetic
+      PlayQueue pseudo-section), and 'iva' to 327 iva:-prefixed rows with NULL
+      library_section_id (Plex Discover / online catalog). All four real
+      libraries carry correct agents (2 QFlix - TV = tv.plex.agents.series,
+      4 QFlix - Movies and 5 QFlix - Anime Movies = tv.plex.agents.movie,
+      6 QFlix - Anime = tv.plex.agents.series), so no metadata is at risk.
+      Both identifiers are enumerated EXPLICITLY rather than left unanchored: the
+      same message naming a real provider (com.plexapp.agents.*, tv.plex.agents.*)
+      is a genuine config break and MUST still page - verified this rx does not
+      match those. 'iva' is included because keying on 'library' alone would have
+      re-paged on the identical non-issue (it fired Jul 11 and Jul 21).
+    added: 2026-08-03
+
+  - id: arr-parsing-no-matching-title
+    title: Sonarr/Radarr ParsingService "No matching series/movie <title>"
+    rx: '(?i)\|Debug\|ParsingService\|No matching (?:series|movie)\b'
+    field: null
+    prompt_clause: 'Sonarr/Radarr ParsingService "No matching series"/"No matching movie"'
+    why: >-
+      STRUCTURAL, not obscurity: the *arr pulls an indexer's FULL recent RSS feed
+      (206-522 items per sync) and filters locally, so every title outside a
+      36-title library logs this at Debug. All 897 such lines in
+      sonarr.debug.0.txt are level=Debug; ZERO are Error. The 2026-08-03 F3 alert
+      reported one at severity=error. Cross-referenced all 36 library titles
+      against the 197 distinct unmatched titles: ZERO real overlap (the single
+      apparent hit was a substring collision), and the matcher demonstrably works
+      - South Park and Stranger Things appear in the logs and NEVER in the
+      unmatched list. So this is not a series-list or root-folder regression.
+      Do NOT justify this rule as "shows nobody subscribes to": the top unmatched
+      titles are One Piece, House of the Dragon and My Hero Academia, which are
+      mainstream - the invariant is feed-size vs library-size, not popularity.
+      Sonarr writes "No matching series <title>" and Radarr "No matching movie
+      for titles '<title>'"; both shapes are covered, verified against live log
+      lines 2026-08-03.
+      ANCHORED TO LEVEL+LOGGER, not to the phrase. An earlier draft matched the
+      bare phrase with a (?!folder|files) lookahead and field: null, which meant
+      it ran against signature+summary+excerpt JOINED - so a model's PROSE merely
+      containing "no matching series" suppressed the whole finding, including a
+      genuine |Error|ImportApprovedEpisodes| disk-quota import failure (proven
+      under .NET 2026-08-03). It also missed the plural "no matching series
+      FOLDERS on disk" because the lookahead wrote folder\b with no s?. The
+      "|Debug|ParsingService|" anchor costs ZERO real suppression and fixes both:
+      measured read-only on the box 2026-08-03, 155130 of 155130 "No matching
+      series" and 117585 of 117585 "No matching movie" lines carry exactly that
+      level+logger, with ZERO occurrences at any other level or logger anywhere
+      in the corpus. The genuine Error lines "no matching series FOLDER on disk"
+      and "no matching series FILES were readable" carry a different logger and
+      now cannot match at all, rather than relying on a lookahead.
+    added: 2026-08-03
+
+  - id: arr-release-rejected-unknown-title
+    title: Sonarr/Radarr DownloadDecisionMaker "[Permanent] Unknown Series/Movie"
+    rx: '(?i)\|Debug\|DownloadDecisionMaker\|.*\[Permanent\] Unknown (?:series|movie)\b'
+    field: null
+    prompt_clause: 'DownloadDecisionMaker "[Permanent] Unknown Series/Unknown Movie" rejections'
+    why: >-
+      The DownloadDecisionMaker half of the same by-design event - 29,146
+      "[Permanent] Unknown Series" and 43,363 "[Permanent] Unknown Movie"
+      rejections, all level=Debug. Anchored to "[Permanent] Unknown
+      Series|Movie" and NOT to "[Permanent]" alone, so every other rejection
+      reason (quality, size, custom format, "matches an alias for series with
+      TVDB ID") still reaches a model. Shares prompt segment 10 with
+      arr-parsing-no-matching-title - the same precedent as segment 4 (two tdarr
+      express-route rules) and segment 6 (wasm-oom + mediainfo-failure).
+      ANCHORED TO LEVEL+LOGGER for the same reason as its twin above: with
+      field: null this rx runs against signature+summary+excerpt JOINED, so the
+      bare "[Permanent] Unknown Series" phrase appearing in a model's PROSE was
+      enough to suppress an unrelated genuine fault (proven under .NET with a
+      real |Error|SeriesService|database is locked finding). Measured read-only
+      2026-08-03: 101183 of 101183 "[Permanent] Unknown Series" and 117582 of
+      117582 "[Permanent] Unknown Movie" lines carry "|Debug|DownloadDecisionMaker|",
+      zero at any other level or logger, so the anchor costs no real suppression.
+      The `.*` between logger and reason is deliberately NOT (?s) - it may not
+      cross a newline, so a Debug rejection line pasted ABOVE an unrelated error
+      line in the same excerpt does not drag the error down with it.
+    added: 2026-08-03
+
+  - id: arr-debug-only-excerpt
+    title: Finding whose ONLY evidence is *arr Debug-level lines
+    rx: '(?ims)\A(?!.*(?:\|\s*(?:Error|Fatal|Warn(?:ing)?|Critical)\s*\||ERROR\s*[-:]|\[ERROR\]|Traceback \(most recent call last\))).*\|Debug\|'
+    field: excerpt
+    prompt_clause: "any finding whose ONLY evidence is *arr Debug-level lines"
+    why: >-
+      STRUCTURAL backstop for the severity misclassification F3 exposed, not a
+      phrase rule. REA takes `severity` verbatim from the model, and the prompt's
+      standing "ignore unrelated debug lines" instruction was violated anyway by
+      qwen2.5-coder:7b - a prompt cannot hold this floor. Fires only when the
+      excerpt carries an *arr NLog |Debug| level token and NO error-level
+      evidence anywhere in it, so it declines findings with no error-level
+      evidence rather than silencing a log level.
+      THE GUARD IS DELIBERATELY WIDER THAN *arr NLog. An earlier draft wrote the
+      lookahead as \|(?:Error|Fatal|Warn)\| - unpadded, pipe-delimited, *arr-only
+      - while the rule itself eats a finding of ANY format. Bazarr ships inside
+      the SAME arr_logs section and writes PADDED tokens: `cat -A` on the box
+      2026-08-03 gives "|ERROR   |" and "|WARNING |", neither of which satisfied
+      that lookahead ("Warning" was not even in the alternation), so an excerpt
+      pairing a genuine Bazarr ERROR with one *arr Debug line was silently eaten.
+      Same for Plex's "ERROR - " and a Python "Traceback (most recent call
+      last):". The alternation now covers padded pipe tokens, Warning, Critical,
+      ERROR-dash/colon, [ERROR] and Traceback - the same header set
+      bare-stack-continuation already uses. Widening a NEGATIVE lookahead can
+      only ever suppress LESS, so this direction is fail-open by construction.
+      Scoped to `excerpt` for the
+      same reason as bare-stack-continuation: a model's prose summary almost
+      always contains the word "error", which would poison the negative
+      lookahead into never firing. After the arr_logs collector rebuild stops
+      shipping Debug lines its live target is source #14 (vlogs), whose LogsQL
+      term filter can still return a Debug line whose message text contains the
+      word "error". MUST SHIP WITH THE COLLECTOR FIX - shipped alone it would eat
+      100% of today's arr_logs findings and convert a visible false page into
+      silence.
+    added: 2026-08-03
+
+  - id: plex-credits-detection-chatter
+    title: Plex CreditsDetectionManager marker-scan retry chatter
+    rx: '(?i)\[creditsdetectionmanager(?:\]|/).{0,80}?(?:incomplete marker attributes|bufferinglinereader: failed to read line|credits detection for item \d+ has failed too many times)'
+    field: null
+    prompt_clause: 'Plex CreditsDetectionManager marker-scan chatter'
+    why: >-
+      The credits/intro marker scanner reporting its own retryable read
+      failures. Enrolled here 2026-08-03 to close a TWIN-SURFACE GAP, not
+      because the class is new: the plex_errors collector had been dropping
+      every line containing the bare substring "CreditsDetectionManager" since
+      2026-07-25, uncounted and with NO rule in this file, while a comment in
+      that collector asserted each of its exclusions "has a TWIN rule in
+      manifest/rea-noise-classes.yaml". That assertion was false for this class
+      and for plex-unknown-metadata-type-folder, and together they were 897 of
+      the 1051 fresh ERROR lines dropped on 2026-08-03 - 86% of the section's
+      suppression was invisible to CI, which is precisely the two-policy-surface
+      failure this file exists to prevent.
+      DELIBERATELY NARROWER THAN THE COLLECTOR GREP WAS. The bare subsystem name
+      matched five distinct message shapes; this rx enumerates only the three
+      benign high-volume ones (measured 2026-08-03: 85 "incomplete marker
+      attributes", 85 "BufferingLineReader: failed to read line", 20 "credits
+      detection for item N has failed too many times"). The other two -
+      "Job failed: Scanner job failed" (4) and "Mis-matching media items
+      detected" (6) - are NOT covered and still reach a model, because a failed
+      scanner job is a plausible real fault and nothing proved otherwise. Any
+      future ERROR naming this subsystem also still pages. Fail open.
+    added: 2026-08-03
+
+  - id: plex-unknown-metadata-type-folder
+    title: 'Plex "Unknown metadata type: folder" browse reply'
+    rx: '(?i)unknown metadata type:\s*folder\b'
+    field: null
+    prompt_clause: 'Plex "Unknown metadata type: folder" replies'
+    why: >-
+      A client asked the PMS HTTP API about a folder-type item, for which Plex
+      has no metadata class, and PMS logged the miss at ERROR level. Uniform
+      shape - every one of the 697 fresh occurrences measured 2026-08-03 is
+      "[Req#<id>] Unknown metadata type: folder" under a request tag, i.e. a
+      normal browse response rather than a state fault. Highest-volume single
+      class in plex_errors: 66% of all fresh ERROR lines on its own, which is
+      why the collector reclaims its bytes at the input as well.
+      Enrolled here for the same twin-surface reason as
+      plex-credits-detection-chatter - see that class's `why`. Anchored to the
+      exact "folder" type so an "Unknown metadata type: <anything-else>" still
+      pages.
+    added: 2026-08-03
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -180,6 +379,24 @@ prompt_segments:
   - index: 7
     marker: 'Failed to create parent iterator'
     classes: [plex-post-reap-scan]
+  - index: 8
+    marker: 'Plex "ClientProfileExtra: missing or invalid type parameter" lines, which PMS logs at ERROR level once or more per transcode-decision request and which never accompany a failed transcode'
+    classes: [plex-client-profile-extra]
+  - index: 9
+    marker: "Plex \"Unable to find metadata agent provider for identifier\" naming the PSEUDO-identifiers 'library' or 'iva', which are Plex resolving its own PlayQueue and Discover scopes"
+    classes: [plex-metadata-agent-pseudo-identifier]
+  - index: 10
+    marker: 'Sonarr/Radarr ParsingService "No matching series"/"No matching movie" Debug lines and the paired DownloadDecisionMaker "[Permanent] Unknown Series/Unknown Movie" rejections'
+    classes: [arr-parsing-no-matching-title, arr-release-rejected-unknown-title]
+  - index: 11
+    marker: 'any finding whose ONLY evidence is *arr Debug-level lines - an excerpt carrying a "|Debug|" NLog level token and no error-level token'
+    classes: [arr-debug-only-excerpt]
+  - index: 12
+    marker: 'Plex CreditsDetectionManager marker-scan chatter'
+    classes: [plex-credits-detection-chatter]
+  - index: 13
+    marker: 'Plex "Unknown metadata type: folder" replies'
+    classes: [plex-unknown-metadata-type-folder]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
