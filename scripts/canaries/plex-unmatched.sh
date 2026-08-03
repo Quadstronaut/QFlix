@@ -26,6 +26,9 @@
 #       series has seasonFolder=False, so `[MTBB] ... S2 - 13 ...mkv` files
 #       land in the series root, Plex reads the trailing "- NN" as an episode
 #       number and files them under Season 1.
+#       REMEDIATED 2026-08-03: sonarr2 now reports renameEpisodes=True and all
+#       three of its series seasonFolder=True. Kept here as the shape to look
+#       for, not as a live description of the box.
 #
 # DETECTION ROUTE: HTTP, not sqlite. Every episode returned by
 # `GET /library/sections/{id}/all?type=4` with `Accept: application/json`
@@ -92,12 +95,39 @@
 #   2 — could not query Plex / config missing / a section read was truncated
 #       (the canary asserted NOTHING; do not read this as "library is fine")
 #
-# This canary does NOT remediate, by design. A metadata refresh demonstrably
-# does not fix these (proved: refreshed 2026-07-27, still local://) and
-# `GET /library/metadata/{rk}/matches` returns 0 candidates at episode level.
-# The only remedy that works is an unmatch+rematch at SERIES level, which
-# recreates every episode row and discards ratingKeys, watch state and
-# Tautulli history. That is an operator judgement call, not a timer's.
+# This canary does NOT remediate, by design — but the REMEDY IS CHEAP AND
+# NON-DESTRUCTIVE, and an earlier version of this comment said the opposite.
+# Correcting it, because the wrong version pushed the operator toward the one
+# route that DOES destroy member data.
+#
+# WHAT ACTUALLY FIXES IT (proved end-to-end on all 29 items, 2026-08-03):
+#     PUT /library/metadata/{SHOW_ratingKey}/refresh?force=1
+# Note SHOW-level, and note `force=1`. Both matter:
+#   - Episode level is useless: `GET /library/metadata/{episode_rk}/matches`
+#     returns size=0. There is nothing to bind an episode to directly.
+#   - A NON-forced refresh is the no-op that produced the old claim. The 29
+#     items were refreshed on 2026-07-27 and stayed local://, and that got
+#     written down as "a metadata refresh demonstrably does not fix these".
+#     It does — with force=1, which is what makes Plex re-pull the season's
+#     episode list instead of trusting its cached "already refreshed" state.
+#
+# It repairs IN PLACE. Measured before/after on all 29: the metadata_item rows
+# keep their id (== ratingKey), index, parent_id and media_parts.file; only
+# `guid` flips local://NNNN -> plex://episode/... and the summary/duration/
+# air-date fields populate. Already-correct siblings are untouched — Squid Game
+# S2 and S3 came back byte-identical across the refresh of their parent show.
+# metadata_item_settings and metadata_item_views row counts were unchanged
+# (3291 / 1515), and Monster (2022)'s pre-existing show/season view_counts
+# (20 / 7) survived intact.
+#
+# The DESTRUCTIVE route the old comment recommended — unmatch+rematch at series
+# level — recreates every episode row and discards ratingKeys, watch state and
+# Tautulli history. Do NOT reach for it for a local:// backlog. It is strictly
+# worse than force=1 and buys nothing.
+#
+# Remediation is still not automated here: force=1 re-pulls from Plex's
+# metadata service for every child of the show, so a timer firing it library-
+# wide is a self-inflicted rate-limit. Fire it at the SHOWS this canary names.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
