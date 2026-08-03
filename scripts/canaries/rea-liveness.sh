@@ -207,12 +207,17 @@
 # maintenance concern (rule 3) bought for an observability need already met.
 #
 # HONEST LIMITS
-#   1. The WRITER IS NOT SHIPPED BY THIS TRACK. qflix-rea.ps1 is gitignored and
-#      workstation-only; this canary is the reader half of a two-part change.
-#      Until the operator adds the one-line write to REA's heredoc, this canary
-#      exits 2 `rea-heartbeat-absent` every run. That is the truthful state —
-#      nothing watches REA — so the timer must be enabled AFTER the writer
-#      lands, not before.
+#   1. THE WRITER IS A GITIGNORED WORKSTATION FILE, so it is untestable from
+#      this repo and invisible to deploy-drift.sh. It is `Get-LastTerminalAuditLine`
+#      plus a base64 template hole in `Get-RemoteHeredoc`, both in
+#      scripts/local-llm/qflix-rea.ps1. WIRED AND VERIFIED LIVE 2026-08-03: the
+#      first real heartbeat was written by the box's own clock during REA's
+#      existing SSH hop, and this canary went exit 2 -> PASS on it. The
+#      "enable the timer only AFTER the writer lands" ordering constraint is
+#      therefore satisfied. If that ps1 is ever lost, rolled back to a version
+#      predating the writer, or restored from an old backup, THIS canary is the
+#      thing that says so — it returns to exit 2 `rea-heartbeat-absent` rather
+#      than passing on absence.
 #   2. One-run lag on P2/P3, by construction (see the contract above).
 #   3. This proves REA RAN AND FINISHED. It does not prove REA's findings were
 #      correct, nor that the models reasoned well. `outcome=heartbeat` means
