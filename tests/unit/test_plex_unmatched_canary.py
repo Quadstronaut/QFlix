@@ -127,14 +127,17 @@ class _Handler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             plan.setdefault("seen_types", []).append(qs.get("type", [None])[0])
             plan.setdefault("pages", []).append((key, start, size))
-            self._json({"MediaContainer": handler(start, size)})
+            typed = qs.get("type", [None])[0] is not None
+            self._json({"MediaContainer": handler(start, size, typed)})
             return
         self._json({"error": "unhandled"}, code=404)
 
 
 def _paged(items):
-    """Well-behaved Plex: honours container start/size, reports totalSize."""
-    def _serve(start, size):
+    """Well-behaved Plex: honours container start/size, reports totalSize.
+    `typed` is accepted (and ignored) because the handler now always passes
+    whether a type filter was sent -- the unfiltered re-list needs it."""
+    def _serve(start, size, typed=None):
         window = items[start:start + size]
         return {"size": len(window), "totalSize": len(items),
                 "Metadata": window}
@@ -143,7 +146,7 @@ def _paged(items):
 
 def _lying_empty(declared):
     """The empty-because-BROKEN case: says it has N, hands back nothing."""
-    def _serve(_start, _size):
+    def _serve(_start, _size, _typed=None):
         return {"size": 0, "totalSize": declared, "Metadata": []}
     return _serve
 
@@ -244,8 +247,12 @@ def test_episode_type_filter_is_sent(code, tmp_path):
     plan = _plan([TV], {"2": _paged([])})
     with _Plex(plan) as plex:
         _run(code, tmp_path, base=plex.base)
-    assert plan["seen_types"] == ["4"], (
+    assert plan["seen_types"][0] == "4", (
         "must request type=4 (episodes); anything else changes what is counted")
+    # This section came back with zero episodes, so the canary asks its second
+    # question -- an UNFILTERED re-list -- to tell an empty library apart from a
+    # broken type filter. That call deliberately carries no type param.
+    assert plan["seen_types"] == ["4", None], plan["seen_types"]
 
 
 # --------------------------------------------------------------------------
@@ -634,3 +641,56 @@ def test_systemd_unit_pair_exists_and_names_the_canary():
     timer_body = timer.read_text(encoding="utf-8")
     assert "OnCalendar=" in timer_body
     assert "WantedBy=timers.target" in timer_body
+
+
+# --------------------------------------------------------------------------
+# The declared=0 hole (arbiter fix 2026-08-03)
+# --------------------------------------------------------------------------
+
+def _type4_broken(total_items):
+    """The section HOLDS content, but a type=4 query finds nothing -- the shape
+    a Plex schema/version change produces if the episode filter stops matching.
+    Both listings are served by the same section, distinguished only by whether
+    the type filter was sent."""
+    def _serve(_start, _size, typed=None):
+        if typed:
+            return {"size": 0, "totalSize": 0, "Metadata": []}
+        return {"size": 0, "totalSize": total_items, "Metadata": []}
+    return _serve
+
+
+def test_zero_episodes_in_a_populated_library_is_broken_not_clean(code, tmp_path):
+    """THE HOLE: the truncation guard only fires when `declared > 0`, so a
+    section reporting totalSize=0 walks past it. If the type=4 filter ever
+    stops matching, EVERY show section returns totalSize=0/Metadata=[] and this
+    canary printed `plex-unmatched-clean ... episodes=0` and exited 0 --
+    asserting nothing about 445 real episodes while showing Kuma green."""
+    plan = _plan([TV, ANIME], {"2": _type4_broken(382), "6": _type4_broken(63)})
+    with _Plex(plan) as plex:
+        r = _run(code, tmp_path, base=plex.base)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "STAGE=plex-no-episodes" in r.stderr, r.stderr
+    assert "holds=382" in r.stderr, r.stderr
+
+
+def test_the_second_question_is_what_makes_it_decidable(code, tmp_path):
+    """MUTATION PROOF. "Zero episodes" ALONE cannot separate the two cases -- a
+    genuinely empty library looks identical. The discriminator is the unfiltered
+    re-list, so the same zero-episode section with an empty library must stay
+    CLEAN. This is the assertion that stops the new guard from red-lining every
+    freshly created TV library."""
+    with _Plex(_plan([TV], {"2": _paged([])})) as plex:
+        r = _run(code, tmp_path, base=plex.base)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "episodes=0" in r.stdout
+
+
+def test_a_populated_library_costs_no_extra_call(code, tmp_path):
+    """The re-list is per EMPTY section only. A normal run must not double its
+    request count against a 445-episode Plex."""
+    plan = _plan([TV], {"2": _paged([_ep(i, guid=_plex_guid(i))
+                                 for i in range(5)])})
+    with _Plex(plan) as plex:
+        r = _run(code, tmp_path, base=plex.base)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert plan["seen_types"] == ["4"], plan["seen_types"]
