@@ -81,6 +81,14 @@ jobs:
       - name: REA policy-seam tests (always run)
         shell: pwsh
         run: ./tests/local-llm/test-rea-noise-classes.ps1
+
+      - name: S2 backup tests (always run)
+        shell: pwsh
+        # Subject is scripts/local-llm/backup-untracked.ps1, which IS tracked —
+        # so unlike the REA suite below, every structural block really runs here.
+        # Its one LIVE block (verify the real B:\BAKS mirror) skips loudly on a
+        # runner with no such volume and says so in the output.
+        run: ./tests/local-llm/test-backup-untracked.ps1
       - name: REA suite (subject is an audit-scope S2 member)
         shell: pwsh
         run: |
