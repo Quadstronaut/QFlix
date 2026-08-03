@@ -359,12 +359,65 @@ case "$REST" in
     fi
     KNOWN="unknown-to-table"
     if [ -n "$TABLE" ] && [ -r "$TABLE" ]; then
+      # PyYAML stays the AUTHORITATIVE reader: it validates the whole document,
+      # so a table corrupted anywhere degrades to "unparseable" rather than to a
+      # confidently wrong label. But PyYAML is a third-party module and this is a
+      # shell canary invoking a bare `python3`. It is present on the box
+      # (/usr/bin/python3 has yaml 6.0.3) and ABSENT from the GitHub runner's
+      # interpreter — tests/run.sh installs it into tests/.venv, which this
+      # subprocess never sees. That mismatch made the canary label a KNOWN reason
+      # as `unknown-to-table` on CI only, reddening the build for 9 consecutive
+      # pushes while the same test passed on the workstation. Exactly the
+      # "green here, red there" class the banner at the end of tests/run.sh
+      # exists to warn about, and the reason an OPTIONAL dependency must not
+      # silently change a watchdog's output.
+      #
+      # So: "the module is missing" is distinguished from "the table is broken"
+      # by exit code 3, and only the former falls back to a stdlib read.
       KNOWNLIST=$(python3 - "$TABLE" <<'PY' 2>/dev/null
-import sys, yaml
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(3)          # module absent != table corrupt; caller falls back
 d = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
 print(" ".join(str(x) for x in (d.get("deadman_reasons") or [])))
 PY
-) || KNOWNLIST=""
+)
+      PYRC=$?
+      if [ "$PYRC" -ne 0 ]; then
+        KNOWNLIST=""
+        # 3 = our own "PyYAML absent" signal. 126/127 = no usable python3 at
+        # all. Both mean we never got to LOOK at the table, so read the one flat
+        # list we need with awk. Any OTHER non-zero is the YAML parser failing
+        # ON the table — a real corruption, which must NOT be papered over by a
+        # laxer reader, so it still falls through to "reason-table-unparseable".
+        #
+        # The fallback is deliberately narrow: `deadman_reasons:` is a top-level
+        # key holding a flat list of bare scalars, and nothing else in this
+        # manifest has that shape. It stops at the first line that starts in
+        # column 0, so it cannot wander into a neighbouring key. \047 is the
+        # single quote, written octal so the awk program needs no shell quoting
+        # gymnastics.
+        case "$PYRC" in
+          3|126|127)
+            KNOWNLIST=$(awk '
+              /^deadman_reasons:[[:space:]]*(#.*)?$/ { inb = 1; next }
+              inb && /^[[:space:]]*(#.*)?$/          { next }
+              inb && /^[[:space:]]+-[[:space:]]*/ {
+                  v = $0
+                  sub(/^[[:space:]]+-[[:space:]]*/, "", v)
+                  sub(/[[:space:]]+#.*$/, "", v)
+                  gsub(/[ \t\r"\047]/, "", v)
+                  if (v != "") printf "%s ", v
+                  next
+              }
+              inb { exit }
+            ' "$TABLE")
+            [ -n "$KNOWNLIST" ] && skip "reason-table-read-without-pyyaml"
+            ;;
+        esac
+      fi
       KNOWNLIST=$(printf '%s' "$KNOWNLIST" | tr -d '\r')
       if [ -z "$KNOWNLIST" ]; then
         skip "reason-table-unparseable"
