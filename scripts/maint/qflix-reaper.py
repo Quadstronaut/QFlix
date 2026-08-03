@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""qflix-reaper — 60-day autodelete for the QFlix Plex libraries.
+"""qflix-reaper — add-date autodelete for the QFlix Plex libraries.
 
 WHY this exists: Maintainerr's 60-day "delete after N days" rule went broken on
 the seedbox and was silently retaining items (or, worse, threatening to delete
@@ -14,7 +14,8 @@ WHAT IT DELETES: items in the four QFlix Plex libraries
     'QFlix - TV'            -> sonarr   (series, match tvdbId)
     'QFlix - Anime'         -> sonarr2  (series, match tvdbId)
 
-whose Plex addedAt is STRICTLY older than --threshold-days (default 60), that are
+whose Plex addedAt is STRICTLY older than --threshold-days (default
+DEFAULT_THRESHOLD_DAYS, currently 45 — see the note on that constant), that are
 not excluded, and that POSITIVELY resolve to exactly one *arr id. Resolution is
 mandatory: an item that does not map to a single Radarr movie / Sonarr series is
 NEVER deleted — it is skipped and logged UNRESOLVED. Such an item is an "orphan"
@@ -1046,7 +1047,8 @@ def parse_args(argv=None):
     ap.add_argument("--execute", action="store_true",
                     help="perform real deletions (the ONLY way to mutate). Default is dry-run.")
     ap.add_argument("--threshold-days", type=int, default=DEFAULT_THRESHOLD_DAYS,
-                    help="addedAt age cutoff in days; item is a candidate iff age > N (strict). Default 60.")
+                    help=("addedAt age cutoff in days; item is a candidate iff age > N "
+                          "(strict). Default %(default)s."))
     ap.add_argument("--exclude-file", default=None,
                     help="exclusion list (default scripts/maint/qflix-reaper.exclude beside this script).")
     ap.add_argument("--max-items", type=int, default=DEFAULT_MAX_ITEMS,
