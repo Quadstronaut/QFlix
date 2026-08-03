@@ -1,5 +1,5 @@
 [Unit]
-Description=Manitoba maint — QFlix reaper (60-day autodelete, replaces broken Maintainerr)
+Description=Manitoba maint — QFlix reaper (add-date autodelete, replaces broken Maintainerr)
 After=network-online.target
 
 [Service]
