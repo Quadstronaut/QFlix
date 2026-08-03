@@ -143,6 +143,18 @@
 #   "No applications configured" is exit 2, not a clean pass: a wiped
 #   Applications page produces an empty intended set for which "nothing is
 #   missing" is trivially true and completely wrong.
+#
+#   THE CONDITION IS GUARDED, NOT JUST ITS TWO KNOWN CAUSES. Zero apps and zero
+#   enabled indexers are the two ways an empty intended set was ANTICIPATED, but
+#   the thing that makes the verdict vacuous is the empty set itself. Category
+#   data going missing on either side produces it too: an indexer whose
+#   `capabilities.categories` comes back [] after a Prowlarr upgrade, or an app
+#   whose syncCategories is wiped, drops EVERY indexer into skip_nocat, leaves
+#   `intended` empty, makes `missing` trivially empty, and reclassifies every
+#   present entry as an orphan — which by design never fails. Reproduced against
+#   the live 2026-08-03 topology: perturbing either field alone yielded
+#   `intended=0, orphan=16, skip_nocat=10` and exit 0. Guarding the causes and
+#   not the condition is how a guard passes while blind.
 #   cli.py collapses every non-zero to a Kuma DOWN, so the 1-vs-2 split is for
 #   the operator on the command line and for the tests — the STAGE label
 #   carries it into Kuma.
@@ -169,6 +181,8 @@
 #   prowlarr-appsync-prowlarr-down    Prowlarr API unreachable / non-JSON
 #   prowlarr-appsync-no-apps          zero applications configured
 #   prowlarr-appsync-no-indexers      zero ENABLED indexers
+#   prowlarr-appsync-no-intent        the intended set came out EMPTY across
+#                                     every application (see below)
 #   prowlarr-appsync-arr-down         an application's *arr could not be read
 #   prowlarr-appsync-unknown-app      application implementation we cannot map
 #                                     to an API version (never guess a path)
@@ -231,6 +245,38 @@ def _slug(text):
     """Kuma msg= is parsed as whitespace-separated tokens, so nothing that
     reaches it may contain a space."""
     return re.sub(r"\s+", "_", str(text).strip())
+
+
+def _join_capped(parts, limit, sep=";"):
+    """Join WHOLE elements up to `limit` chars, then say how many were dropped.
+
+    Same helper, same reasoning, as scripts/canaries/plex-unmatched.sh: a plain
+    slice cuts mid-token, which reads as a different (wrong) value rather than
+    as an obvious truncation — and it drops silently, so the operator cannot
+    tell a two-item finding from a fifty-item one."""
+    parts = list(parts)
+    out = []
+    used = 0
+    for part in parts:
+        cost = len(part) + (len(sep) if out else 0)
+        if used + cost > limit:
+            break
+        out.append(part)
+        used += cost
+    else:
+        return sep.join(out)
+
+    # Something was dropped, so the marker has to fit INSIDE the budget too --
+    # otherwise the "+N more" itself pushes the line past cli.py's 200-char cut
+    # and gets sliced, which is the mid-token truncation this helper exists to
+    # prevent. Give back whole elements until it fits.
+    while True:
+        dropped = len(parts) - len(out)
+        marker = ("%s+%d more" % (sep, dropped)) if out else "+%d more" % dropped
+        if not out or used + len(marker) <= limit:
+            return sep.join(out) + marker
+        last = out.pop()
+        used -= len(last) + (len(sep) if out else 0)
 
 
 def fail(stage, msg, code=EXIT_FINDING, detail=None):
@@ -461,6 +507,18 @@ def main():
              "all-%d-applications-have-syncLevel-disabled" % len(apps),
              EXIT_BROKEN, detail=report)
 
+    # The CONDITION, not just its two anticipated causes. If nothing at all is
+    # intended, "nothing is missing" is vacuously true and this canary has
+    # asserted exactly zero. See the RULE 5 block in the header.
+    if report["totals"]["intended"] == 0:
+        fail("prowlarr-appsync-no-intent",
+             "%d-enabled-indexers-x-%d-apps-yield-ZERO-intended-syncs-"
+             "skip_notag=%d-skip_nocat=%d-orphan=%d"
+             % (len(enabled), report["totals"]["apps_checked"],
+                report["totals"]["skip_notag"], report["totals"]["skip_nocat"],
+                report["totals"]["orphan"]),
+             EXIT_BROKEN, detail=report)
+
     # --- P2 ---------------------------------------------------------------
     by_name = {}
     for i in enabled:
@@ -489,20 +547,36 @@ def main():
                                   skip_disabled))
     magnet_tail = ""
     if report["magnet"]["violations"]:
-        magnet_tail = ";magnet_off=%s" % ",".join(
-            _slug(n) for n in report["magnet"]["violations"])
+        magnet_tail = ";magnet_off=%s" % _join_capped(
+            [_slug(n) for n in report["magnet"]["violations"]], 40, ",")
 
     if report["missing"]:
-        where = ",".join("%s:%s" % (_slug(m["app"]), _slug(m["indexer"]))
-                         for m in report["missing"])
+        # THE BUDGET IS SPENT DELIBERATELY, WORST CASE FIRST. cli.py takes
+        # stderr verbatim as the Kuma msg= and truncates at 200 chars
+        # (scripts/maint/lib/cli.py). An unbounded join put the rule-4 counts
+        # LAST, so a total sync outage — the widest, most urgent finding —
+        # dropped the counts entirely and cut the final name mid-token, with
+        # nothing saying anything had been dropped. Measured on a synthetic
+        # 4-app x 14-indexer outage: 1327 bytes of stderr, of which Kuma saw 9
+        # of 56 entries, the last one severed, and no tally at all. The wider
+        # the outage the less the operator was told. So: reserve the tally and
+        # the magnet clause, then fill what is left with WHOLE entries and say
+        # how many were dropped.
+        prefix = "STAGE=prowlarr-appsync-missing msg="
+        budget = 200 - len(prefix) - len(magnet_tail) - len(tail) - 1
+        where = _join_capped(
+            ["%s:%s" % (_slug(m["app"]), _slug(m["indexer"]))
+             for m in report["missing"]], max(budget, 0), ",")
         fail("prowlarr-appsync-missing", "%s%s;%s" % (where, magnet_tail, tail),
              EXIT_FINDING, detail=report)
 
     if report["magnet"]["violations"]:
+        prefix = "STAGE=prowlarr-appsync-magnet-pref-off msg=preferMagnetUrl-false-on-"
+        budget = 200 - len(prefix) - len(tail) - 1
         fail("prowlarr-appsync-magnet-pref-off",
              "preferMagnetUrl-false-on-%s;%s"
-             % (",".join(_slug(n) for n in report["magnet"]["violations"]),
-                tail),
+             % (_join_capped([_slug(n) for n in report["magnet"]["violations"]],
+                             max(budget, 0), ","), tail),
              EXIT_FINDING, detail=report)
 
     if WANT_JSON:

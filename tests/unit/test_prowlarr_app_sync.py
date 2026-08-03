@@ -390,6 +390,9 @@ def test_failure_output_is_exactly_one_line_of_two_tokens(tmp_path, stack):
     assert len(tokens) == 2, tokens
     assert tokens[0].startswith("STAGE=")
     assert tokens[1].startswith("msg=")
+    # The docstring above named the 200-char truncation and then asserted
+    # nothing about it, so an unbounded join sailed through. Now pinned.
+    assert len(lines[0]) <= 200, (len(lines[0]), lines[0])
     assert r.stdout.strip() == "", r.stdout
 
 
@@ -795,3 +798,97 @@ def test_the_shipped_magnet_policy_is_exactly_the_two_diagnosed_indexers():
     config changes and make the canary born-red for the wrong reason."""
     src = SCRIPT.read_text(encoding="utf-8")
     assert '_mag = "Knaben,Tokyo Toshokan"' in src
+
+
+# ===========================================================================
+# The EMPTY-INTENT condition, guarded rather than just its two known causes
+# (arbiter fix 2026-08-03)
+# ===========================================================================
+
+
+def test_a_topology_with_no_indexer_categories_is_broken_not_clean(
+        tmp_path, stack):
+    """Zero apps and zero enabled indexers were the two ANTICIPATED ways to get
+    an empty intended set. The thing that makes the verdict vacuous is the
+    empty set itself, and category data can vanish on either side.
+
+    Here every indexer comes back with `capabilities.categories == []` -- the
+    shape a Prowlarr definition/schema change produces. Every indexer falls into
+    skip_nocat, `intended` is empty, `missing` is trivially empty, and every
+    present entry is reclassified as an orphan (which by design never fails).
+    Before the guard this exited 0 with intended=0, orphan=16, skip_nocat=10."""
+    s = stack()
+    blind = [dict(i, capabilities={"categories": []}) for i in live_indexers()]
+    _wire(s, indexers=blind, arr_lists=live_arr_lists())
+    r = _run(_secrets(tmp_path, s.port))
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert _stage(r) == "prowlarr-appsync-no-intent", r.stderr
+    assert "ZERO-intended-syncs" in r.stderr, r.stderr
+
+
+def test_wiped_sync_categories_on_every_app_is_broken_not_clean(
+        tmp_path, stack):
+    """The mirror image: the indexers are fine, the APPLICATIONS lost their
+    syncCategories. Same vacuous verdict, same exit 2."""
+    s = stack()
+    apps = [application(2, "Radarr", "Radarr", [3], "radarr", [], base=s.base),
+            application(1, "Sonarr", "Sonarr", [3], "sonarr", [], base=s.base)]
+    _wire(s, apps=apps, arr_lists=live_arr_lists())
+    r = _run(_secrets(tmp_path, s.port))
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert _stage(r) == "prowlarr-appsync-no-intent", r.stderr
+
+
+def test_the_empty_intent_guard_discriminates(tmp_path, stack):
+    """MUTATION PROOF. The SAME fixture with categories restored must NOT trip
+    the new guard, so exit 2 above is caused by the blindness rather than by the
+    guard firing on everything."""
+    s = _wire(stack(), arr_lists=live_arr_lists(limetorrents_in_radarr=True))
+    r = _run(_secrets(tmp_path, s.port))
+    assert _stage(r) != "prowlarr-appsync-no-intent", r.stderr
+
+
+# ===========================================================================
+# The alert line must survive the widest finding, counts first
+# ===========================================================================
+
+
+def test_a_total_outage_keeps_the_counts_and_declares_what_it_dropped(
+        tmp_path, stack):
+    """THE FAILURE MODE WAS INVERTED: the wider the outage, the less the
+    operator was told. `where` joined every app:indexer pair unbounded and the
+    rule-4 tally was appended LAST, so cli.py's 200-char cut dropped the tally
+    entirely and severed the final name mid-token with no marker. Measured on
+    this exact fixture before the fix: 1327 bytes of stderr, 9 of 56 entries
+    survived, zero counts."""
+    s = stack()
+    _wire(s, arr_lists={"radarr": [], "sonarr": [], "radarr2": [],
+                        "sonarr2": []})
+    r = _run(_secrets(tmp_path, s.port))
+    assert r.returncode == 1, (r.returncode, r.stdout, r.stderr)
+    line = [ln for ln in r.stderr.splitlines() if ln.strip()][0]
+    assert len(line) <= 200, (len(line), line)
+    # The counts are the rule-4 audit trail. They must never be the thing that
+    # gets dropped.
+    for token in ("intended=", "present=", "orphan=", "skip_notag=",
+                  "skip_nocat=", "skip_disabled="):
+        assert token in line, (token, line)
+    # And a drop must announce itself rather than looking like a short finding.
+    assert "more" in line, line
+    # Full detail is never lost -- it is on stdout under --json.
+    detail = _json(_run(_secrets(tmp_path, s.port), args=("--json",)))
+    assert len(detail["missing"]) == 17, len(detail["missing"])
+
+
+def test_a_magnet_only_finding_also_stays_inside_the_kuma_budget(
+        tmp_path, stack):
+    s = stack()
+    _wire(s, arr_lists=live_arr_lists(limetorrents_in_radarr=True))
+    r = _run(_secrets(tmp_path, s.port),
+             QFLIX_CANARY_APPSYNC_MAGNET_REQUIRED=",".join(
+                 [i["name"] for i in live_indexers()
+                  if i["enable"] and i["protocol"] == "torrent"]))
+    assert r.returncode == 1
+    line = [ln for ln in r.stderr.splitlines() if ln.strip()][0]
+    assert len(line) <= 200, (len(line), line)
+    assert "intended=" in line, line
