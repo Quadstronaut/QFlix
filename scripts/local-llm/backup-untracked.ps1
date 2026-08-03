@@ -87,7 +87,7 @@
   ==========================================================================
   L1 THE ALARM DIES WITH THE SCRIPT. Every loud channel here (Discord, event
      log, exit code, sentinel) is emitted BY this script, so a disabled task
-     alerts nobody. That is the same turtle as R-S4-TASK and it is registered
+     alerts nobody. That is the same turtle as R-WORKSTATION-SCHEDULED-TASKS and it is registered
      there rather than papered over. Two things bound it: `-VerifyOnly` fails
      on a receipt older than -MaxReceiptAgeHours, so the staleness is visible
      to anything that asks; and tests/local-llm/test-backup-untracked.ps1
@@ -439,7 +439,7 @@ function Send-BackupAlert {
 # ---------------------------------------------------------------------------
 # schedule, as code
 # ---------------------------------------------------------------------------
-# The schedule is otherwise pure live registry state -- residual R-S4-TASK, the
+# The schedule is otherwise pure live registry state -- residual R-WORKSTATION-SCHEDULED-TASKS, the
 # same row that already covers REA's own task. It cannot be made offline-
 # enumerable, but it CAN be made reproducible: `-InstallTask` rebuilds it from
 # this file, so a machine rebuild is a command rather than an act of memory.

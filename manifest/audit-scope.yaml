@@ -100,7 +100,7 @@ surfaces:
       tracked half (scripts/local/**, scripts/local-llm/*.ps1 that ARE tracked,
       tests/local-llm/**) is enumerated as S1; the untracked half is S2; the
       scheduled task and the ollama service are live-only and registered as
-      residual rows R-S4-TASK and R-S4-OLLAMA.
+      residual rows R-WORKSTATION-SCHEDULED-TASKS and R-WORKSTATION-OLLAMA-SERVICE.
 
   S5:
     title: the alerting layer itself
@@ -444,7 +444,7 @@ residuals:
       A defect class nobody has thought of yet. The regime does not prevent
       this; it guarantees that once thought of ONCE, it is enumerated
       exhaustively and never re-sampled.
-  - id: R-S4-TASK
+  - id: R-WORKSTATION-SCHEDULED-TASKS
     owner: operator
     review_cadence_days: 90
     last_reviewed: 2026-08-03
@@ -463,7 +463,7 @@ residuals:
       `backup-untracked.ps1 -VerifyOnly` fails on a receipt older than 48h, so
       anything that asks — including tests/local-llm/test-backup-untracked.ps1
       on this workstation — sees the staleness.
-  - id: R-S4-OLLAMA
+  - id: R-WORKSTATION-OLLAMA-SERVICE
     owner: operator
     review_cadence_days: 90
     last_reviewed: 2026-07-29
