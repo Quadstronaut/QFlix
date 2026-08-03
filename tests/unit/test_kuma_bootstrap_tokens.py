@@ -25,8 +25,12 @@ without standing up Kuma. What is pinned is the property whose removal is
 invisible -- that the create-time token is captured and used as a fallback, and
 that a missing token fails the run instead of warning.
 """
+import importlib.util
 import re
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 BOOTSTRAP = REPO / "scripts" / "maint" / "bootstrap-kuma-monitors.py"
@@ -34,6 +38,32 @@ INSTALLER = REPO / "scripts" / "configure" / "240-maintenance-install.sh"
 
 SRC = BOOTSTRAP.read_text(encoding="utf-8")
 MAIN = SRC[SRC.index("def main("):]
+
+
+@pytest.fixture(scope="module")
+def mod():
+    """Import the hyphenated script by path (not a legal module name)."""
+    sys.path.insert(0, str(REPO / "scripts" / "maint"))
+    spec = importlib.util.spec_from_file_location("kuma_bootstrap_tok", BOOTSTRAP)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+class TokenApi:
+    """`live` is what the server answers to get_monitor(id); the cached list
+    passed as `fresh` is what get_monitors() would have returned."""
+
+    def __init__(self, live=None, raises=False):
+        self._live = live or {}
+        self._raises = raises
+        self.live_reads = []
+
+    def get_monitor(self, mid):
+        self.live_reads.append(mid)
+        if self._raises:
+            raise RuntimeError("socket closed")
+        return self._live.get(mid, {})
 
 
 def test_creation_captures_the_returned_token():
@@ -63,12 +93,74 @@ def test_every_token_lookup_falls_back_to_the_create_time_token():
 
     Before the fix only `pusher` and `fleet` had one, which is why a canary --
     and only a canary -- shipped tokenless.
+
+    The three inline lookups were collapsed into `_resolve_token` on 2026-08-03,
+    so the pin follows the property rather than the shape: every call site routes
+    through the helper, and the helper carries the fallback. The previous version
+    of this test matched the literal `elif created_tokens.get(` and would have
+    failed that refactor while the property it guards still held -- a test that
+    blocks correct change teaches people to delete tests.
     """
-    fallbacks = re.findall(r"elif created_tokens\.get\(", MAIN)
-    assert len(fallbacks) >= 3, (
-        f"expected a created_tokens fallback for apps, canaries AND standalone "
-        f"self-pushers; found {len(fallbacks)}"
+    call_sites = re.findall(r"_resolve_token\(api, fresh, created_tokens,", MAIN)
+    assert len(call_sites) >= 3, (
+        f"expected a token lookup for apps, canaries AND standalone "
+        f"self-pushers; found {len(call_sites)}"
     )
+    helper = SRC[SRC.index("def _resolve_token("):SRC.index("def _channel_ids(")]
+    assert "created_tokens.get(" in helper, \
+        "_resolve_token dropped the create-time fallback"
+    assert "_live_push_token(" in helper, \
+        "_resolve_token dropped the live server read"
+
+
+def test_cached_token_wins_and_costs_no_round_trip(mod):
+    api = TokenApi()
+    fresh = {"Canary X": {"id": 9, "pushToken": "fromCache"}}
+    assert mod._resolve_token(api, fresh, {}, "Canary X") == "fromCache"
+    assert api.live_reads == []
+
+
+def test_create_time_token_is_used_when_the_cache_has_none(mod):
+    api = TokenApi()
+    fresh = {"Canary X": {"id": 9}}
+    assert mod._resolve_token(api, fresh, {"Canary X": "fromCreate"}, "Canary X") \
+        == "fromCreate"
+    assert api.live_reads == []
+
+
+def test_the_server_is_asked_when_neither_cache_nor_create_has_it(mod):
+    """The two-installer-runs bug, pinned.
+
+    Run 1 created monitors 115/116/117; `_add_push_monitor` returned no token
+    (`token=pending` in the [add] line) and `get_monitors()` — a client-side
+    cache — had not yet learned it either. The keys landed in `missing`, the
+    install smoke failed 58/61, and the documented remedy was "re-run". A single
+    live `getMonitor` has the token immediately.
+    """
+    api = TokenApi(live={115: {"id": 115, "pushToken": "fromServer"}})
+    fresh = {"Canary Prowlarr App Sync": {"id": 115}}
+    assert mod._resolve_token(api, fresh, {}, "Canary Prowlarr App Sync") \
+        == "fromServer"
+    assert api.live_reads == [115]
+
+
+def test_a_genuinely_tokenless_monitor_still_reports_missing(mod):
+    """The live read must not invent a token — that would re-open the silent
+    exit-0-pushing-nothing hole this whole file exists for."""
+    api = TokenApi(live={9: {"id": 9}})
+    assert mod._resolve_token(api, {"Canary X": {"id": 9}}, {}, "Canary X") is None
+
+
+def test_an_unreachable_server_reports_missing_rather_than_crashing(mod):
+    api = TokenApi(raises=True)
+    assert mod._resolve_token(api, {"Canary X": {"id": 9}}, {}, "Canary X") is None
+
+
+def test_a_monitor_absent_from_the_cache_reports_missing(mod):
+    """No cache entry means no id to ask about — cannot be laundered into a token."""
+    api = TokenApi()
+    assert mod._resolve_token(api, {}, {}, "Canary Ghost") is None
+    assert api.live_reads == []
 
 
 def test_a_missing_token_fails_the_run():
