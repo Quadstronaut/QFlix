@@ -17,6 +17,18 @@ Each step names the detector that locks it, so a fix cannot silently revert:
 > was born green on a broken system would be worth nothing. Step 2 clears the
 > `missing` half.
 
+## STATUS — steps 1 and 2 APPLIED 2026-08-03 09:05–09:23 UTC
+
+Applied live via the Prowlarr/Radarr APIs, before the Monday window opened.
+The canary now exits **0** with `magnet.violations: []` and `missing: []`.
+Step 3 was **not** applied (cosmetic, and the `skip_nocat` count is the
+intended signal for it).
+
+Step 2 did **not** go the way this runbook predicted — see
+[Step 2 · what was actually wrong](#2a-superseded--the-definition-is-not-buggy).
+Rollback values for every mutation are in
+[Rollback](#rollback--exact-prior-values).
+
 ---
 
 ## Step 1 — tick **Prefer Magnet URL** on Knaben and Tokyo Toshokan
@@ -108,21 +120,87 @@ Not a category-config mismatch, not a disabled indexer, not a dead site:
 So the defect is the bundled `limetorrents` Cardigann definition's `/latest100`
 row → category mapping. Prowlarr is `2.5.2.5491` (branch `master`).
 
-### 2a — preferred: refresh the indexer definitions
+### 2a SUPERSEDED — the definition is not buggy
 
-Prowlarr → **System → Tasks → Application Update** (definition refresh), or
-upgrade Prowlarr past `2.5.2.5491`, then re-test. The search path already works,
-which is what makes a definition bug the likely story — and a likely
-already-fixed-upstream one.
+**The "refresh the definitions, it is probably fixed upstream" theory is
+wrong.** Read on the live box 2026-08-03: `Definitions/limetorrents.yml` is
+dated 2026-08-02 (Prowlarr re-syncs that folder; it was already current) and it
+carries this setting, which is upstream *documenting the behaviour as intended*:
 
-Verify with the exact read-only probe used in diagnosis:
+```yaml
+  - name: info_category_8000
+    label: About LimeTorrents Categories
+    default: LimeTorrents only returns category <b>Other</b> in its
+      <i>Keywordless</i> search results page. To pass your apps' indexer TEST
+      you will need to include the 8000(Other) category.
+```
+
+Confirmed against the site, not just the YAML: `/latest100` and
+`/browse-torrents/Movies/` both render the second `<td>` as a bare relative date
+(`2 minutes ago`) with **no `in <Category>` text**, so the definition's
+`category` selector regex `" in (.+?)[.]?$"` cannot match and every row falls to
+the `default:` — `TV shows` if the title has `SxxEyy`, else `Other`. That is an
+honest mapping of a site that genuinely does not categorise its keywordless
+listing. There is no upstream fix to wait for.
+
+Reproduced exactly as Radarr's add-time validation issues it:
 
 ```
-GET /api/v1/search?query=&indexerIds=2&categories=2000&type=search   → must be > 0
+GET /2/api?t=movie&cat=2000,…,2090          → 0 items   (Radarr 400s)
+GET /2/api?t=movie&cat=2000,…,2090,8000     → 118 items (Radarr accepts)
+GET /2/api?t=movie&q=matrix&cat=2000        → 33 items  (the actual value)
 ```
 
-Then hit **Sync App** on the Radarr row and confirm LimeTorrents appears in
-Radarr's indexer list.
+### 2a′ — what was applied: scope the 8000 exception to LimeTorrents alone
+
+The runbook's **Do NOT widen Radarr's `syncCategories` to include 8000** still
+holds and was honoured — widening application id 2 would have written cat 8000
+into **all eight** of Radarr's Prowlarr indexers. The measurement behind that
+DO NOT is now quantified: of the 121 items the keywordless feed returns,
+**20 (16.5 %) are plainly XXX**, 2 are `SxxEyy` TV, 87 carry a year.
+
+So the exception was scoped instead of broadened, using the same dedicated-tag
+lever §2b already endorses:
+
+1. New Prowlarr tag **`radarr-allow-other`** (id 4).
+2. New Prowlarr application **“Radarr (LimeTorrents / Other)”** (id 6) —
+   same Radarr target as app 2, `syncLevel: **addOnly**`, `tags: [4]`,
+   `syncCategories` = app 2's eleven movie cats **+ 8000**.
+   `addOnly` is load-bearing: a second `fullSync` application pointed at the
+   same Radarr is the one shape that could reap the other eight indexers.
+3. LimeTorrents tagged `[3, 4]` — tag 3 (`general`) **kept**, so the working
+   Sonarr entry is never at risk. This is precisely the failure §2b warns about
+   and it is why the tag was *added*, not swapped.
+4. `ApplicationIndexerSync` → LimeTorrents added to Radarr, cats `[2000, 8000]`.
+5. `enableRss = false` on **Radarr's LimeTorrents entry only**. The 8000 category
+   exists solely to get past add-time validation; the indexer's real value to
+   Radarr is its keyword search (33/40 in cat 2000), which runs on
+   `enableAutomaticSearch` / `enableInteractiveSearch`. This keeps the 16.5 %-XXX
+   feed out of the movie pipeline entirely. Stable because app 6 is `addOnly` —
+   Prowlarr adds the entry and never rewrites it.
+
+Net: only LimeTorrents' own Radarr entry ever sees cat 8000. Applications 1–4,
+the other eight Radarr indexers, and Sonarr are byte-for-byte unchanged.
+
+### Residuals — accepted, not fixed
+
+- **Application 2 still retries and still fails**, 2 × `Warn|RadarrV3Proxy|No
+  Results in configured categories` per 6 h cycle, unchanged from before. It
+  still holds tag 3 and still asks for cat 2000 only. Closing this needs the
+  §2b tag surgery on the **Sonarr application**, which risks the working Sonarr
+  entry for 8 log lines a day — the runbook already rates that trade as not
+  worth it, and it was not taken.
+- **The canary's `orphan` count moves 8 → 15.** Application 6 intends exactly
+  one indexer, so Radarr's other seven Prowlarr entries read as orphans *for
+  that application*. Orphans are counted and reported but never fail, by design.
+
+Verify (read-only):
+
+```
+GET /api/v1/search?query=&indexerIds=2&categories=2000&type=search   → still 0; expected
+GET Radarr /api/v3/indexer   → must contain "LimeTorrents (Prowlarr)"
+bash scripts/canaries/prowlarr-app-sync.sh --json                    → exit 0
+```
 
 ### 2b — CORRECTION to the "just untag it" idea
 
@@ -167,6 +245,32 @@ clean sync log is worth the click.
 The app-sync canary counts them as `skip_nocat` rather than ignoring them, so
 if one of them ever *starts* publishing a wanted category the number moves and
 the change is visible.
+
+---
+
+## Rollback — exact prior values
+
+Every mutation of 2026-08-03, with the value to restore. Full pre-change JSON
+bodies are on the box at `~/.opt/maint/prowlarr-remediation-2026-08-03/`
+(`indexer-list.before.json`, `indexer-21.before.json`, `indexer-38.before.json`,
+`applications.before.json`, `radarr-indexers.before.json`).
+
+| # | Where | Object | Prior value | Restore |
+|---|-------|--------|-------------|---------|
+| 1 | Prowlarr | indexer **Knaben** (id 21) `torrentBaseSettings.preferMagnetUrl` | `false` | PUT the field back to `false` |
+| 2 | Prowlarr | indexer **Tokyo Toshokan** (id 38) `torrentBaseSettings.preferMagnetUrl` | `false` | PUT the field back to `false` |
+| 3 | Prowlarr | tag list | `[anime:1, cloudflare:2, general:3]` — **no tag 4** | `DELETE /api/v1/tag/4` |
+| 4 | Prowlarr | application list | four apps: `1 Sonarr`, `2 Radarr`, `3 Sonarr2 (Anime)`, `4 Radarr2 (Anime)` — **no app 6** | `DELETE /api/v1/applications/6` |
+| 5 | Prowlarr | indexer **LimeTorrents** (id 2) `tags` | `[3]` | PUT `tags: [3]` |
+| 6 | Radarr | indexer list | 8 entries, ids `23,24,27,28,29,30,32,33` — **no id 34** | `DELETE /api/v3/indexer/34` |
+| 7 | Radarr | indexer id 34 `enableRss` | `true` (as Prowlarr created it) | PUT `enableRss: true` |
+
+Order to unwind cleanly: 7 → 6 → 5 → 4 → 3 → 2 → 1. Application 2 was **not**
+modified — its `syncCategories` is still the original eleven movie categories
+with no 8000, and its `syncLevel` is still `fullSync`.
+
+> Undoing 4/5/6 restores the exact fault this runbook documents: LimeTorrents
+> absent from Radarr and the canary back to `prowlarr-appsync-missing`.
 
 ---
 
