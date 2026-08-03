@@ -198,9 +198,40 @@ def _ps1_drift(ps1: str, rea: dict, classes: list, by_id: dict, segments: list) 
         ps1, rea.get("prompt_start_marker") or "", rea.get("prompt_stop_marker") or "")
     if prompt is None:
         problems.append("never-report sentence not found between the declared markers")
-    else:
-        for seg in segments:
-            marker = seg.get("marker") or ""
-            if marker and marker not in prompt:
-                problems.append("segment " + str(seg.get("index")) + " marker missing from prompt")
+        return problems
+
+    # Direction 1: yaml -> prompt. Every declared segment really is in the text.
+    markers = []
+    for seg in segments:
+        marker = seg.get("marker") or ""
+        if marker and marker not in prompt:
+            problems.append("segment " + str(seg.get("index")) + " marker missing from prompt")
+        elif marker:
+            markers.append(marker)
+
+    # Direction 2: prompt -> yaml. THIS is the 2026-07-29 root-cause direction —
+    # a never-report clause added to the prompt with no class and no segment. It
+    # was documented in the module docstring and in the yaml header from day one
+    # ("C-07 splits the text ... on ';'") but was never actually implemented, so
+    # for two commits the detector enforced only the harmless direction: an
+    # unenforced prompt clause returned NO drift. Restored 2026-08-03.
+    #
+    # Markers cannot contain ';' (asserted below), so each marker lies wholly
+    # within exactly one ';'-chunk and substring containment is a sound test.
+    for seg in segments:
+        if ";" in (seg.get("marker") or ""):
+            problems.append("segment " + str(seg.get("index"))
+                            + " marker contains ';' — it cannot be located in a split chunk")
+    for n, chunk in enumerate(prompt.split(";")):
+        if not any(m in chunk for m in markers):
+            problems.append("prompt clause " + str(n)
+                            + " is claimed by no rule: " + " ".join(chunk.split())[:60])
+
+    # Direction 3: the per-class prompt_clause is real text, not decoration.
+    # C-07 only ever asserted this field was non-empty, so it silently rotted
+    # out of sync with the prompt it quotes.
+    for c in classes:
+        clause = (c.get("prompt_clause") or "").strip()
+        if clause and clause not in prompt:
+            problems.append("prompt_clause for " + c["id"] + " is not literal prompt text")
     return problems
