@@ -513,7 +513,7 @@ Test-Case 'plex_errors source matches the real PMS log level format' {
     # PMS logs "<ts> [<thread-id>] ERROR - <msg>": the brackets hold the THREAD ID,
     # so the old grep '\[ERROR\]' matched zero lines and the source was dead.
     $h = Get-RemoteHeredoc
-    Assert-True  ($h -match 'grep -h " ERROR - "') 'greps the dash-delimited level'
+    Assert-True  ($h -match 'grep -a " ERROR - "') 'greps the dash-delimited level'
     Assert-False ($h -match 'grep -h "\\\[ERROR\\\]" "\$f"') 'no bracketed-level grep on PMS logs'
 }
 
@@ -738,13 +738,13 @@ Test-Case 'vlogs query no longer carries the blanket -PMP -includes exclusions' 
     # `collect vlogs` deliberately quotes "-PMP -includes" for documentation,
     # so a bare substring check would false-fail against its own explanation.
     Assert-False ($h -match 'traceback\) -PMP -includes') 'blanket global-term exclusions removed from the query'
-    Assert-True ($h -match 'collect vlogs') 'vlogs source still present'
+    Assert-True ($h -match 'collect_cap vlogs') 'vlogs source still present'
 }
 
 Test-Case 'vlogs query still fetches the core error/fatal/exception/panic/traceback terms' {
     $h = Get-RemoteHeredoc
     Assert-True ($h -match 'error OR fatal OR exception OR panic OR traceback') 'core query terms unchanged'
-    Assert-True ($h -match 'fields _time,app,_msg') 'field projection unchanged'
+    Assert-True ($h -match 'fields _time,app,level,_msg') 'field projection includes level'
 }
 
 # --- Fix 3: the system prompt already lists three "must NEVER report" classes
