@@ -50,8 +50,13 @@ surfaces:
           noise policy is extracted to manifest/rea-noise-classes.yaml and
           guarded by C-07; its test file is put in CI by C-10. What remains
           unguarded: any change to the script BODY that does not alter the
-          extracted policy. Backup is robocopy /MIR (a mirror, not history), so
-          a bad edit propagates on the next run.
+          extracted policy. BACKUP (fixed 2026-08-03): scripts/local-llm/
+          backup-untracked.ps1 reads THIS members list, copies each entry into
+          the Backup-Documents mirror hourly, keeps a content-addressed version
+          history outside the /MIR purge scope, and SHA256-verifies all three.
+          So a bad edit is now recoverable; before that the only backup was the
+          daily /MIR, which is a mirror and was measured 22h and two edits stale
+          with nothing checking it.
         policy_extract: manifest/rea-noise-classes.yaml
         loader: scripts/local-llm/rea-noise-classes.ps1
         review_cadence_days: 90
@@ -64,7 +69,10 @@ surfaces:
           its internals, but REA's blob collection depends on the tunnel being
           up — which is why REA has a `tunnel_timeout` deadman reason rather
           than a repo-side check. No policy to extract; the failure mode is
-          covered live by REA's own dead-man, not offline.
+          covered live by REA's own dead-man, not offline. Backed up and
+          verified by scripts/local-llm/backup-untracked.ps1 since 2026-08-03,
+          for free — that script enrols every member of THIS list, so nothing
+          here can be the one nobody remembered to cover.
         policy_extract: null
         loader: null
         review_cadence_days: 90
@@ -413,8 +421,14 @@ residuals:
   - id: R4
     owner: operator
     review_cadence_days: 90
-    last_reviewed: 2026-07-29
-    residual: S2 untracked file bodies — only their extracted policy is guarded.
+    last_reviewed: 2026-08-03
+    residual: >-
+      S2 untracked file bodies — only their extracted policy is guarded by CI.
+      A body edit that does not touch policy is still invisible to a detector.
+      What changed 2026-08-03: it is no longer also unrecoverable. Backup is
+      scripts/local-llm/backup-untracked.ps1 (hourly, SHA256-verified, with a
+      version history), so a bad edit can be rolled back even though CI cannot
+      see it. Reviewing a body change remains a human act.
   - id: R5
     owner: operator
     review_cadence_days: 30
@@ -433,10 +447,22 @@ residuals:
   - id: R-S4-TASK
     owner: operator
     review_cadence_days: 90
-    last_reviewed: 2026-07-29
+    last_reviewed: 2026-08-03
     residual: >-
-      The Windows scheduled task \Archangel\QFlix-LLM\ that runs REA. Its
-      existence, schedule and enabled-state are live workstation registry state.
+      The Windows scheduled tasks behind the workstation half of the system.
+      Their existence, schedule and enabled-state are live registry state, and a
+      disabled task looks exactly like a quiet week. Two of them now:
+      \QFlix-LLM\QFlix Random Error Audit (REA) and
+      \Archangel\Backups\QFlix-Untracked-Backup (the S2 backup verifier, added
+      2026-08-03). NOTE the REA task path is \QFlix-LLM\, at the ROOT — not
+      \Archangel\QFlix-LLM\ as this row claimed until 2026-08-03; verified
+      against Get-ScheduledTask that day. Partial mitigations, both honest about
+      what they cannot do: REA is watched from the BOX by
+      scripts/canaries/rea-liveness.sh, whose liveness does not depend on REA;
+      the backup task has no such external watcher, but
+      `backup-untracked.ps1 -VerifyOnly` fails on a receipt older than 48h, so
+      anything that asks — including tests/local-llm/test-backup-untracked.ps1
+      on this workstation — sees the staleness.
   - id: R-S4-OLLAMA
     owner: operator
     review_cadence_days: 90

@@ -48,10 +48,16 @@ scripts/manitoba-tunnel.ps1
 # 2026-07-29 — no FQDN, token, webhook or credential in the file.
 # It stays out of git because it is operator-local tooling that runs on the
 # workstation, not on the box, and the repo is public.
-# Backup: covered by the Backup-Documents scheduled task, which robocopy /MIR's
-# all of G:\Documents to B:\BAKS\Documents and ignores .gitignore. That is a
-# MIRROR, not history — a bad edit propagates on the next run. Keep that in mind
-# before large rewrites of this file.
+# Backup: scripts/local-llm/backup-untracked.ps1, hourly via the scheduled task
+# \Archangel\Backups\QFlix-Untracked-Backup. It reads the file list from
+# manifest/audit-scope.yaml surface S2 (so enrolling a member there enrols it in
+# the backup), writes into the same B:\BAKS\Documents mirror the daily
+# Backup-Documents /MIR run uses, ALSO keeps a content-addressed version history
+# at B:\BAKS\qflix-untracked-history, and SHA256-verifies all three. It exits 1
+# on divergence and 2 when it cannot tell, and pages Discord either way.
+# Until 2026-08-03 the only backup was that daily /MIR — a mirror, not history,
+# with nothing verifying it. Measured that day: the mirror was 22 hours and two
+# edits behind this file and every surface reported success.
 scripts/local-llm/qflix-rea.ps1
 
 # Staging dir for the 2026-05-11 inventory-driven cleanup; safe to delete once
