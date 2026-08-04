@@ -84,3 +84,19 @@ def test_help_verb_is_registered_and_lists_verbs():
     env = d.dispatch(["help"])
     assert env["ok"] is True
     assert len(env["lines"]) >= 1
+
+def test_app_list_returns_only_lifecycle_classes():
+    d = _load()
+    env = d.dispatch(["app.list"])
+    assert env["ok"] is True
+    # 19 ucc + 4 systemd = 23; cron and library have no start/stop and are excluded
+    assert len(env["lines"]) == 23
+    for line in env["lines"]:
+        assert line.split()[1] in ("ucc", "systemd")
+
+def test_app_list_names_the_class_so_the_phone_never_guesses_how_to_start_a_thing():
+    d = _load()
+    env = d.dispatch(["app.list"])
+    joined = "\n".join(env["lines"])
+    assert "sonarr ucc" in joined
+    assert "listmonk systemd" in joined
