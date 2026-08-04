@@ -28,6 +28,23 @@ through the dispatcher.
 The stARR library view reports *content presence* ("do we have this episode"),
 never *consumption* ("did anyone watch it").
 
+**This constraint bites the `status` verb, and the spec originally contradicted
+itself about it.** `app_status.py` emits five sections, and `top5` is
+per-member by name: `top5_watch` returns `{"user": <friendly name>, "hours",
+"plays"}` from Tautulli, and `top5_requests` returns `{"user": <display name>,
+"count"}` from Seerr. An earlier draft of this table called `status` an
+"unchanged contract" passthrough, which would have shipped exactly the data
+this section forbids. `status` therefore requests
+`--sections quota,kuma,streams,downloads` and never `top5`. The `streams`
+section stays: it is aggregate counts (`streams`, `users`, `transcodes`,
+`wan_kbps`), not identities.
+
+**Pre-existing exposure, not introduced here:** Heartbeat v2's forced command
+is `app-status.py` with no arguments, so the app already installed on the
+operator's phone receives `top5` today. Reminting the key onto the dispatcher
+(Task 9) is what actually closes that, because the dispatcher is the only
+caller that filters.
+
 Any future verb that would surface member activity is a spec change, not an
 implementation detail.
 
@@ -102,7 +119,7 @@ so the app can never silently no-op.
 
 | Verb | Backing action |
 |---|---|
-| `status` | `app_status.py` — the Dashboard doc (unchanged contract) |
+| `status` | `app_status.py --sections quota,kuma,streams,downloads` — the Dashboard doc MINUS `top5` |
 | `app.list` | the 24 lifecycle apps + their class |
 | `app.start\|stop\|restart <slug>` | UCC → `app-<slug> <verb>`; systemd → `systemctl --user <verb> <unit>` |
 | `arr.search_wanted <slug>` | `missing.py --slug <slug> --emit-json` |
