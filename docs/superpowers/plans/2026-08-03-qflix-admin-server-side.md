@@ -356,6 +356,30 @@ def test_app_list_returns_only_lifecycle_classes():
     for line in env["lines"]:
         assert line.split()[1] in ("ucc", "systemd")
 
+def test_status_never_returns_the_per_member_top5_section(monkeypatch):
+    """The name-substring guard cannot catch this: the verb is called `status`
+    and the member data hides inside its payload. Assert on what goes OUT."""
+    d = _load()
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+        stdout = '{"quota": {}, "kuma": {}, "streams": {}, "downloads": {}}'
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    env = d.dispatch(["status"])
+    assert "--sections" in captured["cmd"]
+    sections = captured["cmd"][captured["cmd"].index("--sections") + 1]
+    assert "top5" not in sections, "status must never request the per-member section"
+    assert "top5" not in json.dumps(env)
+
+
 def test_app_list_names_the_class_so_the_phone_never_guesses_how_to_start_a_thing():
     d = _load()
     env = d.dispatch(["app.list"])
@@ -397,14 +421,28 @@ def _verb_app_list(argv: List[str]) -> dict:
                     max_lines=MAX_LINES_CEILING)
 
 
+# app_status.py emits five sections. `top5` is per-member BY NAME —
+# top5_watch gives {"user": friendly_name, "hours", "plays"} from Tautulli and
+# top5_requests gives {"user": displayName, "count"} from Seerr. That is
+# exactly the member viewing activity the spec forbids, so `status` asks for
+# every section EXCEPT top5. `streams` is kept: it is aggregate counts
+# (streams/users/transcodes/wan_kbps), not identities.
+STATUS_SECTIONS = "quota,kuma,streams,downloads"
+
+
 def _verb_status(argv: List[str]) -> dict:
-    """The Dashboard doc. Contract unchanged from Heartbeat v2 — app_status.py
-    already emits exactly what the app expects, so this passes it through whole
-    rather than re-wrapping it."""
+    """The Dashboard doc, minus the per-member section.
+
+    NOT a bare passthrough. Heartbeat v2's forced command ran app_status.py
+    with no arguments and therefore received top5; this verb is the first
+    caller that filters, which is what makes the privacy constraint true on
+    the wire rather than only in the UI.
+    """
     import subprocess
     started = time.time()
     proc = subprocess.run(
-        [sys.executable, str(HERE / "app_status.py"), "--emit-json"],
+        [sys.executable, str(HERE / "app_status.py"), "--emit-json",
+         "--sections", STATUS_SECTIONS],
         capture_output=True, text=True, timeout=30)
     ok = proc.returncode == 0 and bool(proc.stdout.strip())
     env = envelope(verb="status", target=None, ok=ok,
@@ -425,7 +463,7 @@ VERBS["status"] = VerbSpec(handler=_verb_status, arity=0,
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/unit/test_mcp_dispatch.py -q`
-Expected: PASS (10 tests).
+Expected: PASS (11 tests).
 
 - [ ] **Step 5: Commit**
 
