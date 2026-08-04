@@ -793,20 +793,22 @@ def _load():
     return mod
 
 class FakeSonarr:
-    """ArrClient exposes only get/post/put/delete — verified against
-    scripts/mcp/lib/arr_client.py. Fakes mirror that, not a richer API."""
+    """Mirrors the REAL ArrClient, verified against scripts/mcp/lib/arr_client.py:
+    `get()` returns an (http_code, payload) TUPLE, and paths are
+    version-relative because _url() already prepends /api/{version}.
+    A fake that returns a bare list would let a broken production path pass."""
     def get(self, path, **kw):
-        assert path == "/api/v3/series"
-        return [{"title": "Show A", "statistics": {"episodeFileCount": 12,
-                                                   "totalEpisodeCount": 30}},
-                {"title": "Show B", "statistics": {"episodeFileCount": 10,
-                                                   "totalEpisodeCount": 10}}]
+        assert path == "/series", "path must be version-relative"
+        return (200, [{"title": "Show A", "statistics": {"episodeFileCount": 12,
+                                                         "totalEpisodeCount": 30}},
+                      {"title": "Show B", "statistics": {"episodeFileCount": 10,
+                                                         "totalEpisodeCount": 10}}])
 
 class FakeRadarr:
     def get(self, path, **kw):
-        assert path == "/api/v3/movie"
-        return [{"title": "Movie A", "hasFile": True},
-                {"title": "Movie B", "hasFile": False}]
+        assert path == "/movie", "path must be version-relative"
+        return (200, [{"title": "Movie A", "hasFile": True},
+                      {"title": "Movie B", "hasFile": False}])
 
 def test_series_peek_reports_have_over_total():
     m = _load()
@@ -840,6 +842,17 @@ def test_a_dead_arr_degrades_that_slug_without_raising():
     m = _load()
     class Boom:
         def get(self, path, **kw): raise RuntimeError("connection refused")
+
+def test_a_non_200_is_an_error_not_an_empty_library():
+    """An arr answering 500 must not read as 'we own nothing' — that would
+    render an empty stARR page and look like catastrophic data loss."""
+    m = _load()
+    class ServerError:
+        def get(self, path, **kw): return (500, "upstream boom")
+    out = m.peek("sonarr", client=ServerError())
+    assert out["ok"] is False
+    assert "500" in out["error"]
+    assert out["titles"] == []
     out = m.peek("sonarr", client=Boom())
     assert out["ok"] is False
     assert "connection refused" in out["error"]
@@ -882,8 +895,22 @@ MOVIE_SLUGS = ("radarr", "radarr2")
 
 
 def _default_client(slug: str):
+    # ArrClient(slug, version) - version is a REQUIRED positional, and every
+    # real caller passes "v3" (see missing.py, unstick.py).
     from lib.arr_client import ArrClient
-    return ArrClient(slug)
+    return ArrClient(slug, "v3")
+
+
+def _rows(result):
+    """ArrClient.get() returns (http_code, payload). Anything non-200, or a
+    payload that is not a list, is an error the caller must see rather than a
+    quietly empty library."""
+    code, payload = result
+    if code != 200:
+        raise RuntimeError("arr returned HTTP %s" % code)
+    if not isinstance(payload, list):
+        raise RuntimeError("arr returned %s, expected a list" % type(payload).__name__)
+    return payload
 
 
 def peek(slug: str, client=None) -> dict:
@@ -892,7 +919,7 @@ def peek(slug: str, client=None) -> dict:
     try:
         c = client if client is not None else _default_client(slug)
         if kind == "series":
-            for s in c.get("/api/v3/series"):
+            for s in _rows(c.get("/series")):
                 st = s.get("statistics") or {}
                 have = int(st.get("episodeFileCount") or 0)
                 total = int(st.get("totalEpisodeCount") or 0)
@@ -900,7 +927,7 @@ def peek(slug: str, client=None) -> dict:
                     "title": s.get("title", "?"), "have": have, "total": total,
                     "complete": total > 0 and have >= total})
         else:
-            for m in c.get("/api/v3/movie"):
+            for m in _rows(c.get("/movie")):
                 has = bool(m.get("hasFile"))
                 out["titles"].append({
                     "title": m.get("title", "?"), "have": 1 if has else 0,
