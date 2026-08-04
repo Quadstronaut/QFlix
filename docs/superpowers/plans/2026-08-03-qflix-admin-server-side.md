@@ -1208,8 +1208,8 @@ git commit -m "feat(dispatch): starr in one round trip, quota tile, both degrade
 ```bash
 rsync -av scripts/mcp/dispatch.py scripts/mcp/arr_library_peek.py \
           scripts/mcp/arr_disk_usage.py \
-          quadstronaut@manitoba.usbx.me:~/scripts/mcp/
-ssh quadstronaut@manitoba.usbx.me 'chmod +x ~/scripts/mcp/dispatch.py && \
+          $BOX   # from secrets/seedbox.ssh-host:~/scripts/mcp/
+ssh $BOX   # from secrets/seedbox.ssh-host 'chmod +x ~/scripts/mcp/dispatch.py && \
     python3 ~/scripts/mcp/dispatch.py help'
 ```
 
@@ -1220,7 +1220,7 @@ Expected: a JSON envelope listing every verb. If this fails, STOP — reminting 
 ```bash
 for v in help app.list status starr quota; do
   echo "--- $v"
-  ssh quadstronaut@manitoba.usbx.me "python3 ~/scripts/mcp/dispatch.py $v" \
+  ssh $BOX   # from secrets/seedbox.ssh-host "python3 ~/scripts/mcp/dispatch.py $v" \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d["verdict"])'
 done
 ```
@@ -1242,7 +1242,9 @@ Expected: `True` and a sensible verdict for each. Fix anything that fails before
 # remove whole classes of misuse that no verb needs.
 set -uo pipefail
 
-BOX="${QFLIX_BOX:-quadstronaut@manitoba.usbx.me}"
+# Host comes from secrets/, never from this file - tests/unit/test_no_pii_in_repo.py
+# treats a real hostname in a tracked file as a leak, and this repo is public.
+BOX="${QFLIX_BOX:-$(cat "$(dirname "$0")/../../secrets/seedbox.ssh-host")}"
 KEYDIR="${1:-./.admin-key}"
 KEY="$KEYDIR/qflix-admin"
 
@@ -1266,7 +1268,7 @@ ssh "$BOX" "mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && \
   mv ~/.ssh/ak.new ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 
 echo "=== host key pin (fetched over the authenticated channel, not keyscan) ==="
-ssh "$BOX" "ssh-keyscan -t ed25519 localhost 2>/dev/null | sed 's/^localhost/manitoba.usbx.me/'"
+ssh "$BOX" "ssh-keyscan -t ed25519 localhost 2>/dev/null | sed 's/^localhost/seedbox.example.com/'"
 echo "=== private key: $KEY  (load into the app, then delete this copy) ==="
 ```
 
@@ -1282,7 +1284,7 @@ Expected: a keypair in `./.admin-key/`, an `authorized_keys.bak-*` on the box, a
 - [ ] **Step 5: Prove the new key works AND that the old key still does**
 
 ```bash
-ssh -i ./.admin-key/qflix-admin quadstronaut@manitoba.usbx.me 'app.list' \
+ssh -i ./.admin-key/qflix-admin $BOX   # from secrets/seedbox.ssh-host 'app.list' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["verdict"])'
 ```
 
@@ -1290,7 +1292,7 @@ Expected: `23 apps with a lifecycle`. The forced command means the requested
 command is ignored in favour of `dispatch.py`, with `app.list` arriving via
 `SSH_ORIGINAL_COMMAND`.
 
-If this fails, restore: `ssh quadstronaut@manitoba.usbx.me 'cp ~/.ssh/authorized_keys.bak-<stamp> ~/.ssh/authorized_keys'`
+If this fails, restore: `ssh $BOX   # from secrets/seedbox.ssh-host 'cp ~/.ssh/authorized_keys.bak-<stamp> ~/.ssh/authorized_keys'`
 
 - [ ] **Step 6: Confirm `.admin-key` cannot be committed**
 
