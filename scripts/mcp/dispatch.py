@@ -114,6 +114,58 @@ def dispatch(argv: List[str]) -> dict:
                         lines=[str(exc)], elapsed_s=time.time() - started)
 
 
+LIFECYCLE_CLASSES = ("ucc", "systemd")
+_MANIFEST_PATH = HERE.parent.parent / "manifest" / "apps.yaml"
+
+
+def _load_manifest():
+    from lib import manifest as manifest_mod
+    return manifest_mod.load(_MANIFEST_PATH)
+
+
+def _verb_app_list(argv: List[str]) -> dict:
+    started = time.time()
+    man = _load_manifest()
+    rows = []
+    # DEVIATION from brief: `man.apps()` returns an Iterator[App] (full
+    # objects), not name strings — `sorted(man.apps())` raises TypeError
+    # (App is an undecorated @dataclass, not orderable) and `man.app(name)`
+    # expects a string key, not an App. Sort the App objects by .name and
+    # read .name/.class_ straight off them; see task-3-report.md.
+    for app in sorted(man.apps(), key=lambda a: a.name):
+        if app.class_ in LIFECYCLE_CLASSES:
+            rows.append("%s %s" % (app.name, app.class_))
+    return envelope(verb="app.list", target=None, ok=True,
+                    verdict="%d apps with a lifecycle" % len(rows),
+                    lines=rows, elapsed_s=time.time() - started,
+                    max_lines=MAX_LINES_CEILING)
+
+
+def _verb_status(argv: List[str]) -> dict:
+    """The Dashboard doc. Contract unchanged from Heartbeat v2 — app_status.py
+    already emits exactly what the app expects, so this passes it through whole
+    rather than re-wrapping it."""
+    import subprocess
+    started = time.time()
+    proc = subprocess.run(
+        [sys.executable, str(HERE / "app_status.py"), "--emit-json"],
+        capture_output=True, text=True, timeout=30)
+    ok = proc.returncode == 0 and bool(proc.stdout.strip())
+    env = envelope(verb="status", target=None, ok=ok,
+                   verdict="status doc emitted" if ok else "app_status.py failed",
+                   lines=(proc.stderr or "").splitlines(),
+                   elapsed_s=time.time() - started)
+    if ok:
+        env["doc"] = json.loads(proc.stdout)
+    return env
+
+
+VERBS["app.list"] = VerbSpec(handler=_verb_app_list, arity=0,
+                             help="list the apps that have a lifecycle, with their class")
+VERBS["status"] = VerbSpec(handler=_verb_status, arity=0,
+                           help="the Dashboard status document")
+
+
 def main() -> int:
     verb, args = parse_command(os.environ.get("SSH_ORIGINAL_COMMAND"))
     # argv beats the env var so the script is testable and hand-runnable.
