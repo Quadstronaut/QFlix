@@ -243,6 +243,125 @@ for _a in ("start", "stop", "restart"):
         arity=1, help="%s one app by slug (ucc or systemd)" % _a)
 
 
+ARR_SLUGS = ("sonarr", "sonarr2", "radarr", "radarr2")
+
+
+def _run_mcp(script: str, args: List[str], timeout_s: float = 60.0) -> tuple:
+    """Run a sibling MCP script in --emit-json mode.
+
+    Returns (ok, parsed_json_or_None, stderr). Those scripts always exit 0 in
+    JSON mode by convention (missing.py's own comment: returning non-zero made
+    the MCP caller discard the body as ssh-failed, masking which *arr broke),
+    so `ok` keys off parseable stdout, not the return code.
+    """
+    import subprocess
+    proc = subprocess.run([sys.executable, str(HERE / script)] + args,
+                          capture_output=True, text=True, timeout=timeout_s)
+    try:
+        return (True, json.loads(proc.stdout), proc.stderr or "")
+    except Exception:
+        return (False, None, (proc.stderr or proc.stdout or "").strip())
+
+
+def _verb_search_wanted(argv: List[str]) -> dict:
+    started = time.time()
+    slug = argv[0]
+    if slug not in ARR_SLUGS:
+        return envelope(verb="arr.search_wanted", target=slug, ok=False,
+                        verdict="%s is not an *arr" % slug,
+                        lines=["valid: " + ", ".join(ARR_SLUGS)],
+                        elapsed_s=time.time() - started)
+    # missing.py's --slug is OPTIONAL there (omitted = fan out to all four
+    # *arrs); passing it explicitly is what keeps this verb single-target.
+    ok, doc, err = _run_mcp("missing.py", ["--slug", slug, "--emit-json"], 120.0)
+    return envelope(verb="arr.search_wanted", target=slug, ok=ok,
+                    verdict="wanted search queued on %s" % slug if ok
+                            else "search failed on %s" % slug,
+                    lines=(json.dumps(doc, indent=2).splitlines() if doc
+                           else err.splitlines()),
+                    elapsed_s=time.time() - started)
+
+
+def _verb_unstick(argv: List[str]) -> dict:
+    started = time.time()
+    slug, queue_id = argv[0], argv[1]
+    # unstick.py's real flags (verified against its ArgumentParser): --slug,
+    # --queue-id (int) or --hash, --emit-json. It requires --queue-id or
+    # --hash; we always supply --queue-id from here.
+    ok, doc, err = _run_mcp(
+        "unstick.py",
+        ["--slug", slug, "--queue-id", str(queue_id), "--emit-json"], 90.0)
+    return envelope(verb="unstick", target=slug, ok=ok,
+                    verdict="unstuck %s queue item %s" % (slug, queue_id) if ok
+                            else "unstick failed on %s" % slug,
+                    lines=(json.dumps(doc, indent=2).splitlines() if doc
+                           else err.splitlines()),
+                    elapsed_s=time.time() - started)
+
+
+# PRIVACY (spec 2026-08-03): logs.py's --app table (verified by reading the
+# file) routes to *every* app with a log file, including tautulli (a
+# per-member watch/session history tool), seerr (a per-member request
+# tracker), plex (its own server log can carry X-Plex-Username / session
+# detail on stream lines), and listmonk (subscriber email addresses appear in
+# send/bounce lines). logs.py tails those files verbatim — it applies no
+# redaction — so wiring --app straight through from the phone (as a literal
+# transcription of the brief would) puts member identities on the wire. That
+# is the same class of leak Task 3 found in app_status.py's top5 section,
+# reached through a different script; `status` was restricted to safe
+# sections there, and `logs` is restricted to safe apps here, on the same
+# reasoning. See task-5-report.md for the write-up.
+LOG_SAFE_APPS = (
+    "sonarr", "sonarr2", "radarr", "radarr2", "prowlarr",
+    "bazarr", "bazarr2", "kometa", "buildarr", "recyclarr",
+    "nginx", "qbittorrent",
+    "tdarr-server", "tdarr-node",
+    "maint-pusher", "maint-webhook", "maint-window",
+)
+
+
+def _format_log_line(item) -> str:
+    """logs.py's JSON `lines` field is list[dict] (ts/level/message/
+    source_file) for a real app tail, not list[str] — a bare str(dict) would
+    still "work" but reads as a raw Python repr on the phone. Render the
+    fields worth showing; fall back to str() for anything else (e.g. the
+    plain strings the unit tests substitute via a monkeypatched _run_mcp)."""
+    if isinstance(item, dict):
+        return "%s %s %s" % (item.get("ts") or "?", item.get("level") or "?",
+                             item.get("message") or "")
+    return str(item)
+
+
+def _verb_logs(argv: List[str]) -> dict:
+    started = time.time()
+    slug = argv[0]
+    if slug not in LOG_SAFE_APPS:
+        return envelope(verb="logs", target=slug, ok=False,
+                        verdict="%s logs are not exposed over this verb" % slug,
+                        lines=["valid: " + ", ".join(sorted(LOG_SAFE_APPS))],
+                        elapsed_s=time.time() - started)
+    tail = MAX_LINES
+    if "--tail" in argv:
+        try:
+            tail = int(argv[argv.index("--tail") + 1])
+        except (ValueError, IndexError):
+            tail = MAX_LINES
+    ok, doc, err = _run_mcp("logs.py", ["--app", slug, "--emit-json"], 45.0)
+    raw_lines = (doc or {}).get("lines") or (err.splitlines() if err else [])
+    lines = [_format_log_line(item) for item in raw_lines]
+    return envelope(verb="logs", target=slug, ok=ok,
+                    verdict="%s log tail" % slug if ok else "could not read %s log" % slug,
+                    lines=lines, elapsed_s=time.time() - started, max_lines=tail)
+
+
+VERBS["arr.search_wanted"] = VerbSpec(handler=_verb_search_wanted, arity=1,
+                                      help="fire a wanted/missing search on one *arr")
+VERBS["unstick"] = VerbSpec(handler=_verb_unstick, arity=2,
+                            help="delete+blocklist a stuck queue item: unstick <slug> <queue-id>")
+VERBS["logs"] = VerbSpec(handler=_verb_logs, arity=1,
+                         help="tail one app's log: logs <slug> [--tail N]")
+
+
 def main() -> int:
     verb, args = parse_command(os.environ.get("SSH_ORIGINAL_COMMAND"))
     # argv beats the env var so the script is testable and hand-runnable.
