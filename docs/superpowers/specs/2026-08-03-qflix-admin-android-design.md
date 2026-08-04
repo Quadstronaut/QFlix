@@ -103,7 +103,7 @@ so the app can never silently no-op.
 | Verb | Backing action |
 |---|---|
 | `status` | `app_status.py` — the Dashboard doc (unchanged contract) |
-| `app.list` | the 23 lifecycle apps + their class |
+| `app.list` | the 24 lifecycle apps + their class |
 | `app.start\|stop\|restart <slug>` | UCC → `app-<slug> <verb>`; systemd → `systemctl --user <verb> <unit>` |
 | `arr.search_wanted <slug>` | `missing.py --slug <slug> --emit-json` |
 | `starr` | **all four rows in one call** — `arr_library_peek.py` + `arr_disk_usage.py` for every *arr |
@@ -115,10 +115,10 @@ so the app can never silently no-op.
 exposing per-instance `arr.peek` / `arr.disk` verbs. Per-row verbs would mean
 eight SSH connections to paint one screen, each with full handshake cost, on
 exactly the flaky mobile link this app exists to work over. Same reasoning keeps
-`app.list` a single call for all 23 rows. Actions stay per-target because the
+`app.list` a single call for all 24 rows. Actions stay per-target because the
 operator fires them one at a time and wants that verdict alone.
 
-There is deliberately **no `cron.run` verb.** The Apps page lists 23 lifecycle
+There is deliberately **no `cron.run` verb.** The Apps page lists 24 lifecycle
 apps and does not show the 6 timer-driven jobs, so a cron verb would be
 dispatcher surface no UI can reach — an untested path that rots. If cron
 force-runs are wanted later, they arrive with the page that shows them.
@@ -155,7 +155,7 @@ Heartbeat v2's view, plus two additions:
 
 ### Apps
 
-23 rows — 19 UCC + 4 systemd. Per row: name, class badge (`UCC` / `systemd`),
+24 rows — 18 UCC + 6 systemd. Per row: name, class badge (`UCC` / `systemd`),
 current state, and start / stop / restart. Tapping an action shows a verdict
 toast; the row expands to the last 20 lines on demand.
 
