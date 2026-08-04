@@ -197,3 +197,41 @@ def test_every_lifecycle_verb_carries_its_own_action(monkeypatch):
     for action in ("start", "stop", "restart"):
         env = d.dispatch(["app." + action, "sonarr"])
         assert action in env["verdict"], (action, env["verdict"])
+
+
+ARRS = ("sonarr", "sonarr2", "radarr", "radarr2")
+
+def test_search_wanted_refuses_a_non_arr():
+    d = _load()
+    env = d.dispatch(["arr.search_wanted", "plex"])
+    assert env["ok"] is False
+    assert "not an *arr" in env["verdict"] or "not an arr" in env["verdict"].lower()
+
+def test_search_wanted_accepts_each_arr(monkeypatch):
+    d = _load()
+    monkeypatch.setattr(d, "_run_mcp",
+                        lambda *a, **k: (True, {"per_arr": {}}, ""))
+    for slug in ARRS:
+        env = d.dispatch(["arr.search_wanted", slug])
+        assert env["ok"] is True, slug
+        assert env["target"] == slug
+
+def test_logs_honours_an_explicit_tail_within_the_ceiling(monkeypatch):
+    d = _load()
+    monkeypatch.setattr(d, "_run_mcp",
+                        lambda *a, **k: (True, {"lines": [str(i) for i in range(300)]}, ""))
+    env = d.dispatch(["logs", "sonarr", "--tail", "50"])
+    assert len(env["lines"]) == 50
+
+def test_logs_tail_cannot_exceed_the_ceiling(monkeypatch):
+    d = _load()
+    monkeypatch.setattr(d, "_run_mcp",
+                        lambda *a, **k: (True, {"lines": [str(i) for i in range(1000)]}, ""))
+    env = d.dispatch(["logs", "sonarr", "--tail", "99999"])
+    assert len(env["lines"]) == d.MAX_LINES_CEILING
+
+def test_unstick_requires_both_slug_and_queue_id():
+    d = _load()
+    env = d.dispatch(["unstick", "sonarr"])
+    assert env["ok"] is False
+    assert "expects" in env["verdict"].lower()
