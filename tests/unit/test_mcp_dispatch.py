@@ -61,10 +61,23 @@ def test_unknown_verb_lists_every_known_verb_so_the_app_cannot_silently_noop():
         assert any(name in line for line in env["lines"])
 
 def test_wrong_arity_says_what_was_expected():
+    """Registers a throwaway probe verb rather than naming a real one.
+
+    At Task 2 the only registered verb is `help` (arity 0); every verb that
+    takes an argument arrives in Task 4 or later. Naming one of those here
+    would make this test pass for the wrong reason now (it would hit the
+    unknown-verb branch) and couple it to another task's registration order
+    forever."""
     d = _load()
-    env = d.dispatch(["app.restart"])          # missing the slug
+    d.VERBS["probe.needs_one"] = d.VerbSpec(
+        handler=lambda argv: d.envelope(verb="probe.needs_one", target=argv[0],
+                                        ok=True, verdict="ok", lines=[],
+                                        elapsed_s=0.0),
+        arity=1, help="arity probe")
+    env = d.dispatch(["probe.needs_one"])      # missing the one required arg
     assert env["ok"] is False
     assert "expects" in env["verdict"].lower()
+    assert "1" in env["verdict"]               # says how many it wanted
 
 def test_help_verb_is_registered_and_lists_verbs():
     d = _load()
