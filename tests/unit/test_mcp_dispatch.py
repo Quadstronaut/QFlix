@@ -1,5 +1,6 @@
 # tests/unit/test_mcp_dispatch.py
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -103,3 +104,26 @@ def test_app_list_names_the_class_so_the_phone_never_guesses_how_to_start_a_thin
     joined = "\n".join(env["lines"])
     assert "sonarr ucc" in joined
     assert "listmonk systemd" in joined
+
+def test_status_never_returns_the_per_member_top5_section(monkeypatch):
+    """The name-substring guard cannot catch this: the verb is called `status`
+    and the member data hides inside its payload. Assert on what goes OUT."""
+    d = _load()
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+        stdout = '{"quota": {}, "kuma": {}, "streams": {}, "downloads": {}}'
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    env = d.dispatch(["status"])
+    assert "--sections" in captured["cmd"]
+    sections = captured["cmd"][captured["cmd"].index("--sections") + 1]
+    assert "top5" not in sections, "status must never request the per-member section"
+    assert "top5" not in json.dumps(env)
