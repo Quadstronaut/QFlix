@@ -218,10 +218,20 @@ def test_search_wanted_accepts_each_arr(monkeypatch):
 
 def test_logs_honours_an_explicit_tail_within_the_ceiling(monkeypatch):
     d = _load()
+    # Mix in one dict-shaped record — logs.py's real --emit-json shape is
+    # {ts, level, message, source_file}, not a bare string — so
+    # _format_log_line's dict branch (the one real logs.py output actually
+    # takes) gets exercised here, not just the list[str] shape every other
+    # mock in this file substitutes.
+    mock_lines = [str(i) for i in range(299)] + [
+        {"ts": "2026-08-03T00:00:00", "level": "INFO", "message": "RSS Sync Completed.",
+         "source_file": "/home/x/.apps/sonarr/logs/sonarr.txt"}
+    ]
     monkeypatch.setattr(d, "_run_mcp",
-                        lambda *a, **k: (True, {"lines": [str(i) for i in range(300)]}, ""))
+                        lambda *a, **k: (True, {"lines": mock_lines}, ""))
     env = d.dispatch(["logs", "sonarr", "--tail", "50"])
     assert len(env["lines"]) == 50
+    assert env["lines"][-1] == "2026-08-03T00:00:00 INFO RSS Sync Completed."
 
 def test_logs_tail_cannot_exceed_the_ceiling(monkeypatch):
     d = _load()
@@ -235,3 +245,38 @@ def test_unstick_requires_both_slug_and_queue_id():
     env = d.dispatch(["unstick", "sonarr"])
     assert env["ok"] is False
     assert "expects" in env["verdict"].lower()
+
+
+def test_logs_refuses_apps_whose_logs_carry_member_identity():
+    """listmonk holds subscriber email addresses, tautulli per-member watch
+    records, seerr per-member requests, plex usernames. logs.py applies no
+    redaction, so the refusal must happen HERE, before it is ever invoked."""
+    d = _load()
+    for slug in ("listmonk", "tautulli", "seerr", "plex"):
+        env = d.dispatch(["logs", slug])
+        assert env["ok"] is False, slug
+        assert "not exposed" in env["verdict"], slug
+
+
+def test_logs_refusal_happens_before_the_subprocess_runs(monkeypatch):
+    """A post-hoc filter would still have read the data."""
+    d = _load()
+    called = []
+    monkeypatch.setattr(d, "_run_mcp",
+                        lambda *a, **k: called.append(a) or (True, {"lines": []}, ""))
+    d.dispatch(["logs", "listmonk"])
+    assert called == [], "logs.py must not be invoked for a refused app"
+
+
+def test_an_allowlisted_app_still_reaches_logs_py(monkeypatch):
+    """Guards against over-correcting the allowlist into uselessness."""
+    d = _load()
+    captured = {}
+    def fake(script, args, timeout_s=45.0):
+        captured["script"], captured["args"] = script, args
+        return (True, {"lines": ["2026-08-03 INFO x"]}, "")
+    monkeypatch.setattr(d, "_run_mcp", fake)
+    env = d.dispatch(["logs", "sonarr"])
+    assert env["ok"] is True
+    assert captured["script"] == "logs.py"
+    assert "sonarr" in captured["args"]

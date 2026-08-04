@@ -314,10 +314,16 @@ def _verb_unstick(argv: List[str]) -> dict:
 LOG_SAFE_APPS = (
     "sonarr", "sonarr2", "radarr", "radarr2", "prowlarr",
     "bazarr", "bazarr2", "kometa", "buildarr", "recyclarr",
-    "nginx", "qbittorrent",
+    "qbittorrent",
     "tdarr-server", "tdarr-node",
     "maint-pusher", "maint-webhook", "maint-window",
 )
+# nginx is deliberately ABSENT: its error lines carry
+# `client: <ip> ... request: "<method> <path>"` for routine upstream
+# failures, and this instance reverse-proxies every app's subpath — so a
+# tautulli/seerr hiccup would surface member IP + requested URI here. It
+# can return only if someone verifies the configured log level suppresses
+# the client/request fields.
 
 
 def _format_log_line(item) -> str:
@@ -346,7 +352,16 @@ def _verb_logs(argv: List[str]) -> dict:
             tail = int(argv[argv.index("--tail") + 1])
         except (ValueError, IndexError):
             tail = MAX_LINES
-    ok, doc, err = _run_mcp("logs.py", ["--app", slug, "--emit-json"], 45.0)
+    # Forward --tail to logs.py itself. Left unforwarded, logs.py's own
+    # default (5000) governs the tail/journalctl window and the subprocess +
+    # JSON round-trip carries up to 5000 records that envelope() then
+    # discards down to `tail`. Clamp what we ask logs.py for to
+    # MAX_LINES_CEILING — nothing past that survives envelope()'s cap either,
+    # so asking logs.py for more (e.g. a phone-supplied --tail 99999) would
+    # just make the tail/journalctl read bigger for no visible benefit.
+    fetch_tail = min(max(tail, 1), MAX_LINES_CEILING)
+    ok, doc, err = _run_mcp(
+        "logs.py", ["--app", slug, "--tail", str(fetch_tail), "--emit-json"], 45.0)
     raw_lines = (doc or {}).get("lines") or (err.splitlines() if err else [])
     lines = [_format_log_line(item) for item in raw_lines]
     return envelope(verb="logs", target=slug, ok=ok,
