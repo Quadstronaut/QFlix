@@ -19,20 +19,22 @@ def _load():
     return mod
 
 class FakeSonarr:
-    """ArrClient exposes only get/post/put/delete — verified against
-    scripts/mcp/lib/arr_client.py. Fakes mirror that, not a richer API."""
+    """Mirrors the REAL ArrClient, verified against scripts/mcp/lib/arr_client.py:
+    `get()` returns an (http_code, payload) TUPLE, and paths are
+    version-relative because _url() already prepends /api/{version}.
+    A fake that returns a bare list would let a broken production path pass."""
     def get(self, path, **kw):
-        assert path == "/api/v3/series"
-        return [{"title": "Show A", "statistics": {"episodeFileCount": 12,
-                                                   "totalEpisodeCount": 30}},
-                {"title": "Show B", "statistics": {"episodeFileCount": 10,
-                                                   "totalEpisodeCount": 10}}]
+        assert path == "/series", "path must be version-relative"
+        return (200, [{"title": "Show A", "statistics": {"episodeFileCount": 12,
+                                                         "totalEpisodeCount": 30}},
+                      {"title": "Show B", "statistics": {"episodeFileCount": 10,
+                                                         "totalEpisodeCount": 10}}])
 
 class FakeRadarr:
     def get(self, path, **kw):
-        assert path == "/api/v3/movie"
-        return [{"title": "Movie A", "hasFile": True},
-                {"title": "Movie B", "hasFile": False}]
+        assert path == "/movie", "path must be version-relative"
+        return (200, [{"title": "Movie A", "hasFile": True},
+                      {"title": "Movie B", "hasFile": False}])
 
 def test_series_peek_reports_have_over_total():
     m = _load()
@@ -69,4 +71,15 @@ def test_a_dead_arr_degrades_that_slug_without_raising():
     out = m.peek("sonarr", client=Boom())
     assert out["ok"] is False
     assert "connection refused" in out["error"]
+    assert out["titles"] == []
+
+def test_a_non_200_is_an_error_not_an_empty_library():
+    """An arr answering 500 must not read as 'we own nothing' — that would
+    render an empty stARR page and look like catastrophic data loss."""
+    m = _load()
+    class ServerError:
+        def get(self, path, **kw): return (500, "upstream boom")
+    out = m.peek("sonarr", client=ServerError())
+    assert out["ok"] is False
+    assert "500" in out["error"]
     assert out["titles"] == []
