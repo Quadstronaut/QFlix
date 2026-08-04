@@ -1,0 +1,72 @@
+"""Tests for scripts/mcp/arr_library_peek.py — coarse content-presence peek.
+
+Privacy: this module answers "do we have it", never "did anyone watch it".
+FakeSonarr/FakeRadarr below mirror ArrClient's ACTUAL surface (get/post/put/
+delete only — verified against scripts/mcp/lib/arr_client.py), not a richer
+API the brief might have imagined.
+"""
+import importlib.util, sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+
+def _load():
+    path = REPO / "scripts" / "mcp" / "arr_library_peek.py"
+    spec = importlib.util.spec_from_file_location("arr_library_peek", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["arr_library_peek"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+class FakeSonarr:
+    """ArrClient exposes only get/post/put/delete — verified against
+    scripts/mcp/lib/arr_client.py. Fakes mirror that, not a richer API."""
+    def get(self, path, **kw):
+        assert path == "/api/v3/series"
+        return [{"title": "Show A", "statistics": {"episodeFileCount": 12,
+                                                   "totalEpisodeCount": 30}},
+                {"title": "Show B", "statistics": {"episodeFileCount": 10,
+                                                   "totalEpisodeCount": 10}}]
+
+class FakeRadarr:
+    def get(self, path, **kw):
+        assert path == "/api/v3/movie"
+        return [{"title": "Movie A", "hasFile": True},
+                {"title": "Movie B", "hasFile": False}]
+
+def test_series_peek_reports_have_over_total():
+    m = _load()
+    out = m.peek("sonarr", client=FakeSonarr())
+    a = [t for t in out["titles"] if t["title"] == "Show A"][0]
+    assert (a["have"], a["total"], a["complete"]) == (12, 30, False)
+
+def test_a_fully_present_series_is_marked_complete():
+    m = _load()
+    out = m.peek("sonarr", client=FakeSonarr())
+    b = [t for t in out["titles"] if t["title"] == "Show B"][0]
+    assert b["complete"] is True
+
+def test_movie_peek_is_present_or_not():
+    m = _load()
+    out = m.peek("radarr", client=FakeRadarr())
+    assert {t["title"]: t["complete"] for t in out["titles"]} == {
+        "Movie A": True, "Movie B": False}
+    for t in out["titles"]:
+        assert t["total"] == 1
+
+def test_peek_reports_no_consumption_data_whatsoever():
+    """Privacy: content presence only. Nothing about who watched anything."""
+    m = _load()
+    out = m.peek("sonarr", client=FakeSonarr())
+    banned = ("watch", "view", "session", "user", "played", "seen")
+    blob = repr(out).lower()
+    assert not any(b in blob for b in banned)
+
+def test_a_dead_arr_degrades_that_slug_without_raising():
+    m = _load()
+    class Boom:
+        def get(self, path, **kw): raise RuntimeError("connection refused")
+    out = m.peek("sonarr", client=Boom())
+    assert out["ok"] is False
+    assert "connection refused" in out["error"]
+    assert out["titles"] == []
