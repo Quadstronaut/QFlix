@@ -39,6 +39,16 @@ this section forbids. `status` therefore requests
 section stays: it is aggregate counts (`streams`, `users`, `transcodes`,
 `wan_kbps`), not identities.
 
+**The same constraint bites `logs`.** `scripts/mcp/logs.py --app <slug>` will
+tail any app that has a log file, and several of those logs are full of member
+identity: `listmonk` carries subscriber email addresses, `tautulli` per-member
+watch and session records, `seerr` per-member requests, `plex` usernames in
+`X-Plex-Username`. `logs.py` applies no redaction. The `logs` verb therefore
+takes an explicit allowlist, `LOG_SAFE_APPS` — infrastructure and pipeline
+tools only — and refuses anything outside it *before* `logs.py` is invoked.
+This is the same posture as `STATUS_SECTIONS`: the phone cannot ask for the
+data, rather than being trusted not to display it.
+
 **Pre-existing exposure, not introduced here:** Heartbeat v2's forced command
 is `app-status.py` with no arguments, so the app already installed on the
 operator's phone receives `top5` today. Reminting the key onto the dispatcher
