@@ -89,8 +89,11 @@ def test_app_list_returns_only_lifecycle_classes():
     d = _load()
     env = d.dispatch(["app.list"])
     assert env["ok"] is True
-    # 19 ucc + 4 systemd = 23; cron and library have no start/stop and are excluded
-    assert len(env["lines"]) == 23
+    # 18 ucc + 6 systemd = 24. Counted off App.class_ via the manifest loader,
+    # NOT off the `# --- group ---` comment headers in apps.yaml, which have
+    # drifted from the real class fields (postgres sits under the systemd
+    # comment but is class: ucc). cron (10) and library (1) have no lifecycle.
+    assert len(env["lines"]) == 24
     for line in env["lines"]:
         assert line.split()[1] in ("ucc", "systemd")
 
