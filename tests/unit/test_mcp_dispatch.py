@@ -42,3 +42,32 @@ def test_no_verb_returns_member_viewing_activity():
         assert not any(b in low for b in banned), (
             "verb %r looks like it exposes member activity; see the privacy "
             "constraint in the 2026-08-03 spec" % name)
+
+def test_parse_command_splits_verb_from_args():
+    d = _load()
+    assert d.parse_command("app.restart sonarr") == ("app.restart", ["sonarr"])
+
+def test_empty_command_is_help_not_a_crash():
+    d = _load()
+    assert d.parse_command(None) == ("help", [])
+    assert d.parse_command("   ") == ("help", [])
+
+def test_unknown_verb_lists_every_known_verb_so_the_app_cannot_silently_noop():
+    d = _load()
+    env = d.dispatch(["definitely.not.a.verb"])
+    assert env["ok"] is False
+    assert "unknown verb" in env["verdict"].lower()
+    for name in d.VERBS:
+        assert any(name in line for line in env["lines"])
+
+def test_wrong_arity_says_what_was_expected():
+    d = _load()
+    env = d.dispatch(["app.restart"])          # missing the slug
+    assert env["ok"] is False
+    assert "expects" in env["verdict"].lower()
+
+def test_help_verb_is_registered_and_lists_verbs():
+    d = _load()
+    env = d.dispatch(["help"])
+    assert env["ok"] is True
+    assert len(env["lines"]) >= 1
