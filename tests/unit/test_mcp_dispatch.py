@@ -156,6 +156,7 @@ def test_unknown_slug_is_refused():
 
 def test_start_during_the_ucc_gate_explains_itself(monkeypatch):
     d = _load()
+    monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
     monkeypatch.setattr(d, "_ucc_gate_up", lambda: True)
     env = d.dispatch(["app.start", "sonarr"])
     assert env["ok"] is False
@@ -169,3 +170,30 @@ def test_restart_is_not_blocked_by_the_gate(monkeypatch):
     monkeypatch.setattr(d, "_ucc_gate_up", lambda: True)
     env = d.dispatch(["app.restart", "sonarr"])
     assert "gate" not in env["verdict"].lower()
+
+def test_stop_routes_like_the_other_lifecycle_verbs(monkeypatch):
+    d = _load()
+    monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
+    env = d.dispatch(["app.stop", "sonarr"])
+    assert env["target"] == "sonarr"
+    assert "stop" in env["verdict"]
+
+
+def test_the_gate_blocks_only_ucc_start_not_systemd_start(monkeypatch):
+    """The Ultra.cc gate is an Ultra.cc constraint. systemd units are ours and
+    keep working through it — gating them would invent an outage."""
+    d = _load()
+    monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
+    monkeypatch.setattr(d, "_ucc_gate_up", lambda: True)
+    env = d.dispatch(["app.start", "listmonk"])      # systemd class
+    assert "gate" not in env["verdict"].lower()
+
+
+def test_every_lifecycle_verb_carries_its_own_action(monkeypatch):
+    """Guards the lambda-in-loop registration: a late-binding bug would make
+    all three verbs perform whichever action was registered last."""
+    d = _load()
+    monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
+    for action in ("start", "stop", "restart"):
+        env = d.dispatch(["app." + action, "sonarr"])
+        assert action in env["verdict"], (action, env["verdict"])
