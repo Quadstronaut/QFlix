@@ -119,7 +119,7 @@ exactly the flaky mobile link this app exists to work over. Same reasoning keeps
 operator fires them one at a time and wants that verdict alone.
 
 There is deliberately **no `cron.run` verb.** The Apps page lists 24 lifecycle
-apps and does not show the 6 timer-driven jobs, so a cron verb would be
+apps and does not show the 10 timer-driven jobs, so a cron verb would be
 dispatcher surface no UI can reach — an untested path that rots. If cron
 force-runs are wanted later, they arrive with the page that shows them.
 
