@@ -74,3 +74,55 @@ def _verb_help(argv: List[str]) -> dict:
 # Registered HERE, not in Task 2: it makes the privacy test above non-vacuous
 # from the first commit, and `help` needs nothing from the router.
 VERBS["help"] = VerbSpec(handler=_verb_help, arity=0, help="list every verb")
+
+
+def parse_command(raw: Optional[str]) -> tuple:
+    """Split $SSH_ORIGINAL_COMMAND into (verb, args).
+
+    An empty command means the operator SSH'd with no command at all — answer
+    with help rather than an opaque failure.
+    """
+    if not raw or not raw.strip():
+        return ("help", [])
+    parts = raw.strip().split()
+    return (parts[0], parts[1:])
+
+
+def dispatch(argv: List[str]) -> dict:
+    started = time.time()
+    verb = argv[0] if argv else "help"
+    args = argv[1:]
+
+    spec = VERBS.get(verb)
+    if spec is None:
+        return envelope(verb=verb, target=None, ok=False,
+                        verdict="unknown verb %r" % verb,
+                        lines=_help_lines(), elapsed_s=time.time() - started,
+                        max_lines=MAX_LINES_CEILING)
+
+    if len(args) < spec.arity:
+        return envelope(verb=verb, target=None, ok=False,
+                        verdict="%s expects %d argument(s), got %d"
+                                % (verb, spec.arity, len(args)),
+                        lines=[spec.help], elapsed_s=time.time() - started)
+
+    try:
+        return spec.handler(args)
+    except Exception as exc:  # a handler must never take the connection down
+        return envelope(verb=verb, target=(args[0] if args else None), ok=False,
+                        verdict="%s failed: %s" % (verb, exc.__class__.__name__),
+                        lines=[str(exc)], elapsed_s=time.time() - started)
+
+
+def main() -> int:
+    verb, args = parse_command(os.environ.get("SSH_ORIGINAL_COMMAND"))
+    # argv beats the env var so the script is testable and hand-runnable.
+    if len(sys.argv) > 1:
+        verb, args = sys.argv[1], sys.argv[2:]
+    json.dump(dispatch([verb] + args), sys.stdout)
+    sys.stdout.write("\n")
+    return 0   # see Global Constraints: the body carries failure, not the code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
