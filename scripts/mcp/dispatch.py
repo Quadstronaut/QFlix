@@ -235,6 +235,8 @@ def _lifecycle(verb_name: str, argv: List[str]) -> dict:
         elapsed_s=time.time() - started)
 
 
+# The IIFE is load-bearing: `lambda argv: _lifecycle("app." + _a, argv)` would
+# late-bind _a and make all three verbs run whichever action registered last.
 for _a in ("start", "stop", "restart"):
     VERBS["app." + _a] = VerbSpec(
         handler=(lambda name: (lambda argv: _lifecycle(name, argv)))("app." + _a),
