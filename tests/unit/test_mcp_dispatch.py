@@ -127,3 +127,45 @@ def test_status_never_returns_the_per_member_top5_section(monkeypatch):
     sections = captured["cmd"][captured["cmd"].index("--sections") + 1]
     assert "top5" not in sections, "status must never request the per-member section"
     assert "top5" not in json.dumps(env)
+
+def test_ucc_app_routes_to_the_approved_ultra_command(monkeypatch):
+    d = _load()
+    monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
+    env = d.dispatch(["app.restart", "sonarr"])
+    assert env["target"] == "sonarr"
+    assert "ucc" in env["verdict"] or "app-sonarr" in "\n".join(env["lines"] + [env["verdict"]])
+
+def test_systemd_app_routes_to_systemctl(monkeypatch):
+    d = _load()
+    monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
+    env = d.dispatch(["app.restart", "listmonk"])
+    assert env["target"] == "listmonk"
+    assert "systemd" in env["verdict"] or "systemctl" in "\n".join(env["lines"] + [env["verdict"]])
+
+def test_a_cron_app_is_refused_rather_than_silently_doing_nothing():
+    d = _load()
+    env = d.dispatch(["app.restart", "kometa"])
+    assert env["ok"] is False
+    assert "no lifecycle" in env["verdict"].lower()
+
+def test_unknown_slug_is_refused():
+    d = _load()
+    env = d.dispatch(["app.restart", "not-an-app"])
+    assert env["ok"] is False
+    assert "unknown app" in env["verdict"].lower()
+
+def test_start_during_the_ucc_gate_explains_itself(monkeypatch):
+    d = _load()
+    monkeypatch.setattr(d, "_ucc_gate_up", lambda: True)
+    env = d.dispatch(["app.start", "sonarr"])
+    assert env["ok"] is False
+    assert "gate" in env["verdict"].lower()
+
+def test_restart_is_not_blocked_by_the_gate(monkeypatch):
+    """Only `start` is gated by Ultra.cc. Blocking restart too would remove the
+    operator's main remote remediation for no reason."""
+    d = _load()
+    monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
+    monkeypatch.setattr(d, "_ucc_gate_up", lambda: True)
+    env = d.dispatch(["app.restart", "sonarr"])
+    assert "gate" not in env["verdict"].lower()
