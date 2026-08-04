@@ -180,6 +180,67 @@ VERBS["status"] = VerbSpec(handler=_verb_status, arity=0,
                            help="the Dashboard status document")
 
 
+def _ucc_gate_up() -> bool:
+    """True when the Ultra.cc maintenance gate is active. While it is,
+    Ultra.cc BLOCKS `app-* start` — so answering 'the gate is up' is more
+    useful than relaying an opaque failure."""
+    try:
+        from lib import suppression
+        return bool(suppression.ucc_active())
+    except Exception:
+        return False
+
+
+def _lifecycle(verb_name: str, argv: List[str]) -> dict:
+    from lib import lifecycle as lifecycle_mod
+    started = time.time()
+    slug = argv[0]
+    man = _load_manifest()
+
+    try:
+        app = man.app(slug)
+    except Exception:
+        return envelope(verb=verb_name, target=slug, ok=False,
+                        verdict="unknown app %r" % slug,
+                        lines=["run app.list for the 24 apps that have a lifecycle"],
+                        elapsed_s=time.time() - started)
+
+    if app.class_ not in LIFECYCLE_CLASSES:
+        return envelope(verb=verb_name, target=slug, ok=False,
+                        verdict="%s is class %s and has no lifecycle"
+                                % (slug, app.class_),
+                        lines=["only ucc and systemd apps start/stop/restart"],
+                        elapsed_s=time.time() - started)
+
+    action = verb_name.split(".", 1)[1]
+    if action == "start" and app.class_ == "ucc" and _ucc_gate_up():
+        return envelope(verb=verb_name, target=slug, ok=False,
+                        verdict="the Ultra.cc gate is up; `app-%s start` is blocked "
+                                "until it clears" % slug,
+                        lines=["restart is still available and is usually what you want"],
+                        elapsed_s=time.time() - started)
+
+    fn = {"start": lifecycle_mod.start,
+          "stop": lifecycle_mod.stop,
+          "restart": lifecycle_mod.restart}[action]
+    res = fn(app)
+    how = ("app-%s %s" % (app.raw.get("ucc_slug", slug), action)
+           if app.class_ == "ucc"
+           else "systemctl --user %s %s" % (action, app.raw.get("unit", slug)))
+    return envelope(
+        verb=verb_name, target=slug, ok=bool(res.ok),
+        verdict="%s %s (%s: %s)" % (action, slug, app.class_, how)
+                if res.ok else "%s %s FAILED: %s" % (action, slug, res.reason),
+        lines=(res.stdout or "").splitlines() + (res.stderr or "").splitlines(),
+        elapsed_s=time.time() - started)
+
+
+for _a in ("start", "stop", "restart"):
+    VERBS["app." + _a] = VerbSpec(
+        handler=(lambda name: (lambda argv: _lifecycle(name, argv)))("app." + _a),
+        arity=1, help="%s one app by slug (ucc or systemd)" % _a)
+
+
 def main() -> int:
     verb, args = parse_command(os.environ.get("SSH_ORIGINAL_COMMAND"))
     # argv beats the env var so the script is testable and hand-runnable.
