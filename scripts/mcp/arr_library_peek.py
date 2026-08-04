@@ -15,29 +15,21 @@ Movies  -> present/absent per film (have/total are 1/1 or 0/1 so one shape
 
 Deliberately coarse: the operator asked for a peek, not library statistics.
 
-DEVIATION from brief (verified against scripts/mcp/lib/arr_client.py and
-every existing caller — missing.py, unstick.py, quality_fallback.py,
+DEVIATION from brief (fix round 1, verified against scripts/mcp/lib/arr_client.py
+and every existing caller — missing.py, unstick.py, quality_fallback.py,
 collect.py):
   1. ArrClient's constructor is `ArrClient(slug, version, ...)` — `version`
-     is a required positional arg. The brief's `ArrClient(slug)` would raise
-     TypeError in production. Every sibling script passes "v3" explicitly.
-  2. ArrClient.get(path) returns an (http_code, payload) TUPLE of the
-     RECORDS, and `path` is relative to the version root ArrClient already
-     builds into the URL (e.g. missing.py never calls "/api/v3/command", it
-     calls "/command"; quality_fallback.py calls "/series", not
-     "/api/v3/series"). Calling c.get("/api/v3/series") against the real
-     client would double the "/api/v3" segment in the URL (404) even before
-     accounting for the tuple. The brief's own test fakes (correctly, per
-     the brief's OWN stated interface) return a bare list from a path that
-     DOES carry "/api/v3" — i.e. the brief's fakes model a client that does
-     not exist on this box.
-  A thin adapter in _default_client() below reconciles this: it builds the
-  real ArrClient with the version, strips the "/api/v3" prefix peek() sends
-  (matching the fixed test contract) before delegating, unwraps the
-  (code, payload) tuple, and raises on a non-200 so peek()'s existing
-  except-and-degrade path handles it the same way it handles a fake's raised
-  RuntimeError. client=<fake> (as every test here supplies) bypasses the
-  adapter entirely and is used exactly as the brief specified.
+     is a required positional arg. `_default_client` passes "v3" explicitly,
+     matching every sibling script.
+  2. ArrClient.get(path) returns an (http_code, payload) TUPLE, and `path` is
+     relative to the version root ArrClient already builds into the URL
+     (missing.py calls "/command", not "/api/v3/command"; quality_fallback.py
+     calls "/series", not "/api/v3/series"). `_rows()` below unwraps that
+     tuple and raises on a non-200 or non-list payload; `peek()` calls
+     "/series" / "/movie" through it. The test fakes mirror this real shape
+     (tuple return, version-relative path) so the production path
+     (client=None -> _default_client -> the real ArrClient) is exercised by
+     the same contract the tests check, not a fake built to a different API.
 """
 from __future__ import annotations
 
@@ -53,32 +45,24 @@ sys.path.insert(0, str(HERE.parent / "maint"))
 SERIES_SLUGS = ("sonarr", "sonarr2")
 MOVIE_SLUGS = ("radarr", "radarr2")
 
-_ARR_VERSION = "v3"
-_API_PREFIX = "/api/" + _ARR_VERSION
-
-
-class _ArrClientAdapter:
-    """Presents the bare get(path) -> records interface peek() (and its
-    tests) use, backed by the real ArrClient — see the module docstring's
-    DEVIATION note for why this exists rather than calling ArrClient
-    directly."""
-
-    def __init__(self, slug: str):
-        from lib.arr_client import ArrClient
-        self._slug = slug
-        self._client = ArrClient(slug, _ARR_VERSION)
-
-    def get(self, path: str, **kw):
-        rel = path[len(_API_PREFIX):] if path.startswith(_API_PREFIX) else path
-        code, payload = self._client.get(rel, **kw)
-        if code != 200:
-            raise RuntimeError(
-                "%s: HTTP %s from %s" % (self._slug, code, path))
-        return payload
-
 
 def _default_client(slug: str):
-    return _ArrClientAdapter(slug)
+    # ArrClient(slug, version) - version is a REQUIRED positional, and every
+    # real caller passes "v3" (see missing.py, unstick.py).
+    from lib.arr_client import ArrClient
+    return ArrClient(slug, "v3")
+
+
+def _rows(result):
+    """ArrClient.get() returns (http_code, payload). Anything non-200, or a
+    payload that is not a list, is an error the caller must see rather than a
+    quietly empty library."""
+    code, payload = result
+    if code != 200:
+        raise RuntimeError("arr returned HTTP %s" % code)
+    if not isinstance(payload, list):
+        raise RuntimeError("arr returned %s, expected a list" % type(payload).__name__)
+    return payload
 
 
 def peek(slug: str, client=None) -> dict:
@@ -87,7 +71,7 @@ def peek(slug: str, client=None) -> dict:
     try:
         c = client if client is not None else _default_client(slug)
         if kind == "series":
-            for s in c.get("/api/v3/series"):
+            for s in _rows(c.get("/series")):
                 st = s.get("statistics") or {}
                 have = int(st.get("episodeFileCount") or 0)
                 total = int(st.get("totalEpisodeCount") or 0)
@@ -95,7 +79,7 @@ def peek(slug: str, client=None) -> dict:
                     "title": s.get("title", "?"), "have": have, "total": total,
                     "complete": total > 0 and have >= total})
         else:
-            for m in c.get("/api/v3/movie"):
+            for m in _rows(c.get("/movie")):
                 has = bool(m.get("hasFile"))
                 out["titles"].append({
                     "title": m.get("title", "?"), "have": 1 if has else 0,
