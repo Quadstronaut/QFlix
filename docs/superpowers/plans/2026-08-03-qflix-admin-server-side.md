@@ -87,6 +87,10 @@ def test_no_verb_returns_member_viewing_activity():
     from the wire protocol, not merely unused by the UI. plex.py supports a
     sessions snapshot; no verb may reach it."""
     d = _load()
+    # Non-vacuity guard: an empty VERBS would make the loop below assert
+    # nothing and pass forever. `help` is registered from Task 1 precisely so
+    # this test has something to check from the first commit.
+    assert len(d.VERBS) >= 1, "VERBS is empty - the loop below would prove nothing"
     banned = ("session", "watch", "history", "viewer", "member", "who")
     for name in d.VERBS:
         low = name.lower()
@@ -121,6 +125,7 @@ one place the action set is written down.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -162,6 +167,22 @@ def envelope(*, verb: str, target: Optional[str], ok: bool, verdict: str,
 
 
 VERBS: dict = {}
+
+
+def _help_lines() -> List[str]:
+    return ["%-24s %s" % (name, spec.help) for name, spec in sorted(VERBS.items())]
+
+
+def _verb_help(argv: List[str]) -> dict:
+    return envelope(verb="help", target=None, ok=True,
+                    verdict="%d verbs available" % len(VERBS),
+                    lines=_help_lines(), elapsed_s=0.0,
+                    max_lines=MAX_LINES_CEILING)
+
+
+# Registered HERE, not in Task 2: it makes the privacy test above non-vacuous
+# from the first commit, and `help` needs nothing from the router.
+VERBS["help"] = VerbSpec(handler=_verb_help, arity=0, help="list every verb")
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -243,17 +264,6 @@ def parse_command(raw: Optional[str]) -> tuple:
     return (parts[0], parts[1:])
 
 
-def _help_lines() -> List[str]:
-    return ["%-24s %s" % (name, spec.help) for name, spec in sorted(VERBS.items())]
-
-
-def _verb_help(argv: List[str]) -> dict:
-    return envelope(verb="help", target=None, ok=True,
-                    verdict="%d verbs available" % len(VERBS),
-                    lines=_help_lines(), elapsed_s=0.0,
-                    max_lines=MAX_LINES_CEILING)
-
-
 def dispatch(argv: List[str]) -> dict:
     started = time.time()
     verb = argv[0] if argv else "help"
@@ -280,11 +290,7 @@ def dispatch(argv: List[str]) -> dict:
                         lines=[str(exc)], elapsed_s=time.time() - started)
 
 
-VERBS["help"] = VerbSpec(handler=_verb_help, arity=0, help="list every verb")
-
-
 def main() -> int:
-    import os
     verb, args = parse_command(os.environ.get("SSH_ORIGINAL_COMMAND"))
     # argv beats the env var so the script is testable and hand-runnable.
     if len(sys.argv) > 1:
@@ -301,7 +307,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/unit/test_mcp_dispatch.py -q`
-Expected: PASS (8 tests).
+Expected: PASS (8 tests). `help` was registered in Task 1; Task 2 adds only the router.
 
 - [ ] **Step 5: Commit**
 
@@ -429,8 +435,6 @@ git commit -m "feat(dispatch): status passthrough and app.list with class badges
 - [ ] **Step 1: Write the failing test**
 
 ```python
-import os
-
 def test_ucc_app_routes_to_the_approved_ultra_command(monkeypatch):
     d = _load()
     monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
