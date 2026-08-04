@@ -348,8 +348,11 @@ def test_app_list_returns_only_lifecycle_classes():
     d = _load()
     env = d.dispatch(["app.list"])
     assert env["ok"] is True
-    # 19 ucc + 4 systemd = 23; cron and library have no start/stop and are excluded
-    assert len(env["lines"]) == 23
+    # 18 ucc + 6 systemd = 24. Counted off App.class_ via the manifest loader,
+    # NOT off the `# --- group ---` comment headers in apps.yaml, which have
+    # drifted from the real class fields (postgres sits under the systemd
+    # comment but is class: ucc). cron (10) and library (1) have no lifecycle.
+    assert len(env["lines"]) == 24
     for line in env["lines"]:
         assert line.split()[1] in ("ucc", "systemd")
 
@@ -523,7 +526,7 @@ def _lifecycle(verb_name: str, argv: List[str]) -> dict:
     except Exception:
         return envelope(verb=verb_name, target=slug, ok=False,
                         verdict="unknown app %r" % slug,
-                        lines=["run app.list for the 23 apps that have a lifecycle"],
+                        lines=["run app.list for the 24 apps that have a lifecycle"],
                         elapsed_s=time.time() - started)
 
     if app.class_ not in LIFECYCLE_CLASSES:
@@ -1301,7 +1304,7 @@ ssh -i ./.admin-key/qflix-admin $BOX   # from secrets/seedbox.ssh-host 'app.list
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["verdict"])'
 ```
 
-Expected: `23 apps with a lifecycle`. The forced command means the requested
+Expected: `24 apps with a lifecycle`. The forced command means the requested
 command is ignored in favour of `dispatch.py`, with `app.list` arriving via
 `SSH_ORIGINAL_COMMAND`.
 
