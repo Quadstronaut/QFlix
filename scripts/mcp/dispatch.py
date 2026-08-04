@@ -141,14 +141,28 @@ def _verb_app_list(argv: List[str]) -> dict:
                     max_lines=MAX_LINES_CEILING)
 
 
+# app_status.py emits five sections. `top5` is per-member BY NAME —
+# top5_watch gives {"user": friendly_name, "hours", "plays"} from Tautulli and
+# top5_requests gives {"user": displayName, "count"} from Seerr. That is
+# exactly the member viewing activity the spec forbids, so `status` asks for
+# every section EXCEPT top5. `streams` is kept: it is aggregate counts
+# (streams/users/transcodes/wan_kbps), not identities.
+STATUS_SECTIONS = "quota,kuma,streams,downloads"
+
+
 def _verb_status(argv: List[str]) -> dict:
-    """The Dashboard doc. Contract unchanged from Heartbeat v2 — app_status.py
-    already emits exactly what the app expects, so this passes it through whole
-    rather than re-wrapping it."""
+    """The Dashboard doc, minus the per-member section.
+
+    NOT a bare passthrough. Heartbeat v2's forced command ran app_status.py
+    with no arguments and therefore received top5; this verb is the first
+    caller that filters, which is what makes the privacy constraint true on
+    the wire rather than only in the UI.
+    """
     import subprocess
     started = time.time()
     proc = subprocess.run(
-        [sys.executable, str(HERE / "app_status.py"), "--emit-json"],
+        [sys.executable, str(HERE / "app_status.py"), "--emit-json",
+         "--sections", STATUS_SECTIONS],
         capture_output=True, text=True, timeout=30)
     ok = proc.returncode == 0 and bool(proc.stdout.strip())
     env = envelope(verb="status", target=None, ok=ok,
