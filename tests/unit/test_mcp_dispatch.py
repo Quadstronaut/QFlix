@@ -209,12 +209,32 @@ def test_search_wanted_refuses_a_non_arr():
 
 def test_search_wanted_accepts_each_arr(monkeypatch):
     d = _load()
-    monkeypatch.setattr(d, "_run_mcp",
-                        lambda *a, **k: (True, {"per_arr": {}}, ""))
+    # Realistic missing.py shape (verified by reading scripts/mcp/missing.py):
+    # {"per_arr": {<slug>: {"status": "queued", ...}}} keyed by the slug that
+    # was actually requested — not the empty dict the pre-C3 mock used, which
+    # would have hidden the fact that the code never looked at `status`.
+    monkeypatch.setattr(
+        d, "_run_mcp",
+        lambda script, args, timeout_s=60.0: (
+            True, {"per_arr": {args[args.index("--slug") + 1]:
+                               {"status": "queued", "command": "x"}}}, ""))
     for slug in ARRS:
         env = d.dispatch(["arr.search_wanted", slug])
         assert env["ok"] is True, slug
         assert env["target"] == slug
+
+
+def test_search_wanted_reports_failure_when_the_arr_refuses(monkeypatch):
+    """C3 reproduction: missing.py answers (stdout parses as JSON, so the old
+    code's `ok` was already True) but its own per_arr status for this slug is
+    "failed" — Sonarr rejected the search. The verb must not toast success."""
+    d = _load()
+    monkeypatch.setattr(
+        d, "_run_mcp",
+        lambda *a, **k: (True, {"per_arr": {"sonarr": {"status": "failed", "code": 503}}}, ""))
+    env = d.dispatch(["arr.search_wanted", "sonarr"])
+    assert env["ok"] is False
+    assert "failed" in env["verdict"].lower() or "not queued" in env["verdict"].lower()
 
 def test_logs_honours_an_explicit_tail_within_the_ceiling(monkeypatch):
     d = _load()
@@ -245,6 +265,50 @@ def test_unstick_requires_both_slug_and_queue_id():
     env = d.dispatch(["unstick", "sonarr"])
     assert env["ok"] is False
     assert "expects" in env["verdict"].lower()
+
+
+def test_unstick_reports_success_when_the_arr_actually_deleted_it(monkeypatch):
+    d = _load()
+    monkeypatch.setattr(
+        d, "_run_mcp",
+        lambda *a, **k: (True, {"status": "deleted+blocklisted",
+                                "pre": {"queue_id": 42, "title": "x", "hash": "y"}}, ""))
+    env = d.dispatch(["unstick", "sonarr", "42"])
+    assert env["ok"] is True
+    assert "42" in env["verdict"]
+
+
+def test_unstick_reports_failure_when_the_arr_refused(monkeypatch):
+    """C3 reproduction, verbatim: unstick.py answers (stdout parses fine, so
+    the old code's `ok` was already True) with {"status": "refused-arr-red"}
+    because Sonarr's own Kuma monitor is red. The verb must not toast
+    "unstuck" for a refusal that changed nothing."""
+    d = _load()
+    monkeypatch.setattr(
+        d, "_run_mcp",
+        lambda *a, **k: (True, {"status": "refused-arr-red", "slug": "sonarr"}, ""))
+    env = d.dispatch(["unstick", "sonarr", "42"])
+    assert env["ok"] is False
+    assert "refused-arr-red" in env["verdict"]
+    assert "unstuck" not in env["verdict"].lower()
+
+
+def test_unstick_status_ok_recognizes_every_real_refusal_and_failure_status():
+    """Direct unit coverage of the classifier itself (verified against every
+    status string scripts/mcp/unstick.py can actually return), independent
+    of the envelope wiring tested above."""
+    d = _load()
+    bad = ("refused-unknown-slug", "refused-arr-red", "refused-cap-hit",
+           "queue-fetch-failed", "delete-failed", "qbit-login-failed",
+           "qbit-delete-failed", "sab-delete-failed", "sab-unreachable",
+           "no-hash-for-qbit-lookup")
+    good = ("deleted+blocklisted", "dry-run", "already-fully-removed",
+            "qbit-orphan-removed", "sab-orphan-removed",
+            "dry-run-qbit-orphan", "dry-run-sab-orphan")
+    for s in bad:
+        assert d._unstick_status_ok(s) is False, s
+    for s in good:
+        assert d._unstick_status_ok(s) is True, s
 
 
 def test_logs_refuses_apps_whose_logs_carry_member_identity():
