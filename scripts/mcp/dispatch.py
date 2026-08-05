@@ -166,10 +166,23 @@ def _verb_status(argv: List[str]) -> dict:
     """
     import subprocess
     started = time.time()
-    proc = subprocess.run(
-        [sys.executable, str(HERE / "app_status.py"), "--emit-json",
-         "--sections", STATUS_SECTIONS],
-        capture_output=True, text=True, timeout=30)
+    # (I3) subprocess.run used to sit outside this try, so a TimeoutExpired
+    # (app_status.py wedged on a dead section) escaped to dispatch()'s
+    # generic handler instead of degrading here — the same defect Task 8
+    # already fixed for `quota`, just never carried to this verb.
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(HERE / "app_status.py"), "--emit-json",
+             "--sections", STATUS_SECTIONS],
+            capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return envelope(verb="status", target=None, ok=False,
+                        verdict="app_status.py timed out",
+                        lines=[], elapsed_s=time.time() - started)
+    except Exception as exc:
+        return envelope(verb="status", target=None, ok=False,
+                        verdict="status failed: %s" % exc.__class__.__name__,
+                        lines=[str(exc)], elapsed_s=time.time() - started)
     ok = proc.returncode == 0 and bool(proc.stdout.strip())
     env = envelope(verb="status", target=None, ok=ok,
                    verdict="status doc emitted" if ok else "app_status.py failed",
@@ -259,10 +272,26 @@ def _run_mcp(script: str, args: List[str], timeout_s: float = 60.0) -> tuple:
     JSON mode by convention (missing.py's own comment: returning non-zero made
     the MCP caller discard the body as ssh-failed, masking which *arr broke),
     so `ok` keys off parseable stdout, not the return code.
+
+    (I3) subprocess.run itself used to sit OUTSIDE this try block, so a
+    TimeoutExpired (a slow/wedged *arr) escaped this function entirely,
+    propagated past every caller (_verb_starr's per-slug loop, _verb_unstick,
+    _verb_search_wanted, _verb_logs), and was only caught by dispatch()'s
+    generic handler — which discards whatever extra top-level keys the verb
+    was building (starr's `arrs` for every OTHER, healthy slug included, not
+    just the wedged one). Catching it here means a timeout degrades to the
+    same (False, None, err) shape as an unparsed response, so callers already
+    written to handle that keep working and the surrounding envelope survives
+    intact.
     """
     import subprocess
-    proc = subprocess.run([sys.executable, str(HERE / script)] + args,
-                          capture_output=True, text=True, timeout=timeout_s)
+    try:
+        proc = subprocess.run([sys.executable, str(HERE / script)] + args,
+                              capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        return (False, None, "%s timed out after %.0fs" % (script, timeout_s))
+    except Exception as exc:
+        return (False, None, "%s did not run: %s" % (script, exc))
     try:
         return (True, json.loads(proc.stdout), proc.stderr or "")
     except Exception:
@@ -400,10 +429,15 @@ def _verb_starr(argv: List[str]) -> dict:
 
     Exactly one _peek_one + one _usage_one per slug (8 subprocess calls
     total, never 8 SSH handshakes). A dead instance is folded into the page
-    rather than taking it down: `ok` stays True so the page still renders,
-    the degraded slug(s) are named in `verdict`, and that instance's own
-    `ok: False` survives untouched inside `arrs[slug]` for the phone to
-    render as a per-row error state.
+    rather than taking it down: as long as SOME instance is healthy, `ok`
+    stays True so the page still renders, the degraded slug(s) are named in
+    `verdict`, and that instance's own `ok: False` survives untouched inside
+    `arrs[slug]` for the phone to render as a per-row error state.
+
+    (I5) `ok` is False only when EVERY instance is degraded — a total outage
+    is not a success just because the round trip itself didn't raise. When
+    only some are down the page still renders useful rows, so `ok` stays
+    True there and the per-row `ok: False` values are what carry the detail.
     """
     started = time.time()
     arrs = {}
@@ -414,10 +448,16 @@ def _verb_starr(argv: List[str]) -> dict:
         arrs[slug] = {"peek": p, "usage": u}
         if not p.get("ok") or not u.get("ok"):
             degraded.append(slug)
+    total_outage = len(degraded) == len(ARR_SLUGS)
+    if not degraded:
+        verdict = "4 *arrs"
+    elif total_outage:
+        verdict = "all 4 *arrs are down"
+    else:
+        verdict = "4 *arrs, degraded: " + ", ".join(degraded)
     env = envelope(
-        verb="starr", target=None, ok=True,
-        verdict="4 *arrs" if not degraded
-                else "4 *arrs, degraded: " + ", ".join(degraded),
+        verb="starr", target=None, ok=not total_outage,
+        verdict=verdict,
         lines=["%s %s %d titles" % (s, arrs[s]["usage"]["human"],
                                     len(arrs[s]["peek"]["titles"]))
                for s in ARR_SLUGS],
