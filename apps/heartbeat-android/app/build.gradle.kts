@@ -10,7 +10,12 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.qflix.heartbeat"
+        // applicationId is the app's identity (what installs, what the Play
+        // Store keys on) - it moves to com.qflix.admin for the rename.
+        // namespace (above) stays com.qflix.heartbeat: that's just the
+        // Kotlin package prefix for R/BuildConfig, not user-visible identity,
+        // and renaming it would churn all 14 source files for no gain.
+        applicationId = "com.qflix.admin"
         minSdk = 31
         targetSdk = 36
         versionCode = 1
