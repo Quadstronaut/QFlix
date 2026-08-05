@@ -83,3 +83,27 @@ def test_a_non_200_is_an_error_not_an_empty_library():
     assert out["ok"] is False
     assert "500" in out["error"]
     assert out["titles"] == []
+
+def test_a_200_with_a_non_list_body_is_an_error_not_an_empty_library():
+    """ArrClient._req returns payload=None on an empty 200 body, so this is a
+    real path, not a hypothetical. It must not read as 'we own nothing'."""
+    m = _load()
+    for payload in (None, {"message": "no content"}):
+        class OddBody:
+            def __init__(self, p): self.p = p
+            def get(self, path, **kw): return (200, self.p)
+        out = m.peek("sonarr", client=OddBody(payload))
+        assert out["ok"] is False, payload
+        assert out["titles"] == [], payload
+
+
+def test_a_title_entry_carries_exactly_four_keys_and_no_others():
+    """The vocabulary test is a tripwire for KNOWN bad words; this is the
+    actual guarantee. A future edit that passed the raw *arr record through
+    would add dozens of keys and fail here even if none of them happened to
+    contain 'watch' or 'view'."""
+    m = _load()
+    out = m.peek("sonarr", client=FakeSonarr())
+    assert out["titles"], "fixture must produce at least one title"
+    for entry in out["titles"]:
+        assert set(entry) == {"title", "have", "total", "complete"}, sorted(entry)
