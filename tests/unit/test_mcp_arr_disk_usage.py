@@ -102,6 +102,9 @@ def test_human_boundary_exactly_1024_rolls_to_kb():
     m = _load()
     assert m.human(1024) == "1.0 KB"
 
-def test_human_tb_scale_value():
+def test_human_terminates_at_tb_instead_of_running_off_the_unit_ladder():
+    """The input must exceed 1024 TB. A 5 TB value never reaches the
+    `unit == "TB"` short-circuit — n is already below 1024 by then — so it
+    proves nothing about termination. This value forces the last rung."""
     m = _load()
-    assert m.human(5 * 1024 ** 4) == "5.0 TB"
+    assert m.human(2048 * 1024 ** 4) == "2048.0 TB"
