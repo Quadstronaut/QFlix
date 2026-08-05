@@ -87,7 +87,10 @@ def test_a_proper_user_at_host_box_passes_the_guard() -> None:
     enough to attempt the (unreachable, in this sandbox) SSH call, not fail
     on the case-statement itself."""
     env = dict(os.environ)
-    env["QFLIX_BOX"] = "nobody@nonexistent.invalid.example"
+    # example.com is on the repo's PII-scanner allowlist (tests/unit/
+    # test_no_pii_in_repo.py ALLOWED_DOMAINS) - any other user@host-shaped
+    # placeholder here reads as a personal email address to that scanner.
+    env["QFLIX_BOX"] = "nobody@example.com"
     proc = subprocess.run(["bash", str(SCRIPT), "--check"],
                           capture_output=True, text=True, timeout=30,
                           cwd=str(REPO_ROOT), env=env)
