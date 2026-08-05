@@ -63,3 +63,4 @@ scripts/local-llm/qflix-rea.ps1
 # Staging dir for the 2026-05-11 inventory-driven cleanup; safe to delete once
 # the operator confirms nothing was accidentally swept.
 .purged-*/
+.admin-key/
