@@ -75,6 +75,32 @@ class ViewStateTest {
         assertTrue(state.maint is SectionState.Missing)
     }
 
+    // -- kuma: reds first --
+    //
+    // `red` (app_status.py's parse_kuma_rows) already contains ONLY monitors
+    // currently down - there is no "up" entry mixed in for a sort to push
+    // out. What was missing was a STABLE, deterministic order: the DB query
+    // it comes from makes no ordering promise, so the same set of down
+    // monitors could render in a different order on every refresh. Sorting
+    // by `since` pins the longest-outstanding red to the top and keeps that
+    // order fixed across refreshes.
+
+    @Test
+    fun `kuma red entries sort oldest-down-first regardless of arrival order`() {
+        val json = """
+            {"kuma": {"ok": true, "total": 10, "up": 7, "down": 3,
+                      "red": [{"name": "C", "msg": "c", "since": "2026-07-15 23:47:43.398"},
+                              {"name": "A", "msg": "a", "since": "2026-07-15 13:17:02.449"},
+                              {"name": "B", "msg": "b", "since": "2026-07-15 23:47:42.038"}]}}
+        """.trimIndent()
+        val doc = StatusDoc.parse(json)
+
+        val state = ViewState.from(doc, Instant.now())
+
+        val kuma = state.kuma as SectionState.Ok
+        assertEquals(listOf("A", "B", "C"), kuma.data.red.map { it.name })
+    }
+
     // -- per-section render state: Ok / SectionError / Missing --
 
     @Test
@@ -179,6 +205,45 @@ class ViewStateTest {
     @Test
     fun `bandwidth label omits the reset clause when next_reset is missing`() {
         assertEquals("3.4% used", ViewState.bandwidthLabel(3.42, null))
+    }
+
+    // -- quota tile: the `quota` verb owns the disk reading when supplied --
+
+    @Test
+    fun `a quota override replaces the doc's own disk reading but not bandwidth`() {
+        val doc = StatusDoc.parse(readFixture())
+        val override = QuotaTileReading(usedGb = 1800.0, totalGb = 2794.0, percent = 64.4)
+
+        val state = ViewState.from(doc, Instant.parse(doc.meta!!.generatedAt), override)
+
+        val quota = state.quota as SectionState.Ok
+        // Overridden: matches the verb reading, not the doc's own 2074/2794.
+        assertEquals("1800 / 2794 GB", quota.data.diskLabel)
+        assertEquals(64.4, quota.data.diskPct, 0.001)
+        // Untouched: bandwidth has no verb equivalent, still sourced from the doc.
+        assertEquals("3.5% used - resets Jul 28", quota.data.bandwidthLabel)
+    }
+
+    @Test
+    fun `with no override the doc's own quota section is used, unchanged`() {
+        val doc = StatusDoc.parse(readFixture())
+
+        val state = ViewState.from(doc, Instant.parse(doc.meta!!.generatedAt))
+
+        val quota = state.quota as SectionState.Ok
+        assertEquals("2074 / 2794 GB", quota.data.diskLabel)
+    }
+
+    @Test
+    fun `an override still renders Ok even when the doc's quota section is degraded`() {
+        val json = """{"quota": {"ok": false, "error": "quota -w failed"}}"""
+        val doc = StatusDoc.parse(json)
+        val override = QuotaTileReading(usedGb = 500.0, totalGb = 1000.0, percent = 50.0)
+
+        val state = ViewState.from(doc, Instant.now(), override)
+
+        val quota = state.quota as SectionState.Ok
+        assertEquals("500 / 1000 GB", quota.data.diskLabel)
     }
 
     // -- alert ordering --
