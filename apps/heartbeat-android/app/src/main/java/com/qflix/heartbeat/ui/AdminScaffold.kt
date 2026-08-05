@@ -9,7 +9,6 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
@@ -23,7 +22,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.qflix.heartbeat.net.StatusTransport
@@ -53,13 +51,19 @@ enum class Destination(val label: String) {
  * from Android reclaiming memory) reopens on the same page instead of
  * silently bouncing the operator back to Dashboard.
  *
- * [AppsScreen] is Task 5's real 24-row lifecycle list. [StarrScreen] is
- * still a placeholder - Task 6 builds its real content (*arr peek/search/
- * disk).
+ * [AppsScreen] is Task 5's real 24-row lifecycle list. [StarrScreen] (Task 6)
+ * is the real 4-row *arr view; [host] is threaded through to it purely for
+ * its "Open in browser" button (see that screen's kdoc) - nothing else here
+ * needs it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AdminScaffold(viewModel: StatusViewModel, actionViewModel: ActionViewModel, transport: StatusTransport) {
+fun AdminScaffold(
+    viewModel: StatusViewModel,
+    actionViewModel: ActionViewModel,
+    transport: StatusTransport,
+    host: String? = null,
+) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var selected by rememberSaveable { mutableStateOf(Destination.DASHBOARD) }
@@ -98,21 +102,13 @@ fun AdminScaffold(viewModel: StatusViewModel, actionViewModel: ActionViewModel, 
                 when (selected) {
                     Destination.DASHBOARD -> DashboardScreen(viewModel = viewModel)
                     Destination.APPS -> AppsScreen(transport = transport, actionViewModel = actionViewModel)
-                    Destination.STARR -> StarrScreen()
+                    Destination.STARR -> StarrScreen(
+                        transport = transport,
+                        actionViewModel = actionViewModel,
+                        host = host,
+                    )
                 }
             }
         }
-    }
-}
-
-/**
- * Placeholder only - Task 6 replaces this with the real 4-row *arr view
- * (peek/search/disk from one "starr" round trip). Existing here solely so
- * the drawer added in this task has somewhere to route to.
- */
-@Composable
-fun StarrScreen() {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("stARR", style = MaterialTheme.typography.headlineSmall)
     }
 }
