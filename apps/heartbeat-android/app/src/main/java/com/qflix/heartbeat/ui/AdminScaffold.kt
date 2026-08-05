@@ -1,14 +1,17 @@
 package com.qflix.heartbeat.ui
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
@@ -17,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -55,6 +59,15 @@ enum class Destination(val label: String) {
  * is the real 4-row *arr view; [host] is threaded through to it purely for
  * its "Open in browser" button (see that screen's kdoc) - nothing else here
  * needs it.
+ *
+ * The one [TopAppBar] here is the ONLY app bar in the tree (Task 7): Dashboard
+ * (Heartbeat v2) used to carry its own `Scaffold`+`TopAppBar` with a refresh
+ * icon and a data-age subtitle, which stacked a second bar underneath this
+ * one the moment the drawer landed in Task 3. `DashboardScreen` now renders
+ * body content only; its refresh action and data-age subtitle are folded in
+ * here instead, shown only while [Destination.DASHBOARD] is selected -
+ * [viewModel]'s state is read directly for that, the same [StatusViewModel]
+ * instance [DashboardScreen] itself collects from.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,6 +80,9 @@ fun AdminScaffold(
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var selected by rememberSaveable { mutableStateOf(Destination.DASHBOARD) }
+
+    val dashboardState by viewModel.uiState.collectAsState()
+    val dashboardRefreshing by viewModel.isRefreshing.collectAsState()
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -89,10 +105,37 @@ fun AdminScaffold(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text(selected.label) },
+                    title = {
+                        Column {
+                            Text(selected.label)
+                            if (selected == Destination.DASHBOARD) {
+                                // Pre-formatted by ViewState.from already (see
+                                // DashboardState.dataAge) - no re-derivation here.
+                                (dashboardState as? StatusUiState.Ready)?.let { ready ->
+                                    Text(
+                                        text = ready.dashboard.dataAge,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
                             Icon(Icons.Filled.Menu, contentDescription = "Open navigation drawer")
+                        }
+                    },
+                    actions = {
+                        if (selected == Destination.DASHBOARD) {
+                            // Disabled while a fetch is already in flight - belt-
+                            // and-suspenders alongside StatusViewModel's own
+                            // re-entrancy guard, which is what actually prevents
+                            // a second concurrent transport.exec() if this slips
+                            // through.
+                            IconButton(onClick = { viewModel.refresh() }, enabled = !dashboardRefreshing) {
+                                Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                            }
                         }
                     },
                 )

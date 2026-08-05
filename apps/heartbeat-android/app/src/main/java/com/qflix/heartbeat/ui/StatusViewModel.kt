@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.qflix.heartbeat.model.DashboardState
+import com.qflix.heartbeat.model.Envelope
+import com.qflix.heartbeat.model.QuotaTileReading
 import com.qflix.heartbeat.model.StatusDoc
 import com.qflix.heartbeat.model.ViewState
 import com.qflix.heartbeat.net.StatusTransport
@@ -13,6 +15,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Everything the dashboard screen (A4) can be showing at any moment.
@@ -90,13 +94,65 @@ class StatusViewModel(private val transport: StatusTransport) : ViewModel() {
         }
     }
 
+    /**
+     * `status` now returns an [Envelope], not a bare doc - the dashboard
+     * document lives at `envelope.raw["doc"]` (present only when
+     * `envelope.ok`; see dispatch.py's `_verb_status`). Everything below
+     * that unwrap - [StatusDoc.parse], [ViewState.from] - is unchanged from
+     * before this task.
+     *
+     * `quota` is fired ONLY after `status` lands successfully - there is no
+     * dashboard to enhance with a quota tile if the main fetch already
+     * failed, and firing it unconditionally would mean every transport
+     * failure test needs a second scripted response it doesn't care about.
+     * A quota-verb failure (refusal, transport error, missing fields) is
+     * swallowed by [fetchQuotaOverride] into `null`: the tile degrades to
+     * the status doc's own quota section rather than blanking the whole
+     * dashboard over a tile that is a nice-to-have, not the main fetch.
+     */
     private suspend fun fetchAndPublish() {
-        transport.exec("status")
-            .mapCatching { raw -> ViewState.from(StatusDoc.parse(raw), Instant.now()) }
-            .fold(
-                onSuccess = { dashboard -> _uiState.value = StatusUiState.Ready(dashboard, Instant.now()) },
-                onFailure = { e -> _uiState.value = StatusUiState.Error(e.message ?: "Unknown error", ::refresh) },
-            )
+        val envelope = transport.exec("status")
+            .mapCatching { raw -> Envelope.parse(raw).getOrThrow() }
+            .getOrElse { e ->
+                _uiState.value = StatusUiState.Error(e.message ?: "Unknown error", ::refresh)
+                return
+            }
+        if (!envelope.ok) {
+            _uiState.value = StatusUiState.Error(envelope.verdict, ::refresh)
+            return
+        }
+        val docElement = envelope.raw["doc"]
+        if (docElement == null) {
+            _uiState.value = StatusUiState.Error("status envelope carried no doc", ::refresh)
+            return
+        }
+        val doc = runCatching { StatusDoc.parse(docElement.toString()) }
+            .getOrElse { e ->
+                _uiState.value = StatusUiState.Error(e.message ?: "malformed status doc", ::refresh)
+                return
+            }
+
+        val quotaOverride = fetchQuotaOverride()
+        _uiState.value = StatusUiState.Ready(ViewState.from(doc, Instant.now(), quotaOverride), Instant.now())
+    }
+
+    /**
+     * Best-effort: any failure (transport error, refusal, an envelope
+     * missing the numeric fields) is `null`, never a thrown exception -
+     * [ViewState.mapQuota] already knows how to fall back to the status
+     * doc's own quota section when there is no override.
+     */
+    private suspend fun fetchQuotaOverride(): QuotaTileReading? {
+        val envelope = transport.exec("quota")
+            .mapCatching { raw -> Envelope.parse(raw).getOrThrow() }
+            .getOrNull()
+            ?.takeIf { it.ok }
+            ?: return null
+        val used = envelope.raw["used_gb"]?.jsonPrimitive?.doubleOrNull
+        val total = envelope.raw["total_gb"]?.jsonPrimitive?.doubleOrNull
+        val percent = envelope.raw["percent"]?.jsonPrimitive?.doubleOrNull
+        if (used == null || total == null || percent == null) return null
+        return QuotaTileReading(usedGb = used, totalGb = total, percent = percent)
     }
 
     companion object {
