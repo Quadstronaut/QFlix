@@ -11,20 +11,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -50,9 +44,16 @@ import com.qflix.heartbeat.net.StatusTransport
 import com.qflix.heartbeat.ui.theme.HeartbeatTheme
 
 /**
- * Root screen. Hosts the top bar (data-age + manual refresh), the
- * pull-to-refresh gesture, and the section list - in the order the design
- * spec fixes: alerts, quota, kuma, streams + top5s, downloads.
+ * Root screen body: the pull-to-refresh gesture and the section list - in
+ * the order the design spec fixes: alerts, quota, kuma, streams + top5s,
+ * downloads.
+ *
+ * Task 7: the top bar (data-age + manual refresh) that used to live here
+ * moved to [AdminScaffold] - this screen used to carry its own `Scaffold` +
+ * `TopAppBar`, which stacked a second bar underneath the drawer's once Task 3
+ * landed. [AdminScaffold] now owns the one app bar for all three
+ * destinations and folds this screen's refresh/data-age affordances into it
+ * (visible only while Dashboard is selected), reading the same [viewModel].
  *
  * A [StatusUiState.Error] (including "not provisioned") replaces the whole
  * screen with a centered message and a retry button rather than trying to
@@ -64,55 +65,22 @@ fun DashboardScreen(viewModel: StatusViewModel) {
     val state by viewModel.uiState.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("QFlix Heartbeat")
-                        // Data age comes pre-formatted on DashboardState itself
-                        // (A2's ViewState.from already computed it against the
-                        // fetch time) - no re-derivation here.
-                        (state as? StatusUiState.Ready)?.let { ready ->
-                            Text(
-                                text = ready.dashboard.dataAge,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                },
-                actions = {
-                    // Disabled while a fetch is already in flight - belt-and-
-                    // suspenders alongside StatusViewModel's own re-entrancy
-                    // guard, which is what actually prevents a second
-                    // concurrent transport.exec() if this slips through.
-                    IconButton(onClick = { viewModel.refresh() }, enabled = !isRefreshing) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
-                    }
-                },
-            )
-        },
-    ) { innerPadding ->
-        when (val s = state) {
-            is StatusUiState.Loading -> LoadingScreen(Modifier.padding(innerPadding))
-            is StatusUiState.Error -> ErrorScreen(s.message, s.retry, Modifier.padding(innerPadding))
-            is StatusUiState.Ready -> PullToRefreshBox(
-                isRefreshing = isRefreshing,
-                onRefresh = { viewModel.refresh() },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-            ) {
-                DashboardBody(s.dashboard)
-            }
+    when (val s = state) {
+        is StatusUiState.Loading -> LoadingScreen()
+        is StatusUiState.Error -> ErrorScreen(s.message, s.retry)
+        is StatusUiState.Ready -> PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = { viewModel.refresh() },
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            DashboardBody(s.dashboard)
         }
     }
 }
 
 @Composable
-private fun LoadingScreen(modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+private fun LoadingScreen() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text("Loading…", style = MaterialTheme.typography.bodyLarge)
     }
 }
@@ -125,8 +93,8 @@ private fun LoadingScreen(modifier: Modifier = Modifier) {
  * - run provision.ps1" requirement without a separate code path.
  */
 @Composable
-private fun ErrorScreen(message: String, retry: () -> Unit, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+private fun ErrorScreen(message: String, retry: () -> Unit) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.padding(24.dp),
@@ -488,9 +456,17 @@ private fun DashboardScreenPreview() {
                        "last_move": {"title": "Cowboy Bebop (2021)", "from": "sonarr2", "to": "sonarr", "ts": "2026-07-25T19:04:37Z"}}},
          "alerts": [{"level": "crit", "text": "Kuma down: QFlix Reaper"}]}
     """.trimIndent()
+    // Task 7: `status` now returns an Envelope with the doc nested at
+    // `raw["doc"]`, not the bare doc itself - wrap the fixture the same way
+    // dispatch.py's `_verb_status` does so this preview still renders Ready
+    // instead of silently landing on Error.
+    val envelope = """
+        {"ok":true,"verb":"status","target":null,"verdict":"status doc emitted",
+         "lines":[],"elapsed_s":0.0,"doc":$fixture}
+    """.trimIndent()
 
     HeartbeatTheme {
-        DashboardScreen(viewModel = viewModel(factory = StatusViewModel.factory(PreviewTransport(Result.success(fixture)))))
+        DashboardScreen(viewModel = viewModel(factory = StatusViewModel.factory(PreviewTransport(Result.success(envelope)))))
     }
 }
 
