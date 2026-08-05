@@ -107,13 +107,22 @@ def test_app_list_names_the_class_so_the_phone_never_guesses_how_to_start_a_thin
 
 def test_status_never_returns_the_per_member_top5_section(monkeypatch):
     """The name-substring guard cannot catch this: the verb is called `status`
-    and the member data hides inside its payload. Assert on what goes OUT."""
+    and the member data hides inside its payload. Assert on what goes OUT.
+
+    Retargeted (deferred minor #2): real app_status.py ALWAYS emits a `top5`
+    stub — {"ok": false, "error": "not_requested"} — even when `top5` was
+    never in --sections, so `"top5" not in json.dumps(env)` would go red
+    against real output while proving nothing about member fields. Assert
+    absence of the actual per-member field names instead: `top5_watch` gives
+    {"user": friendly_name, "hours", "plays"}, `top5_requests` gives {"user":
+    displayName, "count"} (see the spec's privacy section)."""
     d = _load()
     captured = {}
 
     class FakeProc:
         returncode = 0
-        stdout = '{"quota": {}, "kuma": {}, "streams": {}, "downloads": {}}'
+        stdout = ('{"quota": {}, "kuma": {}, "streams": {}, "downloads": {}, '
+                  '"top5": {"ok": false, "error": "not_requested"}}')
         stderr = ""
 
     def fake_run(cmd, **kw):
@@ -126,7 +135,73 @@ def test_status_never_returns_the_per_member_top5_section(monkeypatch):
     assert "--sections" in captured["cmd"]
     sections = captured["cmd"][captured["cmd"].index("--sections") + 1]
     assert "top5" not in sections, "status must never request the per-member section"
-    assert "top5" not in json.dumps(env)
+    blob = json.dumps(env)
+    for field in ("friendly_name", "plexUsername", "displayName", "hours", "plays", "user"):
+        assert field not in blob, "status leaked per-member field %r" % field
+
+
+def test_logs_allowlist_never_includes_apps_whose_logs_carry_member_identity():
+    """Deferred minor #3: no test previously pinned nginx OUT of
+    LOG_SAFE_APPS — a future edit could add it back with nothing to catch it
+    (nginx reverse-proxies every app's subpath, so its error lines carry
+    `client: <ip> ... request: "<method> <path>"` for routine hiccups from
+    tautulli/seerr, which is member IP + requested URL). Also confirms every
+    allowlisted slug is one logs.py actually knows how to tail, so the
+    allowlist can't silently rot ahead of logs.py's own routing table."""
+    d = _load()
+    import logs
+    assert not (set(d.LOG_SAFE_APPS) & {"nginx", "listmonk", "tautulli", "seerr", "plex"})
+    assert set(d.LOG_SAFE_APPS) <= (set(logs._FILE_LOGS) | set(logs._SYSTEMD_LOGS))
+
+
+def test_dispatching_every_verb_never_leaks_a_member_identity_field(monkeypatch):
+    """Deferred minor #1: the verb-NAME substring guard
+    (test_no_verb_returns_member_viewing_activity) is the sole automated
+    defence for a constraint that has already failed three times, and it
+    only ever looks at the verb table, never at what a verb actually emits.
+    This is the behavioural counterpart: dispatch every real verb (backing
+    scripts mocked so this needs no live box) and assert none of the
+    per-member field names the spec forbids ever reach the wire, from any
+    verb — not just `status`, which is the only one already covered above."""
+    d = _load()
+    monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
+
+    class FakeProc:
+        returncode = 0
+        stdout = '{"quota": {}, "kuma": {}, "streams": {}, "downloads": {}}'
+        stderr = ""
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: FakeProc())
+    monkeypatch.setattr(
+        d, "_run_mcp",
+        lambda *a, **k: (True, {"per_arr": {"sonarr": {"status": "queued"},
+                                            "sonarr2": {"status": "queued"},
+                                            "radarr": {"status": "queued"},
+                                            "radarr2": {"status": "queued"}},
+                                "status": "deleted+blocklisted", "lines": []}, ""))
+    monkeypatch.setattr(
+        d, "_peek_one",
+        lambda slug: {"slug": slug, "kind": "series", "titles": [], "ok": True, "error": ""})
+    monkeypatch.setattr(
+        d, "_usage_one",
+        lambda slug: {"slug": slug, "bytes": 0, "human": "0.0 B", "title_count": 0,
+                      "ok": True, "error": ""})
+    monkeypatch.setattr(d, "_quota_raw", lambda: {"used_gb": 1.0, "total_gb": 2.0})
+
+    banned = ("friendly_name", "plexUsername", "displayName", "hours", "plays",
+             "session", "watch", "history", "viewer", "member")
+    for name, spec in d.VERBS.items():
+        if name == "unstick":
+            args = [name, "sonarr", "42"]
+        elif spec.arity >= 1:
+            args = [name, "sonarr"]
+        else:
+            args = [name]
+        env = d.dispatch(args)
+        blob = json.dumps(env)
+        for b in banned:
+            assert b not in blob, "%s leaked banned field/term %r: %s" % (name, b, blob)
 
 def test_ucc_app_routes_to_the_approved_ultra_command(monkeypatch):
     d = _load()
