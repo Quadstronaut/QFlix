@@ -6,7 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import com.qflix.heartbeat.net.SshFetcher
-import com.qflix.heartbeat.ui.DashboardScreen
+import com.qflix.heartbeat.ui.AdminScaffold
 import com.qflix.heartbeat.ui.StatusViewModel
 import com.qflix.heartbeat.ui.theme.HeartbeatTheme
 import java.security.Security
@@ -33,7 +33,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             HeartbeatTheme {
-                DashboardScreen(viewModel = viewModel)
+                // Task 3: the drawer shell now owns top-level navigation;
+                // it routes to DashboardScreen (and, from Tasks 5/6, the
+                // Apps and stARR screens) instead of this Activity going
+                // straight to DashboardScreen itself.
+                AdminScaffold(viewModel = viewModel)
             }
         }
     }
