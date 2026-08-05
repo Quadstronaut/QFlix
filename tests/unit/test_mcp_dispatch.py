@@ -280,3 +280,116 @@ def test_an_allowlisted_app_still_reaches_logs_py(monkeypatch):
     assert env["ok"] is True
     assert captured["script"] == "logs.py"
     assert "sonarr" in captured["args"]
+
+
+# --- starr: all four *arrs in one round trip ---------------------------
+
+def test_starr_returns_all_four_arrs_in_one_call(monkeypatch):
+    d = _load()
+    monkeypatch.setattr(d, "_peek_one",
+                        lambda slug: {"slug": slug, "kind": "series",
+                                      "titles": [], "ok": True, "error": ""})
+    monkeypatch.setattr(d, "_usage_one",
+                        lambda slug: {"slug": slug, "bytes": 0, "human": "0.0 B",
+                                      "title_count": 0, "ok": True, "error": ""})
+    env = d.dispatch(["starr"])
+    assert env["ok"] is True
+    assert sorted(env["arrs"]) == ["radarr", "radarr2", "sonarr", "sonarr2"]
+
+
+def test_one_dead_arr_does_not_kill_the_page(monkeypatch):
+    d = _load()
+    def peek(slug):
+        if slug == "radarr2":
+            return {"slug": slug, "kind": "movie", "titles": [],
+                    "ok": False, "error": "refused"}
+        return {"slug": slug, "kind": "series", "titles": [], "ok": True, "error": ""}
+    monkeypatch.setattr(d, "_peek_one", peek)
+    monkeypatch.setattr(d, "_usage_one",
+                        lambda slug: {"slug": slug, "bytes": 0, "human": "0.0 B",
+                                      "title_count": 0, "ok": True, "error": ""})
+    env = d.dispatch(["starr"])
+    assert env["ok"] is True                       # page still renders
+    assert env["arrs"]["radarr2"]["peek"]["ok"] is False
+    assert "radarr2" in env["verdict"]
+
+
+def test_starr_calls_each_script_exactly_once_per_slug(monkeypatch):
+    """The whole reason `starr` is one verb: eight per-instance SSH round
+    trips would defeat the point on a flaky mobile link. Assert the call
+    count directly at the _run_mcp seam (not the higher _peek_one/_usage_one
+    seam the other two tests use) so a future refactor that fans a slug out
+    to two peek calls, or re-fetches on retry, goes red here."""
+    d = _load()
+    calls = []
+    def fake_run_mcp(script, args, timeout_s=45.0):
+        slug = args[args.index("--slug") + 1]
+        calls.append((script, slug))
+        if script == "arr_library_peek.py":
+            return (True, {"slug": slug, "kind": "series", "titles": [],
+                           "ok": True, "error": ""}, "")
+        return (True, {"slug": slug, "bytes": 0, "human": "0.0 B",
+                       "title_count": 0, "ok": True, "error": ""}, "")
+    monkeypatch.setattr(d, "_run_mcp", fake_run_mcp)
+    d.dispatch(["starr"])
+    assert len(calls) == len(ARRS) * 2, calls          # exactly 8, not 4 or 16
+    assert len(set(calls)) == len(calls), "duplicate (script, slug) call: %r" % calls
+
+
+# --- quota: disk headroom for the Dashboard tile ------------------------
+
+def test_quota_reports_used_total_and_percent(monkeypatch):
+    d = _load()
+    monkeypatch.setattr(d, "_quota_raw",
+                        lambda: {"used_gb": 2190.0, "total_gb": 2794.0})
+    env = d.dispatch(["quota"])
+    assert env["ok"] is True
+    assert env["used_gb"] == 2190.0
+    assert env["percent"] == 78.4
+
+
+def test_quota_zero_total_does_not_divide_by_zero(monkeypatch):
+    d = _load()
+    monkeypatch.setattr(d, "_quota_raw",
+                        lambda: {"used_gb": 0.0, "total_gb": 0.0})
+    env = d.dispatch(["quota"])
+    assert env["ok"] is False
+    assert env["percent"] == 0.0
+
+
+def test_quota_degrades_when_the_binary_is_absent(monkeypatch):
+    """`quota` may not exist on a dev machine (it never does on this
+    Windows workstation) or may be missing on the box itself. This test
+    must not, and does not, depend on the real binary — subprocess.run
+    itself is replaced with something that raises FileNotFoundError, the
+    exact exception a missing executable produces."""
+    d = _load()
+    import subprocess
+    def fake_run(*a, **k):
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'quota'")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    env = d.dispatch(["quota"])
+    assert env["ok"] is False
+    assert env["percent"] == 0.0
+    assert "used_gb" in env and "total_gb" in env      # not just dispatch()'s generic catch
+
+
+def test_quota_raw_parses_real_quota_w_output(monkeypatch):
+    """Exercises the actual `quota -w` line-parsing (the seam every other
+    quota test here mocks past), against the exact sample line shape from
+    the spec: `/dev/sdaa1 2292465076  2929721344  2929721344 ...`."""
+    d = _load()
+    import subprocess
+    sample = (
+        "Disk quotas for user example (uid 1234):\n"
+        "     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace\n"
+        "     /dev/sdaa1 2292465076  2929721344  2929721344          185567       0       0\n"
+    )
+    class FakeProc:
+        stdout = sample
+        stderr = ""
+        returncode = 0
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeProc())
+    raw = d._quota_raw()
+    assert raw["used_gb"] == round(2292465076 / 1024 / 1024, 1)
+    assert raw["total_gb"] == round(2929721344 / 1024 / 1024, 1)
