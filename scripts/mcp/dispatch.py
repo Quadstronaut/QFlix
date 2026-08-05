@@ -377,6 +377,103 @@ VERBS["logs"] = VerbSpec(handler=_verb_logs, arity=1,
                          help="tail one app's log: logs <slug> [--tail N]")
 
 
+def _peek_one(slug: str) -> dict:
+    ok, doc, err = _run_mcp("arr_library_peek.py", ["--slug", slug, "--emit-json"], 45.0)
+    return doc if doc else {"slug": slug, "kind": "?", "titles": [],
+                            "ok": False, "error": err}
+
+
+def _usage_one(slug: str) -> dict:
+    ok, doc, err = _run_mcp("arr_disk_usage.py", ["--slug", slug, "--emit-json"], 45.0)
+    return doc if doc else {"slug": slug, "bytes": 0, "human": "0.0 B",
+                            "title_count": 0, "ok": False, "error": err}
+
+
+def _verb_starr(argv: List[str]) -> dict:
+    """All four *arr rows in ONE call — see the spec's round-trip note.
+
+    Exactly one _peek_one + one _usage_one per slug (8 subprocess calls
+    total, never 8 SSH handshakes). A dead instance is folded into the page
+    rather than taking it down: `ok` stays True so the page still renders,
+    the degraded slug(s) are named in `verdict`, and that instance's own
+    `ok: False` survives untouched inside `arrs[slug]` for the phone to
+    render as a per-row error state.
+    """
+    started = time.time()
+    arrs = {}
+    degraded = []
+    for slug in ARR_SLUGS:
+        p = _peek_one(slug)
+        u = _usage_one(slug)
+        arrs[slug] = {"peek": p, "usage": u}
+        if not p.get("ok") or not u.get("ok"):
+            degraded.append(slug)
+    env = envelope(
+        verb="starr", target=None, ok=True,
+        verdict="4 *arrs" if not degraded
+                else "4 *arrs, degraded: " + ", ".join(degraded),
+        lines=["%s %s %d titles" % (s, arrs[s]["usage"]["human"],
+                                    len(arrs[s]["peek"]["titles"]))
+               for s in ARR_SLUGS],
+        elapsed_s=time.time() - started)
+    env["arrs"] = arrs
+    return env
+
+
+def _quota_raw() -> dict:
+    """Disk headroom. `quota -w` is the authority on this shared seedbox;
+    df would report the whole array, not the slot.
+
+    DEVIATION from brief: the brief's Step 3 code let subprocess.run's
+    FileNotFoundError (quota not installed — true on every dev machine,
+    including this one) escape the function. dispatch()'s blanket handler
+    would still have caught it, but the resulting envelope would carry
+    verdict "quota failed: FileNotFoundError" with used_gb/total_gb/percent
+    all MISSING (envelope() would run, but _verb_quota's env.update() never
+    would) — from a caller's perspective the verb effectively raised, which
+    is exactly what "must degrade to ok=False rather than raising" rules
+    out. Also guards the numeric parse itself: a quota line with a
+    non-numeric blocks/quota field now falls back to the zero reading
+    instead of raising ValueError mid-loop.
+    """
+    import subprocess
+    used_kb = total_kb = 0.0
+    try:
+        proc = subprocess.run(["quota", "-w"], capture_output=True, text=True, timeout=15)
+    except Exception:
+        return {"used_gb": 0.0, "total_gb": 0.0}
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].startswith("/dev/"):
+            try:
+                used_kb, total_kb = float(parts[1]), float(parts[2])
+            except ValueError:
+                used_kb = total_kb = 0.0
+                continue
+            break
+    return {"used_gb": round(used_kb / 1024 / 1024, 1),
+            "total_gb": round(total_kb / 1024 / 1024, 1)}
+
+
+def _verb_quota(argv: List[str]) -> dict:
+    started = time.time()
+    raw = _quota_raw()
+    used, total = raw["used_gb"], raw["total_gb"]
+    pct = round(used / total * 100, 1) if total else 0.0
+    env = envelope(verb="quota", target=None, ok=total > 0,
+                   verdict="%.0f of %.0f GB used (%.1f%%)" % (used, total, pct)
+                           if total else "could not read quota",
+                   lines=[], elapsed_s=time.time() - started)
+    env.update({"used_gb": used, "total_gb": total, "percent": pct})
+    return env
+
+
+VERBS["starr"] = VerbSpec(handler=_verb_starr, arity=0,
+                          help="all four *arr rows (peek + disk) in one round trip")
+VERBS["quota"] = VerbSpec(handler=_verb_quota, arity=0,
+                          help="disk headroom for the Dashboard tile")
+
+
 def main() -> int:
     verb, args = parse_command(os.environ.get("SSH_ORIGINAL_COMMAND"))
     # argv beats the env var so the script is testable and hand-runnable.
