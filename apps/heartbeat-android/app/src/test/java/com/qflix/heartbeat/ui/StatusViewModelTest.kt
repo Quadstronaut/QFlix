@@ -34,13 +34,13 @@ class StatusViewModelTest {
             "app_status_live.json missing from test resources"
         }.bufferedReader().readText()
 
-    /** Returns queued results in order, one per [fetch] call - lets a test simulate retry-after-failure sequences. */
+    /** Returns queued results in order, one per [exec] call - lets a test simulate retry-after-failure sequences. */
     private class QueueTransport(private val results: MutableList<Result<String>>) : StatusTransport {
-        override suspend fun fetch(): Result<String> = results.removeAt(0)
+        override suspend fun exec(verb: String): Result<String> = results.removeAt(0)
     }
 
     /**
-     * A [StatusTransport] whose [fetch] suspends until [release] is called,
+     * A [StatusTransport] whose [exec] suspends until [release] is called,
      * counting how many times it was actually invoked. Used to prove
      * [StatusViewModel]'s re-entrancy guard collapses rapid-fire refresh()
      * calls into at most one in-flight transport call, instead of racing two
@@ -55,7 +55,7 @@ class StatusViewModelTest {
             gate.complete(Unit)
         }
 
-        override suspend fun fetch(): Result<String> {
+        override suspend fun exec(verb: String): Result<String> {
             callCount++
             gate.await()
             return result
@@ -95,7 +95,7 @@ class StatusViewModelTest {
         // A transport that suspends forever proves the ViewModel starts in
         // (and stays in) Loading until the fetch actually resolves.
         val hangingTransport = object : StatusTransport {
-            override suspend fun fetch(): Result<String> = suspendCancellableCoroutine { }
+            override suspend fun exec(verb: String): Result<String> = suspendCancellableCoroutine { }
         }
 
         val vm = StatusViewModel(hangingTransport)

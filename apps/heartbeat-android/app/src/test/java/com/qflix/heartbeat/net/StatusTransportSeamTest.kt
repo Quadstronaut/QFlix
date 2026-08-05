@@ -8,7 +8,8 @@ import org.junit.Test
 /**
  * Proves the [StatusTransport] seam itself: anything coded against the
  * interface can swap [SshFetcher] for [FakeTransport] and get a canned
- * result with zero network/provisioning setup.
+ * result with zero network/provisioning setup. Verb is irrelevant to the
+ * seam itself, so both tests exercise "status".
  */
 class StatusTransportSeamTest {
 
@@ -18,7 +19,7 @@ class StatusTransportSeamTest {
     fun `fake transport returns the canned JSON string unchanged`() = runBlocking {
         val transport: StatusTransport = FakeTransport(Result.success(canned))
 
-        val result = transport.fetch()
+        val result = transport.exec("status")
 
         assertTrue(result.isSuccess)
         assertEquals(canned, result.getOrThrow())
@@ -28,7 +29,7 @@ class StatusTransportSeamTest {
     fun `fake transport can also simulate failure without touching real transport`() = runBlocking {
         val transport: StatusTransport = FakeTransport(Result.failure(RuntimeException("offline")))
 
-        val result = transport.fetch()
+        val result = transport.exec("status")
 
         assertTrue(result.isFailure)
     }
