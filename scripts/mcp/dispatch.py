@@ -309,12 +309,47 @@ def _verb_search_wanted(argv: List[str]) -> dict:
     # missing.py's --slug is OPTIONAL there (omitted = fan out to all four
     # *arrs); passing it explicitly is what keeps this verb single-target.
     ok, doc, err = _run_mcp("missing.py", ["--slug", slug, "--emit-json"], 120.0)
-    return envelope(verb="arr.search_wanted", target=slug, ok=ok,
-                    verdict="wanted search queued on %s" % slug if ok
-                            else "search failed on %s" % slug,
+    # (C3) _run_mcp's `ok` only means "stdout parsed as JSON" — missing.py
+    # always exits 0 and reports the real outcome inside its own body, keyed
+    # per slug (verified by reading scripts/mcp/missing.py's run()):
+    # {"per_arr": {<slug>: {"status": "queued"|"failed", ...}}}. Without this
+    # check a red *arr ("status": "failed") still toasted "wanted search
+    # queued" — a false success the operator has no reason to doubt.
+    per_arr_status = (((doc or {}).get("per_arr") or {}).get(slug) or {}).get("status") if ok else None
+    success = ok and per_arr_status == "queued"
+    if success:
+        verdict = "wanted search queued on %s" % slug
+    elif ok:
+        verdict = "wanted search NOT queued on %s: %s" % (
+            slug, per_arr_status or "missing.py returned no per_arr entry for it")
+    else:
+        verdict = "search failed on %s: %s" % (slug, err or "could not reach missing.py")
+    return envelope(verb="arr.search_wanted", target=slug, ok=success,
+                    verdict=verdict,
                     lines=(json.dumps(doc, indent=2).splitlines() if doc
                            else err.splitlines()),
                     elapsed_s=time.time() - started)
+
+
+# (C3) unstick.py's real return shape, verified by reading scripts/mcp/
+# unstick.py: a top-level {"status": <str>, ...}, never a bare ok/fail flag.
+# Its refusals (_preflight) are always prefixed "refused-" (refused-arr-red,
+# refused-cap-hit, refused-unknown-slug), and every path that tried to act
+# but couldn't ends "-failed" (queue-fetch-failed, delete-failed,
+# qbit-login-failed, qbit-delete-failed, sab-delete-failed) or is
+# "sab-unreachable" / "no-hash-for-qbit-lookup" (no download client had
+# anything to act on and this verb never passes --hash, so the orphan
+# fallback can't look one up either). Everything else — deleted+blocklisted,
+# either dry-run variant, already-fully-removed, {qbit,sab}-orphan-removed —
+# means the queue item is confirmed gone, which is the actual promise this
+# verb makes.
+def _unstick_status_ok(status: Optional[str]) -> bool:
+    s = str(status or "")
+    if s.startswith("refused-") or s.endswith("-failed"):
+        return False
+    if s in ("sab-unreachable", "no-hash-for-qbit-lookup"):
+        return False
+    return True
 
 
 def _verb_unstick(argv: List[str]) -> dict:
@@ -326,9 +361,20 @@ def _verb_unstick(argv: List[str]) -> dict:
     ok, doc, err = _run_mcp(
         "unstick.py",
         ["--slug", slug, "--queue-id", str(queue_id), "--emit-json"], 90.0)
-    return envelope(verb="unstick", target=slug, ok=ok,
-                    verdict="unstuck %s queue item %s" % (slug, queue_id) if ok
-                            else "unstick failed on %s" % slug,
+    status = (doc or {}).get("status") if ok else None
+    success = ok and _unstick_status_ok(status)
+    if success:
+        verdict = "unstuck %s queue item %s (%s)" % (slug, queue_id, status)
+    elif ok:
+        # unstick.py ran and answered; its own status says nothing actually
+        # changed. Name that status verbatim so "unstuck" is never toasted
+        # for a refusal (this is the exact C3 failure: Sonarr down ->
+        # refused-arr-red -> the old code still said "unstuck").
+        verdict = "unstick did NOT act on %s queue item %s: %s" % (slug, queue_id, status)
+    else:
+        verdict = "unstick failed on %s: %s" % (slug, err or "could not reach unstick.py")
+    return envelope(verb="unstick", target=slug, ok=success,
+                    verdict=verdict,
                     lines=(json.dumps(doc, indent=2).splitlines() if doc
                            else err.splitlines()),
                     elapsed_s=time.time() - started)
