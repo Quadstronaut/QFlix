@@ -49,11 +49,19 @@ tools only — and refuses anything outside it *before* `logs.py` is invoked.
 This is the same posture as `STATUS_SECTIONS`: the phone cannot ask for the
 data, rather than being trusted not to display it.
 
-**Pre-existing exposure, not introduced here:** Heartbeat v2's forced command
-is `app-status.py` with no arguments, so the app already installed on the
-operator's phone receives `top5` today. Reminting the key onto the dispatcher
-(Task 9) is what actually closes that, because the dispatcher is the only
-caller that filters.
+**Pre-existing exposure — STILL OPEN, not closed by this work.** Heartbeat
+v2's forced command is `app_status.py` with no arguments, so the key already
+installed on the operator's phone receives `top5` — named members and their
+watch hours — every time it is used, today. An earlier draft of this passage
+claimed "reminting the key onto the dispatcher (Task 9)" closes that
+exposure. It does not: Task 9 ran under an explicit operator directive to be
+**additive only** (`scripts/configure/provision-admin-key.sh` never removes
+an existing `authorized_keys` entry), so the Heartbeat key was deliberately
+left in place, coexists with the new dispatcher key, and still works exactly
+as before. The new dispatcher key is clean — it is the only caller that
+filters `top5` out. Actually closing the exposure means retiring the
+Heartbeat key, which is a *deletion*, not an append, and awaits separate
+operator authorisation before anyone runs it.
 
 Any future verb that would surface member activity is a spec change, not an
 implementation detail.
