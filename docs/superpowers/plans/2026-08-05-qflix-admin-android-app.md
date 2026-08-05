@@ -26,6 +26,13 @@
 - **Existing seams stay:** `StatusTransport` remains the only network interface so tests and previews keep using `FakeTransport` with no device.
 - **Package rename is `com.qflix.heartbeat` → `com.qflix.admin`, label "QFlix Admin".** A changed `applicationId` means Android installs a NEW app; the old one is uninstalled separately, not upgraded.
 - **Module path stays `apps/heartbeat-android/`.** Renaming the directory churns the whole diff for no benefit; the app's identity lives in `applicationId` and `android:label`.
+- **Assertions come from `org.junit.Assert.*`, NOT `kotlin.test.*`.** This module has no
+  `kotlin-test` dependency (checked in `libs.versions.toml` and `build.gradle.kts`), so a
+  `kotlin.test` import fails at compile time with `Unresolved reference 'test'` — which is the
+  WRONG failure for a TDD step-2 check, since it never reaches the code under test. Every
+  existing test file in the repo uses JUnit assertions; match them.
+- **Run Gradle from PowerShell, not Git Bash.** Git Bash on this machine dies on the wrapper
+  with an `xargs` assertion failure. Use `.\gradlew.bat testDebugUnitTest --console=plain`.
 - Build/test from `apps/heartbeat-android/`: `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`.
 
 ## File Structure
@@ -63,9 +70,9 @@
 ```kotlin
 package com.qflix.heartbeat.model
 
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EnvelopeTest {
@@ -264,7 +271,9 @@ git commit -m "feat(app): rename to QFlix Admin (new applicationId installs as a
 ```kotlin
 package com.qflix.heartbeat.ui
 
-import kotlin.test.assertEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DestinationTest {
@@ -319,9 +328,10 @@ git commit -m "feat(app): hideable drawer over three destinations"
 package com.qflix.heartbeat.ui
 
 import com.qflix.heartbeat.net.FakeTransport
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ActionViewModelTest {
@@ -392,7 +402,9 @@ git commit -am "feat(app): action plumbing - refusal is an answer, not a failure
 ```kotlin
 package com.qflix.heartbeat.model
 
-import kotlin.test.assertEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AppRowTest {
@@ -448,9 +460,9 @@ git commit -am "feat(app): Apps screen - 24 rows with a visible class badge"
 ```kotlin
 package com.qflix.heartbeat.model
 
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StarrRowTest {
