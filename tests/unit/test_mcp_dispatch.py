@@ -314,6 +314,66 @@ def test_one_dead_arr_does_not_kill_the_page(monkeypatch):
     assert "radarr2" in env["verdict"]
 
 
+def test_starr_ok_is_false_only_when_every_instance_is_degraded(monkeypatch):
+    """(I5) A single dead *arr still renders a useful page (ok stays True,
+    covered by test_one_dead_arr_does_not_kill_the_page above). All four dead
+    is a real outage, not a success — this is the case that flag must catch,
+    while the `arrs` payload itself still survives with every row's own
+    ok:False intact for the phone to render."""
+    d = _load()
+    monkeypatch.setattr(
+        d, "_peek_one",
+        lambda slug: {"slug": slug, "kind": "?", "titles": [], "ok": False, "error": "down"})
+    monkeypatch.setattr(
+        d, "_usage_one",
+        lambda slug: {"slug": slug, "bytes": 0, "human": "0.0 B", "title_count": 0,
+                      "ok": False, "error": "down"})
+    env = d.dispatch(["starr"])
+    assert env["ok"] is False
+    assert "arrs" in env
+    assert sorted(env["arrs"]) == ["radarr", "radarr2", "sonarr", "sonarr2"]
+    for slug in ARRS:
+        assert env["arrs"][slug]["peek"]["ok"] is False
+
+
+def test_starr_survives_a_real_subprocess_timeout_without_losing_arrs(monkeypatch):
+    """(I3) handler-raise test: exercise the REAL _run_mcp seam, not a mocked
+    _peek_one/_usage_one, so subprocess.run itself raises TimeoutExpired —
+    reproducing the exact defect (a wedged *arr escaping to dispatch()'s
+    generic handler, which builds a bare 6-key envelope with no `arrs` key at
+    all). Must assert the EXTRAS survive, not merely that ok is False."""
+    d = _load()
+    import subprocess
+
+    def fake_run(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get("timeout", 45))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    env = d.dispatch(["starr"])
+    assert "arrs" in env, "the whole page's data was lost, not just the wedged slug's"
+    assert sorted(env["arrs"]) == ["radarr", "radarr2", "sonarr", "sonarr2"]
+    assert env["ok"] is False               # total outage: every slug timed out
+    for slug in ARRS:
+        assert env["arrs"][slug]["peek"]["ok"] is False
+        assert env["arrs"][slug]["usage"]["ok"] is False
+
+
+def test_status_survives_a_real_subprocess_timeout(monkeypatch):
+    """(I3) handler-raise test for _verb_status's own subprocess.run, the
+    other call site the finding named. Before the fix this escaped to
+    dispatch()'s generic exception handler; the envelope must still come
+    back well-formed with a verdict that names the real cause."""
+    d = _load()
+    import subprocess
+
+    def fake_run(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get("timeout", 30))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    env = d.dispatch(["status"])
+    assert set(env) == {"ok", "verb", "target", "verdict", "lines", "elapsed_s"}
+    assert env["ok"] is False
+    assert "timed out" in env["verdict"].lower()
+
+
 def test_starr_calls_each_script_exactly_once_per_slug(monkeypatch):
     """The whole reason `starr` is one verb: eight per-instance SSH round
     trips would defeat the point on a flaky mobile link. Assert the call
