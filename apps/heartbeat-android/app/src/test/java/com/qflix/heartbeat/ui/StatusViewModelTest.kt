@@ -34,6 +34,22 @@ class StatusViewModelTest {
             "app_status_live.json missing from test resources"
         }.bufferedReader().readText()
 
+    /**
+     * `status` now returns an [Envelope][com.qflix.heartbeat.model.Envelope],
+     * not a bare doc - wraps the live fixture's doc JSON the same way
+     * dispatch.py's `_verb_status` does (`env["doc"] = ...`), so every test
+     * below that scripts a successful status fetch exercises the real
+     * unwrap path rather than the pre-Task-7 shape.
+     */
+    private fun statusEnvelope(doc: String = readFixture()): String =
+        """{"ok":true,"verb":"status","target":null,"verdict":"status doc emitted",
+            "lines":[],"elapsed_s":0.0,"doc":$doc}"""
+
+    /** A successful `quota` verb envelope - used_gb/total_gb/percent live at the top level, not under `doc`. */
+    private fun quotaEnvelope(usedGb: Double = 2074.0, totalGb: Double = 2794.0, percent: Double = 74.2): String =
+        """{"ok":true,"verb":"quota","target":null,"verdict":"x","lines":[],"elapsed_s":0.0,
+            "used_gb":$usedGb,"total_gb":$totalGb,"percent":$percent}"""
+
     /** Returns queued results in order, one per [exec] call - lets a test simulate retry-after-failure sequences. */
     private class QueueTransport(private val results: MutableList<Result<String>>) : StatusTransport {
         override suspend fun exec(verb: String): Result<String> = results.removeAt(0)
@@ -74,12 +90,30 @@ class StatusViewModelTest {
 
     @Test
     fun `fetches on init and lands on Ready with the mapped dashboard`() = runTest {
-        val vm = StatusViewModel(FakeTransport(Result.success(readFixture())))
+        val vm = StatusViewModel(FakeTransport(Result.success(statusEnvelope())))
 
         val state = vm.uiState.value as StatusUiState.Ready
+        // No "quota" verb scripted on this single-verb FakeTransport, so the
+        // quota tile falls back to the doc's own quota.disk reading.
         val quota = state.dashboard.quota as SectionState.Ok
         assertEquals("2074 / 2794 GB", quota.data.diskLabel)
         assertFalse(vm.isRefreshing.value)
+    }
+
+    @Test
+    fun `the quota verb's reading overrides the doc's own disk figure`() = runTest {
+        val vm = StatusViewModel(
+            FakeTransport(
+                mapOf(
+                    "status" to Result.success(statusEnvelope()),
+                    "quota" to Result.success(quotaEnvelope(usedGb = 1800.0, totalGb = 2794.0, percent = 64.4)),
+                ),
+            ),
+        )
+
+        val state = vm.uiState.value as StatusUiState.Ready
+        val quota = state.dashboard.quota as SectionState.Ok
+        assertEquals("1800 / 2794 GB", quota.data.diskLabel)
     }
 
     @Test
@@ -108,7 +142,8 @@ class StatusViewModelTest {
         val transport = QueueTransport(
             mutableListOf(
                 Result.failure(IllegalStateException("offline")),
-                Result.success(readFixture()),
+                Result.success(statusEnvelope()),
+                Result.success(quotaEnvelope()),
             ),
         )
         val vm = StatusViewModel(transport)
@@ -123,8 +158,10 @@ class StatusViewModelTest {
     fun `refresh after a Ready state re-fetches and stays Ready with fresh data, toggling isRefreshing`() = runTest {
         val transport = QueueTransport(
             mutableListOf(
-                Result.success(readFixture()),
-                Result.success(readFixture()),
+                Result.success(statusEnvelope()),
+                Result.success(quotaEnvelope()),
+                Result.success(statusEnvelope()),
+                Result.success(quotaEnvelope()),
             ),
         )
         val vm = StatusViewModel(transport)
@@ -141,7 +178,8 @@ class StatusViewModelTest {
         val transport = QueueTransport(
             mutableListOf(
                 Result.failure(IllegalStateException("offline")),
-                Result.success(readFixture()),
+                Result.success(statusEnvelope()),
+                Result.success(quotaEnvelope()),
             ),
         )
         val vm = StatusViewModel(transport)
@@ -156,8 +194,12 @@ class StatusViewModelTest {
     fun `two rapid refresh calls collapse into a single in-flight transport fetch`() = runTest {
         // The transport gates on the very first fetch (init's own load()) so
         // this also proves the guard covers "initial load included", not
-        // just refresh-after-Ready.
-        val transport = GatedTransport(Result.success(readFixture()))
+        // just refresh-after-Ready. GatedTransport answers every verb with
+        // the same scripted result, so once the gate opens the pending
+        // `status` call resolves, then the ensuing `quota` call resolves
+        // immediately too (the gate stays completed) - one fetch is 2 calls
+        // now, not 1, which is what the final assertion below checks for.
+        val transport = GatedTransport(Result.success(statusEnvelope()))
         val vm = StatusViewModel(transport)
         assertEquals(1, transport.callCount)
         assertTrue("still loading until the gate is released", vm.uiState.value is StatusUiState.Loading)
@@ -171,6 +213,6 @@ class StatusViewModelTest {
         transport.release()
 
         assertTrue(vm.uiState.value is StatusUiState.Ready)
-        assertEquals(1, transport.callCount)
+        assertEquals(2, transport.callCount)
     }
 }
