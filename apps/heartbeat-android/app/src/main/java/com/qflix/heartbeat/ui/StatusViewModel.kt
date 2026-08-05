@@ -20,7 +20,7 @@ import kotlinx.coroutines.launch
  *  - [Ready]: last fetch succeeded; [fetchedAt] backs the "data age" clock
  *    that A2's [ViewState.dataAge] renders relative to "now".
  *  - [Error]: last fetch failed (unreachable host, not provisioned, bad
- *    auth, malformed JSON - [StatusTransport.fetch] never throws, so this
+ *    auth, malformed JSON - [StatusTransport.exec] never throws, so this
  *    covers every failure mode). [retry] re-runs the fetch without the UI
  *    needing a reference to the ViewModel itself.
  */
@@ -50,7 +50,7 @@ class StatusViewModel(private val transport: StatusTransport) : ViewModel() {
 
     // Tracks the single in-flight fetch (initial load, retry, or refresh) so
     // a double-tap on the refresh icon / a fast double pull-to-refresh can't
-    // launch two concurrent transport.fetch() calls. Without this, whichever
+    // launch two concurrent transport.exec() calls. Without this, whichever
     // SSH session finishes second wins the final _uiState write - which can
     // silently regress the dashboard to older data if it happens to be the
     // earlier-triggered (slower) one. Only one fetch may be in flight at a
@@ -91,7 +91,7 @@ class StatusViewModel(private val transport: StatusTransport) : ViewModel() {
     }
 
     private suspend fun fetchAndPublish() {
-        transport.fetch()
+        transport.exec("status")
             .mapCatching { raw -> ViewState.from(StatusDoc.parse(raw), Instant.now()) }
             .fold(
                 onSuccess = { dashboard -> _uiState.value = StatusUiState.Ready(dashboard, Instant.now()) },

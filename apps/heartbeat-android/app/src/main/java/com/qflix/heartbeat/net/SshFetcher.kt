@@ -15,9 +15,9 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider
  * [StatusTransport] backed by a real SSH connection to the seedbox.
  *
  * Every credential comes from the provisioning bundle in app-private storage
- * (see [Provisioning]) — nothing is baked into the APK. The server's
- * `authorized_keys` entry forces the `status` command regardless of what we
- * exec, so this class is read-only by construction, not just by convention.
+ * (see [Provisioning]) — nothing is baked into the APK. The server's forced
+ * command now routes on the exec string instead of ignoring it, so [exec]
+ * threads the requested verb all the way to the wire.
  *
  * Host key checking is a strict pin, not trust-on-first-use: [knownHostFile]
  * holds exactly one `ssh-keyscan`-captured line, and sshj's
@@ -26,7 +26,7 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider
  */
 class SshFetcher(private val filesDir: File) : StatusTransport {
 
-    override suspend fun fetch(): Result<String> = withContext(Dispatchers.IO) {
+    override suspend fun exec(verb: String): Result<String> = withContext(Dispatchers.IO) {
         if (!Provisioning.isProvisioned(filesDir)) {
             return@withContext Result.failure(
                 IllegalStateException(
@@ -38,12 +38,12 @@ class SshFetcher(private val filesDir: File) : StatusTransport {
         runCatching {
             val config = Provisioning.loadConfig(filesDir)
             ensureBouncyCastleProvider()
-            connectAndFetch(config)
+            connectAndFetch(config, verb)
         }
     }
 
     /** Blocking; must run off the main thread (see [Dispatchers.IO] above). */
-    private fun connectAndFetch(config: ProvisionConfig): String {
+    private fun connectAndFetch(config: ProvisionConfig, verb: String): String {
         // AndroidConfig (not DefaultConfig) is required on Android per the
         // sshj FAQ — it swaps in key/algorithm defaults that work against
         // Android's stock provider stack instead of a desktop JVM's.
@@ -59,9 +59,9 @@ class SshFetcher(private val filesDir: File) : StatusTransport {
 
             val session = ssh.startSession()
             try {
-                // The server's forced command overrides whatever we exec —
-                // "status" documents intent, nothing more.
-                val cmd = session.exec("status")
+                // The forced command routes on this; before the dispatcher
+                // landed it was ignored, so this string was decorative.
+                val cmd = session.exec(verb)
                 val output = IOUtils.readFully(cmd.inputStream).toString()
                 cmd.join(TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS)
                 output
