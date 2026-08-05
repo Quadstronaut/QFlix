@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import com.qflix.heartbeat.net.Provisioning
 import com.qflix.heartbeat.net.SshFetcher
 import com.qflix.heartbeat.ui.ActionViewModel
 import com.qflix.heartbeat.ui.AdminScaffold
@@ -32,6 +33,18 @@ class MainActivity : ComponentActivity() {
         ActionViewModel.factory(transport)
     }
 
+    // The SAME FQDN the SSH transport above already connects to, read from
+    // the same provisioning bundle - never hardcoded, never a second secret.
+    // StarrScreen's "Open in browser" button reuses it (Ultra.cc reverse-
+    // proxies every app's web UI at https://<host>/<slug>/ off this one
+    // host). Null when the device isn't provisioned yet; the button disables
+    // itself rather than guessing a URL - see StarrScreen's kdoc.
+    private val provisionedHost: String? by lazy {
+        runCatching {
+            if (Provisioning.isProvisioned(filesDir)) Provisioning.loadConfig(filesDir).host else null
+        }.getOrNull()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -48,7 +61,12 @@ class MainActivity : ComponentActivity() {
                 // it routes to DashboardScreen, the real AppsScreen (Task 5),
                 // and (Task 6) stARR instead of this Activity going straight
                 // to DashboardScreen itself.
-                AdminScaffold(viewModel = viewModel, actionViewModel = actionViewModel, transport = transport)
+                AdminScaffold(
+                    viewModel = viewModel,
+                    actionViewModel = actionViewModel,
+                    transport = transport,
+                    host = provisionedHost,
+                )
             }
         }
     }
