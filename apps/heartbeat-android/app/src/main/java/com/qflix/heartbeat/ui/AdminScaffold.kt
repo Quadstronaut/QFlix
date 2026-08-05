@@ -26,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.qflix.heartbeat.net.StatusTransport
 import kotlinx.coroutines.launch
 
 /**
@@ -52,13 +53,13 @@ enum class Destination(val label: String) {
  * from Android reclaiming memory) reopens on the same page instead of
  * silently bouncing the operator back to Dashboard.
  *
- * [AppsScreen] and [StarrScreen] are placeholders here - Tasks 5 and 6 build
- * their real content (lifecycle actions, *arr peek/search/disk). This task
- * only needs the drawer to be navigable to all three.
+ * [AppsScreen] is Task 5's real 24-row lifecycle list. [StarrScreen] is
+ * still a placeholder - Task 6 builds its real content (*arr peek/search/
+ * disk).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AdminScaffold(viewModel: StatusViewModel) {
+fun AdminScaffold(viewModel: StatusViewModel, actionViewModel: ActionViewModel, transport: StatusTransport) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var selected by rememberSaveable { mutableStateOf(Destination.DASHBOARD) }
@@ -96,23 +97,11 @@ fun AdminScaffold(viewModel: StatusViewModel) {
             Box(Modifier.padding(innerPadding)) {
                 when (selected) {
                     Destination.DASHBOARD -> DashboardScreen(viewModel = viewModel)
-                    Destination.APPS -> AppsScreen()
+                    Destination.APPS -> AppsScreen(transport = transport, actionViewModel = actionViewModel)
                     Destination.STARR -> StarrScreen()
                 }
             }
         }
-    }
-}
-
-/**
- * Placeholder only - Task 5 replaces this with the real 24-row lifecycle
- * list (slug + UCC/systemd class badge + start/stop/restart). Existing here
- * solely so the drawer added in this task has somewhere to route to.
- */
-@Composable
-fun AppsScreen() {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("Apps", style = MaterialTheme.typography.headlineSmall)
     }
 }
 
