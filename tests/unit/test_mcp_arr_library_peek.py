@@ -101,9 +101,17 @@ def test_a_title_entry_carries_exactly_four_keys_and_no_others():
     """The vocabulary test is a tripwire for KNOWN bad words; this is the
     actual guarantee. A future edit that passed the raw *arr record through
     would add dozens of keys and fail here even if none of them happened to
-    contain 'watch' or 'view'."""
+    contain 'watch' or 'view'.
+
+    BOTH branches are checked: peek() builds a separate dict literal for
+    series and for movies, so they can drift independently — a reviewer
+    confirmed a movie-branch-only regression went undetected when this test
+    covered series alone.
+    """
     m = _load()
-    out = m.peek("sonarr", client=FakeSonarr())
-    assert out["titles"], "fixture must produce at least one title"
-    for entry in out["titles"]:
-        assert set(entry) == {"title", "have", "total", "complete"}, sorted(entry)
+    for slug, fake in (("sonarr", FakeSonarr()), ("radarr", FakeRadarr())):
+        out = m.peek(slug, client=fake)
+        assert out["titles"], "%s fixture must produce at least one title" % slug
+        for entry in out["titles"]:
+            assert set(entry) == {"title", "have", "total", "complete"}, \
+                (slug, sorted(entry))
