@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import com.qflix.heartbeat.net.SshFetcher
+import com.qflix.heartbeat.ui.ActionViewModel
 import com.qflix.heartbeat.ui.AdminScaffold
 import com.qflix.heartbeat.ui.StatusViewModel
 import com.qflix.heartbeat.ui.theme.HeartbeatTheme
@@ -16,9 +17,19 @@ class MainActivity : ComponentActivity() {
 
     // SshFetcher is the only production StatusTransport - filesDir is where
     // provision.ps1 (A3) drops the key bundle. Swapped for FakeTransport in
-    // tests/previews via the same StatusViewModel.factory() seam.
+    // tests/previews via the StatusViewModel/ActionViewModel factory() seams.
+    // One instance is shared across both ViewModels (and AppsScreen's own
+    // app.list load, passed through AdminScaffold) - SshFetcher opens and
+    // closes its own SSH session per exec() call, so it holds no state that
+    // would need isolating per consumer.
+    private val transport by lazy { SshFetcher(filesDir) }
+
     private val viewModel: StatusViewModel by viewModels {
-        StatusViewModel.factory(SshFetcher(filesDir))
+        StatusViewModel.factory(transport)
+    }
+
+    private val actionViewModel: ActionViewModel by viewModels {
+        ActionViewModel.factory(transport)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -34,10 +45,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             HeartbeatTheme {
                 // Task 3: the drawer shell now owns top-level navigation;
-                // it routes to DashboardScreen (and, from Tasks 5/6, the
-                // Apps and stARR screens) instead of this Activity going
-                // straight to DashboardScreen itself.
-                AdminScaffold(viewModel = viewModel)
+                // it routes to DashboardScreen, the real AppsScreen (Task 5),
+                // and (Task 6) stARR instead of this Activity going straight
+                // to DashboardScreen itself.
+                AdminScaffold(viewModel = viewModel, actionViewModel = actionViewModel, transport = transport)
             }
         }
     }
