@@ -8,7 +8,7 @@ import org.junit.rules.TemporaryFolder
 
 /**
  * No network in these tests — only the "not provisioned" path is exercised,
- * which [SshFetcher.fetch] must short-circuit before it ever touches sshj.
+ * which [SshFetcher.exec] must short-circuit before it ever touches sshj.
  * That keeps this test running on the plain JVM (no Android device/emulator,
  * no BouncyCastle/AndroidConfig involved) while still proving the class
  * degrades to [Result.failure] instead of throwing.
@@ -23,7 +23,7 @@ class SshFetcherTest {
         val filesDir = tmp.newFolder("empty-files-dir")
         val fetcher = SshFetcher(filesDir)
 
-        val result = fetcher.fetch()
+        val result = fetcher.exec("status")
 
         assertTrue(result.isFailure)
         assertTrue(result.exceptionOrNull() is IllegalStateException)
@@ -39,7 +39,7 @@ class SshFetcherTest {
         // phone_key and known_host still missing.
         val fetcher = SshFetcher(filesDir)
 
-        val result = fetcher.fetch()
+        val result = fetcher.exec("status")
 
         assertTrue(result.isFailure)
     }
