@@ -22,11 +22,17 @@
 # authorized_keys and losing all SSH access. Mitigations, in order:
 #   1. Hold an existing SSH session open in another terminal for the whole run.
 #      If anything goes wrong that session is the only way back in.
-#   2. A timestamped backup is taken before the append.
+#   2. A timestamped backup is taken before the append, and verified to exist
+#      and be non-empty before the append is allowed to proceed — an empty or
+#      missing backup (e.g. `cp -p` failing under ENOSPC, which this box runs
+#      close to at ~78% quota) would otherwise leave "restore from backup"
+#      pointing at nothing.
 #   3. The append is verified: line count must rise by exactly one, and the
 #      pre-existing lines must hash identically afterwards.
 #   4. ssh-keygen -l must report exactly one more valid key than before.
-# Any of those failing aborts before the key is trusted.
+# Any of those failing (2-4) RESTORES authorized_keys from the step-2 backup
+# and exits non-zero — the invariants gate the live file, not only whether the
+# new key gets trusted. A caught failure does not leave the file mutated.
 #
 # The existing Heartbeat key (forced to app_status.py) is left ALONE. Both keys
 # coexist: the old phone app keeps working while the new dispatcher surface is
@@ -91,27 +97,54 @@ fi
 ssh-keygen -t ed25519 -N '' -C 'qflix-admin-phone' -f "$KEY" >/dev/null
 PUB=$(cat "$KEY.pub")
 
-# --- 3. backup, append ONE line, verify additively
+# --- 3. backup, append ONE line, verify additively (and self-heal on failure)
 echo "==> appending (backup first, one line, no rewrite)"
 ssh "$BOX" "PUB='$PUB' OPTS='$REMOTE_CMD' bash -s" <<'REMOTE'
 set -u
 AK=~/.ssh/authorized_keys
+BAK="$AK.bak-preadmin-$(date -u +%Y%m%dT%H%M%SZ)"
+
+# (I1) Take the backup and CONFIRM it landed before trusting it as a restore
+# path. `cp -p` failing (ENOSPC is live on this box) would otherwise leave
+# every "RESTORE FROM BACKUP" message below pointing at nothing.
+cp -p "$AK" "$BAK"
+[ -s "$BAK" ] || { echo "backup $BAK is missing or empty - ABORTING before any append" >&2; exit 1; }
+
+restore_and_exit() {
+  cp -p "$BAK" "$AK"
+  echo "  RESTORED $AK from $BAK - live file is unchanged from before this run" >&2
+  echo "$1" >&2
+  exit 1
+}
+
+# (I1) `wc -l` counts NEWLINE CHARACTERS, not lines: an authorized_keys file
+# whose last key has no trailing newline reports one line short. The append
+# below would then land on the SAME line as that last key — concatenating the
+# new entry into the old key's comment field instead of adding its own line.
+# Normalize BEFORE computing PRE_LINES so the invariants below measure the
+# same file shape they append to, rather than reacting after the fact.
+if [ -s "$AK" ] && [ "$(tail -c1 "$AK" | wc -l)" -eq 0 ]; then
+  printf '\n' >> "$AK"
+fi
+
 PRE_LINES=$(wc -l < "$AK")
 PRE_HEAD=$(sha256sum < "$AK" | cut -d' ' -f1)
 PRE_KEYS=$(ssh-keygen -l -f "$AK" 2>/dev/null | wc -l)
-cp -p "$AK" "$AK.bak-preadmin-$(date -u +%Y%m%dT%H%M%SZ)"
 
 printf '%s %s\n' "$OPTS" "$PUB" >> "$AK"
 
 POST_LINES=$(wc -l < "$AK")
 POST_HEAD=$(head -n "$PRE_LINES" "$AK" | sha256sum | cut -d' ' -f1)
 POST_KEYS=$(ssh-keygen -l -f "$AK" 2>/dev/null | wc -l)
-[ $((POST_LINES - PRE_LINES)) -eq 1 ] || { echo "line delta != 1 - RESTORE FROM BACKUP" >&2; exit 1; }
-[ "$PRE_HEAD" = "$POST_HEAD" ] || { echo "existing lines CHANGED - RESTORE FROM BACKUP" >&2; exit 1; }
-[ $((POST_KEYS - PRE_KEYS)) -eq 1 ] || { echo "valid-key delta != 1 - RESTORE FROM BACKUP" >&2; exit 1; }
+# (I1) Any invariant failing below now RESTORES the live file from the
+# verified backup instead of just printing an instruction and exiting with
+# the mutated file still in place.
+[ $((POST_LINES - PRE_LINES)) -eq 1 ] || restore_and_exit "line delta != 1"
+[ "$PRE_HEAD" = "$POST_HEAD" ] || restore_and_exit "existing lines CHANGED"
+[ $((POST_KEYS - PRE_KEYS)) -eq 1 ] || restore_and_exit "valid-key delta != 1"
 echo "  lines $PRE_LINES -> $POST_LINES, prior lines unchanged, keys $PRE_KEYS -> $POST_KEYS"
 REMOTE
-[ $? -eq 0 ] || { echo "append verification failed - see message above" >&2; exit 1; }
+[ $? -eq 0 ] || { echo "append verification failed - see message above (file was restored if it got that far)" >&2; exit 1; }
 
 # --- 4. prove the new key works before anyone relies on it
 echo "==> verifying the new key on a fresh connection"
