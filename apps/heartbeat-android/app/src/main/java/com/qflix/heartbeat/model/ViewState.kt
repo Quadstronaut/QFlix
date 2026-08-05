@@ -41,6 +41,17 @@ data class QuotaView(
     val bandwidthLabel: String,
 )
 
+/**
+ * One reading from the standalone `quota` verb (`used_gb`/`total_gb`/
+ * `percent` - dispatch.py's `_verb_quota`, backed by `quota -w`, the
+ * authority on this shared seedbox's disk headroom). Passed into
+ * [ViewState.from] so the disk figure has exactly ONE owner: when present,
+ * it replaces the status doc's own `quota.disk` reading rather than the app
+ * showing two numbers, from two different collectors, for the same fact.
+ * Bandwidth has no equivalent verb, so it still comes from the doc.
+ */
+data class QuotaTileReading(val usedGb: Double, val totalGb: Double, val percent: Double)
+
 data class KumaView(
     val summary: String,
     val red: List<KumaRedView>,
@@ -82,9 +93,9 @@ data class MaintView(
 /** Pure StatusDoc -> DashboardState mapping. No I/O, no Android types - trivially unit-testable. */
 object ViewState {
 
-    fun from(doc: StatusDoc, now: Instant): DashboardState = DashboardState(
+    fun from(doc: StatusDoc, now: Instant, quotaOverride: QuotaTileReading? = null): DashboardState = DashboardState(
         dataAge = dataAge(doc.meta?.generatedAt, now),
-        quota = mapQuota(doc.quota),
+        quota = mapQuota(doc.quota, quotaOverride),
         kuma = mapKuma(doc.kuma),
         streams = mapStreams(doc.streams),
         top5 = mapTop5(doc.top5),
@@ -120,18 +131,38 @@ object ViewState {
     }
 
     // ---- quota: disk + bandwidth bars ----
+    //
+    // [QuotaTileReading] (from the standalone `quota` verb) takes over the
+    // DISK reading whenever it's present, regardless of the status doc's own
+    // quota.ok - "one owner" means the verb's number wins outright, not that
+    // it merely fills a gap. Bandwidth has no verb equivalent, so it always
+    // comes from the doc's section (Missing/SectionError there is unaffected
+    // by whether a quota-verb reading exists).
 
-    private fun mapQuota(section: QuotaSection?): SectionState<QuotaView> = when {
-        section == null -> SectionState.Missing
-        !section.ok -> SectionState.SectionError(section.error ?: "quota unavailable")
-        else -> SectionState.Ok(
-            QuotaView(
-                diskPct = section.disk?.pct ?: 0.0,
-                diskLabel = diskLabel(section.disk?.usedGb ?: 0.0, section.disk?.totalGb ?: 0.0),
-                bandwidthUsedPct = section.bandwidth?.usedPct ?: 0.0,
-                bandwidthLabel = bandwidthLabel(section.bandwidth?.usedPct ?: 0.0, section.bandwidth?.nextReset),
-            ),
-        )
+    private fun mapQuota(section: QuotaSection?, override: QuotaTileReading?): SectionState<QuotaView> {
+        if (override != null) {
+            val bandwidthPct = section?.bandwidth?.usedPct ?: 0.0
+            return SectionState.Ok(
+                QuotaView(
+                    diskPct = override.percent,
+                    diskLabel = diskLabel(override.usedGb, override.totalGb),
+                    bandwidthUsedPct = bandwidthPct,
+                    bandwidthLabel = bandwidthLabel(bandwidthPct, section?.bandwidth?.nextReset),
+                ),
+            )
+        }
+        return when {
+            section == null -> SectionState.Missing
+            !section.ok -> SectionState.SectionError(section.error ?: "quota unavailable")
+            else -> SectionState.Ok(
+                QuotaView(
+                    diskPct = section.disk?.pct ?: 0.0,
+                    diskLabel = diskLabel(section.disk?.usedGb ?: 0.0, section.disk?.totalGb ?: 0.0),
+                    bandwidthUsedPct = section.bandwidth?.usedPct ?: 0.0,
+                    bandwidthLabel = bandwidthLabel(section.bandwidth?.usedPct ?: 0.0, section.bandwidth?.nextReset),
+                ),
+            )
+        }
     }
 
     /** "2073 / 2794 GB" - whole numbers print bare, fractional GB keeps one decimal. */
@@ -155,6 +186,17 @@ object ViewState {
     }
 
     // ---- kuma ----
+    //
+    // Reds first (v2): app_status.py's `red` array (see parse_kuma_rows) is
+    // ALREADY filtered down to monitors currently DOWN - there is no "up"
+    // entry mixed in for this sort to filter out. What it does NOT guarantee
+    // is a stable, meaningful ORDER: it arrives in whatever order the Kuma DB
+    // query happened to return, which can be arbitrary and can shuffle
+    // between refreshes even when the same monitors are still down. Sorting
+    // by `since` ascending pins the longest-outstanding red to the top and
+    // keeps the list's order deterministic across refreshes - the concrete,
+    // testable form "pin DOWN monitors to the top" takes given a field that
+    // is already all-down.
 
     private fun mapKuma(section: KumaSection?): SectionState<KumaView> = when {
         section == null -> SectionState.Missing
@@ -162,7 +204,9 @@ object ViewState {
         else -> SectionState.Ok(
             KumaView(
                 summary = "${section.up ?: 0}/${section.total ?: 0} up",
-                red = section.red.map { KumaRedView(it.name ?: "", it.msg ?: "", it.since ?: "") },
+                red = section.red
+                    .map { KumaRedView(it.name ?: "", it.msg ?: "", it.since ?: "") }
+                    .sortedBy { it.since },
             ),
         )
     }
