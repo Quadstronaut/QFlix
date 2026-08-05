@@ -132,6 +132,21 @@ never asked to carry an unbounded log. `verdict` is always a single human
 sentence — it is what the toast shows; `lines` is what the expandable panel
 shows. This satisfies "verdict + last lines on demand."
 
+**Extra top-level keys (I5).** The six keys above are the only ones every
+verb guarantees. Three verbs attach additional keys beyond that base
+envelope, and the contract differs per verb — a client cannot write one rule
+for all three:
+
+| Verb | Extra key(s) | Attached when | Meaning of the verb's own `ok` |
+|---|---|---|---|
+| `quota` | `used_gb`, `total_gb`, `percent` | always | `ok` reflects whether a real quota reading was obtained (`total_gb > 0`) |
+| `status` | `doc` | only when `ok` is `true` | `ok` reflects whether `app_status.py` produced a usable document at all |
+| `starr` | `arrs` | always | `ok` is `true` unless **every** *arr instance is degraded (a total outage); a partial degrade still renders with `ok: true` and the affected slug(s) named in `verdict`, with that instance's own `arrs[slug].{peek,usage}.ok: false` intact for a per-row error state |
+
+A client reading `env.doc` or `env.arrs` unconditionally must still guard for
+the verb's documented attach condition — `status` in particular omits `doc`
+on failure, including a timed-out `app_status.py`, by design.
+
 **Verb table.** An unknown verb is an error with the full verb list in `lines`,
 so the app can never silently no-op.
 
