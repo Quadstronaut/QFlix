@@ -374,6 +374,37 @@ def test_quota_degrades_when_the_binary_is_absent(monkeypatch):
     assert "used_gb" in env and "total_gb" in env      # not just dispatch()'s generic catch
 
 
+def test_app_list_reads_the_manifest_from_manitoba_manifest_env_not_a_hardcoded_path(
+    monkeypatch, tmp_path
+):
+    """Guards the production defect found in box smoke-testing: _load_manifest
+    used to hardcode HERE.parent.parent / "manifest" / "apps.yaml", which
+    resolves to <repo>/manifest/apps.yaml on the workstation (HERE = .../scripts/
+    /mcp) but to ~/manifest/apps.yaml on the box (HERE = ~/scripts/mcp) — a path
+    that does not exist there, so app.list came back ok=False with a
+    ManifestError. The fix routes through lib.cli._manifest_path(), whose first
+    step honours $MANITOBA_MANIFEST. Point that env var at a throwaway
+    single-app manifest (nothing like the real 24-app one) and confirm app.list
+    reflects THAT file. If _load_manifest ever reverts to a hardcoded
+    repo-relative path, this env var is ignored, the real repo manifest (24
+    lifecycle apps) is read instead, and the assertion below goes red."""
+    d = _load()
+    throwaway = tmp_path / "throwaway-apps.yaml"
+    throwaway.write_text(
+        "apps:\n"
+        "  probe-app:\n"
+        "    class: systemd\n"
+        "    kuma_monitor: null\n"
+        "    health:\n"
+        "      kind: systemd_only\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MANITOBA_MANIFEST", str(throwaway))
+    env = d.dispatch(["app.list"])
+    assert env["ok"] is True
+    assert env["lines"] == ["probe-app systemd"]
+
+
 def test_quota_raw_parses_real_quota_w_output(monkeypatch):
     """Exercises the actual `quota -w` line-parsing (the seam every other
     quota test here mocks past), against the exact sample line shape from

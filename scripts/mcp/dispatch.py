@@ -115,12 +115,18 @@ def dispatch(argv: List[str]) -> dict:
 
 
 LIFECYCLE_CLASSES = ("ucc", "systemd")
-_MANIFEST_PATH = HERE.parent.parent / "manifest" / "apps.yaml"
 
 
 def _load_manifest():
+    # Reuse lib.cli's resolver rather than recomputing a path here. It is the
+    # canonical 3-step resolution ($MANITOBA_MANIFEST -> ~/.opt/maint/apps.yaml
+    # -> repo fallback) that the working maint CLI already uses. A second copy
+    # here would be two policy surfaces for one fact, and the first version of
+    # this function hardcoded a repo-relative path that resolved to
+    # ~/manifest/apps.yaml on the box and broke app.list in production.
     from lib import manifest as manifest_mod
-    return manifest_mod.load(_MANIFEST_PATH)
+    from lib.cli import _manifest_path
+    return manifest_mod.load(_manifest_path())
 
 
 def _verb_app_list(argv: List[str]) -> dict:
