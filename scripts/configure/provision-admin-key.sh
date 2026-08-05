@@ -33,7 +33,18 @@
 # tested. Retiring the old entry is a later, separate decision.
 set -uo pipefail
 
-BOX="${QFLIX_BOX:-$(cat "$(dirname "$0")/../../secrets/seedbox.ssh-host" 2>/dev/null)}"
+# Canonical host resolution (C2 fix). scripts/lib/ssh.sh is the one place in
+# this repo that turns the bare FQDN in secrets/seedbox.ssh-host into a real
+# SSH target by prefixing the operator's username — every other SSH caller in
+# the repo goes through it. This script used to `cat` that file directly and
+# skip the prefixing, so on a no-env-var run every ssh/scp below connected as
+# the LOCAL username instead of the operator's — on Ultra.cc a wrong-user
+# guess trips fail2ban, which also kills the tunnel: a lockout from the very
+# script that exists to protect access. QFLIX_BOX still overrides it entirely
+# for anyone who wants a different target.
+# shellcheck source=../lib/ssh.sh
+source "$(dirname "$0")/../lib/ssh.sh"
+BOX="${QFLIX_BOX:-$SSHM_HOST}"
 KEYDIR="${KEYDIR:-./.admin-key}"
 KEY="$KEYDIR/qflix-admin"
 REMOTE_CMD='command="python3 /home/'"${BOX%%@*}"'/scripts/mcp/dispatch.py",restrict'
@@ -41,6 +52,18 @@ REMOTE_CMD='command="python3 /home/'"${BOX%%@*}"'/scripts/mcp/dispatch.py",restr
 if [ -z "$BOX" ]; then
   echo "no host: set QFLIX_BOX or create secrets/seedbox.ssh-host" >&2; exit 2
 fi
+
+# Defense in depth: whatever produced $BOX, refuse to proceed without a
+# user@host shape. A bare FQDN here means every ssh/scp below would connect
+# as the wrong user (see above), AND `${BOX%%@*}` in REMOTE_CMD would return
+# the WHOLE STRING (no "@" to split on) instead of a username — the forced
+# command would then point at /home/<fqdn>/scripts/mcp/dispatch.py, a path
+# that cannot exist, and step 4's smoke test (which uses `~/`) would not
+# catch it before the key is appended.
+case "$BOX" in
+  *@*) ;;
+  *) echo "BOX must be user@host - got '$BOX' (secrets/seedbox.ssh-host holds the FQDN only)" >&2; exit 2 ;;
+esac
 
 if [ "${1:-}" = "--check" ]; then
   echo "existing qflix-admin-phone entries on the box:"
