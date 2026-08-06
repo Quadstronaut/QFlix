@@ -142,6 +142,14 @@ def test_rules_match_their_canonical_log_lines(ledgers):
          "line (error: -1)"),
         ("plex-unknown-metadata-type-folder",
          "ERROR - [Req#5d3] Unknown metadata type: folder"),
+        # 2026-08-06. The REA alert line verbatim. Note the repo path is
+        # capitalised "Bazarr" upstream while the rx spells it lowercase — the
+        # (?i) flag is load-bearing here, so this case pins it.
+        ("bazarr-github-release-check-ratelimit",
+         "Error trying to get releases from Github. Http error. "
+         "requests.exceptions.HTTPError: 403 Client Error: rate limit exceeded "
+         "for url: https://api.github.com/repos/morpheus65535/Bazarr/releases"
+         "?per_page=100"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -212,6 +220,24 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
         by["arr-release-rejected-unknown-title"],
         "arr:db-locked The release was rejected with [Permanent] Unknown Series. "
         "|Error|SeriesService|database is locked")
+
+    # 2026-08-06. The Bazarr update-check rule is anchored to the Bazarr repo
+    # URL, NOT to "rate limit exceeded" or to api.github.com generally, because
+    # the cosmetic argument is specific to that consumer: Bazarr runs
+    # --no-update, so its release list is display-only. QFlix's OWN GitHub
+    # callers (the lifecycle resolver, Tuesday.md:73) have no such exemption —
+    # a silent rate-limit there really does degrade version resolution — so
+    # every other GitHub 403 must still page.
+    rl = by["bazarr-github-release-check-ratelimit"]
+    for still_pages in (
+            "403 Client Error: rate limit exceeded for url: "
+            "https://api.github.com/repos/Radarr/Radarr/releases/latest",
+            "403 Client Error: rate limit exceeded for url: "
+            "https://api.github.com/rate_limit",
+            "403 Client Error: rate limit exceeded for url: "
+            "https://api.github.com/repos/morpheus65535/Bazarr/issues"):
+        assert not re.search(rl, still_pages), (
+            "a non-Bazarr-release GitHub rate-limit must still page: " + still_pages)
 
     # The structural backstop: fires only when the excerpt has an *arr |Debug|
     # token and NO error-level token anywhere in it. The guard must span every
