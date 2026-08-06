@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - Bazarr ingest integrity (dangling language profile / stalled *arr sync)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push bazarr-ingest
+StandardOutput=journal
+StandardError=journal

@@ -184,6 +184,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.timer \
     scripts/maint/systemd/manitoba-maint-canary-sab-stall.service \
     scripts/maint/systemd/manitoba-maint-canary-sab-stall.timer \
+    scripts/maint/systemd/manitoba-maint-canary-bazarr-ingest.service \
+    scripts/maint/systemd/manitoba-maint-canary-bazarr-ingest.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-scanner.service \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-scanner.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-healthcheck.service \
@@ -221,6 +223,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/newsletter-digest-stale.sh \
     scripts/canaries/thread-ceiling.sh \
     scripts/canaries/sab-stall.sh \
+    scripts/canaries/bazarr-ingest.sh \
     scripts/canaries/tdarr-scanner.sh \
     scripts/canaries/tdarr-healthcheck.sh \
     scripts/canaries/ucc-gate-stuck.sh \
@@ -513,6 +516,8 @@ for unit in \
     manitoba-maint-canary-thread-ceiling.timer \
     manitoba-maint-canary-sab-stall.service \
     manitoba-maint-canary-sab-stall.timer \
+    manitoba-maint-canary-bazarr-ingest.service \
+    manitoba-maint-canary-bazarr-ingest.timer \
     manitoba-maint-canary-tdarr-scanner.service \
     manitoba-maint-canary-tdarr-scanner.timer \
     manitoba-maint-canary-tdarr-healthcheck.service \
@@ -712,6 +717,14 @@ systemctl --user enable --now manitoba-maint-canary-tdarr-scanner.timer
 # succeeding and masked it. Reds on a missing engine binary immediately, and on a
 # pathological completed-check error ratio.
 systemctl --user enable --now manitoba-maint-canary-tdarr-healthcheck.timer
+# Bazarr ingest canary — hourly. bazarr2 ran twelve days (2026-07-25..08-06)
+# holding ZERO series because its language-profiles table was emptied while
+# config.yaml still named profile 1, so every insert FK-failed and Anime +
+# Anime Movies got no subtitles at all. Its app monitor stayed green the whole
+# time: it probes the web UI, which answered 200. Checks BOTH instances for a
+# dangling default profile, zero enabled languages, and a *arr holding items
+# the Bazarr side does not.
+systemctl --user enable --now manitoba-maint-canary-bazarr-ingest.timer
 # QFlix hourly collector — snapshot + stale-detect + autonomous unstick + Kuma
 # heartbeat. Migrated off the workstation 2026-07-09 (was Windows Task
 # \QFlix\Hourly Collect, now disabled). Feeds the "QFlix Collect (workstation)"
@@ -858,7 +871,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity plex-transcoder plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity plex-transcoder plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"

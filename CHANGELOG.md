@@ -1,5 +1,72 @@
 # Changelog
 
+## 2026-08-06 — The anime Bazarr held zero series for twelve days, green the whole way
+
+Anime and Anime Movies got no subtitles between 2026-07-25 and 2026-08-06.
+bazarr2 was up, answering its web UI with a 200, pushing a healthy heartbeat,
+and storing nothing at all.
+
+**Mechanism.** One row went missing. `table_languages_profiles` was emptied on
+2026-07-25 while `config.yaml` kept naming profile 1 as both
+`serie_default_profile` and `movie_default_profile`. Every series Bazarr synced
+from Sonarr2 was stamped `profileId=1`, that FK pointed into an empty table, and
+the insert failed:
+
+```
+ERROR (series:227) - BAZARR cannot insert series /home/.../Anime/Cowboy Bebop
+  because of (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+```
+
+`table_shows` therefore stayed at **0** — and because `table_episodes` carries
+its own FK to `table_shows`, every episode insert then failed against the empty
+parent, at which point the sync job died on `'NoneType' object has no attribute
+'episode_file_id'`. Three failures deep, one missing row. It ran hourly for
+twelve days and logged **8,485** `FOREIGN KEY constraint failed` errors. The
+same event also cleared every enabled language, so even a surviving profile
+would have subtitled nothing.
+
+**Why nothing caught it.** bazarr2's app monitor probes the web UI. The web UI
+was genuinely fine — Flask was serving, the API answered, `/system/status`
+returned a version. Nothing in the monitoring set asked the only question that
+mattered: *does this subtitle daemon actually hold any content?* An HTTP 200
+from a service that stores nothing is indistinguishable from health at the
+transport layer, which is the entire blind spot.
+
+What eventually surfaced it was the Random Error Audit flagging one FK line at
+**1 of 3** model confidence — twelve days late, and by luck rather than by
+design. That is not a monitoring system; that is a lottery ticket that happened
+to win.
+
+**Fix.** Profile 1 (`English`, mirroring bazarr-1) recreated through Bazarr's
+own settings API rather than a raw SQLite INSERT — Bazarr caches the profile id
+list in memory and a direct write would have diverged from the running process.
+`en` re-enabled in the same call. A forced `update_series` + `update_movies`
+brought in 3/3 series (75 episodes) and 3/3 movies-with-files, all carrying
+`profileId=1`, with zero errors logged afterward.
+
+**Guard.** `canary-bazarr-ingest`, hourly, over **both** instances. Three
+predicates: a **dangling default profile**, **zero enabled languages**, and
+**ingest stalled** (the *arr holds items, Bazarr holds none). The profile
+predicate is written as a dangling *reference* rather than "the profiles table
+is empty", because deleting and recreating a profile in the UI assigns a fresh
+id and leaves the config pointing at the old one — a state an emptiness test
+reads as perfectly healthy. Mutation-proved on arrival: wiping the profiles
+table fires it, renumbering 1→7 fires it (at `profiles-in-db-1`, which is what
+an emptiness check would have waved through), disabling all languages fires it,
+emptying `table_shows` fires it, an unreadable DB exits 2 rather than passing
+clean, and an unmutated scratch copy still passes.
+
+Bazarr's `Error trying to get releases from Github` rate-limit line, flagged in
+the same alert, was classified as noise across all three REA policy surfaces.
+It is the unauthenticated GitHub API's 60-requests-per-hour **per-IP** quota
+being spent by other tenants of this shared seedbox, and it is cosmetic by
+proof rather than assertion: every Bazarr here runs `--no-update`, so the
+release list is display-only. Authentication is not available as a fix —
+`check_update.py` passes no headers and has no token setting, and
+`bazarr2-sync.timer` would revert a patched call site within the hour. The rule
+is anchored to the Bazarr repo URL, so a rate-limit against any other GitHub
+endpoint still pages.
+
 ## 2026-07-29 — The dashboard served a dead app shell for 22 hours, green the whole way
 
 The public board at `/` looked fine. It was not fine: for roughly 22 hours it
