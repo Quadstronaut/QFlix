@@ -113,6 +113,9 @@ jobs:
   manitoba-maint-canary-sab-stall:
     timer: scripts/maint/systemd/manitoba-maint-canary-sab-stall.timer
     kuma_monitor: "Canary SAB Stall"
+  manitoba-maint-canary-bazarr-ingest:
+    timer: scripts/maint/systemd/manitoba-maint-canary-bazarr-ingest.timer
+    kuma_monitor: "Canary Bazarr Ingest"
   manitoba-maint-canary-kometa-libraries:
     timer: scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.timer
     kuma_monitor: "Canary Kometa Libraries"

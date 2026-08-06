@@ -353,6 +353,43 @@ classes:
       pages.
     added: 2026-08-03
 
+  - id: bazarr-github-release-check-ratelimit
+    title: Bazarr update-check rate-limited by the GitHub API
+    rx: '(?i)rate limit exceeded for url:\s*https://api\.github\.com/repos/morpheus65535/bazarr/releases'
+    field: null
+    prompt_clause: 'Bazarr "Error trying to get releases from Github" GitHub API rate-limit failures'
+    why: >-
+      Bazarr's updater polls the unauthenticated GitHub releases API, which is
+      limited to 60 requests/hour PER IP. This is an Ultra.cc SHARED seedbox, so
+      that quota is consumed by every other tenant on the same address - two
+      Bazarr instances checking hourly could not exhaust it alone. The failure
+      is therefore external and not ours to fix from inside the stack.
+      COSMETIC IS PROVEN, NOT ASSUMED: all three Bazarr processes run with
+      `--no-update` (verified live 2026-08-06 - bazarr2's ExecStart, its running
+      argv, and bazarr-1's containerised argv all carry the flag), so the
+      release list is display-only and Bazarr could not self-update even with a
+      complete response. It is also self-correcting rather than a wedge -
+      releases.txt was refreshed successfully at 23:51 the same evening the
+      403s fired, i.e. the poll succeeds again as soon as the shared quota
+      rolls over.
+      AUTHENTICATION IS NOT AVAILABLE AS A FIX, which is why this is suppressed
+      rather than engineered away: app/check_update.py builds the URL inline and
+      calls requests.get(url, allow_redirects=True, timeout=15) with NO headers
+      argument, and there is no token config field or environment variable
+      anywhere in the Bazarr tree. The only lever would be patching that call
+      site, and bazarr2-sync.timer re-matches bazarr2 to bazarr-1's version
+      hourly, so such a patch is reverted by design. (A GitHub PAT would still
+      buy real headroom for QFlix's OWN api.github.com callers - the lifecycle
+      resolver in Tuesday.md:73 - which is a separate, unrelated change.)
+      DELIBERATELY ANCHORED TO THE BAZARR REPO URL, not to "rate limit exceeded"
+      or to api.github.com generally. A 403 against any other GitHub endpoint -
+      including QFlix's own release-resolver traffic, where a silent rate-limit
+      really would degrade version checks - is NOT covered here and still pages.
+      The other update-check failure shapes (Connection Error, Timeout) are also
+      left uncovered: a persistent one of those is a network fault worth seeing,
+      and only the rate-limit shape is provably external.
+    added: 2026-08-06
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -401,6 +438,9 @@ prompt_segments:
   - index: 13
     marker: 'Plex "Unknown metadata type: folder" replies'
     classes: [plex-unknown-metadata-type-folder]
+  - index: 14
+    marker: 'Bazarr "Error trying to get releases from Github" GitHub API rate-limit failures'
+    classes: [bazarr-github-release-check-ratelimit]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
