@@ -35,15 +35,40 @@
 #     thresholds — the same tiny-denominator flaw that retired the OLD
 #     design, in a new form.
 #
+# 2026-08-06 fix — the STRUCTURAL blindness: this box deliberately runs
+# qBit's completed pool near-empty (torrent-janitor purges *arr-untracked
+# leftovers daily; qBit's own ratio cleanup removes seeds once they hit
+# target ratio). A single run rarely sees MIN_SAMPLE torrents coexisting —
+# measured 2026-08 at 2-3 total — so "5 CONCURRENT imported torrents" was not
+# an occasional shortfall, it was permanently unreachable from one snapshot.
+# The vacuity clock (below) was about to start firing weekly forever, which
+# trains the operator to ignore it exactly like the two retired designs did.
+#
+# Lowering MIN_SAMPLE is not the fix — a tiny denominator is precisely the
+# failure mode that retired BOTH prior designs (see above). Instead: stop
+# requiring torrents to coexist. Each run records a per-torrent verdict
+# (hardlinked/detached, orphans still excluded) keyed by qBit's stable
+# info-hash into a rolling ledger at
+# ~/.opt/maint/hardlink-integrity/observations.json, and MIN_SAMPLE is
+# evaluated against the ACCUMULATED distinct-torrent count across many runs,
+# not the concurrent snapshot. The pool holds a handful at once but many
+# torrents pass through it across a week, so the sample fills even though the
+# snapshot never does. Entries age out via a TTL (see below) so this stays a
+# rolling window, not an unbounded ledger a decade-old fixed regression could
+# haunt. Full rationale is in the embedded python next to the ledger code.
+#
 # Thresholds (tunable via env on the seedbox systemd unit's
-# Environment= lines) — all evaluated over the orphan-EXCLUDED sample:
-#   QFLIX_CANARY_HARDLINK_MAX_DETACHED      default 2  (absolute floor — allows a lone copy-import in flight)
-#   QFLIX_CANARY_HARDLINK_MAX_DETACHED_PCT  default 5  (percentage floor — covers proportional regressions)
-#   QFLIX_CANARY_HARDLINK_MIN_SAMPLE        default 5  (min imported torrents before asserting a regression)
-#   QFLIX_CANARY_HARDLINK_MAX_VACUOUS_DAYS  default 7  (max consecutive days of INCONCLUSIVE runs before failing)
+# Environment= lines) — all evaluated over the orphan-EXCLUDED, ACCUMULATED
+# sample:
+#   QFLIX_CANARY_HARDLINK_MAX_DETACHED         default 2   (absolute floor — allows a lone copy-import in flight)
+#   QFLIX_CANARY_HARDLINK_MAX_DETACHED_PCT     default 5   (percentage floor — covers proportional regressions)
+#   QFLIX_CANARY_HARDLINK_MIN_SAMPLE           default 5   (min DISTINCT torrents observed, accumulated across runs, before asserting a regression)
+#   QFLIX_CANARY_HARDLINK_MAX_VACUOUS_DAYS     default 7   (max consecutive days the ACCUMULATOR stays below MIN_SAMPLE before that blindness itself fails)
+#   QFLIX_CANARY_HARDLINK_OBSERVATION_TTL_DAYS default 14  (rolling window — ledger entries not refreshed within this many days are pruned)
 # MAX_DETACHED and MAX_DETACHED_PCT must BOTH be exceeded to fail, and the
-# imported-sample count must reach MIN_SAMPLE first — below that the run is
-# inconclusive (passes) rather than crying wolf on a handful of torrents.
+# accumulated distinct-torrent count must reach MIN_SAMPLE first — below that
+# the run is inconclusive (passes) rather than crying wolf on a handful of
+# torrents.
 #
 # Stage labels (printed to stderr on failure → Kuma msg=):
 #   qbit-up-fail            qBit WebAPI unreachable
@@ -75,6 +100,9 @@ MIN_SAMPLE=${QFLIX_CANARY_HARDLINK_MIN_SAMPLE:-5}
 # Council finding 8: how long this canary may pass WITHOUT asserting anything
 # before the blindness itself becomes the alert. See the vacuity clock below.
 MAX_VACUOUS_DAYS=${QFLIX_CANARY_HARDLINK_MAX_VACUOUS_DAYS:-7}
+# 2026-08-06: rolling window for the per-torrent observation ledger. Entries
+# not refreshed within this many days are pruned — see the ledger code below.
+OBSERVATION_TTL_DAYS=${QFLIX_CANARY_HARDLINK_OBSERVATION_TTL_DAYS:-14}
 
 # Auth — qBit WebUI form-login, same pattern as qbit-stall.sh. Referer
 # header is mandatory on Ultra.cc-flavored qBit or it returns 403.
@@ -94,7 +122,7 @@ TFILE=/tmp/qfh-completed.json
 curl -sf -m 12 -b /tmp/qfh.cookie "$QB/api/v2/torrents/info?filter=completed" > "$TFILE"
 [ -s "$TFILE" ] || { printf "STAGE=qbit-up-fail msg=torrents-info-empty\n" >&2; exit 1; }
 
-export MAX_DETACHED MAX_DETACHED_PCT MIN_SAMPLE MAX_VACUOUS_DAYS
+export MAX_DETACHED MAX_DETACHED_PCT MIN_SAMPLE MAX_VACUOUS_DAYS OBSERVATION_TTL_DAYS
 python3 <<"PYEND"
 import json, os, sys, time
 
@@ -178,135 +206,268 @@ def _vacuous_exit(reason, detail):
 with open("/tmp/qfh-completed.json") as f:
     torrents = json.load(f)
 
-if not torrents:
-    # Zero completed torrents is NOT inherently suspicious anymore: the torrent
-    # janitor (qflix-torrent-janitor, 2026-07-27) reaps completed *arr-untracked
-    # seeds once they meet ratio/age, so an empty completed-pool is a legitimate
-    # transient steady state (e.g. right after a purge, before new grabs finish),
-    # not a nuked qBit data dir. A genuine qBit data-loss / mount-evaporation
-    # surfaces via the qBit app monitor + qbit-stall canary. Pass as INCONCLUSIVE
-    # rather than crying wolf — same philosophy as the min-sample branch below.
-    _vacuous_exit("empty-pool", "0 completed torrents; the torrent janitor may "
-                                "have reaped the seed pool")
+# --- rolling observation ledger (2026-08-06) --------------------------------
+# STRUCTURAL FIX for the tiny-denominator trap that retired the OLD design and
+# nearly retired this one too: this box deliberately runs the qBit completed
+# pool near-empty (torrent-janitor purges *arr-untracked leftovers daily;
+# qBit own ratio cleanup removes seeds). A single run rarely sees
+# MIN_SAMPLE torrents coexisting, so requiring that many CONCURRENT torrents
+# made the guard permanently blind — not occasionally, structurally, forever.
+#
+# The fix: stop requiring torrents to coexist. Accumulate a verdict per
+# TORRENT — keyed by the qBit info-hash, stable for that torrent lifetime —
+# across MANY RUNS, and assert once enough DISTINCT torrents have been
+# observed over time. The pool holds a handful at once but many pass through
+# it across a week, so the sample fills even though the snapshot never does.
+#
+# Orphans (benign, no size match — see the module header) are NEVER recorded
+# here, exactly as they are excluded from the count today: they doubled
+# nothing, so they carry no evidence either way.
+#
+# A recorded verdict is TRUE FOR THE MOMENT IT WAS TAKEN, not a live status.
+# If qBit later deletes that torrent source (ratio hit, janitor sweep), the
+# torrent simply stops appearing in the completed list and this canary stops
+# observing it — the stored verdict is left exactly as it was. That is
+# CORRECT and INTENTIONAL, not stale data: the claim recorded is "at the
+# moment checked, this torrent was, or was not, hardlinked", and that fact
+# does not retroactively change because qBit later reaped the seed. Do not "fix"
+# this later by deleting entries whose torrent has disappeared from qBit —
+# that would silently shrink the sample back toward the exact blindness this
+# rewrite exists to escape. The TTL prune below is the only removal path, and
+# it is time-based (last_seen age), not presence-based.
+#
+# A re-observation of the SAME hash overwrites its verdict with whatever this
+# run just saw — explicitly, deliberately, not by accident. That is real new
+# evidence for that torrent: an operator fix genuinely flips detached ->
+# hardlinked and the ledger must be able to show that. last_seen always
+# advances on re-observation; first_seen is stamped once and never moved, so
+# "how long has this torrent been under observation" stays meaningful even
+# after a verdict flip.
+OBS_STATE_DIR = os.path.expanduser("~/.opt/maint/hardlink-integrity")
+OBS_STATE_PATH = os.path.join(OBS_STATE_DIR, "observations.json")
+OBSERVATION_TTL_DAYS = float(os.environ.get("OBSERVATION_TTL_DAYS", "14"))
+NOW = int(time.time())
 
-# Walk the four library roots and build two indexes:
-#   library  : (dev, inode) → [paths]   — hardlink twin lookup
-#   by_size  : st_size      → [(dev, inode, path)]  — copy-mode lookup, so a
-#              qBit file with no inode twin can be told apart from a benign
-#              orphan (superseded/different-release seed): a byte-identical
-#              library file at a DIFFERENT inode == storage genuinely doubled.
-DOWNLOADS = "/home/quadstronaut/downloads"
-LIB_ROOTS = ["/home/quadstronaut/media/Movies",
-             "/home/quadstronaut/media/TV Shows",
-             "/home/quadstronaut/media/Anime",
-             "/home/quadstronaut/media/Anime Movies"]
-VIDEO_EXTS = (".mkv", ".mp4", ".m4v", ".avi", ".mov")
-library = {}
-by_size = {}
-lib_count = 0
-for root in LIB_ROOTS:
-    if not os.path.isdir(root):
-        continue
-    for dirpath, _, files in os.walk(root):
-        for f in files:
-            if not f.lower().endswith(VIDEO_EXTS):
-                continue
-            p = os.path.join(dirpath, f)
-            try:
-                st = os.stat(p)
-            except (FileNotFoundError, PermissionError):
-                continue
-            library.setdefault((st.st_dev, st.st_ino), []).append(p)
-            by_size.setdefault(st.st_size, []).append((st.st_dev, st.st_ino, p))
-            lib_count += 1
 
-if lib_count == 0:
-    sys.stderr.write("STAGE=library-empty msg=no_videos_under_media_root\n")
-    sys.exit(1)
+def _load_observations():
+    """Best-effort read -> {hash: {verdict, first_seen, last_seen}}. ANY
+    failure (missing file, corrupt JSON, wrong shape, a poisoned single
+    record) degrades to an EMPTY ledger rather than crashing the canary — a
+    monitor that dies on its own state file is worse than one that starts
+    blind again; losing the ledger just means re-accumulating from zero, not
+    losing the ability to ever assert again."""
+    try:
+        with open(OBS_STATE_PATH) as fh:
+            data = json.load(fh)
+        raw = data.get("observations")
+        if not isinstance(raw, dict):
+            return {}
+        clean = {}
+        for h, rec in raw.items():
+            if (isinstance(rec, dict)
+                    and rec.get("verdict") in ("hardlinked", "detached")
+                    and isinstance(rec.get("first_seen"), (int, float))
+                    and isinstance(rec.get("last_seen"), (int, float))):
+                clean[h] = {"verdict": rec["verdict"],
+                            "first_seen": rec["first_seen"],
+                            "last_seen": rec["last_seen"]}
+        return clean
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        sys.stderr.write("note: observation ledger unreadable (%s: %s), "
+                         "starting empty\n" % (type(exc).__name__, exc))
+        return {}
 
-# For each qBit completed torrent: locate its largest video file (multi-
-# file torrents → content_path is a directory), stat it, and classify:
-#   hardlinked — a library path shares its (dev, inode)   [import used hardlink]
-#   detached   — no inode twin, but a byte-identical library file exists at a
-#                different inode                            [import COPIED = doubled]
-#   orphan     — no inode twin AND no same-size library file [benign superseded seed]
-# A library twin must be outside ~/downloads — the qBit-side path obviously
-# shares the inode with itself.
-resolved = 0        # torrents whose content resolved to an on-disk video file
-total = 0           # of those: ones with a library presence (hardlinked + detached)
-hardlinked = 0
-detached = []       # imported-by-COPY = real storage-doubling regression
-orphans = 0         # superseded / different-release / unimported seeds (excluded)
-for t in torrents:
-    cp = t.get("content_path", "")
-    if not cp or not os.path.exists(cp):
-        continue
-    if os.path.isdir(cp):
-        target = None
-        biggest = 0
-        for dirpath, _, files in os.walk(cp):
+
+def _save_observations(obs):
+    """Best-effort write. Never raises — a write failure just means this
+    run observations do not carry forward, not that the canary fails."""
+    try:
+        os.makedirs(OBS_STATE_DIR, exist_ok=True)
+        with open(OBS_STATE_PATH, "w") as fh:
+            json.dump({"observations": obs}, fh)
+    except OSError as exc:
+        sys.stderr.write("note: observation ledger write failed (%s) — this "
+                         "run observations will not carry forward\n" % exc)
+
+
+def _prune_observations(obs, now, ttl_days):
+    """Drop entries not refreshed within ttl_days — a ROLLING window, not a
+    permanent memory. This is the only removal path (see the note above): a
+    torrent that stops appearing in the qBit completed list simply stops being
+    refreshed and ages out on its own schedule, so a long-fixed regression
+    cannot haunt the accumulator forever. Returns (kept, pruned_count)."""
+    cutoff = now - ttl_days * 86400.0
+    kept = {h: rec for h, rec in obs.items() if rec["last_seen"] >= cutoff}
+    return kept, len(obs) - len(kept)
+
+
+def _record_observation(observations, h, verdict, now):
+    """Merge ONE classification into the ledger for hash h, in place. Keyed by
+    hash so re-observing the same torrent across runs updates one entry
+    instead of appending a duplicate -- accumulation counts DISTINCT torrents,
+    not DISTINCT observations. verdict is OVERWRITTEN every call -- this is
+    the explicit, deliberate re-observation behaviour described above, not a
+    bug: a fresh reading is real evidence for this moment. first_seen is
+    stamped only the first time a hash is seen and never moved afterward;
+    last_seen advances on every call. Returns observations for convenience."""
+    rec = observations.get(h, {})
+    observations[h] = {
+        "verdict": verdict,
+        "first_seen": rec.get("first_seen", now),
+        "last_seen": now,
+    }
+    return observations
+
+
+observations, pruned_n = _prune_observations(_load_observations(), NOW,
+                                             OBSERVATION_TTL_DAYS)
+# The live pool seen by this run may legitimately be empty (torrent janitor /
+# ratio cleanup) — that no longer means "nothing to assert" the way it used
+# to. It just means this particular run adds zero NEW observations; the
+# accumulator from prior runs is still evaluated below.
+pool_empty_this_run = not torrents
+
+resolved = 0                  # torrents THIS RUN resolved to an on-disk file
+run_detached_samples = []     # THIS RUN (category, name) detached samples, for the failure msg
+orphans = 0                   # THIS RUN benign orphans (never recorded to the ledger)
+
+if not pool_empty_this_run:
+    # Walk the four library roots and build two indexes:
+    #   library  : (dev, inode) → [paths]   — hardlink twin lookup
+    #   by_size  : st_size      → [(dev, inode, path)]  — copy-mode lookup, so a
+    #              qBit file with no inode twin can be told apart from a benign
+    #              orphan (superseded/different-release seed): a byte-identical
+    #              library file at a DIFFERENT inode == storage genuinely doubled.
+    DOWNLOADS = "/home/quadstronaut/downloads"
+    LIB_ROOTS = ["/home/quadstronaut/media/Movies",
+                 "/home/quadstronaut/media/TV Shows",
+                 "/home/quadstronaut/media/Anime",
+                 "/home/quadstronaut/media/Anime Movies"]
+    VIDEO_EXTS = (".mkv", ".mp4", ".m4v", ".avi", ".mov")
+    library = {}
+    by_size = {}
+    lib_count = 0
+    for root in LIB_ROOTS:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _, files in os.walk(root):
             for f in files:
                 if not f.lower().endswith(VIDEO_EXTS):
                     continue
                 p = os.path.join(dirpath, f)
                 try:
-                    sz = os.path.getsize(p)
-                except FileNotFoundError:
+                    st = os.stat(p)
+                except (FileNotFoundError, PermissionError):
                     continue
-                if sz > biggest:
-                    biggest, target = sz, p
-        if not target:
+                library.setdefault((st.st_dev, st.st_ino), []).append(p)
+                by_size.setdefault(st.st_size, []).append((st.st_dev, st.st_ino, p))
+                lib_count += 1
+
+    if lib_count == 0:
+        sys.stderr.write("STAGE=library-empty msg=no_videos_under_media_root\n")
+        sys.exit(1)
+
+    # For each qBit completed torrent: locate its largest video file (multi-
+    # file torrents → content_path is a directory), stat it, and classify:
+    #   hardlinked — a library path shares its (dev, inode)   [import used hardlink]
+    #   detached   — no inode twin, but a byte-identical library file exists at a
+    #                different inode                            [import COPIED = doubled]
+    #   orphan     — no inode twin AND no same-size library file [benign superseded seed]
+    # A library twin must be outside ~/downloads — the qBit-side path obviously
+    # shares the inode with itself.
+    for t in torrents:
+        cp = t.get("content_path", "")
+        if not cp or not os.path.exists(cp):
             continue
-    else:
-        target = cp
-    try:
-        st = os.stat(target)
-    except (FileNotFoundError, PermissionError):
-        continue
-    resolved += 1
-    key = (st.st_dev, st.st_ino)
-    twins = [p for p in library.get(key, []) if not p.startswith(DOWNLOADS)]
-    if twins:
-        hardlinked += 1
-        total += 1
-        continue
-    # No inode twin. A byte-identical library file at a DIFFERENT inode is a
-    # copy-mode import (storage doubled). No size match → benign orphan seed
-    # (its library counterpart, if any, is a different release at a different
-    # byte size), so it is NOT evidence of an import regression — exclude it.
-    copies = [p for (d, i, p) in by_size.get(st.st_size, [])
-              if (d, i) != key and not p.startswith(DOWNLOADS)]
-    if copies:
-        detached.append((t.get("category", "?"), t.get("name", "?")[:60]))
-        total += 1
-    else:
-        orphans += 1
+        if os.path.isdir(cp):
+            target = None
+            biggest = 0
+            for dirpath, _, files in os.walk(cp):
+                for f in files:
+                    if not f.lower().endswith(VIDEO_EXTS):
+                        continue
+                    p = os.path.join(dirpath, f)
+                    try:
+                        sz = os.path.getsize(p)
+                    except FileNotFoundError:
+                        continue
+                    if sz > biggest:
+                        biggest, target = sz, p
+            if not target:
+                continue
+        else:
+            target = cp
+        try:
+            st = os.stat(target)
+        except (FileNotFoundError, PermissionError):
+            continue
+        resolved += 1
+        key = (st.st_dev, st.st_ino)
+        twins = [p for p in library.get(key, []) if not p.startswith(DOWNLOADS)]
+        if twins:
+            verdict = "hardlinked"
+        else:
+            # No inode twin. A byte-identical library file at a DIFFERENT inode
+            # is a copy-mode import (storage doubled). No size match → benign
+            # orphan seed (its library counterpart, if any, is a different
+            # release at a different byte size) — NOT evidence of a regression,
+            # and NEVER recorded to the ledger.
+            copies = [p for (d, i, p) in by_size.get(st.st_size, [])
+                      if (d, i) != key and not p.startswith(DOWNLOADS)]
+            if copies:
+                verdict = "detached"
+                run_detached_samples.append((t.get("category", "?"), t.get("name", "?")[:60]))
+            else:
+                orphans += 1
+                continue
 
-if resolved == 0:
-    # qBit reported completed torrents but none of them resolve to on-disk
-    # files — qBit data dir was nuked, a remote mount evaporated, or
-    # someone moved the downloads tree out from under qBit. All suspicious.
-    sys.stderr.write("STAGE=qbit-no-completed msg=zero-content-paths-on-disk\n")
-    sys.exit(1)
+        h = t.get("hash")
+        if not h:
+            # No stable identity to key the ledger on. Still counted toward
+            # `resolved` above (so qbit-no-completed sanity still works), but
+            # skip accumulation rather than risk merging distinct torrents
+            # under a falsy key.
+            continue
+        _record_observation(observations, h, verdict, NOW)
 
+    if resolved == 0:
+        # qBit reported completed torrents but none of them resolve to on-disk
+        # files — qBit data dir was nuked, a remote mount evaporated, or
+        # someone moved the downloads tree out from under qBit. All suspicious.
+        sys.stderr.write("STAGE=qbit-no-completed msg=zero-content-paths-on-disk\n")
+        sys.exit(1)
+
+# Persist regardless of whether this run added anything new — a run that only
+# pruned stale entries still needs that pruning to stick.
+_save_observations(observations)
+
+total = len(observations)
+hardlinked_total = sum(1 for r in observations.values() if r["verdict"] == "hardlinked")
+detached_total = total - hardlinked_total
 min_sample = int(os.environ.get("MIN_SAMPLE", "5"))
-if total < min_sample:
-    # Too few torrents currently coexist with their qBit seed to assert a
-    # systemic copy-mode regression (a real one shows up as a HIGH copy
-    # fraction across MANY imports, not 1-2 in a near-empty pool). Pass as
-    # inconclusive rather than firing on small-sample noise — the failure
-    # mode that produced the 2026-07-10 false positive.
-    #
-    # Timed on the same clock as the empty-pool exit: a pool that never grows
-    # back above min_sample blinds this guard just as completely as an empty one,
-    # and is in fact the MORE likely shape now that the janitor reaps to ratio.
-    _vacuous_exit(
-        "below-min-sample",
-        f"imported={total} < min={min_sample}; hardlinked={hardlinked} "
-        f"detached={len(detached)} orphans={orphans} resolved={resolved}")
+span_days = ((NOW - min(r["first_seen"] for r in observations.values())) / 86400.0
+             if observations else 0.0)
+summary = (f"observed={total}/{min_sample} over {span_days:.0f}d "
+          f"(hardlinked={hardlinked_total} detached={detached_total}) "
+          f"pruned={pruned_n}")
 
-detached_n = len(detached)
-detached_pct = 100.0 * detached_n / total
+if total < min_sample:
+    # Too few DISTINCT torrents have been observed, accumulated across runs, to
+    # assert a systemic copy-mode regression (a real one shows up as a HIGH
+    # copy fraction across MANY imports, not 1-2 in a near-empty pool). Pass as
+    # inconclusive rather than firing on small-sample noise — the failure mode
+    # that produced the 2026-07-10 false positive, and the same failure mode
+    # this rewrite exists to keep from happening at the (now unreachable)
+    # concurrent-pool level.
+    #
+    # Timed on the same clock either way: an accumulator that never grows past
+    # min_sample blinds this guard just as completely as an empty one.
+    _vacuous_exit("empty-pool" if pool_empty_this_run else "below-min-sample",
+                 summary)
+
+detached_pct = 100.0 * detached_total / total
 max_n = int(os.environ.get("MAX_DETACHED", "2"))
 max_pct = float(os.environ.get("MAX_DETACHED_PCT", "5"))
 
@@ -315,17 +476,17 @@ max_pct = float(os.environ.get("MAX_DETACHED_PCT", "5"))
 # "did it like what it saw"; a firing canary is the opposite of a blind one.
 _clear_vacuity()
 
-if detached_n >= max_n and detached_pct >= max_pct:
-    samples = ";".join(f"{c}:{n}" for c, n in detached[:3])[:80]
+if detached_total >= max_n and detached_pct >= max_pct:
+    samples = ";".join(f"{c}:{n}" for c, n in run_detached_samples[:3])[:80]
     sys.stderr.write(
-        f"STAGE=hardlink-regression msg=detached={detached_n}/{total} "
-        f"pct={detached_pct:.1f}% orphans={orphans} samples={samples}\n"
+        f"STAGE=hardlink-regression msg=detached={detached_total}/{total} "
+        f"pct={detached_pct:.1f}% orphans_this_run={orphans} {summary} "
+        f"samples={samples}\n"
     )
     sys.exit(1)
 
-print(f"PASS: hardlink-integrity — imported={total} hardlinked={hardlinked} "
-      f"detached={detached_n} ({detached_pct:.1f}%, threshold={max_n}n@{max_pct}%) "
-      f"orphans={orphans}")
+print(f"PASS: hardlink-integrity — {summary} detached_pct={detached_pct:.1f}% "
+      f"(threshold={max_n}n@{max_pct}%) orphans_this_run={orphans}")
 sys.exit(0)
 PYEND
 ') || RC=$?
