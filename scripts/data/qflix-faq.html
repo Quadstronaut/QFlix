@@ -864,7 +864,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
 
     <section class="deck" id="sec-monitoring">
       <h2><span class="num">10</span>Kuma &amp; canaries</h2>
-      <p class="deck-sub">Push monitors, status page, and the 25 end-to-end canaries.</p>
+      <p class="deck-sub">Push monitors, status page, and the 26 end-to-end canaries.</p>
 
       <article class="card tut" id="q-kuma-arch" data-tags="kuma push monitor pusher webhook netns isolation 60 seconds">
         <h3>Why is auto-heal in the pusher and not in a Kuma webhook? <a class="qhash" href="#q-kuma-arch">#</a></h3>
@@ -875,7 +875,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
       </article>
 
       <article class="card tut" id="q-canaries" data-tags="canary movie anime deletion mobile-ux pipeline end-to-end hardlink qbit vlogs kometa quota prowlarr maintainerr">
-        <h3>What do the 25 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
+        <h3>What do the 26 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
         <table class="tbl">
           <thead><tr><th>Canary</th><th>Cadence</th><th>Asserts</th></tr></thead>
           <tbody>
@@ -884,6 +884,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
             <tr><td><code>canary-tautulli-plex-link</code></td><td>every 15 min</td><td>Tautulli's <em>configured</em> Plex address is a live <code>/identity</code> &mdash; catches &ldquo;Tautulli web up but pinned to a dead/old Plex&rdquo; (the 2026-05-20 re-IP class the app monitor stayed green through)</td></tr>
             <tr><td><code>canary-mobile-ux</code></td><td>every 15 min</td><td>Public qflix-dash board still renders + the <code>/</code> &rarr; board redirect still works</td></tr>
             <tr><td><code>canary-sab-stall</code></td><td>every 15 min</td><td>SABnzbd flowing: fires on queue speed 0 while active jobs wait &gt;10 min (provider/creds dead) OR any slot-level Paused job pinned &gt;24 h (the 2026-07-19 wedged-queue-object class) &mdash; both invisible to the app monitor</td></tr>
+            <tr><td><code>canary-bazarr-ingest</code></td><td>hourly</td><td>Both Bazarr instances can still take in what their *arr holds: fires on a default language profile the config names but the database does not have (every insert then fails on a foreign key), on zero enabled languages, or on an *arr holding shows/movies while Bazarr holds none. Added after the anime Bazarr sat holding zero series for twelve days with its app monitor green the whole time &mdash; the web UI answered fine, it just could not store anything, so nothing got subtitles</td></tr>
             <tr><td><code>canary-qbit-stall</code></td><td>every 15 min</td><td>qBittorrent dl_info_speed&ne;0 while a download queue exists for &gt;5 min (libtorrent wedge detector)</td></tr>
             <tr><td><code>canary-vlogs-stall</code></td><td>every 15 min</td><td>VictoriaLogs is up and ingesting; every managed *arr is logging within the freshness window</td></tr>
             <tr><td><code>canary-hardlink-integrity</code></td><td>every 30 min</td><td>Enumerate qBit-completed torrents; check every one has a library twin with the same (dev, inode). Detached &ge; threshold &rarr; fire. (Old design sampled library mtime &mdash; deprecated 2026-05-22 after firing 20/20 false-positive while *arr was at 100% coverage.)</td></tr>
@@ -939,7 +940,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
             <tr><td>1. Prowlarr</td><td>Indexer count &ge; 5; search round-trip for &ldquo;ubuntu&rdquo; returns &ge; 1</td></tr>
             <tr><td>2. *arr &harr; qBit</td><td><code>testall</code> returns 200 for sonarr / sonarr2 / radarr / radarr2</td></tr>
             <tr><td>3. Library hygiene</td><td>Hardlink count &ge; 2 on Movies samples; rescan helpers reach Komga / Kavita / Audiobookshelf</td></tr>
-            <tr><td>4. App liveness</td><td>qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 25 canaries</td></tr>
+            <tr><td>4. App liveness</td><td>qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 26 canaries</td></tr>
             <tr><td>5. Maintenance system</td><td>Webhook <code>/health</code>, window timer scheduled, manifest validates, pusher active, Kuma drift = 0, Kuma all-up (external + parked excluded)</td></tr>
           </tbody>
         </table>

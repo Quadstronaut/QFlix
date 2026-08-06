@@ -555,6 +555,19 @@ canaries:
     kuma_monitor: "Canary qBit Stall"
     script: "scripts/canaries/qbit-stall.sh"
     schedule: "every-15min"
+  bazarr-ingest:
+    # Added 2026-08-06. Both Bazarr instances hold a language profile their
+    # config still points at, and hold >0 items whenever their *arr does.
+    # bazarr2's table_languages_profiles was emptied 2026-07-25 while
+    # config.yaml kept naming profile 1, so every series/movie insert FK-failed
+    # and table_shows sat at ZERO for twelve days — 8485 logged FOREIGN KEY
+    # errors, no subtitles for Anime or Anime Movies, and every monitor green
+    # because the app probe reads the web UI, which answered 200 throughout.
+    # Hourly matches Bazarr's own sync cadence; checking faster than the thing
+    # being checked writes buys nothing.
+    kuma_monitor: "Canary Bazarr Ingest"
+    script: "scripts/canaries/bazarr-ingest.sh"
+    schedule: "hourly"
   sab-stall:
     # Usenet twin of qbit-stall (gap closed 2026-07-19): SABnzbd's process +
     # web UI stay up (app monitor green) while every queued job sits at
