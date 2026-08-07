@@ -340,3 +340,55 @@ def test_run_omits_sab_key_when_not_included(monkeypatch):
                         lambda: {"slots": [], "queue": {"paused": False}, "totals": {"count": 0}})
     out = collect.run(include={"qbit", "sab"}, recent_hours=1)
     assert out["sab"]["totals"] == {"count": 0}
+
+
+# --- 2026-08-07: the rule that deleted+blocklisted 10 legitimate releases ----
+
+
+def test_zero_movement_states_exempt_when_the_QUEUE_is_paused():
+    """THE REGRESSION. A paused QUEUE leaves its slots reporting "Downloading",
+    not "Paused" (measured live: queue paused=True, slot statuses
+    {"Downloading": 148}). So the Paused-branch exemption above was guarding the
+    one branch that cannot trigger for an operator pause, and every queued item
+    accrued zero-movement hours while the operator had deliberately stopped the
+    queue."""
+    for state in collect._SAB_ZERO_MOVEMENT_STATES:
+        assert collect.matches_stale_sab_rule(state, True) is None, state
+        assert collect.matches_stale_sab_rule(state, True, True) is None, state
+
+
+def test_a_slot_that_never_received_a_byte_is_queued_not_stuck():
+    """SAB transfers ONE nzb at a time while labelling every queued slot
+    "Downloading" — normalize_sab_slot's own docstring says so, and it measured
+    1 of 146 slots holding any bytes. Zero byte-movement is therefore the NORMAL
+    condition for everything behind the head of the queue; flagging it condemned
+    queue_depth-1 items on every deep queue, at 10 destructive actions a day."""
+    for state in collect._SAB_ZERO_MOVEMENT_STATES:
+        assert collect.matches_stale_sab_rule(state, False, False) is None, state
+
+
+def test_a_slot_that_started_then_stopped_IS_still_stuck():
+    """The exemption must not blind the detector to a real stall. An item that
+    received bytes and then stopped is exactly what this rule is for."""
+    for state in collect._SAB_ZERO_MOVEMENT_STATES:
+        assert collect.matches_stale_sab_rule(state, False, True) == "sab-zero-movement", state
+
+
+def test_unknown_start_state_preserves_prior_behaviour():
+    """has_started=None means the caller cannot tell — the pinned-strike
+    re-check sees one slot and no sample history. Defaulting that to "exempt"
+    would silently widen the exemption into a caller that never asked for it."""
+    for state in collect._SAB_ZERO_MOVEMENT_STATES:
+        assert collect.matches_stale_sab_rule(state, False, None) == "sab-zero-movement", state
+        assert collect.matches_stale_sab_rule(state, False) == "sab-zero-movement", state
+
+
+def test_paused_pinned_and_pp_hung_branches_are_untouched():
+    """The fix is scoped to the zero-movement branch. A slot Paused while the
+    QUEUE runs is the object.py force-pause wedge and must still fire; the
+    post-processing branch is unrelated."""
+    assert collect.matches_stale_sab_rule("Paused", False) == "sab-paused-pinned"
+    assert collect.matches_stale_sab_rule("Paused", False, False) == "sab-paused-pinned"
+    assert collect.matches_stale_sab_rule("Paused", True) is None
+    for state in collect._SAB_PP_HUNG_STATES:
+        assert collect.matches_stale_sab_rule(state, False, False) == "sab-pp-hung", state
