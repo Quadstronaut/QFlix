@@ -210,11 +210,79 @@ def test_main_asserts_before_returning_success(mod):
         if stripped.startswith("mute ") and "=" in stripped:
             first = stripped
             break
-    assert first == "mute = _mute_monitor_names(api)", (
-        "main()'s first `mute` assignment must come from the verifier; "
+    assert first == "mute = _mute_monitor_names(api, created_names)", (
+        "main()'s first `mute` assignment must come from the verifier, AND must "
+        "pass created_names — without it a monitor created this run but missing "
+        "from the socket-refreshed cache is never enumerated, which is how the "
+        "guard reported success over a mute monitor three times "
+        "(2026-07-30 Dash Asset Integrity, 2026-08-07 Tdarr Pause Integrity); "
         f"found: {first!r}"
     )
 
-    tail = main_src[main_src.index("_mute_monitor_names(api)"):]
+    # created_names must be populated at EVERY create site, not just the ones
+    # whose token came back — a tokenless create is exactly the case that ships
+    # mute, so keying off created_tokens would miss it. Three create sites.
+    assert main_src.count("created_names.add(") == 3, (
+        "expected 3 created_names.add() calls (apps, canaries, standalone "
+        f"self-pushers); found {main_src.count('created_names.add(')}"
+    )
+
+    tail = main_src[main_src.index("_mute_monitor_names(api, created_names)"):]
     assert "return 1" in tail, \
         "main() no longer fails the run when monitors are left mute"
+
+
+# --- created-this-run monitors are enumerated even when the cache cannot see
+# --- them (2026-08-07). Third occurrence of one class; see _mute_monitor_names.
+
+
+def test_a_created_monitor_absent_from_the_cache_is_accused_not_skipped(mod):
+    """THE REGRESSION. get_monitors() is a socket-refreshed client cache, so a
+    monitor created seconds earlier can be missing from it entirely — not
+    checked, not accused, not printed. The verifier then returns [] and the
+    caller prints "verified: every active monitor has notification channels"
+    over a monitor with none.
+
+    Live proof this is not theoretical: run 1 of the 2026-08-07 bootstrap created
+    "Canary Tdarr Pause Integrity", attached nothing, and printed the verified
+    line; run 2 reported `+ channels [1, 2] (was NONE)`. "Canary Dash Asset
+    Integrity" did the same on 2026-07-30 with this guard already in place."""
+    api = FakeApi([_mon(1, "Plex", [1, 2])])          # cache has NOT caught up
+    assert mod._mute_monitor_names(api, {"Canary Tdarr Pause Integrity"}) == [
+        "Canary Tdarr Pause Integrity"
+    ]
+
+
+def test_created_monitor_present_and_wired_is_not_accused(mod):
+    """The union must not manufacture a false FATAL once the cache does catch
+    up — otherwise every fresh-monitor deploy fails forever."""
+    api = FakeApi([_mon(1, "Plex", [1, 2]), _mon(119, "Canary Tdarr Pause Integrity", [1, 2])])
+    assert mod._mute_monitor_names(api, {"Canary Tdarr Pause Integrity"}) == []
+
+
+def test_created_monitor_present_but_mute_is_accused_once_not_twice(mod):
+    """It is in BOTH the cache and created_names; it must appear exactly once."""
+    api = FakeApi([_mon(119, "Canary Tdarr Pause Integrity", [])])
+    assert mod._mute_monitor_names(api, {"Canary Tdarr Pause Integrity"}) == [
+        "Canary Tdarr Pause Integrity"
+    ]
+
+
+def test_unreadable_kuma_still_accuses_what_this_run_created(mod):
+    """A failed re-read means we can vouch for nothing — but we still KNOW what
+    we created, and waving those through is how a mute monitor ships. Monitors
+    we did NOT create stay unaccused: absent evidence is not evidence."""
+    class Broken:
+        def get_monitors(self):
+            raise RuntimeError("socket closed")
+
+    assert mod._mute_monitor_names(Broken(), {"Canary New"}) == ["Canary New"]
+    assert mod._mute_monitor_names(Broken()) == []
+
+
+def test_no_creates_means_no_added_accusations(mod):
+    """The ordinary steady-state run: nothing created, so the union adds
+    nothing and behaviour is exactly as before this change."""
+    api = FakeApi([_mon(1, "Plex", [1, 2])])
+    assert mod._mute_monitor_names(api, set()) == []
+    assert mod._mute_monitor_names(api, None) == []
