@@ -555,6 +555,22 @@ canaries:
     kuma_monitor: "Canary qBit Stall"
     script: "scripts/canaries/qbit-stall.sh"
     schedule: "every-15min"
+  stream-cap-liveness:
+    # Added 2026-08-06. The per-member concurrent-stream cap is enforced by two
+    # CRONTAB entries (kill_stream.sh --max 4 and stream_stats.sh, both every
+    # minute) and had NO dead-man of any kind: no monitor, no token, no self-push,
+    # and structurally unreachable by the C-01 ledger, whose boundary is systemd
+    # timers plus declared installer units - crontab is a third scheduling plane
+    # neither leg enumerates. A slot rebuild already dropped these once.
+    # Detect-only, and deliberately NOT a push bolted into kill_stream.sh: that
+    # is member-facing ENFORCEMENT, where a bug does not merely mis-report but
+    # can stop the cap working. Reads the writer-stamped `ts` in each artefact
+    # (never mtime - C-04 mtime-freshness) and emits ONLY ages, never a
+    # username, title or stream count (member consumption stays out of admin
+    # tooling).
+    kuma_monitor: "Canary Stream Cap Liveness"
+    script: "scripts/canaries/stream-cap-liveness.sh"
+    schedule: "every-15min"
   tdarr-pause-integrity:
     # Added 2026-08-06. The fair-use quiet-hours pause (18:00-23:00 UTC) had NO
     # surface that could see it fail: pusher.py pushes "Tdarr Node" UP and skips
