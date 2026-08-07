@@ -555,6 +555,19 @@ canaries:
     kuma_monitor: "Canary qBit Stall"
     script: "scripts/canaries/qbit-stall.sh"
     schedule: "every-15min"
+  cron-liveness:
+    # Added 2026-08-07. The LIVE half of the crontab plane: the offline C-01
+    # detector reads jobs.yaml `cron:` declarations and demands a dead-man
+    # answer for each, but it runs against git and cannot see the box - so it
+    # can never notice a crontab line that was DROPPED (a slot rebuild has
+    # wiped these once already) or one ADDED without adjudication. Both
+    # directions, prowlarr-app-sync shape. Deliberately not a leg of
+    # timer-liveness: different mechanism, different failure vocabulary
+    # (loaded/active/next-fire has no crontab analogue), independently
+    # swappable.
+    kuma_monitor: "Canary Cron Liveness"
+    script: "scripts/canaries/cron-liveness.sh"
+    schedule: "hourly"
   stream-cap-liveness:
     # Added 2026-08-06. The per-member concurrent-stream cap is enforced by two
     # CRONTAB entries (kill_stream.sh --max 4 and stream_stats.sh, both every

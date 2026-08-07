@@ -24,25 +24,39 @@ def _timers(repo):
     )
 
 
-def _external_units(repo):
-    """The other half of the boundary, re-derived independently: entries that
-    declare a bare `unit:` instead of a repo-tracked `timer:` path."""
+def _plane(repo, name):
+    """Entries declared on one NON-repo scheduling plane, re-derived
+    independently of the detector. `unit:` = installer-generated systemd timer,
+    `cron:` = crontab line. Neither has a file in git."""
     jobs = yaml.safe_load(repo.read("manifest/jobs.yaml"))["jobs"]
     return sorted(k for k, v in jobs.items()
-                  if (v or {}).get("unit") and not (v or {}).get("timer"))
+                  if (v or {}).get(name) and not (v or {}).get("timer"))
+
+
+def _external_units(repo):
+    return _plane(repo, "unit")
+
+
+def _cron_jobs(repo):
+    return _plane(repo, "cron")
 
 
 def test_enumerates_every_timer_with_zero_omissions(ctx, repo):
     result = det.detect(ctx)
     timers = _timers(repo)
     externals = _external_units(repo)
+    crons = _cron_jobs(repo)
     assert timers, "no timers found — the boundary re-derivation is broken"
-    # The boundary is the UNION of both scheduling planes. Asserted as a sum of
-    # two INDEPENDENTLY re-derived counts, so neither half can silently shrink:
-    # before 2026-08-06 the external half did not exist as a concept and seven
-    # live installer-generated timers sat outside every enumeration.
-    assert result.boundary_size == len(timers) + len(externals)
+    # The boundary is the UNION of all THREE scheduling planes, asserted as a sum
+    # of three INDEPENDENTLY re-derived counts so no plane can silently shrink.
+    # Each was added only after it was found missing: before 2026-08-06 seven
+    # installer-generated timers sat outside every enumeration, and before
+    # 2026-08-07 the entire crontab did - ten lines including the member-facing
+    # stream-cap enforcement.
+    assert result.boundary_size == len(timers) + len(externals) + len(crons)
     assert result.metrics["external_units"] == len(externals)
+    assert result.metrics["cron_jobs"] == len(crons)
+    assert crons, "no cron entries — the crontab plane vanished from the ledger"
     timer_verdicts = [v for v in result.verdicts if v.path.endswith(".timer")]
     assert len(timer_verdicts) == len(timers), (
         "detector emitted " + str(len(timer_verdicts)) + " timer verdicts for "
@@ -54,6 +68,11 @@ def test_enumerates_every_timer_with_zero_omissions(ctx, repo):
     assert len(ext_verdicts) == len(externals), (
         "detector emitted " + str(len(ext_verdicts)) + " unit verdicts for "
         + str(len(externals)) + " declared installer units — an omission"
+    )
+    cron_verdicts = [v for v in result.verdicts if v.instance_id.endswith(":cron")]
+    assert len(cron_verdicts) == len(crons), (
+        "detector emitted " + str(len(cron_verdicts)) + " cron verdicts for "
+        + str(len(crons)) + " declared crontab jobs — an omission"
     )
 
 
@@ -70,17 +89,47 @@ def test_a_unit_entry_is_never_orphaned(ctx, repo):
         "installer-generated units reported as orphan-job-entry: " + str(orphans))
 
 
-def test_timer_and_unit_are_mutually_exclusive(ctx, repo):
-    """Declaring both is ambiguous about which side owns the unit, and would let
-    an entry satisfy the tracked-path cross-check while actually being installed
-    by a heredoc. Guarded so the vocabulary cannot be used to evade the check."""
+def test_exactly_one_scheduling_plane_per_entry(ctx, repo):
+    """Declaring two planes is ambiguous about which mechanism actually runs the
+    job, and would let a cron entry borrow a timer's tracked-path cross-check.
+    Declaring none leaves nothing to adjudicate. Guarded so the vocabulary that
+    made these planes expressible cannot be used to evade the check."""
     jobs = yaml.safe_load(repo.read("manifest/jobs.yaml"))["jobs"]
-    both = [k for k, v in jobs.items()
-            if (v or {}).get("unit") and (v or {}).get("timer")]
-    assert both == [], "jobs declaring BOTH timer: and unit: " + str(both)
-    neither = [k for k, v in jobs.items()
-               if not (v or {}).get("unit") and not (v or {}).get("timer")]
-    assert neither == [], "jobs declaring NEITHER timer: nor unit: " + str(neither)
+    PLANES = ("timer", "unit", "cron")
+    bad = {}
+    for k, v in jobs.items():
+        declared = [p for p in PLANES if (v or {}).get(p)]
+        if len(declared) != 1:
+            bad[k] = declared
+    assert bad == {}, (
+        "every job must declare exactly one of timer:/unit:/cron: — offenders "
+        "(job -> planes declared): " + str(bad))
+
+
+def test_every_cron_entry_carries_a_command_substring(repo):
+    """`cron:` is matched against `crontab -l` by cron-liveness.sh, so an empty
+    or whitespace value would match every line (or none) and the live check
+    would silently assert nothing."""
+    jobs = yaml.safe_load(repo.read("manifest/jobs.yaml"))["jobs"]
+    weak = {k: v.get("cron") for k, v in jobs.items()
+            if (v or {}).get("cron") and len(str(v.get("cron")).strip()) < 8}
+    assert weak == {}, "cron: values too short to identify a crontab line: " + str(weak)
+
+
+def test_cron_substrings_are_unique(repo):
+    """Two entries matching the same crontab line would let one job's presence
+    vouch for another's. The live canary matches by substring, so uniqueness is
+    what makes that matching sound."""
+    jobs = yaml.safe_load(repo.read("manifest/jobs.yaml"))["jobs"]
+    crons = {k: str(v["cron"]) for k, v in jobs.items() if (v or {}).get("cron")}
+    collisions = []
+    for a, sa in crons.items():
+        for b, sb in crons.items():
+            if a < b and (sa in sb or sb in sa):
+                collisions.append((a, b))
+    assert collisions == [], (
+        "cron: substrings where one contains the other — a single crontab line "
+        "could satisfy both: " + str(collisions))
 
 
 def test_every_timer_is_adjudicated_one_way_or_the_other(ctx):
