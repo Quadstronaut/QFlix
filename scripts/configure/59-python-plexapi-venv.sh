@@ -7,9 +7,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/../lib/ssh.sh"
 source "$HERE/../lib/log.sh"
 source "$HERE/../lib/secrets.sh"
+# Authenticated GitHub API: 60 req/h per SHARED IP -> 5000 per token. Fails
+# open if secrets/github.pat is absent, so a missing optional credential can
+# never break an install.
+source "$HERE/../lib/github.sh"
 
 if ! secret_exists python-plexapi.version; then
-  TAG=$(curl -fsSL https://api.github.com/repos/pkkid/python-plexapi/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')
+  TAG=$(gh_latest_tag pkkid/python-plexapi)
   [ -n "$TAG" ] || die "could not resolve plexapi latest tag"
   secret_write python-plexapi.version "$TAG"
 fi
