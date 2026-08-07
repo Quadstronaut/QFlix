@@ -607,18 +607,32 @@ def main() -> int:
     # also reads (so audit and bootstrap can never disagree).
     from lib.kuma import STANDALONE_SELF_PUSH_MONITORS
     _STANDALONE_HB_S = 90000  # 24h + buffer, matching the daily-0430 canary heartbeat
+
+    # Per-monitor heartbeat overrides for standalone jobs that do NOT run daily.
+    # The 24h default is correct for a job that beats once a day and wrong for
+    # anything faster: a 15-minute job under a 24h dead-man can be dead for a
+    # full day while its monitor sits green. Entries here are (seconds), and a
+    # job belongs in this dict whenever its timer is tighter than daily.
+    _STANDALONE_HB_OVERRIDES = {
+        # Runs at :07/:22/:37/:52. One hour tolerates three consecutive missed
+        # runs -- enough to ride out a slow plex.tv or a single hung run without
+        # flapping, tight enough that a stuck gate is visible the same morning.
+        "QFlix Entitlement Gate": 3600,
+    }
+
     for mon_name in STANDALONE_SELF_PUSH_MONITORS:
         if mon_name in existing:
             print(f"  [skip]{mon_name:25s} (already exists)")
             skipped += 1
             continue
+        hb = _STANDALONE_HB_OVERRIDES.get(mon_name, _STANDALONE_HB_S)
         try:
-            tok = _add_push_monitor(api, mon_name, interval=_STANDALONE_HB_S)
+            tok = _add_push_monitor(api, mon_name, interval=hb)
             created_names.add(mon_name)
             if tok:
                 created_tokens[mon_name] = tok
             print(f"  [add]{mon_name:25s} PUSH (standalone janitor, "
-                  f"hb={_STANDALONE_HB_S}s, token={'yes' if tok else 'pending'})")
+                  f"hb={hb}s, token={'yes' if tok else 'pending'})")
             created += 1
         except Exception as exc:
             print(f"  [FAIL]{mon_name:25s} {exc}")

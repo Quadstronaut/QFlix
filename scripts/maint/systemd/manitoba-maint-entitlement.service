@@ -1,0 +1,27 @@
+[Unit]
+Description=Manitoba maint - QFlix entitlement gate (provision + protect Plex/Seerr access)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# DEFAULT = REPORT ONLY. Ships SAFE: reads Plex shares, Seerr users and the
+# Starhold entitlement API, seeds the cohort clocks, writes the audit manifest,
+# and MUTATES NOTHING. Arm with an on-box drop-in appending --execute, the same
+# ritual as the reaper and the torrent janitor, and only after reviewing a
+# report-only run.
+#
+# Arming needs BOTH this flag AND `armed: true` in secrets/members.yaml. Two
+# switches because either one alone is a thing somebody can flip without
+# meaning to: the roster is edited by hand and the unit is edited by deploy.
+#
+# The maintenance-window guard and the --max-mutations cap stay in force when
+# armed. Seeding and reporting run regardless of arming -- a system that only
+# learns who existed once it may act cannot tell a pre-existing member from
+# somebody who joined while it was disarmed.
+ExecStart=/usr/bin/python3 %h/scripts/maint/qflix-entitlement.py
+# One lookup per household plus two Plex round-trips and a Seerr page. Fast,
+# but plex.tv is occasionally slow and a timeout mid-run must not leave state
+# half-written.
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal

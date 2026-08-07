@@ -171,6 +171,12 @@ STANDALONE_SELF_PUSH_MONITORS = {
     "QFlix Audio Disposition": "qflix-audio-disposition",
     "qflix-anime-janitor": "qflix-anime-janitor",
     "QFlix Torrent Janitor": "qflix-torrent-janitor",
+    # The entitlement gate (2026-08-06). Runs every 15 minutes and is the only
+    # thing that writes Plex share sections or Seerr permissions, so its
+    # dead-man matters more than most: if it stops, new members are never
+    # provisioned AND lapsed members are never reduced, and both failures are
+    # silent by nature -- nobody files a ticket saying "I still have access".
+    "QFlix Entitlement Gate": "qflix-entitlement",
     # The LIVE half of the audit regime (L-01..L-06). The offline detectors
     # above audit SOURCE; this audits what is actually RUNNING -- staged units
     # vs what systemd loaded, the live Kuma monitor set, persisted push tokens,
