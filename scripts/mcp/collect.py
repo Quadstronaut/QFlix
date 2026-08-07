@@ -140,7 +140,8 @@ _SAB_PP_HUNG_STATES = {"Verifying", "Repairing", "Extracting", "Moving", "Runnin
                         "QuickCheck", "Checking"}
 
 
-def matches_stale_sab_rule(slot_state: str, queue_paused: bool) -> Optional[str]:
+def matches_stale_sab_rule(slot_state: str, queue_paused: bool,
+                           has_started: Optional[bool] = None) -> Optional[str]:
     """SAB analogue of matches_stale_rule (qBit). STATE eligibility only —
     the stale loop (qflix-collect.py, C3) still requires 3 zero-delta
     samples before treating a match as a real candidate; byte-delta is out
@@ -155,6 +156,38 @@ def matches_stale_sab_rule(slot_state: str, queue_paused: bool) -> Optional[str]
     if slot_state == "Paused":
         return None if queue_paused else "sab-paused-pinned"
     if slot_state in _SAB_ZERO_MOVEMENT_STATES:
+        # TWO EXEMPTIONS, both added 2026-08-07 after this rule deleted AND
+        # BLOCKLISTED 10 legitimate releases in one run.
+        #
+        # 1. A PAUSED QUEUE. The Paused branch above already refuses to flag an
+        #    operator-paused queue -- but that branch is unreachable for this
+        #    case, because a paused QUEUE leaves its slots reporting
+        #    "Downloading", not "Paused" (measured live: queue paused=True with
+        #    slot statuses {"Downloading": 148}). The guard was on the one
+        #    branch that cannot trigger it.
+        #
+        # 2. NEVER STARTED. SAB transfers ONE nzb at a time while labelling
+        #    every queued slot "Downloading" -- normalize_sab_slot's own
+        #    docstring says so ("every other slot sits at 0 regardless of queue
+        #    speed"), and it was measured live at 1 of 146 slots holding any
+        #    bytes. So zero byte-movement is the NORMAL condition for everything
+        #    behind the head, and this rule was flagging queue_depth-1 items on
+        #    every deep queue, forever, at 10 destructive actions per day.
+        #    An item that has never received a single byte has not stalled; it
+        #    is waiting its turn.
+        #
+        # has_started=None means the caller cannot tell (e.g. the pinned-strike
+        # re-check, which sees one slot and no sample history). That preserves
+        # the prior behaviour rather than silently widening the exemption.
+        #
+        # NOT A BLIND SPOT: "nothing is starting at all" is a QUEUE-level fault
+        # and belongs to canaries/sab-stall.sh (`sab-stalled`: queue speed ~0
+        # with slots waiting). Item-level stall detection answers a different
+        # question -- did something that WAS moving stop.
+        if queue_paused:
+            return None
+        if has_started is False:
+            return None
         return "sab-zero-movement"
     if slot_state in _SAB_PP_HUNG_STATES:
         return "sab-pp-hung"

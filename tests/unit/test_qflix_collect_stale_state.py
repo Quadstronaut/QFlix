@@ -644,3 +644,51 @@ def test_env_int_malformed_degrades_to_default(monkeypatch):
     assert qc._env_int("PP_HUNG_ESCALATE_HOURS", 4) == 4
     monkeypatch.setenv("PP_HUNG_ESCALATE_HOURS", "6")
     assert qc._env_int("PP_HUNG_ESCALATE_HOURS", 4) == 6
+
+
+# --- 2026-08-07: never-started SAB slots are queued, not stuck --------------
+
+
+def test_sab_slot_that_never_started_is_NOT_a_candidate(monkeypatch, tmp_path):
+    """THE REGRESSION, end to end. A slot with zero downloaded bytes across all
+    three snapshots is waiting its turn behind the head of the queue, not
+    stalled — SAB transfers one nzb at a time while labelling every queued slot
+    "Downloading". Before this, such slots became unstick candidates, and
+    act_on_candidates DELETES AND BLOCKLISTS them: 10 legitimate Vanderpump
+    releases went that way at 20:00Z on 2026-08-07.
+
+    This is the integration half. The rule can be perfectly correct and still
+    never fire if the collector does not pass has_started — so assert the
+    behaviour, not the predicate."""
+    sid = "SABnzbd_nzo_neverstarted"
+    snaps = [_snapshot([], sab_slots=[_sab_slot(sid, 0, state="Downloading")])
+             for _ in range(3)]
+    _seed(tmp_path, snaps, {})
+    candidates, hashes = _run(monkeypatch, tmp_path)
+    assert candidates == [], "a never-started slot must not be an unstick candidate"
+    assert sid not in hashes, "and must not accrue zero-movement hours"
+
+
+def test_sab_slot_that_started_then_stalled_IS_still_a_candidate(monkeypatch, tmp_path):
+    """The exemption must not blind the detector. Bytes received, then flat."""
+    sid = "SABnzbd_nzo_realstall"
+    snaps = [_snapshot([], sab_slots=[_sab_slot(sid, 750, state="Downloading")])
+             for _ in range(3)]
+    _seed(tmp_path, snaps, {})
+    candidates, hashes = _run(monkeypatch, tmp_path)
+    assert candidates == [sid]
+    assert hashes[sid]["rule_matched"] == "sab-zero-movement"
+
+
+def test_sab_slot_that_started_mid_window_counts_as_started(monkeypatch, tmp_path):
+    """has_started reads ANY sample, not the oldest. A slot at 0 bytes in the
+    first snapshot that has bytes by the third genuinely started — and its
+    byte-delta is non-zero anyway, so it is popped as progressing. Pinned so a
+    future 'use sm[0]' refactor cannot quietly reintroduce the false negative."""
+    sid = "SABnzbd_nzo_latestart"
+    snaps = [_snapshot([], sab_slots=[_sab_slot(sid, n, state="Downloading")])
+             for n in (0, 400, 900)]
+    _seed(tmp_path, snaps, {})
+    candidates, hashes = _run(monkeypatch, tmp_path)
+    assert candidates == [], "a slot making progress is not stuck"
+    assert sid not in hashes
