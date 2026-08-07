@@ -200,6 +200,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.timer \
     scripts/maint/systemd/manitoba-maint-canary-cron-liveness.service \
     scripts/maint/systemd/manitoba-maint-canary-cron-liveness.timer \
+    scripts/maint/systemd/manitoba-maint-canary-unstick-rate.service \
+    scripts/maint/systemd/manitoba-maint-canary-unstick-rate.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-scanner.service \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-scanner.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-healthcheck.service \
@@ -241,6 +243,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/tdarr-pause-integrity.sh \
     scripts/canaries/stream-cap-liveness.sh \
     scripts/canaries/cron-liveness.sh \
+    scripts/canaries/unstick-rate.sh \
     scripts/canaries/tdarr-scanner.sh \
     scripts/canaries/tdarr-healthcheck.sh \
     scripts/canaries/ucc-gate-stuck.sh \
@@ -549,6 +552,8 @@ for unit in \
     manitoba-maint-canary-stream-cap-liveness.timer \
     manitoba-maint-canary-cron-liveness.service \
     manitoba-maint-canary-cron-liveness.timer \
+    manitoba-maint-canary-unstick-rate.service \
+    manitoba-maint-canary-unstick-rate.timer \
     manitoba-maint-canary-tdarr-scanner.service \
     manitoba-maint-canary-tdarr-scanner.timer \
     manitoba-maint-canary-tdarr-healthcheck.service \
@@ -780,6 +785,11 @@ systemctl --user enable --now manitoba-maint-canary-stream-cap-liveness.timer
 # This is the live half. Refuses to pass (exit 2) if the ledger declares zero
 # cron jobs, which would make "everything declared is present" vacuously true.
 systemctl --user enable --now manitoba-maint-canary-cron-liveness.timer
+# Unstick action rate — hourly. The autonomous unstick DELETES and BLOCKLISTS;
+# on 2026-08-07 it destroyed 10 legitimate releases in one run with no alert
+# anywhere. Watches the destructive ACTION rather than the rule that nominated
+# it, so it catches causes nobody has thought of yet.
+systemctl --user enable --now manitoba-maint-canary-unstick-rate.timer
 # QFlix hourly collector — snapshot + stale-detect + autonomous unstick + Kuma
 # heartbeat. Migrated off the workstation 2026-07-09 (was Windows Task
 # \QFlix\Hourly Collect, now disabled). Feeds the "QFlix Collect (workstation)"
@@ -932,7 +942,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-pause-integrity stream-cap-liveness cron-liveness kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity plex-transcoder plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-pause-integrity stream-cap-liveness cron-liveness unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity plex-transcoder plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
