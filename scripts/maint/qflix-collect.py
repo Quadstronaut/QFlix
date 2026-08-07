@@ -268,7 +268,8 @@ def _load_snapshots(last_n: int = 3) -> list[dict]:
     return out
 
 
-def _matches_stale_sab_rule(state: str | None, queue_paused: bool) -> str | None:
+def _matches_stale_sab_rule(state: str | None, queue_paused: bool,
+                            has_started: bool | None = None) -> str | None:
     """Local port of the C2 `matches_stale_sab_rule` rule table (state name
     -> rule, or None if not stale-eligible). Used both by the per-snapshot
     dispatch in update_stale_state() and by escalate_sab_if_pinned()'s
@@ -282,6 +283,25 @@ def _matches_stale_sab_rule(state: str | None, queue_paused: bool) -> str | None
         # must not be flagged.
         return "sab-paused-pinned" if not queue_paused else None
     if state in SAB_DOWNLOADISH_STATES:
+        # TWO EXEMPTIONS, both added 2026-08-07 after this rule deleted AND
+        # BLOCKLISTED 10 legitimate releases in a single run (see the twin in
+        # scripts/mcp/collect.py for the full write-up; these two copies are
+        # deliberately duplicated and MUST stay in lockstep).
+        #
+        # 1. A paused QUEUE leaves its slots reporting "Downloading", not
+        #    "Paused", so the exemption above never fired for it.
+        # 2. SAB transfers one nzb at a time while labelling every queued slot
+        #    "Downloading" (1 of 146 slots held any bytes, measured live), so
+        #    zero byte-movement is normal for everything behind the head and
+        #    this flagged queue_depth-1 items forever.
+        #
+        # has_started=None = caller cannot tell; keep prior behaviour.
+        # "Nothing starting at all" is queue-level and belongs to
+        # canaries/sab-stall.sh, not here.
+        if queue_paused:
+            return None
+        if has_started is False:
+            return None
         return "sab-zero-movement"
     if state in SAB_PP_STATES:
         # Hung post-processing (par2/unrar/move) -- unstick's *arr-side
@@ -441,7 +461,14 @@ def update_stale_state() -> list[str]:
                      + ") — not acting; add it to classify_qbit_stall's sets")
                 continue
         else:  # kind == "sab" -- same 3-snapshot zero-delta requirement (C3)
-            rule = _matches_stale_sab_rule(state, sab_queue_paused)
+            # has_started distinguishes "stalled" from "queued behind others".
+            # Zero delta is necessary but NOT sufficient for SAB: a slot that
+            # has never received a byte is waiting its turn, because SAB
+            # transfers one nzb at a time while reporting every queued slot as
+            # "Downloading". Read the NEWEST sample, not the oldest -- a slot
+            # that started during the window has genuinely started.
+            has_started = any((s.get("downloaded") or 0) > 0 for s in sm)
+            rule = _matches_stale_sab_rule(state, sab_queue_paused, has_started)
             if rule is None:
                 continue
             # unstick's *arr-side DELETE flow can't fix a hung par2/unrar
