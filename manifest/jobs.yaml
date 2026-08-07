@@ -175,6 +175,9 @@ jobs:
   manitoba-maint-canary-cron-liveness:
     timer: scripts/maint/systemd/manitoba-maint-canary-cron-liveness.timer
     kuma_monitor: "Canary Cron Liveness"
+  manitoba-maint-canary-unstick-rate:
+    timer: scripts/maint/systemd/manitoba-maint-canary-unstick-rate.timer
+    kuma_monitor: "Canary Unstick Rate"
   manitoba-maint-canary-kometa-libraries:
     timer: scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.timer
     kuma_monitor: "Canary Kometa Libraries"
