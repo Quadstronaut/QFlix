@@ -456,10 +456,31 @@ def plan_for_share(
     seerr_target = None
     if seerr_user is not None and seerr_user.permissions != SU.PERMISSIONS_DISABLED:
         seerr_target = SU.PERMISSIONS_DISABLED
+    # THE NEVER-SEEN ALERT MUST SURVIVE INTO EXPIRED (2026-08-07).
+    # It used to fire only in the PENDING branch above, on the reasoning that
+    # you want to hear about a typo "while there is still time to fix it". That
+    # is backwards: PENDING costs nobody anything, and EXPIRED is the moment the
+    # person is actually reduced. So the one warning that distinguishes "did not
+    # subscribe" from "we are looking up the wrong address" went silent at
+    # exactly the moment it mattered, and stayed silent on every subsequent run
+    # because the state never leaves EXPIRED on its own.
+    #
+    # Concretely: a member subscribes on Patreon under a different address than
+    # billing.holder, the entitlement service is never asked about the address
+    # they actually pay with, and they are reduced to Welcome as a non-payer —
+    # while paying. Louder here than in PENDING, not quieter, because here it is
+    # already costing someone their access.
+    expired_alert = None
+    if answer is not None and answer.never_seen:
+        expired_alert = (
+            "REDUCING %s but the entitlement service has NEVER SEEN that "
+            "address — if they pay under a different one, billing.holder is "
+            "wrong and this reduction is a false positive"
+            % mask(holder or "?"))
     return Plan(email=email, state=S_EXPIRED, household_id=hid, holder=holder,
                 plex_target=plex_target, seerr_target=seerr_target,
                 provision_plex_id=provision, deadline=deadline,
-                days_remaining=remaining,
+                days_remaining=remaining, alert=expired_alert,
                 reason="not entitled and grace expired %.1f day(s) ago; %s"
                        % (-remaining,
                           "already at the floor" if not (plex_target or seerr_target)
