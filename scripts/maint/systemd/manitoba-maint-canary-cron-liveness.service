@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - crontab vs jobs.yaml ledger, both directions
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push cron-liveness
+StandardOutput=journal
+StandardError=journal

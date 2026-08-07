@@ -32,6 +32,25 @@
 #                      same `timer` paths): buildarr, kometa, logrotate,
 #                      recyclarr, tdarr-node-pause, tdarr-node-resume,
 #                      upgradinatorr. One vocabulary bug, not seven misses.
+#   cron               ALTERNATIVE to both, for a CRONTAB line, which has no
+#                      unit name AND no file in git. The value is a command
+#                      SUBSTRING that uniquely identifies the line in
+#                      `crontab -l`; cron-liveness.sh matches on it in both
+#                      directions. Adjudicated to the identical standard.
+#
+#                      Added 2026-08-07, closing the THIRD scheduling plane.
+#                      `unit:` closed installer-generated systemd timers on
+#                      2026-08-06 but crontab stayed entirely outside the
+#                      boundary - 10 lines, one of them kill_stream.sh --max 4,
+#                      which is member-facing enforcement of the per-member
+#                      concurrent-stream cap. Exactly ONE of timer/unit/cron per
+#                      entry: zero leaves nothing to adjudicate, two is
+#                      ambiguous about which mechanism actually runs it.
+#
+#   schedule           cron entries only: the crontab expression. Documentation
+#                      for the reader; cron-liveness.sh matches on `cron:` and
+#                      never on this, so a drifted comment cannot break the check.
+#
 #   kuma_monitor       the Kuma monitor that goes RED when this job stops. Must
 #                      resolve against manifest/apps.yaml (apps + canaries) or
 #                      lib/kuma.py:STANDALONE_SELF_PUSH_MONITORS, else finding.
@@ -153,6 +172,9 @@ jobs:
   manitoba-maint-canary-stream-cap-liveness:
     timer: scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.timer
     kuma_monitor: "Canary Stream Cap Liveness"
+  manitoba-maint-canary-cron-liveness:
+    timer: scripts/maint/systemd/manitoba-maint-canary-cron-liveness.timer
+    kuma_monitor: "Canary Cron Liveness"
   manitoba-maint-canary-kometa-libraries:
     timer: scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.timer
     kuma_monitor: "Canary Kometa Libraries"
@@ -420,3 +442,141 @@ jobs:
     # probe, so "Tdarr Node" goes red. Asymmetric with the pause half by nature
     # - a stuck-PAUSED node becomes visible, a stuck-RUNNING one does not.
     kuma_monitor: "Tdarr Node"
+
+  # ------------------------------------------------------- crontab (`cron:`)
+  # The THIRD scheduling plane, enumerated 2026-08-07 from `crontab -l` (10
+  # lines) and previously outside the boundary entirely. Live presence is
+  # checked by cron-liveness.sh in BOTH directions; this file is the source of
+  # truth for what SHOULD be there and what notices when it stops.
+
+  cron-kill-stream:
+    cron: "scripts/plex/kill_stream.sh --max 4"
+    schedule: "* * * * *"
+    # Member-facing ENFORCEMENT of the per-member concurrent-stream cap. Dead-
+    # manned by effect: canary-stream-cap-liveness reads the writer-stamped ts
+    # in kill-history.json, which kill_stream.py appends on every run.
+    kuma_monitor: "Canary Stream Cap Liveness"
+
+  cron-stream-stats:
+    cron: "scripts/plex/stream_stats.sh"
+    schedule: "* * * * *"
+    # Same canary, second predicate (state.json's ts). Declared separately
+    # because they are two independent crontab lines: one can be dropped
+    # without the other, and the canary names which.
+    kuma_monitor: "Canary Stream Cap Liveness"
+
+  cron-heartbeat-listmonk:
+    cron: "scripts/ops/heartbeat-listmonk.sh"
+    schedule: "*/5 * * * *"
+    kuma_monitor: null
+    no_monitor_reason: >-
+      A RESTART helper, not a producer: it curls listmonk /health and restarts
+      the unit only if dead. If this cron stops, nothing silently degrades - the
+      "Listmonk" app monitor still reds on the underlying outage, exactly as it
+      would if the helper had never existed. What is lost is automatic recovery,
+      which turns a self-healing outage into a visible one. That is a
+      degradation of convenience, not of observability, so it needs no separate
+      dead-man of its own.
+    open_gap: false
+    adjudicated: 2026-08-07
+    owner: operator
+
+  cron-heartbeat-tdarr-server:
+    cron: "scripts/ops/heartbeat-tdarr-server.sh"
+    schedule: "*/5 * * * *"
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Restart helper for tdarr-server, same shape as heartbeat-listmonk: the
+      "Tdarr" app monitor still reds on the real outage if this stops. Losing it
+      costs auto-recovery, not visibility.
+    open_gap: false
+    adjudicated: 2026-08-07
+    owner: operator
+
+  cron-heartbeat-tdarr-node:
+    cron: "scripts/ops/heartbeat-tdarr-node.sh"
+    schedule: "*/5 * * * *"
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Restart helper for tdarr-node. Same reasoning as the other two heartbeats,
+      with one extra: it carries its own quiet-hours guard so it does not fight
+      tdarr-node-pause.timer, and that interaction is now separately watched by
+      canary-tdarr-pause-integrity.
+    open_gap: false
+    adjudicated: 2026-08-07
+    owner: operator
+
+  cron-heartbeat-maint-webhook:
+    cron: "scripts/ops/heartbeat-maint-webhook.sh"
+    schedule: "*/5 * * * *"
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Restart helper for the manitoba-maint webhook receiver. If it stops, the
+      "Manitoba Pusher" self-heartbeat and the webhook's own app monitor still
+      red on a genuine receiver outage. Auto-recovery lost, observability intact.
+    open_gap: false
+    adjudicated: 2026-08-07
+    owner: operator
+
+  cron-listmonk-sync:
+    cron: "scripts/ops/listmonk-sync.py"
+    schedule: "0 4 * * *"
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Nightly reconcile of Plex shares into Listmonk subscribers. A silent stop
+      means new members stop being onboarded to the newsletter - member-visible
+      but slow, low-severity, and self-announcing (the operator notices a new
+      member is not receiving the weekly send). Writes to
+      ~/.apps/listmonk/logs/sync.log, so stale-log-watchdog is the natural home
+      for a freshness check if this is ever worth escalating. UNCLOSED by
+      choice, not by oversight - recorded so the next audit inherits the
+      decision rather than rediscovering the gap.
+    open_gap: true
+    adjudicated: 2026-08-07
+    owner: operator
+
+  cron-prune-text-libraries:
+    cron: "scripts/post-import/prune-text-libraries.sh"
+    schedule: "0 4 * * *"
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Nightly cleanup of text/ebook leftovers after import. Failure mode is
+      pure accretion: files that should have been removed stay on disk. The
+      quota canary (80% warn / 90% critical) is the real downstream signal and
+      has weeks of headroom at this job's volume, so a dedicated dead-man would
+      duplicate its concern without adding a distinct one.
+    open_gap: false
+    adjudicated: 2026-08-07
+    owner: operator
+
+  cron-arr-housekeeping-missing:
+    cron: "arr-housekeeping.py --missing"
+    schedule: "0 4 * * 0,2,3,4,5,6"
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Nightly missing-episode search sweep (six days a week; Monday is skipped
+      for the maintenance window). If it stops, nothing breaks - wanted items
+      simply stop being re-searched, which surfaces as members reporting
+      long-missing episodes rather than as any red. NOTE: qflix-missing-search
+      .timer also exists as a systemd unit; whether these two overlap or divide
+      the work was NOT established during this audit and is worth a look.
+      Tracked as an open gap for that reason, not because the sweep itself is
+      unmonitorable.
+    open_gap: true
+    adjudicated: 2026-08-07
+    owner: operator
+
+  cron-arr-housekeeping-unstick:
+    cron: "arr-housekeeping.py --unstick"
+    schedule: "15 * * * *"
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Hourly autonomous unstick of wedged *arr queue items. A silent stop means
+      stuck downloads stop being cleared automatically; they then accumulate
+      and become visible through the qBit/SAB stall canaries and through members
+      reporting a request that never completes. Degrades recovery, not
+      visibility. Writes ~/.opt/maint/arr-unstick.log, so stale-log-watchdog is
+      the escalation path if this ever warrants one.
+    open_gap: false
+    adjudicated: 2026-08-07
+    owner: operator
