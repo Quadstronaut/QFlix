@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-08-07 — A gate that freezes instead of draining
+
+QFlix is now tied to the Starhold entitlement API. The operator invites friends
+by hand off the form at `qflix.starhold.dev`; a 15-minute reconciler watches the
+Plex share flip to accepted, provisions a Seerr account with **permissions 0**,
+and thereafter grants or withdraws access to match
+`entitlements.starhold.app`. It ships **inert** — timer running, Kuma monitor
+green, roster `armed: false`, no `--execute` drop-in, zero mutations.
+
+Access is an **AND**: *invited by the operator* **and** *currently entitled*.
+That is why it gates on the bare `entitled` boolean and not on a pledge amount —
+the roster is already the allowlist, so a supporter nobody invited still has no
+Plex share. No `qflix` reward was added; tier policy stays a human judgement.
+
+**The load-bearing decision.** The integration guide says *fail closed, never
+grant on error*. That law is correct for a system that only grants, and it is a
+**mass-eviction button** in one that also revokes — a DNS blip becomes "every
+member cancelled at once". So `lib/entitlement.py` returns **YES / NO /
+UNKNOWN**, never a bool, and exposes `grants` and `revokes` which are
+deliberately *not* complements. Both are false for UNKNOWN. An entitlement API
+outage **freezes** the system rather than draining it. Eighteen injected faults
+— refused connection, DNS, TLS, 401/403/429/500/502, HTML error page, truncated
+JSON, missing field, wrong type, stale-no — each assert `revokes is False`.
+
+**Three live facts the design got wrong until the APIs were actually read.**
+`library_section_ids` takes `Section@id`, not `Section@key` — passing keys
+shares *nothing*, silently. An **empty** list is not "share nothing"; plex.tv
+reads it as *unshare this server*, which deletes the share and **evicts** the
+person, so `set_sections()` refuses `[]` unconditionally. And Seerr ran
+`newPlexLogin: true` with a full-member `defaultPermissions`, so a friend who
+signed in before the cron fired **self-provisioned a fully enabled account** —
+a race no polling interval can win, closed structurally by setting
+`defaultPermissions` to 0 so accounts are born disabled.
+
+**Then a 46-agent adversarial review found the bug the 97 passing tests were
+hiding.** Anchoring the arrival clock to Plex's real `acceptedAt` was a genuine
+improvement that quietly turned the launch-cohort fallback into a deadline in
+the **past**: with `amnesty_until` missing or mistyped, it computed
+`acceptedAt + 30d`, and `acceptedAt` is months ago for every existing member.
+One typo in one roster key would have reduced the entire membership on the first
+armed run. The test passed because it seeded the bare-email form (anchors at
+*now*); production seeds the pair form (anchors *historically*). Forty-one
+findings, twenty-three refuted, **eighteen fixed** — including a lapse grace
+that was never granted on the run that started it, roster errors quoting member
+emails into Kuma, and a run lock the spec promised but nobody wrote.
+
+Live end-to-end on the crash-test account: **15/15**, restored to its exact
+before-state. `manifest 73 / kuma 73 / matched 73, no drift`.
+
 ## 2026-08-07 — Seventeen scheduled things the dead-man could not even describe
 
 A fleet audit across four dimensions — stable, reporting, monitored, logged —
