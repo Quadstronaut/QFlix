@@ -136,6 +136,9 @@ jobs:
   manitoba-maint-canary-tdarr-pause-integrity:
     timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-pause-integrity.timer
     kuma_monitor: "Canary Tdarr Pause Integrity"
+  manitoba-maint-canary-stream-cap-liveness:
+    timer: scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.timer
+    kuma_monitor: "Canary Stream Cap Liveness"
   manitoba-maint-canary-kometa-libraries:
     timer: scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.timer
     kuma_monitor: "Canary Kometa Libraries"
