@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - autonomous unstick action rate (destructive automation must not be silent)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push unstick-rate
+StandardOutput=journal
+StandardError=journal
