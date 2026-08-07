@@ -11,6 +11,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/../lib/ssh.sh"
 source "$HERE/../lib/log.sh"
 source "$HERE/../lib/secrets.sh"
+# Authenticated GitHub API: 60 req/h per SHARED IP -> 5000 per token. Fails
+# open if secrets/github.pat is absent, so a missing optional credential can
+# never break an install.
+source "$HERE/../lib/github.sh"
 
 # ── Step 1: pre-reqs ────────────────────────────────────────────────────────
 [ -f secrets/tmdb.api_key ] || die "missing secrets/tmdb.api_key"
@@ -18,7 +22,7 @@ source "$HERE/../lib/secrets.sh"
 
 # ── Step 2: pin Kometa version (latest stable at first run) ────────────────
 if ! secret_exists kometa.version; then
-  TAG=$(curl -fsSL https://api.github.com/repos/Kometa-Team/Kometa/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')
+  TAG=$(gh_latest_tag Kometa-Team/Kometa)
   [ -n "$TAG" ] || die "could not resolve Kometa latest tag"
   secret_write kometa.version "$TAG"
   log_info "pinned kometa.version = $TAG"

@@ -11,10 +11,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/../lib/ssh.sh"
 source "$HERE/../lib/log.sh"
 source "$HERE/../lib/secrets.sh"
+# Authenticated GitHub API: 60 req/h per SHARED IP -> 5000 per token. Fails
+# open if secrets/github.pat is absent, so a missing optional credential can
+# never break an install.
+source "$HERE/../lib/github.sh"
 
 # ── Step 1: pin version ─────────────────────────────────────────────────────
 if ! secret_exists recyclarr.version; then
-  TAG=$(curl -fsSL https://api.github.com/repos/recyclarr/recyclarr/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')
+  TAG=$(gh_latest_tag recyclarr/recyclarr)
   [ -n "$TAG" ] || die "could not resolve Recyclarr latest tag"
   secret_write recyclarr.version "$TAG"
   log_info "pinned recyclarr.version = $TAG"
