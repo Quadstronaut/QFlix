@@ -87,12 +87,35 @@ policy.
 
 ## Arming
 
-Four interlocks. All four must pass before anything mutates.
+**Five** conditions. All five must hold before anything mutates.
 
 1. `secrets/members.yaml` → `armed: true` *(currently `false`)*
-2. `--execute` on the command line, via an on-box drop-in *(currently absent)*
-3. not inside the Monday 11:00–15:00 UTC window
-4. under `--max-mutations` (default 10; overflow **defers**, it does not abort)
+2. **Zero unresolved households** *(currently **ten** are unresolved)*
+3. `--execute` on the command line, via an on-box drop-in *(currently absent)*
+4. not inside the Monday 11:00–15:00 UTC window
+5. under `--max-mutations` (default 10; overflow **defers**, it does not abort)
+
+> [!WARNING]
+> ### `armed: true` on its own does nothing — and that is the dangerous part
+>
+> `gate_is_armed()` requires the switch **and** zero unresolved households. A
+> household is unresolved until it has `amount_usd`, `rail`, and — for any rail
+> that reports by email — `payer_ref`. **All ten** non-exempt households
+> currently carry `rail: null` and `amount_usd: null`.
+>
+> So flipping `armed: true` today changes nothing, the log still says
+> `armed=False`, and the natural next move is to fill in rail + amount for all
+> ten in a single edit. **That arms all ten simultaneously**, on a shared
+> deadline, with no rehearsal.
+>
+> **Resolve households ONE AT A TIME.** Watch a full run between each. The first
+> one you resolve is your rehearsal — if it does something you did not expect,
+> you have nine untouched households and a `git checkout` to fall back on.
+>
+> The blast-radius tripwire is the net under this, not a substitute for it: it
+> refuses any run reducing more than a third of governed households. It converts
+> the mistake from a mass eviction into a red monitor, but you still have to not
+> make it.
 
 Plus one rail that cannot be satisfied, only tripped:
 
