@@ -21,11 +21,28 @@ which derives its unit list from the same `timer:` paths - buildarr, kometa,
 logrotate, recyclarr, tdarr-node-pause, tdarr-node-resume, upgradinatorr.
 That is a vocabulary bug in the dead-man, not seven independent misses.
 
-Entries may now declare `unit:` (a bare unit name) INSTEAD of `timer:`. Such an
-entry is adjudicated identically - a monitor or a written reason - but is not
-expected to have a file in git, so it can never raise `orphan-job-entry`.
-An entry declaring NEITHER, or BOTH, is a finding: the first is an
-unadjudicatable stub, the second is ambiguous about which side owns the unit.
+2026-08-07 - AND IT COULD NOT EXPRESS CRONTAB AT ALL.
+The `unit:` fix above closed the installer-generated systemd plane but left a
+THIRD one entirely outside the boundary: the user crontab, 10 lines of it,
+including `kill_stream.sh --max 4` - member-facing enforcement of the per-member
+concurrent-stream cap. A crontab line has no unit name AND no file in git, so
+neither `timer:` nor `unit:` can name it. Every cron job on this box was
+therefore unadjudicated and unadjudicatABLE.
+
+THE THREE PLANES, all adjudicated through one helper:
+  timer:  repo-tracked .timer path, cross-checked against `git ls-files`
+  unit:   installer-GENERATED systemd timer (heredoc, no file in git)
+  cron:   a crontab line, identified by a command substring
+Exactly ONE per entry. Zero leaves nothing to adjudicate; two is ambiguous about
+which mechanism runs it, and would let a cron entry borrow a timer's
+tracked-path cross-check.
+
+HONEST LIMIT: this detector is OFFLINE, so `unit:` and `cron:` entries are
+enumerated from the declaration alone. Nothing here can see an installer unit or
+a crontab line that exists on the box and was never declared. That reverse
+direction is live-only: timer-liveness.sh owns it for systemd, cron-liveness.sh
+for crontab - the same offline-audits-SOURCE / live-audits-RUNNING split the
+rest of the regime uses.
 
 HONEST LIMIT: this detector is OFFLINE, so `unit:` entries are enumerated from
 the declaration alone. Nothing here can see an installer unit that exists on
@@ -44,7 +61,7 @@ from ..model import FINDING, OK, DetectorResult, Verdict
 NAME = "c01_timer_deadman"
 CLASS_ID = "C-01"
 BOUNDARY = ("tracked scripts/*/systemd/*.timer UNION manifest/jobs.yaml:jobs "
-            "(incl. installer-generated units declared via `unit:`)")
+            "(incl. installer-generated units via `unit:` and crontab lines via `cron:`)")
 
 TIMER_GLOB = "scripts/*/systemd/*.timer"
 MIN_REASON_CHARS = 40
@@ -155,6 +172,7 @@ def detect(ctx) -> DetectorResult:
     verdicts: List[Verdict] = []
     monitored = adjudicated = open_gaps = 0
     external_units = 0
+    cron_jobs = 0
 
     for path in timers:
         unit = path.rsplit("/", 1)[-1][: -len(".timer")]
@@ -188,23 +206,35 @@ def detect(ctx) -> DetectorResult:
             adjudicated += 1
             open_gaps += 1
 
-    # Installer-generated units: declared by bare `unit:` name, no repo file.
-    # Held to the same written-answer standard via the same helper.
-    for job_id, job in sorted(jobs.items()):
-        job = job or {}
-        if not job.get("unit") or job.get("timer"):
-            continue
-        external_units += 1
-        iid = "jobs.yaml:" + job_id + ":unit"
-        verdict, bucket = _adjudicate(job, iid, "manifest/jobs.yaml", monitors)
-        verdicts.append(verdict)
-        if bucket == "monitored":
-            monitored += 1
-        elif bucket == "adjudicated":
-            adjudicated += 1
-        elif bucket == "open_gap":
-            adjudicated += 1
-            open_gaps += 1
+    # The two NON-repo scheduling planes, adjudicated through the SAME helper as
+    # repo-tracked timers. One loop over both rather than a copy per plane: a
+    # third near-identical block is how the standards drift apart, which is the
+    # defect this file keeps re-learning.
+    #
+    #   unit:  an installer-GENERATED systemd timer (heredoc, no file in git)
+    #   cron:  a CRONTAB line, which has no unit name at all
+    #
+    # Neither is cross-checked against the tracked-file set, because neither has
+    # a file by construction.
+    for plane in ("unit", "cron"):
+        for job_id, job in sorted(jobs.items()):
+            job = job or {}
+            if not job.get(plane) or job.get("timer"):
+                continue
+            if plane == "unit":
+                external_units += 1
+            else:
+                cron_jobs += 1
+            iid = "jobs.yaml:" + job_id + ":" + plane
+            verdict, bucket = _adjudicate(job, iid, "manifest/jobs.yaml", monitors)
+            verdicts.append(verdict)
+            if bucket == "monitored":
+                monitored += 1
+            elif bucket == "adjudicated":
+                adjudicated += 1
+            elif bucket == "open_gap":
+                adjudicated += 1
+                open_gaps += 1
 
     # The other direction: a jobs.yaml entry whose timer does not exist means
     # the ledger is describing a system that is gone. Scoped to entries that
@@ -214,20 +244,23 @@ def detect(ctx) -> DetectorResult:
     for job_id, job in sorted(jobs.items()):
         job = job or {}
         tpath = job.get("timer")
-        unit = job.get("unit")
-        if tpath and unit:
+        declared = [p for p in ("timer", "unit", "cron") if job.get(p)]
+        # EXACTLY ONE scheduling plane per entry. Two would be ambiguous about
+        # which mechanism actually runs it (and would let a cron entry borrow a
+        # timer's tracked-path cross-check); zero leaves nothing to adjudicate.
+        if len(declared) > 1:
             verdicts.append(Verdict(
                 instance_id="jobs.yaml:" + job_id, kind="incomplete-adjudication", status=FINDING,
                 path="manifest/jobs.yaml", lineno=0,
-                detail="job '" + job_id + "' declares BOTH timer: and unit: - ambiguous about "
-                       "whether the repo or an installer owns this unit",
+                detail="job '" + job_id + "' declares " + " and ".join(declared)
+                       + " - exactly one scheduling plane per entry",
             ))
             continue
-        if not tpath and not unit:
+        if not declared:
             verdicts.append(Verdict(
                 instance_id="jobs.yaml:" + job_id, kind="incomplete-adjudication", status=FINDING,
                 path="manifest/jobs.yaml", lineno=0,
-                detail="job '" + job_id + "' declares neither timer: nor unit: - nothing to adjudicate",
+                detail="job '" + job_id + "' declares no timer:, unit: or cron: - nothing to adjudicate",
             ))
             continue
         if tpath and tpath not in timer_set:
@@ -239,11 +272,12 @@ def detect(ctx) -> DetectorResult:
 
     return DetectorResult(
         boundary_name=BOUNDARY,
-        boundary_size=len(timers) + external_units,
+        boundary_size=len(timers) + external_units + cron_jobs,
         verdicts=verdicts,
         metrics={
             "timers": len(timers),
             "external_units": external_units,
+            "cron_jobs": cron_jobs,
             "jobs_declared": len(jobs),
             "monitored": monitored,
             "adjudicated_no_monitor": adjudicated,

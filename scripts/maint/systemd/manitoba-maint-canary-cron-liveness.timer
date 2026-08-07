@@ -1,0 +1,10 @@
+[Unit]
+Description=Manitoba canary - crontab ledger drift (hourly)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=180
+Persistent=true
+
+[Install]
+WantedBy=timers.target
