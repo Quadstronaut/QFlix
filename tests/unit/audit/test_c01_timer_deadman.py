@@ -24,17 +24,63 @@ def _timers(repo):
     )
 
 
+def _external_units(repo):
+    """The other half of the boundary, re-derived independently: entries that
+    declare a bare `unit:` instead of a repo-tracked `timer:` path."""
+    jobs = yaml.safe_load(repo.read("manifest/jobs.yaml"))["jobs"]
+    return sorted(k for k, v in jobs.items()
+                  if (v or {}).get("unit") and not (v or {}).get("timer"))
+
+
 def test_enumerates_every_timer_with_zero_omissions(ctx, repo):
     result = det.detect(ctx)
     timers = _timers(repo)
+    externals = _external_units(repo)
     assert timers, "no timers found — the boundary re-derivation is broken"
-    assert result.boundary_size == len(timers)
+    # The boundary is the UNION of both scheduling planes. Asserted as a sum of
+    # two INDEPENDENTLY re-derived counts, so neither half can silently shrink:
+    # before 2026-08-06 the external half did not exist as a concept and seven
+    # live installer-generated timers sat outside every enumeration.
+    assert result.boundary_size == len(timers) + len(externals)
+    assert result.metrics["external_units"] == len(externals)
     timer_verdicts = [v for v in result.verdicts if v.path.endswith(".timer")]
     assert len(timer_verdicts) == len(timers), (
         "detector emitted " + str(len(timer_verdicts)) + " timer verdicts for "
         + str(len(timers)) + " timers — an omission"
     )
     assert sorted(v.path for v in timer_verdicts) == timers
+    # Every external unit gets its own verdict too — same totality guarantee.
+    ext_verdicts = [v for v in result.verdicts if v.instance_id.endswith(":unit")]
+    assert len(ext_verdicts) == len(externals), (
+        "detector emitted " + str(len(ext_verdicts)) + " unit verdicts for "
+        + str(len(externals)) + " declared installer units — an omission"
+    )
+
+
+def test_a_unit_entry_is_never_orphaned(ctx, repo):
+    """The regression that made installer units inexpressible: a `unit:` entry
+    has no file in git by construction, so cross-checking it against the
+    tracked-timer set reported it as an orphan and the ledger punished honesty."""
+    result = det.detect(ctx)
+    externals = set(_external_units(repo))
+    orphans = [v.instance_id for v in result.verdicts
+               if v.kind == "orphan-job-entry"
+               and v.instance_id.split(":")[-1] in externals]
+    assert orphans == [], (
+        "installer-generated units reported as orphan-job-entry: " + str(orphans))
+
+
+def test_timer_and_unit_are_mutually_exclusive(ctx, repo):
+    """Declaring both is ambiguous about which side owns the unit, and would let
+    an entry satisfy the tracked-path cross-check while actually being installed
+    by a heredoc. Guarded so the vocabulary cannot be used to evade the check."""
+    jobs = yaml.safe_load(repo.read("manifest/jobs.yaml"))["jobs"]
+    both = [k for k, v in jobs.items()
+            if (v or {}).get("unit") and (v or {}).get("timer")]
+    assert both == [], "jobs declaring BOTH timer: and unit: " + str(both)
+    neither = [k for k, v in jobs.items()
+               if not (v or {}).get("unit") and not (v or {}).get("timer")]
+    assert neither == [], "jobs declaring NEITHER timer: nor unit: " + str(neither)
 
 
 def test_every_timer_is_adjudicated_one_way_or_the_other(ctx):

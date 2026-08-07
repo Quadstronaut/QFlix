@@ -10,6 +10,28 @@ manitoba-maint-flaresolverr-canary.timer is on disk but absent from
 manifest/apps.yaml:canaries, so whether an audit "saw" it depended on which
 file that run happened to open. The boundary here is the UNION of both sides,
 so neither can hide an entry from the other.
+
+2026-08-06 - THE LEDGER COULD NOT EXPRESS UNITS THE REPO DOES NOT OWN.
+The `timer:` field had to resolve to a repo-tracked path, so an
+installer-GENERATED unit (written by a configure-script heredoc, never a file
+in git) was not merely unmonitored, it was INEXPRESSIBLE: declaring one raised
+`orphan-job-entry`, so the ledger actively punished honesty. Seven such timers
+were live on the box and invisible to this detector AND to timer-liveness.sh,
+which derives its unit list from the same `timer:` paths - buildarr, kometa,
+logrotate, recyclarr, tdarr-node-pause, tdarr-node-resume, upgradinatorr.
+That is a vocabulary bug in the dead-man, not seven independent misses.
+
+Entries may now declare `unit:` (a bare unit name) INSTEAD of `timer:`. Such an
+entry is adjudicated identically - a monitor or a written reason - but is not
+expected to have a file in git, so it can never raise `orphan-job-entry`.
+An entry declaring NEITHER, or BOTH, is a finding: the first is an
+unadjudicatable stub, the second is ambiguous about which side owns the unit.
+
+HONEST LIMIT: this detector is OFFLINE, so `unit:` entries are enumerated from
+the declaration alone. Nothing here can see an installer unit that exists on
+the box and was never declared. That reverse direction is live-only and belongs
+to timer-liveness.sh, which runs on the box - the same offline-audits-SOURCE /
+live-audits-RUNNING split the rest of the regime already uses.
 """
 from __future__ import annotations
 
@@ -21,7 +43,8 @@ from ..model import FINDING, OK, DetectorResult, Verdict
 
 NAME = "c01_timer_deadman"
 CLASS_ID = "C-01"
-BOUNDARY = "tracked scripts/*/systemd/*.timer UNION manifest/jobs.yaml:jobs"
+BOUNDARY = ("tracked scripts/*/systemd/*.timer UNION manifest/jobs.yaml:jobs "
+            "(incl. installer-generated units declared via `unit:`)")
 
 TIMER_GLOB = "scripts/*/systemd/*.timer"
 MIN_REASON_CHARS = 40
@@ -62,18 +85,76 @@ def _known_monitors(repo) -> Set[str]:
     return names
 
 
+def _adjudicate(job: dict, iid: str, path: str, monitors: Set[str]) -> tuple:
+    """The written-answer test, shared by repo-tracked timers and `unit:` entries.
+
+    Returns (verdict, bucket) where bucket is one of "monitored",
+    "adjudicated", "open_gap" or None (a finding). Extracted verbatim from the
+    original inline block so `unit:` entries are held to the IDENTICAL standard
+    - a second, laxer copy of this logic would be exactly the two-policy-surface
+    defect this repo keeps getting bitten by.
+    """
+    monitor = job.get("kuma_monitor")
+    reason = (job.get("no_monitor_reason") or "").strip()
+
+    if monitor:
+        if monitor not in monitors:
+            return Verdict(
+                instance_id=iid, kind="unknown-monitor", status=FINDING,
+                path=path, lineno=0,
+                detail="kuma_monitor '" + monitor + "' resolves against neither apps.yaml nor "
+                       "STANDALONE_SELF_PUSH_MONITORS",
+            ), None
+        return Verdict(
+            instance_id=iid, kind="monitored", status=OK, path=path,
+            detail="dead-manned by " + monitor,
+        ), "monitored"
+
+    if len(reason) < MIN_REASON_CHARS:
+        return Verdict(
+            instance_id=iid, kind="incomplete-adjudication", status=FINDING,
+            path=path, lineno=0,
+            detail="no kuma_monitor and no_monitor_reason is " + str(len(reason))
+                   + " chars (need >= " + str(MIN_REASON_CHARS) + ")",
+        ), None
+    if not job.get("adjudicated") or not job.get("owner"):
+        return Verdict(
+            instance_id=iid, kind="incomplete-adjudication", status=FINDING,
+            path=path, lineno=0,
+            detail="no_monitor_reason present but adjudicated date and/or owner missing",
+        ), None
+
+    if job.get("open_gap"):
+        # Reported EVERY run, on purpose. `open_gap: true` moves a gap from
+        # unknown to known-dated-owned; it does not make it disappear.
+        return Verdict(
+            instance_id=iid, kind="open-gap", status=FINDING, path=path, lineno=0,
+            detail="adjudicated as a KNOWN, UNCLOSED dead-man gap (owner "
+                   + str(job.get("owner")) + ")",
+        ), "open_gap"
+    return Verdict(
+        instance_id=iid, kind="no-monitor-accepted", status=OK, path=path,
+        detail="adjudicated: no dead-man needed",
+    ), "adjudicated"
+
+
 def detect(ctx) -> DetectorResult:
     repo = ctx.repo
     timers = repo.tracked_matching([TIMER_GLOB])
     jobs: Dict[str, dict] = (ctx.ledgers.jobs.get("jobs") or {})
     monitors = _known_monitors(repo)
 
+    # Only `timer:` entries index by path. A `unit:` entry has no repo file by
+    # definition, so folding it in here would make it look like a path clash.
     by_timer_path = {}
     for job_id, job in sorted(jobs.items()):
-        by_timer_path[(job or {}).get("timer")] = (job_id, job or {})
+        tpath = (job or {}).get("timer")
+        if tpath:
+            by_timer_path[tpath] = (job_id, job or {})
 
     verdicts: List[Verdict] = []
     monitored = adjudicated = open_gaps = 0
+    external_units = 0
 
     for path in timers:
         unit = path.rsplit("/", 1)[-1][: -len(".timer")]
@@ -97,63 +178,59 @@ def detect(ctx) -> DetectorResult:
             continue
 
         job_id, job = entry
-        monitor = job.get("kuma_monitor")
-        reason = (job.get("no_monitor_reason") or "").strip()
-
-        if monitor:
-            if monitor not in monitors:
-                verdicts.append(Verdict(
-                    instance_id=iid, kind="unknown-monitor", status=FINDING,
-                    path=path, lineno=0,
-                    detail="kuma_monitor '" + monitor + "' resolves against neither apps.yaml nor "
-                           "STANDALONE_SELF_PUSH_MONITORS",
-                ))
-                continue
+        verdict, bucket = _adjudicate(job, iid, path, monitors)
+        verdicts.append(verdict)
+        if bucket == "monitored":
             monitored += 1
-            verdicts.append(Verdict(
-                instance_id=iid, kind="monitored", status=OK, path=path,
-                detail="dead-manned by " + monitor,
-            ))
-            continue
-
-        if len(reason) < MIN_REASON_CHARS:
-            verdicts.append(Verdict(
-                instance_id=iid, kind="incomplete-adjudication", status=FINDING,
-                path=path, lineno=0,
-                detail="no kuma_monitor and no_monitor_reason is " + str(len(reason))
-                       + " chars (need >= " + str(MIN_REASON_CHARS) + ")",
-            ))
-            continue
-        if not job.get("adjudicated") or not job.get("owner"):
-            verdicts.append(Verdict(
-                instance_id=iid, kind="incomplete-adjudication", status=FINDING,
-                path=path, lineno=0,
-                detail="no_monitor_reason present but adjudicated date and/or owner missing",
-            ))
-            continue
-
-        adjudicated += 1
-        if job.get("open_gap"):
+        elif bucket == "adjudicated":
+            adjudicated += 1
+        elif bucket == "open_gap":
+            adjudicated += 1
             open_gaps += 1
-            # Reported EVERY run, on purpose. `open_gap: true` moves a gap from
-            # unknown to known-dated-owned; it does not make it disappear.
-            verdicts.append(Verdict(
-                instance_id=iid, kind="open-gap", status=FINDING, path=path, lineno=0,
-                detail="adjudicated as a KNOWN, UNCLOSED dead-man gap (owner "
-                       + str(job.get("owner")) + ")",
-            ))
-        else:
-            verdicts.append(Verdict(
-                instance_id=iid, kind="no-monitor-accepted", status=OK, path=path,
-                detail="adjudicated: no dead-man needed",
-            ))
+
+    # Installer-generated units: declared by bare `unit:` name, no repo file.
+    # Held to the same written-answer standard via the same helper.
+    for job_id, job in sorted(jobs.items()):
+        job = job or {}
+        if not job.get("unit") or job.get("timer"):
+            continue
+        external_units += 1
+        iid = "jobs.yaml:" + job_id + ":unit"
+        verdict, bucket = _adjudicate(job, iid, "manifest/jobs.yaml", monitors)
+        verdicts.append(verdict)
+        if bucket == "monitored":
+            monitored += 1
+        elif bucket == "adjudicated":
+            adjudicated += 1
+        elif bucket == "open_gap":
+            adjudicated += 1
+            open_gaps += 1
 
     # The other direction: a jobs.yaml entry whose timer does not exist means
-    # the ledger is describing a system that is gone.
+    # the ledger is describing a system that is gone. Scoped to entries that
+    # actually claim a repo path - a `unit:` entry has no file by construction,
+    # and orphaning it is what made installer units inexpressible.
     timer_set = set(timers)
     for job_id, job in sorted(jobs.items()):
-        tpath = (job or {}).get("timer")
-        if tpath not in timer_set:
+        job = job or {}
+        tpath = job.get("timer")
+        unit = job.get("unit")
+        if tpath and unit:
+            verdicts.append(Verdict(
+                instance_id="jobs.yaml:" + job_id, kind="incomplete-adjudication", status=FINDING,
+                path="manifest/jobs.yaml", lineno=0,
+                detail="job '" + job_id + "' declares BOTH timer: and unit: - ambiguous about "
+                       "whether the repo or an installer owns this unit",
+            ))
+            continue
+        if not tpath and not unit:
+            verdicts.append(Verdict(
+                instance_id="jobs.yaml:" + job_id, kind="incomplete-adjudication", status=FINDING,
+                path="manifest/jobs.yaml", lineno=0,
+                detail="job '" + job_id + "' declares neither timer: nor unit: - nothing to adjudicate",
+            ))
+            continue
+        if tpath and tpath not in timer_set:
             verdicts.append(Verdict(
                 instance_id="jobs.yaml:" + job_id, kind="orphan-job-entry", status=FINDING,
                 path="manifest/jobs.yaml", lineno=0,
@@ -162,10 +239,11 @@ def detect(ctx) -> DetectorResult:
 
     return DetectorResult(
         boundary_name=BOUNDARY,
-        boundary_size=len(timers),
+        boundary_size=len(timers) + external_units,
         verdicts=verdicts,
         metrics={
             "timers": len(timers),
+            "external_units": external_units,
             "jobs_declared": len(jobs),
             "monitored": monitored,
             "adjudicated_no_monitor": adjudicated,

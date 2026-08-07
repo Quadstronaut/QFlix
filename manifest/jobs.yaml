@@ -15,6 +15,23 @@
 # FIELDS
 #   timer              repo-relative path to the .timer unit (cross-checked
 #                      both ways: a wrong path is a finding, not a silent pass)
+#   unit               ALTERNATIVE to `timer`, for an INSTALLER-GENERATED unit:
+#                      live on the box, written by a configure-script heredoc,
+#                      with no file in git. Bare unit name, e.g.
+#                      `upgradinatorr.timer`. Adjudicated to the identical
+#                      standard as `timer`, but never cross-checked against the
+#                      tracked-file set, because it has no file by construction.
+#                      Declaring BOTH, or NEITHER, is a finding.
+#
+#                      Added 2026-08-06. Before it, `timer` had to resolve to a
+#                      repo path, so an installer unit was not merely
+#                      unmonitored but INEXPRESSIBLE - declaring one raised
+#                      `orphan-job-entry`, i.e. the ledger punished honesty.
+#                      Seven were live and invisible to BOTH the offline C-01
+#                      detector and timer-liveness.sh (which enumerates from the
+#                      same `timer` paths): buildarr, kometa, logrotate,
+#                      recyclarr, tdarr-node-pause, tdarr-node-resume,
+#                      upgradinatorr. One vocabulary bug, not seven misses.
 #   kuma_monitor       the Kuma monitor that goes RED when this job stops. Must
 #                      resolve against manifest/apps.yaml (apps + canaries) or
 #                      lib/kuma.py:STANDALONE_SELF_PUSH_MONITORS, else finding.
@@ -324,3 +341,64 @@ jobs:
     open_gap: false
     adjudicated: 2026-07-29
     owner: operator
+
+  # ------------------------------------------- installer-generated (`unit:`)
+  # Live on the box, written by configure-script heredocs, no file in git.
+  # Enumerated 2026-08-06 by diffing `systemctl --user list-timers` (53 live)
+  # against this ledger (47 declared) - the diff nobody had run. Every one of
+  # these was outside BOTH the offline detector and timer-liveness.sh.
+
+  buildarr:
+    unit: buildarr.timer
+    kuma_monitor: "Buildarr"
+
+  kometa:
+    unit: kometa.timer
+    kuma_monitor: "Kometa"
+
+  recyclarr:
+    unit: recyclarr.timer
+    kuma_monitor: "Recyclarr"
+
+  upgradinatorr:
+    unit: upgradinatorr.timer
+    kuma_monitor: "Upgradinatorr"
+
+  logrotate:
+    unit: logrotate.timer
+    kuma_monitor: null
+    no_monitor_reason: >-
+      Ultra.cc panel-managed log rotation for the slot. If it stops, logs grow
+      until the quota canary (80% warn / 90% critical) fires - a real,
+      already-monitored downstream signal with days of headroom, not a silent
+      failure. A dedicated dead-man would duplicate the quota canary's concern
+      without adding a distinct signal.
+    open_gap: false
+    adjudicated: 2026-08-06
+    owner: operator
+
+  tdarr-node-pause:
+    unit: tdarr-node-pause.timer
+    kuma_monitor: null
+    no_monitor_reason: >-
+      The fair-use quiet-hours PAUSE half (18:00-23:00 UTC). It has no dead-man
+      and, worse, the one monitor that could notice is deliberately blinded
+      during exactly its window: pusher.py pushes "Tdarr Node" UP with
+      [paused: fair-use quiet hours] and SKIPS the probe, and
+      tdarr-healthcheck.sh sets its stall threshold above the 5h pause. So if
+      this timer is disabled, masked, or dropped by a slot rebuild, the node
+      transcodes straight through the streaming peak with every surface green.
+      The fix is to INVERT the pause-window predicate (assert the node is
+      INACTIVE during the window rather than skipping the probe), not to add a
+      timer dead-man. Tracked as an open gap until that lands.
+    open_gap: true
+    adjudicated: 2026-08-06
+    owner: operator
+
+  tdarr-node-resume:
+    unit: tdarr-node-resume.timer
+    # The RESUME half genuinely is dead-manned: if it fails to fire the node
+    # stays paused, and once the window closes the pusher stops suppressing the
+    # probe, so "Tdarr Node" goes red. Asymmetric with the pause half by nature
+    # - a stuck-PAUSED node becomes visible, a stuck-RUNNING one does not.
+    kuma_monitor: "Tdarr Node"
