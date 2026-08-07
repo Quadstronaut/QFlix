@@ -555,6 +555,19 @@ canaries:
     kuma_monitor: "Canary qBit Stall"
     script: "scripts/canaries/qbit-stall.sh"
     schedule: "every-15min"
+  tdarr-pause-integrity:
+    # Added 2026-08-06. The fair-use quiet-hours pause (18:00-23:00 UTC) had NO
+    # surface that could see it fail: pusher.py pushes "Tdarr Node" UP and skips
+    # the probe entirely inside the window (correctly - otherwise it auto-healed
+    # the node 2min into every pause), and tdarr-healthcheck.sh holds its stall
+    # threshold above the 5h pause. So a disabled/masked/rebuilt-away
+    # tdarr-node-pause.timer let the node transcode straight through the
+    # streaming peak with every monitor green. Asserts the missing direction:
+    # during the window the node must be INACTIVE. Detect-only - stopping it
+    # here would fight the pusher's suppression and the recovery breaker.
+    kuma_monitor: "Canary Tdarr Pause Integrity"
+    script: "scripts/canaries/tdarr-pause-integrity.sh"
+    schedule: "hourly"
   bazarr-ingest:
     # Added 2026-08-06. Both Bazarr instances hold a language profile their
     # config still points at, and hold >0 items whenever their *arr does.
