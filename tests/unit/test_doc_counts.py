@@ -178,8 +178,16 @@ def _faq_canary_table():
     faq = _read(FAQ)
     i = faq.find("canaries actually test")
     assert i != -1, "FAQ canary-table heading moved (update this guard)"
-    seg = faq[i:i + 12000]
-    body = seg[seg.find("<tbody>"):seg.find("</tbody>")]
+    # Bound by the ACTUAL <tbody>...</tbody>, not a fixed character window. The
+    # window used to be 12000 chars, which silently truncated the table as it
+    # grew: adding the 29th canary pushed dash-asset-integrity (a deliberately
+    # long row) past the cutoff and this guard reported it MISSING from a file
+    # it was plainly still in. A drift test whose own parser drifts is worse
+    # than no test — it accuses the document of the parser's bug.
+    start = faq.find("<tbody>", i)
+    end = faq.find("</tbody>", start)
+    assert start != -1 and end != -1, "FAQ canary table <tbody> not found after the heading"
+    body = faq[start:end]
     return {
         name: cadence.strip()
         for name, cadence in re.findall(
