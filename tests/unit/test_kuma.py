@@ -593,6 +593,11 @@ _AUDIT_METRICS = (
     # rather than what is in git. Present here or the drift audit correctly
     # reports it manifest_only.
     'monitor_status{monitor_id="12",monitor_name="QFlix Audit Live",monitor_type="push"} 1\n'
+    # "QFlix Entitlement Gate" joined STANDALONE_SELF_PUSH_MONITORS 2026-08-07:
+    # the only job that writes Plex share sections or Seerr permissions, so a
+    # silent stop strands new members unprovisioned AND lapsed ones unreduced.
+    # Present here or the drift audit correctly reports it manifest_only.
+    'monitor_status{monitor_id="13",monitor_name="QFlix Entitlement Gate",monitor_type="push"} 1\n'
 )
 
 
@@ -609,11 +614,11 @@ class TestAuditMonitors:
         # "QFlix Collect (workstation)" joined STANDALONE_SELF_PUSH_MONITORS
         # 2026-07-29 (it self-pushes from the box now, see lib/kuma.py) so it
         # must appear here too, matched rather than manifest_only.
-        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Live", "QFlix Audit Regime", "QFlix Collect (workstation)", "QFlix Fleet", "QFlix Reaper", "QFlix Torrent Janitor", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
+        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Live", "QFlix Audit Regime", "QFlix Collect (workstation)", "QFlix Entitlement Gate", "QFlix Fleet", "QFlix Reaper", "QFlix Torrent Janitor", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
         assert report["manifest_only"] == []
         assert report["kuma_only"] == []
-        assert report["live_count"] == 12
-        assert report["manifest_count"] == 12
+        assert report["live_count"] == 13
+        assert report["manifest_count"] == 13
 
     def test_audit_manifest_only(self, monkeypatch):
         from lib.kuma import audit_monitors
