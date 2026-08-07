@@ -470,6 +470,22 @@ def update_stale_state() -> list[str]:
             has_started = any((s.get("downloaded") or 0) > 0 for s in sm)
             rule = _matches_stale_sab_rule(state, sab_queue_paused, has_started)
             if rule is None:
+                # FORGET, don't just skip. `continue` alone leaves a previously
+                # tracked entry banked forever with its accrued
+                # consecutive_zero_hours, because nothing else prunes an entry
+                # that merely stopped matching -- the qBit path pops on progress
+                # (see above), the ghost-prune only fires when the id leaves the
+                # client entirely, and build_stuck_list reads this state
+                # verbatim. That is why 133 phantom rows survived the
+                # 2026-08-07 rule fix and would have kept the heartbeat
+                # reporting them stuck indefinitely.
+                #
+                # Convergent by construction: no longer eligible means no longer
+                # tracked. A queue paused for post-processing therefore resets
+                # the clock, which is correct -- while the queue is paused we
+                # cannot judge, and a genuinely stalled item re-accrues as soon
+                # as it resumes. Detection is delayed by the threshold, not lost.
+                hashes.pop(k, None)
                 continue
             # unstick's *arr-side DELETE flow can't fix a hung par2/unrar
             # step; these are tracked (feed the stuck list + C4 escalation)
