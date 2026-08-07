@@ -133,6 +133,9 @@ jobs:
   manitoba-maint-canary-bazarr-ingest:
     timer: scripts/maint/systemd/manitoba-maint-canary-bazarr-ingest.timer
     kuma_monitor: "Canary Bazarr Ingest"
+  manitoba-maint-canary-tdarr-pause-integrity:
+    timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-pause-integrity.timer
+    kuma_monitor: "Canary Tdarr Pause Integrity"
   manitoba-maint-canary-kometa-libraries:
     timer: scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.timer
     kuma_monitor: "Canary Kometa Libraries"
@@ -379,21 +382,19 @@ jobs:
 
   tdarr-node-pause:
     unit: tdarr-node-pause.timer
-    kuma_monitor: null
-    no_monitor_reason: >-
-      The fair-use quiet-hours PAUSE half (18:00-23:00 UTC). It has no dead-man
-      and, worse, the one monitor that could notice is deliberately blinded
-      during exactly its window: pusher.py pushes "Tdarr Node" UP with
-      [paused: fair-use quiet hours] and SKIPS the probe, and
-      tdarr-healthcheck.sh sets its stall threshold above the 5h pause. So if
-      this timer is disabled, masked, or dropped by a slot rebuild, the node
-      transcodes straight through the streaming peak with every surface green.
-      The fix is to INVERT the pause-window predicate (assert the node is
-      INACTIVE during the window rather than skipping the probe), not to add a
-      timer dead-man. Tracked as an open gap until that lands.
-    open_gap: true
-    adjudicated: 2026-08-06
-    owner: operator
+    # Dead-manned by EFFECT rather than by liveness, which is the right test
+    # here: what matters is not that this timer fired, but that the node is
+    # actually stopped during quiet hours. canary-tdarr-pause-integrity asserts
+    # exactly that and goes red if the node is ACTIVE inside the window.
+    #
+    # Declared open_gap: true earlier the same day, before that canary existed.
+    # The gap was real: pusher.py pushes "Tdarr Node" UP and SKIPS the probe
+    # inside the window (correctly - otherwise it auto-healed the node 2min into
+    # every pause), and tdarr-healthcheck.sh holds its stall threshold above the
+    # 5h pause. Every surface was blinded during exactly the interval that
+    # mattered, so a disabled or rebuilt-away timer let the node transcode
+    # through the streaming peak with everything green.
+    kuma_monitor: "Canary Tdarr Pause Integrity"
 
   tdarr-node-resume:
     unit: tdarr-node-resume.timer

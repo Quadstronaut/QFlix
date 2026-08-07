@@ -34,6 +34,14 @@ WATCHED=(
   "kometa|$HOME/.apps/kometa/config/logs/meta.log|129600"
   "recyclarr|$HOME/.apps/recyclarr/logs/recyclarr.log|907200"
   "buildarr|$HOME/.apps/buildarr/logs/buildarr.log|129600"
+  # Weekly (Sun 06:00 UTC), same 1.5x-cadence threshold as recyclarr. Added
+  # 2026-08-06: upgradinatorr was the only cron-class app in manifest/apps.yaml
+  # absent from this table despite writing four dated logs, and its own monitor
+  # cannot cover the gap - _probe_systemd_oneshot treats Result=success from a
+  # run three months ago identically to one five minutes ago, so a timer that
+  # stopped scheduling reads green forever. All four logs are written in the
+  # same run, so watching one is sufficient.
+  "upgradinatorr|$HOME/.apps/upgradinatorr/logs/sonarr.log|907200"
 )
 NOW=$(date -u +%s)
 FAILED=()

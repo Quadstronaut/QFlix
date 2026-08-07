@@ -186,6 +186,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-sab-stall.timer \
     scripts/maint/systemd/manitoba-maint-canary-bazarr-ingest.service \
     scripts/maint/systemd/manitoba-maint-canary-bazarr-ingest.timer \
+    scripts/maint/systemd/manitoba-maint-canary-tdarr-pause-integrity.service \
+    scripts/maint/systemd/manitoba-maint-canary-tdarr-pause-integrity.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-scanner.service \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-scanner.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-healthcheck.service \
@@ -224,6 +226,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/thread-ceiling.sh \
     scripts/canaries/sab-stall.sh \
     scripts/canaries/bazarr-ingest.sh \
+    scripts/canaries/tdarr-pause-integrity.sh \
     scripts/canaries/tdarr-scanner.sh \
     scripts/canaries/tdarr-healthcheck.sh \
     scripts/canaries/ucc-gate-stuck.sh \
@@ -518,6 +521,8 @@ for unit in \
     manitoba-maint-canary-sab-stall.timer \
     manitoba-maint-canary-bazarr-ingest.service \
     manitoba-maint-canary-bazarr-ingest.timer \
+    manitoba-maint-canary-tdarr-pause-integrity.service \
+    manitoba-maint-canary-tdarr-pause-integrity.timer \
     manitoba-maint-canary-tdarr-scanner.service \
     manitoba-maint-canary-tdarr-scanner.timer \
     manitoba-maint-canary-tdarr-healthcheck.service \
@@ -725,6 +730,15 @@ systemctl --user enable --now manitoba-maint-canary-tdarr-healthcheck.timer
 # dangling default profile, zero enabled languages, and a *arr holding items
 # the Bazarr side does not.
 systemctl --user enable --now manitoba-maint-canary-bazarr-ingest.timer
+# Tdarr fair-use pause integrity — hourly. The quiet-hours pause (18:00–23:00
+# UTC) had NO surface that could see it FAIL: pusher.py pushes "Tdarr Node" UP
+# and skips the probe entirely inside the window (correct — otherwise it
+# auto-healed the node 2min into every pause), and tdarr-healthcheck.sh holds
+# its stall threshold above the 5h pause. A disabled or rebuilt-away
+# tdarr-node-pause.timer therefore let the node transcode straight through the
+# streaming peak with every monitor green. Asserts the node is INACTIVE during
+# the window; first hour is grace. Detect-only.
+systemctl --user enable --now manitoba-maint-canary-tdarr-pause-integrity.timer
 # QFlix hourly collector — snapshot + stale-detect + autonomous unstick + Kuma
 # heartbeat. Migrated off the workstation 2026-07-09 (was Windows Task
 # \QFlix\Hourly Collect, now disabled). Feeds the "QFlix Collect (workstation)"
@@ -871,7 +885,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity plex-transcoder plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-pause-integrity kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity plex-transcoder plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
