@@ -91,6 +91,19 @@ for name, v in (d.get("jobs") or {}).items():
     t = v.get("timer")
     if t:
         out.append(os.path.basename(t))
+        continue
+    # `unit:` declares an INSTALLER-GENERATED timer: live on the box, written by
+    # a configure-script heredoc, with no file in git. Added 2026-08-06 together
+    # with the C-01 vocabulary change. Before it, seven such timers (buildarr,
+    # kometa, logrotate, recyclarr, tdarr-node-pause, tdarr-node-resume,
+    # upgradinatorr) were unreachable by BOTH the offline detector and this
+    # canary, because both enumerate from the same `timer:` paths. Declaring one
+    # used to raise orphan-job-entry, so the ledger punished honesty and the
+    # units stayed invisible. They are liveness-checked here exactly like any
+    # other declared timer.
+    u = v.get("unit")
+    if u:
+        out.append(os.path.basename(str(u)))
 print("\n".join(sorted(set(out))))
 PY
 ) || { echo "STAGE=timer-read-fail msg=could-not-parse-jobs-manifest" >&2; exit 1; }

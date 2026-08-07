@@ -43,11 +43,21 @@ classes:
         from manifest/apps.yaml:canaries. Whether an audit saw it depended on
         which files that run happened to open.
     rule: >-
-      Every tracked scripts/*/systemd/*.timer must have a manifest/jobs.yaml
-      entry declaring either a kuma_monitor that resolves to a real monitor, or
-      a no_monitor_reason with an owner and an adjudication date.
+      Every tracked scripts/*/systemd/*.timer, and every manifest/jobs.yaml
+      entry declaring a bare `unit:` (an installer-generated timer with no file
+      in git), must declare either a kuma_monitor that resolves to a real
+      monitor, or a no_monitor_reason with an owner and an adjudication date.
+      An entry declaring both `timer:` and `unit:`, or neither, is a finding.
     boundary:
-      description: glob scripts/*/systemd/*.timer (tracked) UNION manifest/jobs.yaml:jobs
+      description: >-
+        glob scripts/*/systemd/*.timer (tracked) UNION manifest/jobs.yaml:jobs,
+        the latter including entries declared by bare `unit:` name. Widened
+        2026-08-06: `timer:` had to resolve to a repo path, so installer-
+        generated units were INEXPRESSIBLE rather than merely unmonitored --
+        declaring one raised orphan-job-entry. Seven were live and outside both
+        this detector and timer-liveness.sh. The reverse direction (a unit live
+        on the box that nothing declares) is live-only and belongs to
+        timer-liveness.sh, not here.
       offline: true
     waivers: []
 
