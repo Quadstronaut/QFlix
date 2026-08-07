@@ -369,7 +369,7 @@ def _confirm_mute_live(api, mid):
         return None
 
 
-def _mute_monitor_names(api) -> list:
+def _mute_monitor_names(api, created_names=None) -> list:
     """Names of active monitors carrying ZERO notification channels.
 
     The post-reconcile assertion. Kept separate from
@@ -378,16 +378,41 @@ def _mute_monitor_names(api) -> list:
     of the world cannot catch the actor missing a monitor entirely, which is the
     failure it exists to catch.
 
-    Enumeration still comes from the cached list (there is no other way to learn
-    that a monitor exists), but every accusation is re-checked live — see
-    _confirm_mute_live. An unconfirmable monitor stays ACCUSED: the whole point
-    of the check is to fail loud on what it cannot vouch for."""
+    Enumeration comes from the cached list PLUS `created_names` — the monitors
+    this very run created. That union is load-bearing, not belt-and-braces: the
+    cache is refreshed over a socket, so a monitor created seconds ago may be
+    ABSENT from it entirely, and an absent monitor is not checked, not accused,
+    and not printed — it just silently does not exist as far as this verifier is
+    concerned, which is how the function returns [] and the caller prints
+    "verified: every active monitor has notification channels" over a monitor
+    that has none.
+
+    That is not hypothetical and it is not fixed by the re-read/retry above it:
+    "Canary Dash Asset Integrity" was born mute on 2026-07-30 with this function
+    already in place, and on 2026-08-07 "Canary Tdarr Pause Integrity" did it
+    again — run 1 created it, attached NOTHING, and printed the verified line;
+    run 2 reported `+ channels [1, 2] (was NONE)`. Third occurrence of one class.
+    A verifier whose enumeration can miss the exact monitors most likely to be
+    broken (the new ones) is not a verifier.
+
+    A created-this-run monitor that the cache cannot show is UNCONFIRMABLE and
+    is therefore ACCUSED, per this function's own standing rule: fail loud on
+    what it cannot vouch for. Failing closed here costs one extra bootstrap run
+    on a fresh monitor; failing open costs a monitor that pages nobody."""
     mute = []
+    created_names = set(created_names or ())
     try:
         monitors = api.get_monitors()
     except Exception as exc:
         print(f"  [warn] could not re-read monitors to verify: {exc}")
-        return []
+        # Cannot vouch for anything — but we KNOW what we created, so those are
+        # still accused rather than waved through on a failed read.
+        return sorted(created_names)
+    seen = {m.get("name") for m in monitors}
+    for name in sorted(created_names - seen):
+        print(f"  [unconfirmable]{name:30s} created this run but absent from the "
+              f"monitor list — cannot verify its channels")
+        mute.append(name)
     for m in monitors:
         if not m.get("active", True):
             continue
@@ -520,6 +545,14 @@ def main() -> int:
     # 2026-07-30: scheduled, running, exit 0, pushing nothing, monitor DOWN with
     # "No heartbeat in the time window" and zero real coverage.
     created_tokens: dict[str, str] = {}
+    # EVERY create, whether or not its token came back. Tracked separately
+    # from created_tokens on purpose: that dict only gains a key when the
+    # token was captured, and a monitor created WITHOUT one is precisely the
+    # case that ships mute (2026-08-07 - Canary Tdarr Pause Integrity was
+    # created tokenless on run 1 and the verifier printed "verified" over it).
+    # Keying the mute check off created_tokens would miss exactly the monitors
+    # most likely to be broken.
+    created_names: set = set()
 
     for app in manifest.apps():
         target = app.kuma_monitor
@@ -531,6 +564,7 @@ def main() -> int:
             continue
         try:
             tok = _add_push_monitor(api, target)
+            created_names.add(target)
             if tok:
                 created_tokens[target] = tok
             print(f"  [add]{target:25s} PUSH (token={'yes' if tok else 'pending'})")
@@ -554,6 +588,7 @@ def main() -> int:
             continue
         try:
             tok = _add_push_monitor(api, target, interval=hb)
+            created_names.add(target)
             if tok:
                 created_tokens[target] = tok
             print(f"  [add]{target:25s} PUSH (canary, hb={hb}s, "
@@ -579,6 +614,7 @@ def main() -> int:
             continue
         try:
             tok = _add_push_monitor(api, mon_name, interval=_STANDALONE_HB_S)
+            created_names.add(mon_name)
             if tok:
                 created_tokens[mon_name] = tok
             print(f"  [add]{mon_name:25s} PUSH (standalone janitor, "
@@ -743,11 +779,14 @@ def main() -> int:
     # still mute, FAIL the run. A non-zero exit makes 240-maintenance-install.sh
     # print its "monitors may be incomplete" warning instead of reporting success
     # over a silent monitor.
-    mute = _mute_monitor_names(api)
+    # created_names is every monitor this run CREATED, token or not. Passing it
+    # in is what stops a cache miss from reading as "nothing to check" — see
+    # _mute_monitor_names for the three times that silently shipped a mute guard.
+    mute = _mute_monitor_names(api, created_names)
     if mute:
         print(f"  [retry] {len(mute)} monitor(s) still mute after reconcile: {', '.join(mute)}")
         attached += _ensure_notifications_attached(api)
-        mute = _mute_monitor_names(api)
+        mute = _mute_monitor_names(api, created_names)
     if mute:
         print(f"\nFATAL: {len(mute)} active monitor(s) have NO notification channels:")
         for name in mute:

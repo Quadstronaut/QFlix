@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - per-member stream-cap crons still running (kill_stream + stream_stats)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push stream-cap-liveness
+StandardOutput=journal
+StandardError=journal
