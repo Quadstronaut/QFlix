@@ -555,6 +555,19 @@ canaries:
     kuma_monitor: "Canary qBit Stall"
     script: "scripts/canaries/qbit-stall.sh"
     schedule: "every-15min"
+  unstick-rate:
+    # Added 2026-08-07 after the autonomous unstick DELETED AND BLOCKLISTED ten
+    # legitimate releases in one run with no alert anywhere. Watches the ACTION,
+    # not the rule: a guard on the rule only catches the failure it was written
+    # for, whereas watching the destructive outcome catches every cause. WARN at
+    # 3 actions/day, FAIL at 5, and ALWAYS on reaching the daily cap - hitting
+    # the cap means the system wanted to do MORE than allowed, which is what a
+    # runaway rule looks like. Cap-reached is tested separately from the numeric
+    # threshold so raising the operator-tunable cap cannot silently raise the
+    # alarm with it.
+    kuma_monitor: "Canary Unstick Rate"
+    script: "scripts/canaries/unstick-rate.sh"
+    schedule: "hourly"
   cron-liveness:
     # Added 2026-08-07. The LIVE half of the crontab plane: the offline C-01
     # detector reads jobs.yaml `cron:` declarations and demands a dead-man
