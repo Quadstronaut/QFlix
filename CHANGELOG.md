@@ -1,5 +1,67 @@
 # Changelog
 
+## 2026-08-07 — Seventeen scheduled things the dead-man could not even describe
+
+A fleet audit across four dimensions — stable, reporting, monitored, logged —
+found no broken components. It found something more durable: a **vocabulary
+bug**. Three of its confirmed gaps were not oversights but consequences of one
+enumeration boundary that could not express what was actually running.
+
+**The boundary.** `manifest/jobs.yaml` is the timer↔dead-man ledger, and its
+`timer:` field had to resolve to a **repo-tracked path**. Anything scheduled by
+another mechanism was therefore not merely unmonitored — it was *inexpressible*.
+Declaring an installer-generated unit raised `orphan-job-entry`, so the ledger
+actively punished honesty about it.
+
+Diffing `systemctl --user list-timers` (53 live) against the ledger (47
+declared) — the diff nobody had run — surfaced **seven**: `buildarr`, `kometa`,
+`logrotate`, `recyclarr`, `tdarr-node-pause`, `tdarr-node-resume`,
+`upgradinatorr`. All written by configure-script heredocs, none in git. And
+because `timer-liveness.sh` derives its unit list from those same `timer:`
+paths, the same seven were outside the **live** check too. Plus **ten crontab
+entries** in a scheduling plane the ledger does not model at all.
+
+**Fix.** Entries may now declare a bare `unit:` instead of `timer:` — adjudicated
+to the identical standard through a helper extracted from the inline block
+rather than a second copy of it, never cross-checked against the tracked-file
+set, and declaring *both* or *neither* is itself a finding so the new vocabulary
+cannot be used to evade the path check. `timer-liveness.sh` consumes it too, so
+declaring a unit causes something to actually watch it. Live: **46/46 → 53/53**
+timers loaded, active and scheduled.
+
+**The sharpest find.** `tdarr-node` is deliberately stopped 18:00–23:00 UTC so
+transcoding does not compete with the streaming peak. Every surface that could
+notice that pause *failing* is blinded during exactly that window, correctly:
+`pusher.py` pushes "Tdarr Node" **up** and skips probe and recovery inside it
+(without which it auto-healed the node ~2 min into every pause), and
+`tdarr-healthcheck.sh` holds its stall threshold above the 5 h pause. So a
+disabled or rebuilt-away `tdarr-node-pause.timer` let the node grind through the
+busiest streaming hours with **every monitor green**, and the pause half had no
+dead-man: a stuck-*paused* node reds when the window closes, a stuck-*running*
+one never does.
+
+`canary-tdarr-pause-integrity` asserts the missing direction — inside the
+window, the node must be INACTIVE. Deliberately its own module rather than an
+inverted predicate inside `pusher.py`: that file is the alerting hot path for all
+35 app monitors, and a bug in a new branch there pages falsely on every app,
+every cycle. The window is read from `manifest/apps.yaml`, never restated — that
+number already lives in three places. First hour is grace, reported as a named
+skip. Mutation-proved against real state: forcing the enforced hour while the
+node was genuinely running fired exit 1.
+
+**Also closed.** `upgradinatorr` was the only cron-class app in `apps.yaml`
+missing from `stale-log-watchdog.sh`, and its own monitor cannot cover the gap —
+`_probe_systemd_oneshot` reads the unit's `Result`, and `Result=success` from
+three months ago is indistinguishable from five minutes ago, so a timer that
+stopped being scheduled reads green forever.
+
+**Corrections the audit's own critic earned.** `listmonk.service NRestarts=80`
+looked like the one stability defect; it is cumulative and the unit has been up
+since 2026-07-08 with no restart events in 7 days. The fleet has zero current
+stability defects. And `recyclarr`/`maint-window` reading zero in vlogs are not
+routing breaks — one is weekly, the other Monday-only. Alert delivery is clean:
+zero of 70 active monitors lack a notification channel.
+
 ## 2026-08-06 — The anime Bazarr held zero series for twelve days, green the whole way
 
 Anime and Anime Movies got no subtitles between 2026-07-25 and 2026-08-06.
