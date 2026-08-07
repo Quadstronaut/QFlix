@@ -89,6 +89,28 @@ DEFAULT_NEW_ARRIVAL_DAYS = 30
 # Discord countdown before anything is taken away.
 LAUNCH_FLOOR_DAYS = 7
 
+# Minimum days between this system FIRST RECORDING an account and being allowed
+# to reduce it -- whatever cohort it is in, whatever its clocks say.
+#
+# The bug this closes: `first_seen_accepted` is Plex's real `acceptedAt`, which
+# is historical. An account row that goes missing from state.json while
+# `first_run_at` survives re-seeds as COHORT_ARRIVAL anchored to that historical
+# date, so `acceptedAt + new_arrival_days` can land MONTHS in the past and the
+# account is reducible on the very first clean NO -- with zero of its promised
+# thirty days. LAUNCH_FLOOR_DAYS did not cover it, because that guards the
+# launch cohort only.
+#
+# The real invariant is not about cohorts at all: we must never reduce an
+# account we have only just started tracking, because "just started tracking"
+# means our clocks for it are reconstructions rather than observations. Keyed on
+# `first_recorded_at` -- OUR wall clock -- not on anything Plex reports.
+#
+# Realistic triggers, none exotic: a member changes their Plex account email
+# (state is keyed by email, so the old row is orphaned and a new one appears);
+# a restore from a state.json backup predating that member; a partial write; a
+# hand-edit.
+TRACKING_FLOOR_DAYS = 7
+
 
 def utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
@@ -144,6 +166,12 @@ class AccountState:
     """Everything remembered about one Plex account email."""
 
     first_seen_accepted: Optional[dt.datetime] = None
+    # When WE first wrote this account down. Distinct from first_seen_accepted,
+    # which is Plex's historical acceptedAt. The difference is the whole point:
+    # one is an observation of the past, the other is when our clocks for this
+    # account started being real rather than reconstructed. See
+    # TRACKING_FLOOR_DAYS.
+    first_recorded_at: Optional[dt.datetime] = None
     cohort: str = COHORT_ARRIVAL
     last_entitled_at: Optional[dt.datetime] = None
     went_false_at: Optional[dt.datetime] = None
@@ -168,6 +196,7 @@ class AccountState:
     def to_json(self) -> dict:
         return {
             "first_seen_accepted": to_iso(self.first_seen_accepted),
+            "first_recorded_at": to_iso(self.first_recorded_at),
             "cohort": self.cohort,
             "last_entitled_at": to_iso(self.last_entitled_at),
             "went_false_at": to_iso(self.went_false_at),
@@ -191,6 +220,7 @@ class AccountState:
         perms = d.get("seerr_perms_prior")
         return cls(
             first_seen_accepted=from_iso(d.get("first_seen_accepted")),
+            first_recorded_at=from_iso(d.get("first_recorded_at")),
             cohort=cohort,
             last_entitled_at=from_iso(d.get("last_entitled_at")),
             went_false_at=from_iso(d.get("went_false_at")),
@@ -326,6 +356,7 @@ class AccessState:
                 st.first_seen_accepted = accepted_at
             else:
                 st.first_seen_accepted = now
+            st.first_recorded_at = now
             st.cohort = COHORT_LAUNCH if first else COHORT_ARRIVAL
             added.append(email)
             self.dirty = True
@@ -477,6 +508,22 @@ class AccessState:
 
         if st and st.ever_entitled and st.went_false_at is not None:
             candidates.append(st.went_false_at + dt.timedelta(days=grace_days))
+
+        # THE UNIVERSAL TRACKING FLOOR. Applies to every cohort, unconditionally.
+        #
+        # Every other candidate above is derived from a date this system did not
+        # witness: Plex's historical acceptedAt, or a roster field. This one is
+        # the only clock anchored to OUR observation, and it is what makes a
+        # freshly-recorded account un-reducible regardless of how the others
+        # compute. Without it, an account re-seeded from a historical acceptedAt
+        # is reducible on its first clean NO with zero grace.
+        #
+        # Falls back to first_run_at then now, so an account that predates this
+        # field (state written by an older version) is protected rather than
+        # exposed by the upgrade.
+        recorded = (st.first_recorded_at if st and st.first_recorded_at
+                    else self.first_run_at or now)
+        candidates.append(recorded + dt.timedelta(days=TRACKING_FLOOR_DAYS))
 
         return max(candidates)
 
