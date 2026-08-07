@@ -265,3 +265,54 @@ def test_every_canary_declares_a_kuma_monitor_and_a_schedule():
     bad = [c.name for c in _canaries()
            if not (c.kuma_monitor or "").strip() or not (c.schedule or "").strip()]
     assert not bad, "canaries missing kuma_monitor or schedule: %s" % sorted(bad)
+
+
+# --- the SAME closure property, one layer down: python imports ---------------
+
+
+def _staged_lib_modules():
+    """lib/*.py module names handed to `tar -cf -` in Step 4."""
+    return set(re.findall(r"scripts/maint/lib/([A-Za-z0-9_]+)\.py", _installer()))
+
+
+def _local_lib_modules():
+    d = os.path.join(REPO_ROOT, "scripts", "maint", "lib")
+    return {f[:-3] for f in os.listdir(d) if f.endswith(".py")}
+
+
+def test_every_lib_module_a_deployed_script_imports_is_tar_staged():
+    """Units are not the only thing the installer can under-stage.
+
+    `test_every_unit_the_installer_touches_is_tar_staged` guards systemd units.
+    This is the identical property one layer down: a python module that a
+    deployed script IMPORTS but the installer never STAGES. The failure is
+    quieter than the unit one — no `set -e` abort at install time, just a
+    ModuleNotFoundError on every run afterwards, on a box that was rebuilt or
+    freshly deployed.
+
+    Found live 2026-08-07: `lib/members.py` is imported by BOTH
+    qflix-entitlement.py and patreon-report.py and was staged ZERO times. It
+    existed on the seedbox only because someone had scp'd it by hand, so the
+    repo read as if a fresh deploy would work and it would not have. The gap
+    predates the entitlement gate — patreon-report.py has imported it all along.
+    """
+    staged = _staged_lib_modules()
+    local = _local_lib_modules()
+    maint_dir = os.path.join(REPO_ROOT, "scripts", "maint")
+    sources = [os.path.join(maint_dir, f) for f in os.listdir(maint_dir) if f.endswith(".py")]
+    sources += [os.path.join(maint_dir, "lib", f + ".py") for f in sorted(local)]
+
+    missing = {}
+    for path in sources:
+        src = _read(path)
+        imported = set(re.findall(r"^\s*import\s+([a-z_][a-z0-9_]*)", src, re.M))
+        imported |= set(re.findall(r"^\s*from\s+([a-z_][a-z0-9_]*)\s+import", src, re.M))
+        imported |= set(re.findall(r"^\s*from\s+lib\.([a-z_][a-z0-9_]*)\s+import", src, re.M))
+        for name in imported:
+            if name in local and name not in staged:
+                missing.setdefault(name, set()).add(os.path.basename(path))
+    assert missing == {}, (
+        "lib modules imported by a deployed script but never tar-staged — a "
+        "fresh deploy raises ModuleNotFoundError at RUN time, long after the "
+        "installer reported success: "
+        + str({k: sorted(v) for k, v in sorted(missing.items())}))
