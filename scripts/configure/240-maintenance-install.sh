@@ -112,6 +112,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/access_state.py \
     scripts/maint/lib/plexshare.py \
     scripts/maint/lib/seerrusers.py \
+    scripts/maint/lib/members.py \
     scripts/maint/prune-app-backups.sh \
     scripts/maint/qflix-collect.py \
     scripts/maint/qflix-entitlement.py \
