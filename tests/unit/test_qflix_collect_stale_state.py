@@ -692,3 +692,27 @@ def test_sab_slot_that_started_mid_window_counts_as_started(monkeypatch, tmp_pat
     candidates, hashes = _run(monkeypatch, tmp_path)
     assert candidates == [], "a slot making progress is not stuck"
     assert sid not in hashes
+
+
+def test_a_tracked_sab_entry_is_FORGOTTEN_once_it_stops_matching(monkeypatch, tmp_path):
+    """Convergence. `continue` alone left an entry banked with its accrued
+    consecutive_zero_hours forever: the qBit path pops on progress, the
+    ghost-prune only fires when the id leaves the client, and build_stuck_list
+    reads this state verbatim. That is exactly how 133 phantom rows survived the
+    2026-08-07 rule fix and would have kept the heartbeat reporting them stuck.
+
+    Here the slot is pre-tracked, then becomes ineligible (never received a
+    byte). It must be dropped, not merely skipped."""
+    sid = "SABnzbd_nzo_wasflagged"
+    snaps = [_snapshot([], sab_slots=[_sab_slot(sid, 0, state="Downloading")])
+             for _ in range(3)]
+    seeded = {sid: {"first_zero_movement_at": "2026-08-07T20:00:00Z",
+                    "consecutive_zero_hours": 5, "last_progress": 0.0,
+                    "rule_matched": "sab-zero-movement",
+                    "candidate_for_unstick": True, "acted_on_at": None,
+                    "kind": "sab"}}
+    _seed(tmp_path, snaps, seeded)
+    candidates, hashes = _run(monkeypatch, tmp_path)
+    assert candidates == []
+    assert sid not in hashes, (
+        "a no-longer-matching entry must be forgotten, or it reports stuck forever")
