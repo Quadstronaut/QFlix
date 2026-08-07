@@ -1,0 +1,22 @@
+[Unit]
+Description=Manitoba maint - QFlix entitlement gate (every 15 minutes)
+
+[Timer]
+# Every 15 minutes, offset off the quarter-hour so it does not collide with the
+# hourly collector at :00. A new supporter reaches full access within a quarter
+# hour of the entitlement API seeing them, which is the responsiveness the
+# operator's manual-invite flow needs -- the person is usually still sitting
+# there when it lands.
+#
+# Cost check: ~14 households, one lookup each, four times an hour is about 4%
+# of the entitlement API's 120-requests-per-minute-per-key budget.
+OnCalendar=*-*-* *:07,22,37,52:00 UTC
+RandomizedDelaySec=90
+# Deliberately NOT Persistent. A catch-up burst after downtime would fire
+# several runs back to back; there is nothing to catch up on, because the gate
+# reconciles current state rather than processing a queue of events.
+Persistent=false
+Unit=manitoba-maint-entitlement.service
+
+[Install]
+WantedBy=timers.target

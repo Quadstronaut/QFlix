@@ -108,8 +108,15 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/ucc.py \
     scripts/maint/lib/ucc_incident.py \
     scripts/maint/lib/ucc_response.py \
+    scripts/maint/lib/entitlement.py \
+    scripts/maint/lib/access_state.py \
+    scripts/maint/lib/plexshare.py \
+    scripts/maint/lib/seerrusers.py \
     scripts/maint/prune-app-backups.sh \
     scripts/maint/qflix-collect.py \
+    scripts/maint/qflix-entitlement.py \
+    scripts/maint/systemd/manitoba-maint-entitlement.service \
+    scripts/maint/systemd/manitoba-maint-entitlement.timer \
     scripts/maint/systemd/qflix-collect.service \
     scripts/maint/systemd/qflix-collect.timer \
     scripts/maint/systemd/manitoba-maint-webhook.service \
@@ -271,6 +278,12 @@ chmod +x ~/scripts/maint/qflix-collect.py
 # (added 2026-07-27). Ships DRY-RUN; armed via an on-box drop-in like the reaper.
 cp -f "$STG"/scripts/maint/qflix-torrent-janitor.py ~/scripts/maint/qflix-torrent-janitor.py
 chmod +x ~/scripts/maint/qflix-torrent-janitor.py
+# Entitlement gate. Ships REPORT-ONLY: the unit passes no --execute, and arming
+# additionally requires `armed: true` in secrets/members.yaml. Two switches,
+# because either one alone is something a deploy or a hand-edit could flip
+# without meaning to — the same ritual as the reaper and the torrent janitor.
+cp -f "$STG"/scripts/maint/qflix-entitlement.py ~/scripts/maint/qflix-entitlement.py
+chmod +x ~/scripts/maint/qflix-entitlement.py
 
 # COUNCIL FINDING: the box was running DIFFERENT code from the repo for
 # these. qflix-anime-janitor.py was staged into $STG and never copied out;
@@ -461,6 +474,8 @@ sshm 'bash -s' <<'UNITSCRIPT'
 set -euo pipefail
 mkdir -p ~/.config/systemd/user
 for unit in \
+    manitoba-maint-entitlement.service \
+    manitoba-maint-entitlement.timer \
     manitoba-maint-webhook.service \
     manitoba-maint-window.service \
     manitoba-maint-window.timer \
@@ -757,6 +772,12 @@ systemctl --user enable --now manitoba-maint-canary-stream-cap-liveness.timer
 # push monitor from the always-on box so a PC-off no longer false-reds the
 # public status page. --now activates the hourly schedule.
 systemctl --user enable --now qflix-collect.timer
+# Entitlement gate — every 15 min at :07/:22/:37/:52 UTC. Report-only until
+# BOTH an --execute drop-in and `armed: true` in secrets/members.yaml. Its
+# dead-man is the "QFlix Entitlement Gate" self-push monitor, registered in
+# lib/kuma.py with a 1h heartbeat override — the 24h standalone default would
+# let a 15-minute job be dead for a full day while its monitor sat green.
+systemctl --user enable --now manitoba-maint-entitlement.timer
 # Boot-time listener snapshot — pulled in by default.target, runs once per boot
 # to log TCP-listener occupancy (identifies a port squatter after a reboot; see
 # memory qbit-webui-boot-bind-race). Plain `enable` (NOT --now): it's a ~3min
