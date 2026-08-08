@@ -185,6 +185,9 @@ jobs:
   manitoba-maint-canary-cron-liveness:
     timer: scripts/maint/systemd/manitoba-maint-canary-cron-liveness.timer
     kuma_monitor: "Canary Cron Liveness"
+  manitoba-maint-canary-tdarr-transcode-error:
+    timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-error.timer
+    kuma_monitor: "Canary Tdarr Transcode Error"
   manitoba-maint-canary-entitlement-service:
     timer: scripts/maint/systemd/manitoba-maint-canary-entitlement-service.timer
     # Watches the entitlement API the gate reads. Note this is the dead-man for

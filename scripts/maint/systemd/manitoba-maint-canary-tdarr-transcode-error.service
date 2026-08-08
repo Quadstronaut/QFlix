@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - Tdarr terminal Transcode-error population (parked files never retry and nothing else reports them)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push tdarr-transcode-error
+StandardOutput=journal
+StandardError=journal
