@@ -69,17 +69,33 @@ DECISION_MAKER_FLOWS = {
 #   2. NodeJSONDB.workerLimits — per-node override (THIS is what actually
 #      gates work; if zero, the node runs nothing regardless of global)
 # Operator picked "tune interactively, start at 2/2 and ramp" on 2026-05-09.
-# Bump these together when scaling up. 128-core EPYC; current load avg ~30.
+# Ramped DOWN to 1/1 on 2026-08-07: 2/2 means FOUR concurrent workers (the two
+# pipelines are counted separately, not shared) and that was driving ~94% CPU on
+# a SHARED slot. Bump these together when scaling up. 128-core EPYC.
+#
+# LAYER 2 IS THE ONE THAT MATTERS, AND EDITING ONLY LAYER 1 LOOKS LIKE IT WORKED.
+# On 2026-08-07 the global was set to 1/1 and the node kept running 4 workers,
+# because SettingsGlobalJSONDB is only the seed default for a node that has no
+# record yet -- an existing NodeJSONDB.workerLimits is never re-read from it.
+# The global edit persisted cleanly (1/1 on disk), so every check short of
+# counting live workers agreed the change had taken. Set both, always.
+#
+# AND THE NODE RECORD MUST BE WRITTEN WHILE THE SERVER IS STOPPED. The server
+# rewrote this record two minutes after that edit, when the node reconnected,
+# so a hand-patch applied to a running server is clobbered on the next connect.
+# ensure_node_worker_limits() writes the file directly for the same reason
+# cruddb is avoided elsewhere here; the caller is responsible for stopping
+# tdarr-server first (see 50b's own deploy notes).
 WORKER_LIMITS = {
-    "transcodeWorkerLimit": 2,
-    "healthcheckWorkerLimit": 2,
+    "transcodeWorkerLimit": 1,
+    "healthcheckWorkerLimit": 1,
     "transcodeWorkerLimitGpu": 0,
     "healthcheckWorkerLimitGpu": 0,
 }
 NODE_WORKER_LIMITS = {
-    "transcodecpu": 2,
+    "transcodecpu": 1,
     "transcodegpu": 0,
-    "healthcheckcpu": 2,
+    "healthcheckcpu": 1,
     "healthcheckgpu": 0,
 }
 
