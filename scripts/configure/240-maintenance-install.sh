@@ -394,7 +394,10 @@ sshm "echo -n '$WEBHOOK_PORT' > ~/.opt/maint/maintenance.port && chmod 600 ~/.op
 # install still completes and the operator can run bootstrap manually
 # later. Re-runs are no-ops once monitors exist.
 log_info "bootstrap Kuma monitors + push tokens"
-SSHM_HOST_FOR_TUNNEL=$(secret_read seedbox.ssh-host 2>/dev/null || echo "")
+# The migrate 20 phase-runner retargets every configure/ phase at green via
+# SSHM_HOST="$NEW_HOST" bash <phase> -- this block must follow that override
+# before falling back to blue's own secrets/seedbox.ssh-host.
+SSHM_HOST_FOR_TUNNEL="${SSHM_HOST:-$(secret_read seedbox.ssh-host 2>/dev/null || echo "")}"
 KUMA_BOOTSTRAP_TUNNEL_PID=""
 KUMA_REACHABLE=0
 if [ -z "$SSHM_HOST_FOR_TUNNEL" ]; then

@@ -76,8 +76,28 @@ for app in seerr flaresolverr unpackerr uptimekuma komga kavita calibre-web audi
   [ -n "$port" ] && secret_write "$app.port" "$port"
 done
 
-# qBittorrent — already known: bound on bond0.27 at 17041
-secret_write "qbittorrent.port" "17041"
+# qBittorrent — try the same nginx-fragment discovery every other panel app
+# above uses. On blue this is known to fail: blue's WebUI is bound to
+# bond0.27's own address, not the 127.0.0.1 proxy_pass upstream
+# discover_port_via_nginx greps for, so blue falls back to that known
+# binding. On any OTHER host, a discovery miss is not assumed to be the same
+# NIC quirk -- warn loudly and leave the secret uncaptured (same treatment
+# qbittorrent.password already gets below), rather than write blue's port
+# onto a box that may not share its networking.
+# `command hostname` (not the bare builtin) is deliberate: 15-bootstrap-new.sh
+# exports a hostname() shell function that lies "manitoba" while this script
+# runs ON green, so the blue-only fallback below must bypass that shadow to
+# tell blue and green apart.
+qbit_port="$(discover_port_via_nginx qbittorrent)"
+if [ -n "$qbit_port" ]; then
+  secret_write "qbittorrent.port" "$qbit_port"
+  log_info "  qbittorrent: port=$qbit_port (discovered via nginx)"
+elif [ "$(command hostname 2>/dev/null)" = "manitoba" ]; then
+  secret_write "qbittorrent.port" "17041"
+  log_warn "  qbittorrent: nginx discovery failed on blue — falling back to known bond0.27 binding (17041)"
+else
+  log_warn "qbittorrent.port — nginx discovery failed and this is not blue; capture manually from the panel into secrets/qbittorrent.port"
+fi
 secret_write "qbittorrent.user" "quadstronaut"
 log_warn "qbittorrent.password — capture manually from Ultra.cc panel into secrets/qbittorrent.password"
 
