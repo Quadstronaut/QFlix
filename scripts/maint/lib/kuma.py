@@ -218,6 +218,30 @@ STANDALONE_SELF_PUSH_MONITORS = {
     "QFlix Audit Regime": "qflix-audit",
 }
 
+# Heartbeat window, in seconds, for any self-pusher whose cadence is NOT daily.
+# Anything absent from this dict gets bootstrap's daily default.
+#
+# It lives HERE, next to the monitor registration, rather than in
+# bootstrap-kuma-monitors.py where it started, because a cadence declared apart
+# from the monitor it describes is a pair that drifts: someone retimes the job,
+# the monitor keeps the window it was born with, and the dead-man silently
+# becomes wider than the thing it watches.
+#
+# That failure has a name in this repo and it recurs: a dead-man whose window
+# exceeds the job's cadence is GREEN while the job is dead. The daily default is
+# correct for the daily janitors it was written for and wrong for anything
+# faster -- a 15-minute job under a 24h window can be dead for a full day with
+# its monitor showing up.
+#
+# One entry per non-daily self-pusher. Adding a job that runs more often than
+# daily and NOT adding it here is the bug this dict exists to make obvious.
+STANDALONE_SELF_PUSH_HEARTBEATS = {
+    # Runs at :07/:22/:37/:52 UTC. One hour tolerates three consecutive missed
+    # runs -- enough to ride out a slow plex.tv or one hung run without
+    # flapping, tight enough that a stuck gate is visible the same morning.
+    "QFlix Entitlement Gate": 3600,
+}
+
 
 def _kuma_db_path() -> Path:
     return Path(os.environ.get(
