@@ -177,6 +177,12 @@ STANDALONE_SELF_PUSH_MONITORS = {
     # provisioned AND lapsed members are never reduced, and both failures are
     # silent by nature -- nobody files a ticket saying "I still have access".
     "QFlix Entitlement Gate": "qflix-entitlement",
+    # Strips unmappable (codec_name=unknown) streams that park files in
+    # Tdarr's terminal `Transcode error` state forever (the 13-episode
+    # Marshals burst, root-caused 2026-08-08: a placeholder forced-subtitle
+    # stream aborts the matroska muxer). Daily 04:00 UTC; destructive
+    # automation (remux + atomic replace) must never run silent.
+    "QFlix Unknown Codec Stream": "qflix-unknown-codec-stream",
     # The LIVE half of the audit regime (L-01..L-06). The offline detectors
     # above audit SOURCE; this audits what is actually RUNNING -- staged units
     # vs what systemd loaded, the live Kuma monitor set, persisted push tokens,
