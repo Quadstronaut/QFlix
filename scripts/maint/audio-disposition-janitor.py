@@ -19,7 +19,10 @@ don't positively recognize).
 
 Fix mechanics per file: ffmpeg full stream-copy remux (`-map 0 -c copy`)
 adjusting only `-disposition:a:N` flags — no re-encode, IO-bound only —
-written to a temp file in the same directory, post-verified with ffprobe
+written to a HIDDEN dot-prefixed temp in the same directory (Plex and
+Sonarr skip dotfiles; Tdarr's watcher does NOT — it queues '.plexmatch' —
+so the vanish-retry in fix_file is the hard backstop after a visible temp
+got renamed away by Tdarr mid-run on 2026-08-08), post-verified with ffprobe
 (same stream count, exactly one default audio and it is the AAC target),
 original mtime preserved, then atomically renamed over the original.
 rename(2) over an open file is safe for an in-flight reader, but files in
@@ -273,15 +276,44 @@ def scan_files(roots: list):
                 yield p
 
 
+class TmpVanishedError(RuntimeError):
+    """The temp remux disappeared between ffmpeg closing it and verification.
+    Seen 2026-08-08: Tdarr's library watcher queued a still-visible
+    "<stem>.dispfix.tmp.mkv" mid-write and its replaceOriginalFile staging
+    renamed it to "*.tmp" out from under the verify step. The source file is
+    untouched in this scenario, so one fresh remux attempt is safe."""
+
+
 def fix_file(path: Path, plan: dict) -> None:
     """Remux `path` in place per plan. Raises on any failure; never leaves a
-    partial temp behind."""
+    partial temp behind. A temp that vanishes before verify (external scanner
+    interference, see TmpVanishedError) gets ONE retry with a fresh remux
+    before counting as a real failure."""
     st = path.stat()
     free = shutil.disk_usage(str(path.parent)).free
     if free < st.st_size * FREE_SPACE_FACTOR:
         raise RuntimeError("insufficient free space ({} GB free)".format(
             round(free / 1024**3, 1)))
-    tmp = path.with_name(path.stem + ".dispfix.tmp" + path.suffix)
+    # DOT-PREFIXED so Plex/Sonarr library scanners ignore the temp. Tdarr's
+    # watcher does NOT skip dotfiles (it queues '.plexmatch'), so the vanish
+    # retry below is the real backstop. A visible "<stem>.dispfix.tmp.mkv"
+    # got renamed away by Tdarr mid-run on 2026-08-08 (1 FAILED of 56).
+    tmp = path.with_name("." + path.stem + ".dispfix.tmp" + path.suffix)
+    for attempt in (1, 2):
+        try:
+            _remux_once(path, tmp, plan, st)
+            return
+        except TmpVanishedError as exc:
+            if attempt == 2:
+                raise RuntimeError(str(exc) + " (persisted after retry)")
+            warn("temp vanished before verify for " + str(path)
+                 + " — retrying once with a fresh remux")
+
+
+def _remux_once(path: Path, tmp: Path, plan: dict, st) -> None:
+    """Single remux attempt: ffmpeg -> verify -> atomic replace. Raises
+    TmpVanishedError when the temp is gone at verify/replace time (retryable
+    by fix_file); any other failure raises straight through."""
     try:
         proc = subprocess.run(build_ffmpeg_cmd(str(path), str(tmp), plan),
                               capture_output=True, text=True, timeout=3600)
@@ -289,10 +321,21 @@ def fix_file(path: Path, plan: dict) -> None:
             raise RuntimeError("ffmpeg exit " + str(proc.returncode) + ": "
                                + proc.stderr.strip()[:200])
         src_count = len(ffprobe_streams(str(path)))
-        if not verify_fixed(ffprobe_streams(str(tmp)), src_count):
+        try:
+            tmp_streams = ffprobe_streams(str(tmp))
+        except Exception:
+            if not tmp.exists():        # probe failed because the temp is gone
+                raise TmpVanishedError("temp remux vanished before verify: "
+                                       + str(tmp))
+            raise                       # real probe failure — not retryable
+        if not verify_fixed(tmp_streams, src_count):
             raise RuntimeError("post-remux verification failed")
-        os.utime(tmp, (st.st_atime, st.st_mtime))   # keep *arr/Plex mtime view
-        os.replace(tmp, path)                       # atomic; safe for readers
+        try:
+            os.utime(tmp, (st.st_atime, st.st_mtime))   # keep *arr/Plex mtime view
+            os.replace(tmp, path)                       # atomic; safe for readers
+        except FileNotFoundError:       # same race, later window
+            raise TmpVanishedError("temp remux vanished before replace: "
+                                   + str(tmp))
     finally:
         if tmp.exists():
             try:
