@@ -1,7 +1,7 @@
 {
   "_id": "qflix-direct-play-fix",
   "name": "QFlix Direct-Play Fix",
-  "description": "Surgical re-encode for browser direct-play. vc1 + mpeg2video video streams -> h264. Non-AAC primary audio (including EAC3) -> add aac/en/2ch stream alongside (original audio preserved). Files that are already direct-play-safe pass through untouched. KNOWN LIMIT: ffmpeg copies the default disposition from the source stream, so this flow emits BOTH the original and the added AAC track flagged default (Plex then tie-breaks to the original and live-transcodes anyway). Disposition normalization is owned by scripts/maint/audio-disposition-janitor.py (daily timer manitoba-maint-audio-disposition) - the installed ffmpegCommandEnsureAudioStream 1.0.0 plugin has no disposition control to fix it in-flow. FIXED 2026-08-08: ffmpegCommandStart maps every input stream with '-c copy' by default (see ffmpegCommandExecute's shouldAddCopyCodec), and the matroska muxer aborts the whole job with 'Subtitle codec 0 is not supported' the instant it hits one whose ffprobe codec_name is literally 'unknown' (confirmed via direct ffmpeg repro on The Marshals S01E01, stream #0:5, a forced-but-contentless placeholder subtitle track - same 13-episode release, same burst). qfxDropUnknownVideo/qfxDropUnknownAudio remove ONLY streams where codec_name==unknown (any codec_type) before the command is built, so one unmappable stream can no longer park the whole file. Narrow by design: it never matches a real codec name, so no wanted audio/subtitle track is ever dropped by this rule - and a stream ffprobe can't even name is already unusable to Plex/ffmpeg regardless, so nothing playable is lost.",
+  "description": "Surgical re-encode for browser direct-play. vc1 + mpeg2video video streams -> h264. Non-AAC primary audio (including EAC3) -> add aac/en/2ch stream alongside (original audio preserved). Files that are already direct-play-safe pass through untouched. KNOWN LIMIT: ffmpeg copies the default disposition from the source stream, so this flow emits BOTH the original and the added AAC track flagged default (Plex then tie-breaks to the original and live-transcodes anyway). Disposition normalization is owned by scripts/maint/audio-disposition-janitor.py (daily timer manitoba-maint-audio-disposition) - the installed ffmpegCommandEnsureAudioStream 1.0.0 plugin has no disposition control to fix it in-flow. UNMAPPABLE-STREAM NOTE 2026-08-08: ffmpegCommandStart maps every input stream with '-c copy' by default (see ffmpegCommandExecute's shouldAddCopyCodec), and the matroska muxer aborts the whole job with 'Subtitle codec 0 is not supported' the instant it hits a stream whose codec ffprobe can't identify (proven on The Marshals S01E01-E13, stream #0:5 - a forced-but-contentless placeholder subtitle track - via direct ffmpeg repro AND a live Tdarr JobReport spawnArgs dump). qfxDropUnknownVideo/qfxDropUnknownAudio (Remove Stream By Property, codec_name equals 'unknown') are left in as a defensive backstop but are KNOWN NOT TO FIRE against this specific failure: Tdarr's own scanner stores the unidentifiable codec as a MISSING codec_name key, not the literal string 'unknown', and Remove Stream By Property silently no-ops on undefined/null targets by design - it can never select an absent field. The 'Custom JS Function' plugin (Tdarr's only in-Flow-document scripting mechanism, which would otherwise survive Tdarr_Node's habit of resetting bundled CommunityFlowPlugins files back to pristine on every restart/reconnect) was tried and reverted same day: its own require(workDir-relative-path) call is a Node.js module-relative resolution, not cwd-relative, so it can NEVER find the script it just wrote - confirmed live, and it briefly broke 18 unrelated Vanderpump Rules episodes before rollback. Given both flow-native fixes are broken upstream Tdarr behaviour (2.17.01) and patching bundled plugin JS does not survive a Node restart, the actual fix lives OUTSIDE this flow: scripts/maint/unknown-codec-stream-janitor.py strips the unmappable stream(s) from the SOURCE FILE directly (same stream-copy/atomic-replace/Tautulli-guard machinery as audio-disposition-janitor), then nudges Tdarr to retry. Once a file has no unmappable stream left, this flow processes it exactly as designed - nothing here needs to change for that case. Narrow by construction either way: only a stream ffprobe can't name at all is ever touched, so no wanted audio/subtitle track is ever dropped, and a stream ffprobe can't even name is already unusable to Plex/ffmpeg regardless, so nothing playable is lost.",
   "tags": "qflix",
   "flowPlugins": [
     {
@@ -49,7 +49,7 @@
     },
     {
       "id": "qfxDropUnknownVideo",
-      "name": "Drop unmappable streams (video path)",
+      "name": "Drop unmappable streams (video path, backstop only - see flow description)",
       "sourceRepo": "Community",
       "pluginName": "ffmpegCommandRemoveStreamByProperty",
       "version": "1.0.0",
@@ -101,7 +101,7 @@
     },
     {
       "id": "qfxDropUnknownAudio",
-      "name": "Drop unmappable streams (audio path)",
+      "name": "Drop unmappable streams (audio path, backstop only - see flow description)",
       "sourceRepo": "Community",
       "pluginName": "ffmpegCommandRemoveStreamByProperty",
       "version": "1.0.0",
