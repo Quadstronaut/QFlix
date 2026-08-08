@@ -364,10 +364,17 @@ def test_minimum_access_is_found_case_insensitively():
 def test_full_access_is_recomputed_from_the_live_catalogue():
     """Writing an explicit section list clears Plex's allLibraries flag, so a
     library added later would never reach anyone unless the full set is
-    recomputed every run. This is the test that pins that behaviour."""
-    assert PS.full_access_ids(SECTIONS) == sorted(s.id for s in SECTIONS)
+    recomputed every run. This is the test that pins that behaviour.
+
+    Updated 2026-08-08: full access EXCLUDES Welcome (master, 2026-08-07 --
+    "Welcome is for the NON-entitled only, never both"), so the signature
+    takes the welcome title and the expectation subtracts it.
+    """
+    welcome = "QFlix - Welcome"
+    assert PS.full_access_ids(SECTIONS, welcome) == sorted(
+        s.id for s in SECTIONS if s.title.lower() != welcome.lower())
     grown = SECTIONS + [PS.Section(id=555, key=8, title="QFlix - Docs", type="movie")]
-    assert 555 in PS.full_access_ids(grown)
+    assert 555 in PS.full_access_ids(grown, welcome)
 
 
 # ---------------------------------------------------------------------------
