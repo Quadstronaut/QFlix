@@ -568,6 +568,26 @@ canaries:
     kuma_monitor: "Canary Unstick Rate"
     script: "scripts/canaries/unstick-rate.sh"
     schedule: "hourly"
+  tdarr-transcode-error:
+    # Added 2026-08-08. `TranscodeDecisionMaker: Transcode error` is TERMINAL
+    # -- Tdarr never retries it -- and nothing reported the population: 13
+    # episodes of one series sat parked 2026-08-06..08 until a human went
+    # looking (root cause: an unmappable codec_name=unknown placeholder stream
+    # aborting the matroska muxer). The unknown-codec janitor now fixes THAT
+    # cause daily; this canary watches the STATE, so the next cause nobody has
+    # thought of surfaces as a red instead of as a member asking where their
+    # episode's direct-play audio went. Unstick-rate reasoning: a guard on the
+    # rule catches only the failure it was written for; the terminal outcome
+    # catches every cause. 48h grace = two janitor passes; anything older is
+    # by definition a cause the janitor does not handle. Clock is record-file
+    # mtime -- an acknowledged C-04 tradeoff whose failure direction is safe
+    # (a spurious rewrite delays an alert one window, never fabricates one).
+    # Zero FileJSONDB records exits 2: this Tdarr has ~1,500, so an empty scan
+    # is a moved DB or broken glob, and empty-because-broken must never read
+    # as clean.
+    kuma_monitor: "Canary Tdarr Transcode Error"
+    script: "scripts/canaries/tdarr-transcode-error.sh"
+    schedule: "hourly"
   entitlement-service:
     # Added 2026-08-07. manitoba-maint-entitlement already has a dead-man
     # ("QFlix Entitlement Gate", 15-min timer, 1h heartbeat override) but that
