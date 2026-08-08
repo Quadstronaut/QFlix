@@ -729,14 +729,19 @@ def main(argv=None) -> int:
             _push_kuma("down", "Plex unavailable: %s" % e)
         return EXIT_MEDIA_STACK_UNAVAILABLE
 
+    # Both sets are computed from the same live section list and both refuse to
+    # be empty, so a missing/renamed Welcome section fails the run rather than
+    # silently unsharing anybody. They are DISJOINT: Welcome is the floor for
+    # the non-entitled and is deliberately absent from full access, because its
+    # only content tells the viewer to go and subscribe.
     try:
         minimum_ids = PS.minimum_access_ids(sections, args.welcome_section)
+        full_ids = PS.full_access_ids(sections, args.welcome_section)
     except PS.PlexShareError as e:
         warn(str(e))
         if not args.no_kuma:
             _push_kuma("down", "welcome section missing")
         return EXIT_CONFIG
-    full_ids = PS.full_access_ids(sections)
 
     try:
         seerr = SU.client_from_secrets()
