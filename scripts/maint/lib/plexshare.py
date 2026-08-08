@@ -295,15 +295,52 @@ def find_section(sections: Sequence[Section], title: str) -> Optional[Section]:
     return None
 
 
-def full_access_ids(sections: Sequence[Section]) -> List[int]:
-    """Every section that exists RIGHT NOW.
+def full_access_ids(sections: Sequence[Section], welcome_title: str) -> List[int]:
+    """Every section that exists RIGHT NOW, EXCEPT Welcome.
 
     Recomputed each run on purpose -- see the allLibraries note in the module
     docstring. This is what replaces the flag that writing an explicit list
     destroys, and it is why a library created at 3pm reaches entitled members
     by 3:15 rather than never.
+
+    WHY WELCOME IS SUBTRACTED HERE
+    ------------------------------
+    Welcome holds one video whose entire content is "go to Patreon and activate
+    your subscription". It is the floor a NON-entitled account is reduced to,
+    and it is addressed to exactly that audience. An entitled member who can see
+    it is being asked to buy something they already pay for -- and because the
+    two sets were previously "everything" and "Welcome", every entitled member
+    would have been shown it the moment the gate was armed.
+
+    So the two access levels are now disjoint by construction rather than
+    nested: Welcome appears in `minimum_access_ids` and NOWHERE else. Membership
+    of Welcome is therefore a faithful signal of "this account is not currently
+    entitled", which is what makes the video's instruction true for everyone who
+    can read it.
+
+    Subtracting at the point the FULL set is computed -- rather than adding an
+    exclusion at each call site -- means a future caller cannot reintroduce the
+    overlap by forgetting to filter.
+
+    RAISES rather than returning `[]`, for the same reason minimum_access_ids
+    does. If Welcome is somehow the only section on the server, the subtraction
+    would produce an empty list, and an empty list does not restrict a share --
+    it DELETES it. Evicting every entitled member because a library was renamed
+    is the single worst thing this module can do, so the degenerate case is
+    named and refused instead of written.
     """
-    return sorted(s.id for s in sections)
+    ids = sorted(s.id for s in sections)
+    sec = find_section(sections, welcome_title)
+    if sec is not None:
+        ids = [i for i in ids if i != sec.id]
+    if not ids:
+        raise PlexShareError(
+            "full access computes to an empty section list (sections=%d, "
+            "welcome=%r). An empty list unshares the server instead of granting "
+            "it, so this is refused. Either the Plex server has no libraries "
+            "besides Welcome, or the section list failed to load."
+            % (len(sections), welcome_title))
+    return ids
 
 
 def minimum_access_ids(sections: Sequence[Section], welcome_title: str) -> List[int]:
