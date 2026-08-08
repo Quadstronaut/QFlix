@@ -1,7 +1,7 @@
 {
   "_id": "qflix-direct-play-fix",
   "name": "QFlix Direct-Play Fix",
-  "description": "Surgical re-encode for browser direct-play. vc1 + mpeg2video video streams -> h264. Non-AAC primary audio (including EAC3) -> add aac/en/2ch stream alongside (original audio preserved). Files that are already direct-play-safe pass through untouched. KNOWN LIMIT: ffmpeg copies the default disposition from the source stream, so this flow emits BOTH the original and the added AAC track flagged default (Plex then tie-breaks to the original and live-transcodes anyway). Disposition normalization is owned by scripts/maint/audio-disposition-janitor.py (daily timer manitoba-maint-audio-disposition) - the installed ffmpegCommandEnsureAudioStream 1.0.0 plugin has no disposition control to fix it in-flow.",
+  "description": "Surgical re-encode for browser direct-play. vc1 + mpeg2video video streams -> h264. Non-AAC primary audio (including EAC3) -> add aac/en/2ch stream alongside (original audio preserved). Files that are already direct-play-safe pass through untouched. KNOWN LIMIT: ffmpeg copies the default disposition from the source stream, so this flow emits BOTH the original and the added AAC track flagged default (Plex then tie-breaks to the original and live-transcodes anyway). Disposition normalization is owned by scripts/maint/audio-disposition-janitor.py (daily timer manitoba-maint-audio-disposition) - the installed ffmpegCommandEnsureAudioStream 1.0.0 plugin has no disposition control to fix it in-flow. FIXED 2026-08-08: ffmpegCommandStart maps every input stream with '-c copy' by default (see ffmpegCommandExecute's shouldAddCopyCodec), and the matroska muxer aborts the whole job with 'Subtitle codec 0 is not supported' the instant it hits one whose ffprobe codec_name is literally 'unknown' (confirmed via direct ffmpeg repro on The Marshals S01E01, stream #0:5, a forced-but-contentless placeholder subtitle track - same 13-episode release, same burst). qfxDropUnknownVideo/qfxDropUnknownAudio remove ONLY streams where codec_name==unknown (any codec_type) before the command is built, so one unmappable stream can no longer park the whole file. Narrow by design: it never matches a real codec name, so no wanted audio/subtitle track is ever dropped by this rule - and a stream ffprobe can't even name is already unusable to Plex/ffmpeg regardless, so nothing playable is lost.",
   "tags": "qflix",
   "flowPlugins": [
     {
@@ -48,6 +48,15 @@
       "position": {"x": -200, "y": 360 }
     },
     {
+      "id": "qfxDropUnknownVideo",
+      "name": "Drop unmappable streams (video path)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandRemoveStreamByProperty",
+      "version": "1.0.0",
+      "position": {"x": -200, "y": 420 },
+      "inputsDB": {"codecType": "any", "propertyToCheck": "codec_name", "valuesToRemove": "unknown", "condition": "equals"}
+    },
+    {
       "id": "qfxSetH264",
       "name": "Set Video Encoder h264",
       "sourceRepo": "Community",
@@ -89,6 +98,15 @@
       "pluginName": "ffmpegCommandStart",
       "version": "1.0.0",
       "position": {"x": 600,  "y": 480 }
+    },
+    {
+      "id": "qfxDropUnknownAudio",
+      "name": "Drop unmappable streams (audio path)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandRemoveStreamByProperty",
+      "version": "1.0.0",
+      "position": {"x": 600,  "y": 540 },
+      "inputsDB": {"codecType": "any", "propertyToCheck": "codec_name", "valuesToRemove": "unknown", "condition": "equals"}
     },
     {
       "id": "qfxEnsureAacAudio",
@@ -133,12 +151,14 @@
     {"id": "e05", "source": "qfxCheckMpeg2",   "sourceHandle": "2", "target": "qfxCheckAac",       "targetHandle": null},
     {"id": "e06", "source": "qfxCheckAac",     "sourceHandle": "1", "target": "qfxReplace",        "targetHandle": null},
     {"id": "e07", "source": "qfxCheckAac",     "sourceHandle": "2", "target": "qfxStartAudio",     "targetHandle": null},
-    {"id": "e08", "source": "qfxStartVideo",   "sourceHandle": "1", "target": "qfxSetH264",        "targetHandle": null},
+    {"id": "e08", "source": "qfxStartVideo",   "sourceHandle": "1", "target": "qfxDropUnknownVideo","targetHandle": null},
+    {"id": "e08b","source": "qfxDropUnknownVideo","sourceHandle":"1","target": "qfxSetH264",       "targetHandle": null},
     {"id": "e09", "source": "qfxSetH264",      "sourceHandle": "1", "target": "qfxEnsureAacVideo", "targetHandle": null},
     {"id": "e10", "source": "qfxEnsureAacVideo","sourceHandle":"1", "target": "qfxSetMkvVideo",    "targetHandle": null},
     {"id": "e11", "source": "qfxSetMkvVideo",  "sourceHandle": "1", "target": "qfxExecuteVideo",   "targetHandle": null},
     {"id": "e12", "source": "qfxExecuteVideo", "sourceHandle": "1", "target": "qfxReplace",        "targetHandle": null},
-    {"id": "e13", "source": "qfxStartAudio",   "sourceHandle": "1", "target": "qfxEnsureAacAudio", "targetHandle": null},
+    {"id": "e13", "source": "qfxStartAudio",   "sourceHandle": "1", "target": "qfxDropUnknownAudio","targetHandle": null},
+    {"id": "e13b","source": "qfxDropUnknownAudio","sourceHandle":"1","target": "qfxEnsureAacAudio","targetHandle": null},
     {"id": "e14", "source": "qfxEnsureAacAudio","sourceHandle":"1", "target": "qfxSetMkvAudio",    "targetHandle": null},
     {"id": "e15", "source": "qfxSetMkvAudio",  "sourceHandle": "1", "target": "qfxExecuteAudio",   "targetHandle": null},
     {"id": "e16", "source": "qfxExecuteAudio", "sourceHandle": "1", "target": "qfxReplace",        "targetHandle": null}

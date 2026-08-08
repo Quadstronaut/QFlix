@@ -175,6 +175,14 @@ jobs:
   manitoba-maint-canary-cron-liveness:
     timer: scripts/maint/systemd/manitoba-maint-canary-cron-liveness.timer
     kuma_monitor: "Canary Cron Liveness"
+  manitoba-maint-canary-entitlement-service:
+    timer: scripts/maint/systemd/manitoba-maint-canary-entitlement-service.timer
+    # Watches the entitlement API the gate reads. Note this is the dead-man for
+    # the CANARY, not for the service: if this timer stops, Kuma "Canary
+    # Entitlement Service" goes stale and says so. Needed because the gate's own
+    # monitor cannot cover the service -- lib/entitlement.py turns every service
+    # failure into UNKNOWN, so the gate stays green while provisioning nobody.
+    kuma_monitor: "Canary Entitlement Service"
   manitoba-maint-canary-unstick-rate:
     timer: scripts/maint/systemd/manitoba-maint-canary-unstick-rate.timer
     kuma_monitor: "Canary Unstick Rate"
