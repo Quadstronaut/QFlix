@@ -234,3 +234,114 @@ python3 ~/e2e-entitlement-live.py
 
 The e2e mutates exactly one account. Every other household is marked exempt in
 a throwaway roster, and exempt is terminal.
+
+
+---
+
+# Part II — the payer oracle (money path)
+
+> Grafted from the money-path council merge (wf_d43e030e-347, 2026-08-08).
+> Where this part and Part I disagree on ARMING, Part I governs: arming is
+> FIVE conditions resolved one household at a time, never a two-step ritual.
+
+## 2. The payer-oracle verdict table
+
+Computed by **one** pure module, `scripts/maint/lib/payer_oracle.py`, and
+consumed by both the gate (`qflix-entitlement.py --oracle-check` /
+`--arm-check`) and the canary (`scripts/canaries/entitlement-service.sh`,
+leg 5). Inputs: `D` = declared payers (non-exempt, non-provisional household,
+`billing.rail` set, `billing.amount_usd > 0`); `E` ⊆ `D` = those ever
+entitled; `A` = each declared payer's current lookup answer; `B` = the bulk
+cross-check (`GET /v1/entitlements`); `age` = time since the oldest
+declaration; `settle_days` = 2.
+
+| # | Condition (first match wins) | Verdict | Canary |
+|---|---|---|---|
+| 1 | `len(D) == 0` | `DORMANT` | green — nothing to prove |
+| 2 | any `A` is YES | `PROVEN` | green |
+| 3 | `E` non-empty and **any** member of `E` is now `never_seen` | `DEAD` | **red** |
+| 4 | `B.supported` and `B.count > 0` and no declared holder appears in `B.entitled` | `MISMATCH` | **red** — a member may be paying under a different address |
+| 5 | `B.supported` and `B.count > 0` | `PROVEN_UPSTREAM` | green |
+| 6 | `age < settle_days` | `SETTLING` | green — prints hours remaining |
+| 7 | `B` unavailable (no scope / unreachable / unparseable) and `E` empty | `UNPROVEN_BLIND` | **red** — names the exact fix |
+| 8 | `B.supported` and `B.count == 0` and `E` empty | `UNPROVEN_EMPTY` | **red** |
+
+**Today's live state is row 7, `UNPROVEN_BLIND`, and that is correct.** The
+money path has never demonstrated a success (0 accounts ever entitled) and
+the bulk cross-check answers `403 {"error": "this key lacks the 'bulk'
+scope"}`. It clears the moment the operator grants the scope (row 5/2/6
+follow) or the first real `YES` lands (row 2).
+
+Rows 3 and 4 are deliberately strict: row 3 fires on **any** forgotten
+ever-entitled account, not only when every one is lost at once, because with
+a small number of payers one silent loss is still money lost in silence. Row
+4 is the highest-value alert in the system once it can fire at all — it
+means the service knows of a paying account that matches nobody's declared
+billing address, i.e. someone is paying under an address the roster does not
+have on file and is on a clock to be reduced while paying.
+
+## 3. Reading the verdict
+
+```
+# read-only, no mutation, no Kuma push, no Plex/Seerr I/O at all
+python3 scripts/maint/qflix-entitlement.py --oracle-check
+
+# read-only, full preview including the exact (masked) set that would be
+# reduced if this run executed with --execute
+python3 scripts/maint/qflix-entitlement.py --arm-check
+```
+
+Both print `VERDICT=`, `RED=0|1` and `DETAIL=` (never an unmasked address or
+household id). `--arm-check` additionally exits 2 (`EXIT_ARM_CHECK_RED`) on
+**either** a red verdict **or** any account that would actually be reduced —
+both are independent "do not arm" signals, and either one alone must hold
+the gate.
+
+The canary (`manitoba-maint canary push entitlement-service`, hourly)
+carries the same verdict as its fifth leg, folded into a single Kuma
+monitor: **Canary Entitlement Service**.
+
+## 5. Disarm / rollback
+
+Two independent switches; either one alone re-disarms:
+
+```yaml
+# secrets/members.yaml
+armed: false
+```
+
+```
+systemctl --user revert manitoba-maint-entitlement.service
+systemctl --user daemon-reload
+systemctl --user restart manitoba-maint-entitlement.service
+```
+
+`systemctl --user revert` removes the on-box drop-in and restores the
+repo-shipped (flagless, report-only) unit file. After either step the next
+run reports and mutates nothing; after both, the gate is back to its shipped
+state. `armed:` flipping to `false` never *drains* an already-provisioned
+member — see the YES/NO/UNKNOWN asymmetry below — it only stops **new**
+mutations.
+
+## 6. What arming does and does not change
+
+- `grants` iff a clean `YES`; `revokes` iff a clean `NO`; both are `False`
+  for `UNKNOWN`. An entitlement API outage freezes the gate — it never
+  drains it. Arming does not change this; it is structural in
+  `lib/entitlement.py`.
+- Access stays binary. Tiers or pledge-amount thresholds are explicitly out
+  of scope.
+- No member email, username, household id, or viewing activity appears in
+  this document, in the canary's Kuma message, or in Discord. See
+  `lib/payer_oracle.py`'s masking law and the `never-publish-member-data`
+  operator directive.
+
+## 7. If the canary goes red after arming
+
+Read `DETAIL=` from `--arm-check` first — it names the exact verdict and,
+for `UNPROVEN_BLIND`, the exact operator action (grant the `bulk` scope).
+For `DEAD` or `MISMATCH`, do **not** disarm reflexively: both are the
+*money-losing* alerts this whole change exists to surface, and the correct
+first action is to check the named (masked) example, not to silence the
+monitor. Disarm (§5) only if the gate itself is behaving unexpectedly, not
+merely because it started reporting something real.

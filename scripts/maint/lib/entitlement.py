@@ -91,6 +91,18 @@ YES = "yes"
 NO = "no"
 UNKNOWN = "unknown"
 
+# Bulk states. A fourth, distinct vocabulary from the per-lookup verdicts above
+# on purpose: /v1/entitlements answers a DIFFERENT question ("what does the
+# whole projection contain") and fails in a mode the single-lookup endpoint
+# never can -- "this key exists and works but is not SCOPED for this call".
+# Collapsing that into UNKNOWN would erase the one distinction payer_oracle.py
+# needs to tell the operator the exact one-line Starhold-side fix instead of a
+# generic outage message.
+BULK_OK = "ok"
+BULK_NO_SCOPE = "no-scope"
+BULK_UNREACHABLE = "unreachable"
+BULK_UNPARSEABLE = "unparseable"
+
 
 @dataclass
 class Answer:
@@ -162,6 +174,36 @@ def _unknown(email: str, error: str, http_status: Optional[int] = None,
              raw: Optional[dict] = None) -> Answer:
     return Answer(verdict=UNKNOWN, email=email, error=error,
                   http_status=http_status, raw=raw or {})
+
+
+@dataclass
+class BulkAnswer:
+    """One call to GET /v1/entitlements. NEVER raises -- see EntitlementClient.bulk().
+
+    `state` is one of the four BULK_* strings above and is the only thing a
+    caller may branch on, same law as `Answer.verdict`. `count` is deliberately
+    None in every state except 'ok': a caller that reads `count or 0` on a
+    'no-scope' or 'unreachable' answer would silently treat "I could not ask"
+    as "zero people are entitled", which is exactly the UNPROVEN_BLIND vs
+    UNPROVEN_EMPTY distinction payer_oracle.py exists to keep apart.
+
+    `entitled` holds the real (unmasked) addresses the service reports, kept
+    in memory only for the duration of one run so payer_oracle.judge() can
+    cross-check them against declared billing.holder values. Per SPEC section
+    4 this list must NEVER be logged, persisted, or sent to Kuma/Discord
+    unmasked -- every caller that prints from it must call mask() first.
+    """
+
+    state: str
+    count: Optional[int] = None
+    entitled: List[str] = field(default_factory=list, repr=False)
+    error: Optional[str] = None
+    http_status: Optional[int] = None
+
+    @property
+    def supported(self) -> bool:
+        """True only when the projection is actually readable this run."""
+        return self.state == BULK_OK
 
 
 class EntitlementClient:
@@ -272,6 +314,94 @@ class EntitlementClient:
                           **common)
 
         return Answer(verdict=NO, **common)
+
+    def bulk(self) -> BulkAnswer:
+        """GET /v1/entitlements -- the whole-projection cross-check.
+
+        Requires the 'bulk' scope on the key. Today the QFlix key does not
+        have it, and the live-observed answer is::
+
+            403 {"error": "this key lacks the 'bulk' scope"}
+
+        That is graded 'no-scope' specifically -- not folded into the generic
+        'unreachable' bucket -- because payer_oracle.judge() needs to tell the
+        operator the EXACT one-line Starhold-side fix (grant the scope)
+        instead of a message that reads like a network outage. Every other
+        4xx/5xx, every network failure and every timeout is 'unreachable':
+        none of those tells the caller anything actionable beyond "try again
+        later" or "escalate to Starhold". NEVER raises -- see the class
+        docstring for why a per-household loop cannot tolerate an exception
+        from this client.
+        """
+        url = self.base_url + "/v1/entitlements"
+        req = urllib.request.Request(url, headers={
+            "Authorization": "Bearer " + self.api_key,
+            "Accept": "application/json",
+            "User-Agent": UA,
+        })
+
+        try:
+            with self._opener(req, timeout=self.timeout) as resp:
+                code = getattr(resp, "status", None) or resp.getcode()
+                body = resp.read()
+        except urllib.error.HTTPError as e:
+            text = ""
+            try:
+                text = e.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+            if e.code == 403 and "scope" in text.lower():
+                return BulkAnswer(state=BULK_NO_SCOPE,
+                                  error=(text.strip() or "HTTP 403"),
+                                  http_status=e.code)
+            return BulkAnswer(state=BULK_UNREACHABLE, error="HTTP %s" % e.code,
+                              http_status=e.code)
+        except urllib.error.URLError as e:
+            return BulkAnswer(state=BULK_UNREACHABLE,
+                              error="unreachable: %s" % (e.reason,))
+        except Exception as e:                      # socket timeouts, TLS, ...
+            return BulkAnswer(state=BULK_UNREACHABLE,
+                              error="%s: %s" % (type(e).__name__, e))
+
+        if code != 200:
+            # Defensive: a non-raising opener (or a test double) could return a
+            # non-200 without an HTTPError. Same grading either way.
+            return BulkAnswer(state=BULK_UNREACHABLE, error="HTTP %s" % code,
+                              http_status=code)
+
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as e:
+            return BulkAnswer(state=BULK_UNPARSEABLE,
+                              error="malformed JSON: %s" % e, http_status=code)
+
+        if not isinstance(data, dict):
+            return BulkAnswer(state=BULK_UNPARSEABLE,
+                              error="body is %s, expected object"
+                                    % type(data).__name__, http_status=code)
+
+        entitled = data.get("entitled")
+        count = data.get("count")
+
+        if isinstance(entitled, list) and all(isinstance(x, str) for x in entitled):
+            clean = [e.strip().lower() for e in entitled if isinstance(e, str) and "@" in e]
+            return BulkAnswer(state=BULK_OK,
+                              count=(count if isinstance(count, int) and count >= 0
+                                    else len(clean)),
+                              entitled=clean, http_status=code)
+
+        if isinstance(count, int) and count >= 0:
+            # A count with no address list is still mappable -- the oracle's
+            # DORMANT/PROVEN_UPSTREAM rows only need the number. MISMATCH
+            # cannot fire without addresses to compare, which is the safe
+            # direction: fewer alerts, never a false one.
+            return BulkAnswer(state=BULK_OK, count=count, entitled=[], http_status=code)
+
+        return BulkAnswer(
+            state=BULK_UNPARSEABLE,
+            error="200 body has neither a usable 'entitled' list nor a "
+                 "non-negative 'count' integer",
+            http_status=code)
 
     def healthz(self) -> bool:
         """Liveness probe. No auth required. Never raises."""
