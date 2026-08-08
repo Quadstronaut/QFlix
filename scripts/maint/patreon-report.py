@@ -32,9 +32,24 @@ which is the single most damaging thing a report like this could say. So:
 Same law REA's deadman path follows: empty-because-clean must never look like
 empty-because-broken.
 
-TOKEN ROTATION
---------------
-On 401 the refresh token is spent for a new pair and secrets/patreon.json is
+TOKEN ROTATION -- OFF BY DEFAULT, AND WHY
+------------------------------------------
+SPEC A1/A2 (2026-08-07): the money path reads Patreon ONLY through
+entitlements.starhold.app. This tool is now explicitly an OPTIONAL,
+workstation-only diagnostic, off that path -- but it shares Patreon's OAuth
+model with whatever client secrets/patreon.json belongs to, and Patreon
+refresh tokens are SINGLE-USE. If secrets/patreon.json's client_id is the
+SAME OAuth client the Starhold entitlement service uses, an automatic
+rotation here spends STARHOLD's refresh token and breaks the sync the entire
+money path depends on -- silently, from this tool's point of view, and
+loudly for every member whose access stops updating.
+
+So on a 401 this tool no longer rotates automatically. It refuses, loudly,
+with the hazard named at the refusal point, unless the operator passes
+--allow-token-rotation -- which is itself only safe after registering a
+SEPARATE Patreon OAuth client for this tool (see the module docstring's PII
+section and the operator handoff doc). When rotation IS explicitly allowed,
+the refresh token is spent for a new pair and secrets/patreon.json is
 rewritten atomically (tmp file + os.replace). Non-atomic rewrites are how you
 end up with a half-written credentials file and no way back in -- the refresh
 token is single-use on rotation, so losing it mid-write costs a manual
@@ -120,6 +135,20 @@ def load_creds(path: Path) -> Dict[str, str]:
     return data
 
 
+REQUIRED_CRED_KEYS = ("client_id", "client_secret", "access_token", "refresh_token")
+
+
+def verify_creds(creds: Dict[str, str]) -> List[str]:
+    """`--verify`: key NAMES only, never values. AC-12.
+
+    Pure and offline -- no API call, so it works even with a dead token and
+    tells the operator exactly what is and is not on disk before spending a
+    single network round trip on it.
+    """
+    return ["%-14s %s" % (k, "present" if creds.get(k) else "MISSING")
+            for k in REQUIRED_CRED_KEYS]
+
+
 def save_creds(path: Path, creds: Dict[str, str]) -> None:
     """Atomic rewrite. A torn credentials file costs a manual re-registration."""
     tmp = path.with_suffix(".json.tmp")
@@ -139,8 +168,26 @@ def _get(url: str, token: str) -> Tuple[int, str]:
         return e.code, e.read().decode("utf-8", "replace")
 
 
+SHARED_CLIENT_HAZARD = (
+    "Patreon refresh tokens are SINGLE-USE. If secrets/patreon.json's OAuth "
+    "client is the SAME one entitlements.starhold.app uses, rotating it here "
+    "spends STARHOLD'S token and breaks the money-path sync every member's "
+    "access depends on. Re-run with --allow-token-rotation ONLY after "
+    "confirming this tool has its own SEPARATE Patreon OAuth client "
+    "(register one at https://www.patreon.com/portal/registration/"
+    "register-clients) -- never reuse the entitlement service's client."
+)
+
+
 def refresh(creds: Dict[str, str], path: Path) -> Dict[str, str]:
-    """Spend the refresh token for a new pair and persist it."""
+    """Spend the refresh token for a new pair and persist it.
+
+    Callers MUST gate this on an explicit opt-in -- see api_get() and
+    SHARED_CLIENT_HAZARD above. This function itself does not gate, so a
+    caller that forgets the check is still visible in the diff and in a code
+    review, rather than the gate being buried inside a shared helper nobody
+    reads twice.
+    """
     body = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": creds["refresh_token"],
@@ -167,12 +214,22 @@ def refresh(creds: Dict[str, str], path: Path) -> Dict[str, str]:
     return creds
 
 
-def api_get(url: str, creds: Dict[str, str], path: Path,
+def api_get(url: str, creds: Dict[str, str], path: Path, allow_rotation: bool,
             _retried: bool = False) -> Tuple[Dict, Dict[str, str]]:
+    """GET one Patreon API URL. On a 401, ONLY rotates the refresh token if
+    `allow_rotation` is True (SPEC A3 / AC-12). Without it, refuses loudly
+    with the shared-OAuth-client hazard named at the point of refusal, and
+    NEVER calls refresh() -- the whole point is that the tool must not be
+    able to spend a token it was not explicitly told it may spend.
+    """
     status, body = _get(url, creds["access_token"])
+    if status == 401 and not allow_rotation:
+        raise AuthError(
+            "credentials REJECTED (HTTP 401) and --allow-token-rotation was "
+            "not passed, so nothing was rotated. %s" % SHARED_CLIENT_HAZARD)
     if status == 401 and not _retried:
         creds = refresh(creds, path)
-        return api_get(url, creds, path, _retried=True)
+        return api_get(url, creds, path, allow_rotation, _retried=True)
     if status == 401:
         raise AuthError("still 401 after a successful token refresh: %s" % body[:300])
     if status != 200:
@@ -181,8 +238,9 @@ def api_get(url: str, creds: Dict[str, str], path: Path,
     return json.loads(body), creds
 
 
-def campaign_id(creds: Dict[str, str], path: Path) -> Tuple[str, Dict[str, str]]:
-    data, creds = api_get(API + "/campaigns", creds, path)
+def campaign_id(creds: Dict[str, str], path: Path,
+                allow_rotation: bool = False) -> Tuple[str, Dict[str, str]]:
+    data, creds = api_get(API + "/campaigns", creds, path, allow_rotation)
     rows = data.get("data") or []
     if not rows:
         raise PatreonError("this token sees no campaigns -- wrong account, or the "
@@ -194,14 +252,15 @@ def campaign_id(creds: Dict[str, str], path: Path) -> Tuple[str, Dict[str, str]]
     return rows[0]["id"], creds
 
 
-def fetch_members(cid: str, creds: Dict[str, str], path: Path) -> List[Dict]:
+def fetch_members(cid: str, creds: Dict[str, str], path: Path,
+                  allow_rotation: bool = False) -> List[Dict]:
     """All members, following Patreon's cursor pagination."""
     out: List[Dict] = []
     url = "%s/campaigns/%s/members?%s" % (API, cid, urllib.parse.urlencode({
         "fields[member]": MEMBER_FIELDS, "page[count]": 200}))
     seen_cursors = set()
     while url:
-        data, creds = api_get(url, creds, path)
+        data, creds = api_get(url, creds, path, allow_rotation)
         out.extend(data.get("data") or [])
         nxt = (data.get("meta", {}).get("pagination", {})
                    .get("cursors", {}).get("next"))
@@ -225,7 +284,19 @@ def mask(value: Optional[str]) -> str:
 
 
 def reconcile(members: List[Dict], roster) -> Dict:
-    """Match patrons to roster households. Pure data; decides nothing."""
+    """Match patrons to roster households. Pure data; decides nothing.
+
+    DEFECT-A FIX (2026-08-07): this used to read `hh.hid`, a field that has
+    never existed on lib.members.Household -- the real attribute is `.id`.
+    `getattr(hh, "hid", None)` therefore always returned None, which made
+    EVERY household compare equal (None == None) in the "already matched"
+    dedup set below and made the third branch's `getattr(h, "hid", None)`
+    always fail to appear in `seen`, so the AttributeError two lines later
+    (`h.hid` with no default) fired on the very first rail=patreon household
+    -- and AttributeError is not a PatreonError, so main()'s handler never
+    caught it and the tool tracebacked. Using the real `.id` attribute fixes
+    all three symptoms at once because they were the same bug.
+    """
     by_ref = roster.by_payer_ref() if roster is not None else {}
     matched, unmatched = [], []
     for m in members:
@@ -242,7 +313,7 @@ def reconcile(members: List[Dict], roster) -> Dict:
             "cents": a.get("currently_entitled_amount_cents") or 0,
             "last_charge_status": a.get("last_charge_status"),
             "last_charge_date": a.get("last_charge_date"),
-            "household_id": getattr(hh, "hid", None) if hh else None,
+            "household_id": hh.id if hh else None,
         }
         (matched if hh else unmatched).append(rec)
 
@@ -252,8 +323,8 @@ def reconcile(members: List[Dict], roster) -> Dict:
         seen = {r["household_id"] for r in matched if r["household_id"]}
         for h in roster:
             b = getattr(h, "billing", None)
-            if b and b.rail == "patreon" and getattr(h, "hid", None) not in seen:
-                on_rail.append({"household_id": h.hid,
+            if b and b.rail == "patreon" and h.id not in seen:
+                on_rail.append({"household_id": h.id,
                                 "payer_ref": b.payer_ref,
                                 "amount_usd": b.amount_usd})
     return {"matched": matched, "unmatched_patrons": unmatched,
@@ -326,6 +397,14 @@ def main(argv=None) -> int:
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--full", action="store_true", help="do NOT mask names/emails")
     ap.add_argument("--out", help="write to a file (refused inside tracked dirs)")
+    ap.add_argument("--allow-token-rotation", action="store_true",
+                    help="permit spending the refresh token on a 401. DANGEROUS if "
+                         "secrets/patreon.json shares an OAuth client with the "
+                         "Starhold entitlement service -- see SHARED_CLIENT_HAZARD. "
+                         "Off by default.")
+    ap.add_argument("--verify", action="store_true",
+                    help="print which credential KEYS are present (never values) "
+                         "and exit. No network call.")
     args = ap.parse_args(argv)
 
     cpath = creds_path(args.creds)
@@ -335,11 +414,17 @@ def main(argv=None) -> int:
         print("CONFIG: %s" % e, file=sys.stderr)
         return EXIT_CONFIG
 
+    if args.verify:
+        # Offline, deliberately before any API call. AC-12: names only.
+        for line in verify_creds(creds):
+            print(line)
+        return EXIT_OK
+
     try:
         cid = args.campaign_id
         if not cid:
-            cid, creds = campaign_id(creds, cpath)
-        members = fetch_members(cid, creds, cpath)
+            cid, creds = campaign_id(creds, cpath, args.allow_token_rotation)
+        members = fetch_members(cid, creds, cpath, args.allow_token_rotation)
     except AuthError as e:
         # The whole point of this branch: never let this become "0 patrons".
         print("AUTH_FAILED: %s" % e, file=sys.stderr)
