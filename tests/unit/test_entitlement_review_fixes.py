@@ -231,9 +231,15 @@ def test_cohort_is_persisted_before_any_early_return():
     share that genuinely arrived in between would be back-dated into the launch
     cohort and handed an amnesty it never earned."""
     src = (ROOT / "scripts" / "maint" / "qflix-entitlement.py").read_text(encoding="utf-8")
-    seed = src.index("added = state.seed(accepted")
-    save = src.index("could not persist the seeded cohort")
-    outage = src.index("all %d entitlement lookup(s) failed")
+    # Anchored inside main(): the 2026-08-08 money-path merge moved the
+    # outage into compute_plans()/AllLookupsFailed, and the exception class
+    # (plus --arm-check's own catch) now mention the message earlier in the
+    # file. The invariant is unchanged: within the real run, the seeded
+    # cohort is persisted before the outage early-return.
+    seg = src[src.index("def main("):]
+    seed = seg.index("added = state.seed(accepted")
+    save = seg.index("could not persist the seeded cohort")
+    outage = seg.index("except AllLookupsFailed")
     assert seed < save < outage, \
         "the seeded cohort must be saved before the outage early-return"
 

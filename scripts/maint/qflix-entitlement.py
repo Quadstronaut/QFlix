@@ -914,6 +914,9 @@ def _oracle_check(args, now: dt.datetime) -> int:
         roster_path = MEM.find_roster(Path(args.members) if args.members else None)
         roster = MEM.load(roster_path)
     except MEM.MembersError as e:
+        # The detail goes to the durable log only: members.py's validation
+        # messages quote offending rows verbatim (real addresses / payer refs),
+        # and this read-only path pushes nothing to Kuma by design.
         warn("roster invalid: %s" % e)
         return EXIT_CONFIG
 
@@ -965,13 +968,19 @@ def _arm_check(args, now: dt.datetime) -> int:
         roster_path = MEM.find_roster(Path(args.members) if args.members else None)
         roster = MEM.load(roster_path)
     except MEM.MembersError as e:
+        # The detail goes to the durable log only: members.py's validation
+        # messages quote offending rows verbatim (real addresses / payer refs),
+        # and this read-only path pushes nothing to Kuma by design.
         warn("roster invalid: %s" % e)
         return EXIT_CONFIG
 
-    amnesty = ST.parse_amnesty(_roster_default(roster_path, "amnesty_until"))
-    new_arrival_days = int(_roster_default(roster_path, "new_arrival_days")
-                           or ST.DEFAULT_NEW_ARRIVAL_DAYS)
-    grace_days = roster.grace_days
+    # The preview must refuse the same configs the real run refuses (H4), or
+    # --arm-check happily rehearses a run that would exit EXIT_CONFIG -- or
+    # worse, previews with a different deadline than the run would compute.
+    knobs = _validated_knobs(roster_path, roster)
+    if knobs is None:
+        return EXIT_CONFIG
+    amnesty, new_arrival_days, grace_days = knobs
 
     try:
         token = (_secrets_dir() / "plex.token").read_text(encoding="utf-8").strip()
@@ -987,7 +996,7 @@ def _arm_check(args, now: dt.datetime) -> int:
     except PS.PlexShareError as e:
         warn(str(e))
         return EXIT_CONFIG
-    full_ids = PS.full_access_ids(sections)
+    full_ids = PS.full_access_ids(sections, args.welcome_section)
 
     try:
         seerr = SU.client_from_secrets()
@@ -1409,6 +1418,36 @@ def _roster_default(path: Path, key: str):
         return ((raw.get("defaults") or {}) or {}).get(key)
     except Exception:
         return None
+
+
+def _validated_knobs(roster_path: Path, roster: "MEM.Roster"):
+    """The H4 clock-knob validation, for the READ-ONLY paths (--arm-check).
+
+    main() keeps its own inline copy because a refusal there must also push
+    Kuma down; the preview paths push nothing, so a refusal here just warn()s
+    and the caller exits EXIT_CONFIG. Same rules as main(): a zero/negative/
+    boolean new_arrival_days is refused, and an amnesty_until that is present
+    but unparseable is a typo, never an intent to retire the amnesty.
+
+    Returns (amnesty, new_arrival_days, grace_days) or None on refusal.
+    """
+    nad = _roster_default(roster_path, "new_arrival_days")
+    if nad is None:
+        nad_days = ST.DEFAULT_NEW_ARRIVAL_DAYS
+    elif isinstance(nad, bool) or not isinstance(nad, int) or nad < 1:
+        warn("members.yaml defaults.new_arrival_days is %r; it must be an "
+             "integer >= 1 (same refusal as the real run)." % (nad,))
+        return None
+    else:
+        nad_days = nad
+    am_raw = _roster_default(roster_path, "amnesty_until")
+    am = ST.parse_amnesty(am_raw)
+    if am_raw is not None and am is None:
+        warn("members.yaml defaults.amnesty_until is %r, which is not a "
+             "date; delete the key to retire the amnesty (same refusal as "
+             "the real run)." % (am_raw,))
+        return None
+    return am, nad_days, roster.grace_days
 
 
 if __name__ == "__main__":
