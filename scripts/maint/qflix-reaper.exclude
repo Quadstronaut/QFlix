@@ -21,3 +21,12 @@
 # tvdb:81189
 # plex:14823
 # Planet Earth II
+
+# The Welcome-library video (operator pin, 2026-08-08). Today this line is
+# belt-and-suspenders twice over: the reaper's LIBRARIES allowlist does not
+# include "QFlix - Welcome" (section never queried), and the video resolves to
+# no *arr record (deletion structurally impossible). The pin exists so that if
+# either of those facts ever changes -- Welcome added to LIBRARIES, or the
+# video somehow acquiring an *arr id -- the instruction video still cannot age
+# out. It is the front door of the membership funnel, not media.
+Welcome to QFlix
