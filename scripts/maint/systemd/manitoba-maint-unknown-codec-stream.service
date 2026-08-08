@@ -1,0 +1,15 @@
+[Unit]
+Description=Manitoba maint — unknown-codec-stream janitor (strips streams ffprobe can't identify so Tdarr stops parking them)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# EXECUTE is armed deliberately: the predicate is narrow (codec_name missing/
+# empty/'unknown' only — never a real codec name), the remux is stream-copy-
+# only with a post-verify, and this closes a confirmed permanent-park bug
+# (The Marshals S01E01-E13, 2026-08-06). Blast radius capped by --max-items.
+ExecStart=/usr/bin/python3 %h/scripts/maint/unknown-codec-stream-janitor.py --execute --max-items 25
+# Full-library ffprobe sweep + up to 25 remuxes can run long.
+TimeoutStartSec=7200
+StandardOutput=journal
+StandardError=journal
