@@ -42,6 +42,15 @@ WATCHED=(
   # stopped scheduling reads green forever. All four logs are written in the
   # same run, so watching one is sufficient.
   "upgradinatorr|$HOME/.apps/upgradinatorr/logs/sonarr.log|907200"
+  # Nightly (04:00 UTC) Plex->Listmonk subscriber reconcile, appending to
+  # sync.log on every run. Added 2026-08-08 to CLOSE the cron-listmonk-sync
+  # open_gap in manifest/jobs.yaml: its own adjudication named this canary as
+  # "the natural home for a freshness check", and the gap stayed open only
+  # because nobody had added the line. 36h = the same 1.5x-cadence threshold
+  # the other daily jobs use. A silent stop means new members quietly stop
+  # being onboarded to the newsletter -- member-visible, slow, exactly the
+  # shape a freshness check catches and an app monitor cannot.
+  "listmonk-sync|$HOME/.apps/listmonk/logs/sync.log|129600"
 )
 NOW=$(date -u +%s)
 FAILED=()
