@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # entitlement-service canary: is the thing the money depends on actually alive,
-# authenticated, honouring its contract, and still carrying patron data?
+# authenticated (both ways), honouring its contract, still carrying patron
+# data, and has the money path EVER demonstrated a real success?
 #
 # WHY THIS EXISTS
 # ---------------
-# manitoba-maint-entitlement has a dead-man (Kuma "QFlix Entitlement Gate",
+# manitoba-maint-entitlement has a dead-man ("QFlix Entitlement Gate",
 # 15-minute timer, 1h heartbeat override). That watches the GATE. Nothing
 # watched the SERVICE the gate reads, and the gate is deliberately built so that
 # a broken service is INVISIBLE from the gate's own health:
@@ -21,85 +22,73 @@
 # "I paid and got in", they just don't get in and give up. This canary is the
 # only thing that can say the freeze happened.
 #
-# FOUR LEGS, escalating from "is it there" to "does it still know anything"
+# FIVE LEGS, escalating from "is it there" to "has it EVER actually worked"
 #
-#   1. liveness   /healthz returns 200.
-#   2. auth       an authenticated lookup does not 401/403. A rejected key is
-#                 the single most likely silent killer here: it is indis-
-#                 tinguishable, downstream, from a service outage, and key
-#                 rotation on the Starhold side would cause it with no local
-#                 change to blame.
-#   3. contract   the 200 body is a JSON object carrying a BOOLEAN `entitled`.
-#                 lib/entitlement.py refuses to grade a 200 that lacks the
-#                 field -- "a 200 response has no 'entitled' field" is a
-#                 contract violation, not a no -- precisely so a server-side
-#                 refactor cannot silently revoke everybody. That refusal is
-#                 correct and it is also SILENT: it just produces UNKNOWNs.
-#                 This leg makes it audible.
-#   4. oracle     has the service FORGOTTEN patrons it used to know?
+#   1. liveness    /healthz returns 200.
+#   2. auth-neg     an UNAUTHENTICATED lookup must 401/403. Added 2026-08-07
+#                  (SPEC AC-09). If the entitlement API ever fails open,
+#                  anyone can read entitlement status for any address with no
+#                  key at all -- a PII exposure with no local change to blame,
+#                  and the mirror image of leg 3 below.
+#   3. auth-pos     an AUTHENTICATED lookup does not 401/403. A rejected key
+#                  is the single most likely silent killer here: it is
+#                  indistinguishable, downstream, from a service outage, and
+#                  key rotation on the Starhold side would cause it with no
+#                  local change to blame.
+#   4. contract    the 200 body is a JSON object carrying a BOOLEAN `entitled`.
+#                  lib/entitlement.py refuses to grade a 200 that lacks the
+#                  field -- "a 200 response has no 'entitled' field" is a
+#                  contract violation, not a no -- precisely so a server-side
+#                  refactor cannot silently revoke everybody. That refusal is
+#                  correct and it is also SILENT: it just produces UNKNOWNs.
+#                  This leg makes it audible.
+#   5. oracle      has the money path EVER demonstrated a success, per SPEC
+#                  section 3's verdict table (lib/payer_oracle.judge()).
 #
-# LEG 2 AND 3 USE A SYNTHETIC ADDRESS, NEVER A MEMBER'S. `.invalid` is reserved
-# by RFC 2606 and can never be a real patron, so the probe proves auth and
-# contract without putting a member's address into a script that lives in a
-# PUBLIC repository, into this canary's Kuma message, or into journald. Leg 4
-# necessarily reads real addresses out of the gate's state file at runtime; it
-# masks every one of them before printing. No unmasked address may ever leave
-# this script -- see the never-publish-member-data operator directive.
+# LEGS 2, 3 AND 4 USE A SYNTHETIC ADDRESS, NEVER A MEMBER'S. `.invalid` is
+# reserved by RFC 2606 and can never be a real patron, so the probes prove
+# auth and contract without putting a member's address into a script that
+# lives in a PUBLIC repository, into this canary's Kuma message, or into
+# journald. Leg 5 necessarily reads real declared-payer addresses at runtime
+# (via qflix-entitlement.py --oracle-check); every one of them is masked
+# before it can leave that process -- see lib/payer_oracle.py's PII
+# discipline section and the never-publish-member-data operator directive.
 #
-# LEG 4, AND WHY IT IS THE ONLY LEG THAT CAN CATCH A DEAD SYNC
-# ------------------------------------------------------------
-# Legs 1-3 prove the HTTP service answers. They cannot prove its Patreon
-# projection still contains anyone, because the service's answer for a patron
-# it has lost looks exactly like its answer for someone who never subscribed:
+# LEG 5, AND WHY IT IS THE ONLY LEG THAT CAN CATCH "NEVER WORKED"
+# -----------------------------------------------------------------
+# Legs 1-4 prove the HTTP service answers and honours its contract. They
+# cannot prove the money path has ever actually moved a real person from
+# "subscribed" to "has access" -- the service's answer for a patron it has
+# never heard of is byte-identical to its answer for one it has lost:
 #
 #     {"entitled": false, "reason": "unknown"}
 #
-# So the canary needs an oracle -- an address it KNOWS was entitled, whose
-# sudden absence means the pipe broke rather than the person left. The gate
-# already writes one down: lib/access_state.py persists `last_entitled_at` per
-# account specifically because "the entitlement API is a projection of NOW with
-# no history at all". Any account with that field set was, at some point,
-# really entitled.
+# lib/payer_oracle.judge() is the single implementation (SPEC section 3) of
+# the layered discriminator that answers this: a declared-payer clock that
+# works from day one with zero new credentials, a bulk cross-check
+# (GET /v1/entitlements) once the operator grants the QFlix key the 'bulk'
+# scope, and a forgotten-patron check strengthened to fire on ANY forgotten
+# ever-entitled account, not only when every one of them is lost at once.
+# This leg DELEGATES to that module (via `qflix-entitlement.py
+# --oracle-check`) rather than re-implementing the table here, because a
+# policy replicated across two surfaces drifts by default -- the exact lesson
+# the REA prompt-rule bijection guard already exists to enforce elsewhere in
+# this repo.
 #
-# The discrimination is the `reason` field, and it is exact:
-#
-#     status=former_patron, reason unset  -> they cancelled. Normal. Not a fault.
-#     reason=unknown                      -> the service has NEVER HEARD of this
-#                                            address. For an account that was
-#                                            demonstrably entitled before, that
-#                                            is not a lapse. Data was lost.
-#
-# One such account could be an upstream email change. ALL of them going
-# `reason=unknown` at once is a dead or wiped projection, and if the gate were
-# armed it would grade every one of them a revoke. That is the mass-eviction
-# scenario lib/entitlement.py's whole three-valued design exists to prevent --
-# except this failure mode arrives as a well-formed 200, so the UNKNOWN grading
-# never engages. Hence a separate check.
-#
-# WHY A DORMANT ORACLE IS A PASS AND NOT AN exit-2
-# ------------------------------------------------
-# Until somebody has been entitled at least once, the ever-entitled set is
-# empty and leg 4 asserts nothing. The house rule is that could-not-assert must
-# never read as clean -- but the rule's target is a check made VACUOUSLY TRUE by
-# a broken input, and that is not this. There is no patron to forget, so there
-# is no fault this leg could miss. cron-liveness exits 2 on a zero-length
-# declaration set because crontab jobs demonstrably DO run and an empty ledger
-# means the ledger is broken; here, zero-ever-entitled is a true and expected
-# fact about a system nobody has subscribed to yet.
-#
-# The distinction that DOES matter is broken-vs-empty on the state file itself:
-# unreadable or unparseable state.json is exit 2, because then "zero ever
-# entitled" is empty-because-broken and the oracle is not dormant, it is blind.
-# Leg 4 announces which of the two it is in every PASS message, so a permanently
-# dormant oracle is visible rather than mistaken for a passing check.
+# Today this leg is RED from the very first run, and correctly so: the money
+# path has never demonstrated a success and the bulk scope has not been
+# granted yet. That is the true state of the system, not a bug in the canary.
 #
 # EXIT CODES
-#   0 - service alive, authenticated, honouring its contract; oracle either
-#       satisfied or legitimately dormant (message says which)
-#   1 - service down / key rejected / contract violated / every known-entitled
-#       account forgotten
-#   2 - could not assert: no key on the box, curl missing, or the gate's state
-#       file exists but cannot be read or parsed
+#   0 - service alive, authenticated both ways, honouring its contract; the
+#       payer oracle reads a non-red verdict (PROVEN / PROVEN_UPSTREAM /
+#       DORMANT / SETTLING)
+#   1 - service down / auth failed either direction / contract violated / the
+#       payer oracle reads a red verdict (DEAD / MISMATCH / UNPROVEN_BLIND /
+#       UNPROVEN_EMPTY)
+#   2 - could not assert: no key on the box, curl missing, or
+#       qflix-entitlement.py --oracle-check itself could not run (bad roster,
+#       no entitlement client)
 #
 # Lives on the seedbox at ~/scripts/canaries/entitlement-service.sh (deployed by
 # 240-maintenance-install.sh). Invoked by manitoba-maint-canary-entitlement-
@@ -139,10 +128,26 @@ if [ "$HCODE" != "200" ]; then
   exit 1
 fi
 
-# --- legs 2+3: auth and contract, on a synthetic address ------------------
 # RFC 2606 reserves .invalid. This address can never be a real patron, so a
 # member address never enters this script, its Kuma message, or journald.
 PROBE="qflix-canary-probe@qflix.invalid"
+
+# --- leg 2: auth-negative control ------------------------------------------
+# An UNAUTHENTICATED lookup must be REJECTED. If the service ever fails open
+# here, entitlement status for any address is readable with no key at all --
+# a PII exposure this repo has no other way to detect, and the mirror image
+# of leg 3 (a good key wrongly rejected).
+NOAUTH_CODE=$(curl -s -o /dev/null -m 20 -w "%{http_code}" \
+  -H "Accept: application/json" "$BASE/v1/entitlement?email=$PROBE" 2>/dev/null)
+case "$NOAUTH_CODE" in
+  401|403) ;;
+  *)
+    printf "STAGE=ent-auth-not-enforced msg=unauthenticated-lookup-answered-HTTP-%s-not-401-or-403-entitlement-status-is-readable-with-no-key\n" \
+      "${NOAUTH_CODE:-000}" >&2
+    exit 1 ;;
+esac
+
+# --- leg 3: auth-positive, and leg 4: contract, on the same probe ---------
 BODY=$(mktemp) || { printf "STAGE=ent-no-tmp msg=mktemp-failed\n" >&2; exit 2; }
 trap "rm -f \"$BODY\"" EXIT
 PCODE=$(curl -s -o "$BODY" -m 25 -w "%{http_code}" \
@@ -181,87 +186,37 @@ if [ "${CONTRACT%% *}" != "OK" ]; then
   exit 1
 fi
 
-# --- leg 4: the oracle ----------------------------------------------------
-STATE="$HOME/.opt/maint/entitlement/state.json"
-if [ ! -e "$STATE" ]; then
-  # No state file at all is legitimate before the gate has ever completed a
-  # run. Legs 1-3 already passed, so the service is provably fine; say so and
-  # name the oracle as dormant rather than inventing a fault.
-  printf "PASS: entitlement-service - alive, authenticated, contract OK; oracle DORMANT (no state file yet)\n"
-  exit 0
-fi
-
-ORACLE=$(python3 - "$STATE" <<PY 2>&1
-import json, sys
-try:
-    d = json.load(open(sys.argv[1], encoding="utf-8"))
-except Exception as e:
-    print("UNREADABLE %s" % type(e).__name__); raise SystemExit(0)
-accts = d.get("accounts")
-if not isinstance(accts, dict):
-    print("UNREADABLE no-accounts-object"); raise SystemExit(0)
-ever = sorted(e for e, v in accts.items()
-              if isinstance(v, dict) and v.get("last_entitled_at"))
-print("EVER %d %d" % (len(ever), len(accts)))
-for e in ever:
-    print(e)
-PY
-)
-HEAD=$(printf "%s\n" "$ORACLE" | head -1)
-if [ "${HEAD%% *}" = "UNREADABLE" ]; then
-  # The file exists but will not parse. "Zero ever-entitled" is now empty-
-  # because-broken, and the oracle is blind rather than dormant.
-  printf "STAGE=ent-state-unreadable msg=%s-cannot-tell-dormant-oracle-from-blind-one\n" \
-    "${HEAD#UNREADABLE }" >&2
+# --- leg 5: the payer oracle -----------------------------------------------
+# Delegates to lib/payer_oracle.judge() via qflix-entitlement.py
+# --oracle-check -- see the module header for why this leg must not
+# re-implement the SPEC section 3 verdict table in bash. --oracle-check is
+# read-only: no Plex, no Seerr, no state mutation, no Kuma push of its own.
+GATE="$HOME/scripts/maint/qflix-entitlement.py"
+if [ ! -r "$GATE" ]; then
+  printf "STAGE=ent-oracle-not-deployed msg=%s-missing-cannot-run-the-oracle-leg\n" "$GATE" >&2
   exit 2
 fi
 
-NEVER_ENT=$(printf "%s" "$HEAD" | awk "{print \$2}")
-TRACKED=$(printf "%s" "$HEAD" | awk "{print \$3}")
+ORACLE_OUT=$(python3 "$GATE" --oracle-check --settle-days 2 2>&1)
+ORACLE_RC=$?
 
-if [ "${NEVER_ENT:-0}" -eq 0 ]; then
-  printf "PASS: entitlement-service - alive, authenticated, contract OK; oracle DORMANT (0/%s accounts ever entitled - nobody has subscribed yet, so there is no patron the service could have forgotten)\n" \
-    "${TRACKED:-0}"
-  exit 0
-fi
-
-# At least one account was really entitled once. Ask about each: has the
-# service forgotten it (reason=unknown), or did the person simply cancel?
-FORGOTTEN=0
-CHECKED=0
-EG=""
-while IFS= read -r addr; do
-  [ -z "$addr" ] && continue
-  case "$addr" in EVER*|UNREADABLE*) continue ;; esac
-  CHECKED=$((CHECKED + 1))
-  RB=$(curl -s -m 25 -H "Authorization: Bearer $KEY" -H "Accept: application/json" \
-       "$BASE/v1/entitlement?email=$addr" 2>/dev/null)
-  VERD=$(printf "%s" "$RB" | python3 -c "
-import json,sys
-try: d=json.load(sys.stdin)
-except Exception: print(\"ERR\"); raise SystemExit(0)
-if not isinstance(d,dict): print(\"ERR\"); raise SystemExit(0)
-if d.get(\"entitled\") is True: print(\"YES\")
-elif d.get(\"reason\")==\"unknown\": print(\"FORGOTTEN\")
-else: print(\"LAPSED\")
-" 2>/dev/null)
-  if [ "$VERD" = "FORGOTTEN" ]; then
-    FORGOTTEN=$((FORGOTTEN + 1))
-    # Mask before it can reach Kuma, journald or a terminal. Two leading
-    # characters and the domain is enough to act on and not enough to publish.
-    [ -z "$EG" ] && EG="$(printf "%s" "$addr" | cut -c1-2)***@$(printf "%s" "$addr" | sed "s/.*@//")"
-  fi
-done <<< "$(printf "%s\n" "$ORACLE" | tail -n +2)"
-
-if [ "$CHECKED" -gt 0 ] && [ "$FORGOTTEN" -eq "$CHECKED" ]; then
-  printf "STAGE=ent-sync-forgot-everyone msg=all-%s-known-entitled-account(s)-now-reason=unknown-first=%s-projection-lost-not-a-lapse\n" \
-    "$CHECKED" "$EG" >&2
-  exit 1
-fi
-
-printf "PASS: entitlement-service - alive, authenticated, contract OK; oracle LIVE (%s/%s ever-entitled account(s) checked, %s forgotten)\n" \
-  "$CHECKED" "$TRACKED" "$FORGOTTEN"
-exit 0
+case "$ORACLE_RC" in
+  0)
+    VERDICT_LINE=$(printf "%s\n" "$ORACLE_OUT" | grep "^VERDICT=" | head -1)
+    printf "PASS: entitlement-service - alive, authenticated both ways, contract OK; oracle %s\n" \
+      "${VERDICT_LINE#VERDICT=}"
+    exit 0 ;;
+  2)
+    VERDICT_LINE=$(printf "%s\n" "$ORACLE_OUT" | grep "^VERDICT=" | head -1)
+    DETAIL_LINE=$(printf "%s\n" "$ORACLE_OUT" | grep "^DETAIL=" | head -1)
+    DETAIL_FLAT=$(printf "%s" "${DETAIL_LINE#DETAIL=}" | tr " " "-")
+    printf "STAGE=ent-oracle-red msg=%s-%s\n" "${VERDICT_LINE#VERDICT=}" "$DETAIL_FLAT" >&2
+    exit 1 ;;
+  *)
+    printf "STAGE=ent-oracle-could-not-assert msg=oracle-check-exited-%s-see-the-durable-log-at-.opt/maint/entitlement\n" \
+      "$ORACLE_RC" >&2
+    exit 2 ;;
+esac
 ')
 RC=$?
 echo "$RES"
