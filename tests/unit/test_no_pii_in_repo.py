@@ -49,6 +49,21 @@ ALLOWED_DOMAINS = (
     "manitoba.local",         # service-account placeholder, not routable
     "localhost",
     "x.com",                  # dashboard test fixtures: a@x.com, b@x.com...
+    # RFC 2606 reserved TLDs. The example.* entries above are that RFC's
+    # second-level names; these are its top-level ones, and the set was simply
+    # incomplete. IANA guarantees none of them is ever delegated, so an address
+    # under one cannot be routed and cannot identify a person -- which makes
+    # this a correction to the guard's vocabulary, not an exemption from it.
+    # The docstring's "do not add an exemption" is about real values; a TLD that
+    # is unresolvable by standard is not a real value.
+    #
+    # Something has to be usable here: entitlement-service.sh must probe the
+    # entitlement API's auth and response contract on SOME address, and the only
+    # alternatives are a member's real address (the exact thing this file
+    # exists to stop) or splicing an address together at runtime to slip past
+    # the regex -- evasion, which leaves the guard wrong AND the intent unclear
+    # to the next reader.
+    "invalid", "test", "example",
 )
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")

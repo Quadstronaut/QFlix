@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - entitlement service liveness, auth, contract and sync oracle (the gate freezes silently without it)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push entitlement-service
+StandardOutput=journal
+StandardError=journal
