@@ -242,7 +242,12 @@ def test_the_checked_in_roster_ships_disarmed():
 # count protects the same thing -- "tidying up the roster" silently dropping an
 # exemption -- while naming nobody. Changing this number should be a deliberate
 # edit with a reason in the commit message, never a drive-by.
-EXPECTED_EXEMPT_HOUSEHOLDS = 4
+#
+# 4 -> 3 on 2026-08-08: one household's exemption was removed by operator
+# directive (the person does not use the service and holds no share; the row
+# was kept, un-exempted, so any future share lands named and graded). This is
+# exactly the deliberate-edit-with-a-reason this guard exists to force.
+EXPECTED_EXEMPT_HOUSEHOLDS = 3
 
 
 @_live
