@@ -138,6 +138,16 @@ jobs:
     timer: scripts/maint/systemd/manitoba-maint-audit.timer
     kuma_monitor: "QFlix Audit Regime"
 
+  manitoba-maint-unknown-codec-stream:
+    timer: scripts/maint/systemd/manitoba-maint-unknown-codec-stream.timer
+    # Daily 04:00 UTC janitor stripping unmappable (codec_name=unknown)
+    # streams that otherwise park files in Tdarr's terminal `Transcode error`
+    # state forever. Self-pushes its own standalone monitor (registered in
+    # lib/kuma.py STANDALONE_SELF_PUSH_MONITORS): it REMUXES member files in
+    # place, and destructive automation that stops -- or starts failing --
+    # must never be silent.
+    kuma_monitor: "QFlix Unknown Codec Stream"
+
   # ------------------------------------------------------------- the canaries
   # Every canary timer, each pushing its own Kuma monitor. The count is NOT
   # written here on purpose: it was stale at "19" while the block held 22, and a
@@ -536,14 +546,13 @@ jobs:
     no_monitor_reason: >-
       Nightly reconcile of Plex shares into Listmonk subscribers. A silent stop
       means new members stop being onboarded to the newsletter - member-visible
-      but slow, low-severity, and self-announcing (the operator notices a new
-      member is not receiving the weekly send). Writes to
-      ~/.apps/listmonk/logs/sync.log, so stale-log-watchdog is the natural home
-      for a freshness check if this is ever worth escalating. UNCLOSED by
-      choice, not by oversight - recorded so the next audit inherits the
-      decision rather than rediscovering the gap.
-    open_gap: true
-    adjudicated: 2026-08-07
+      but slow. CLOSED 2026-08-08: stale-log-watchdog now watches
+      ~/.apps/listmonk/logs/sync.log with a 36h (1.5x-cadence) threshold, the
+      exact escalation the 2026-08-07 adjudication named as the natural home.
+      The dead-man is the watchdog's own Kuma monitor; log-stale-listmonk-sync
+      is the failure vocabulary.
+    open_gap: false
+    adjudicated: 2026-08-08
     owner: operator
 
   cron-prune-text-libraries:
@@ -560,22 +569,16 @@ jobs:
     adjudicated: 2026-08-07
     owner: operator
 
-  cron-arr-housekeeping-missing:
-    cron: "arr-housekeeping.py --missing"
-    schedule: "0 4 * * 0,2,3,4,5,6"
-    kuma_monitor: null
-    no_monitor_reason: >-
-      Nightly missing-episode search sweep (six days a week; Monday is skipped
-      for the maintenance window). If it stops, nothing breaks - wanted items
-      simply stop being re-searched, which surfaces as members reporting
-      long-missing episodes rather than as any red. NOTE: qflix-missing-search
-      .timer also exists as a systemd unit; whether these two overlap or divide
-      the work was NOT established during this audit and is worth a look.
-      Tracked as an open gap for that reason, not because the sweep itself is
-      unmonitorable.
-    open_gap: true
-    adjudicated: 2026-08-07
-    owner: operator
+  # cron-arr-housekeeping-missing: RETIRED 2026-08-08. The 2026-08-07
+  # adjudication left this open on one unestablished fact: whether the 04:00
+  # cron and qflix-missing-search.timer overlap or divide the work. Established
+  # by reading: arr-housekeeping.py --missing DELEGATES to scripts/mcp/
+  # missing.py ("to keep one source of truth", cmd_missing) -- the very script
+  # the timer runs daily at 09:00 with its own Kuma monitor ("Qflix Missing
+  # Search"). Full overlap: same sweep, two schedulers, one monitored and one
+  # not. The unmonitored duplicate was removed from the crontab rather than
+  # given a second dead-man; the monitored plane keeps the work. The
+  # --unstick entry below is a DIFFERENT mode and stays.
 
   cron-arr-housekeeping-unstick:
     cron: "arr-housekeeping.py --unstick"
