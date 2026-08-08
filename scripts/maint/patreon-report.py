@@ -242,7 +242,7 @@ def reconcile(members: List[Dict], roster) -> Dict:
             "cents": a.get("currently_entitled_amount_cents") or 0,
             "last_charge_status": a.get("last_charge_status"),
             "last_charge_date": a.get("last_charge_date"),
-            "household_id": getattr(hh, "hid", None) if hh else None,
+            "household_id": hh.id if hh else None,
         }
         (matched if hh else unmatched).append(rec)
 
@@ -252,8 +252,8 @@ def reconcile(members: List[Dict], roster) -> Dict:
         seen = {r["household_id"] for r in matched if r["household_id"]}
         for h in roster:
             b = getattr(h, "billing", None)
-            if b and b.rail == "patreon" and getattr(h, "hid", None) not in seen:
-                on_rail.append({"household_id": h.hid,
+            if b and b.rail == "patreon" and h.id not in seen:
+                on_rail.append({"household_id": h.id,
                                 "payer_ref": b.payer_ref,
                                 "amount_usd": b.amount_usd})
     return {"matched": matched, "unmatched_patrons": unmatched,
