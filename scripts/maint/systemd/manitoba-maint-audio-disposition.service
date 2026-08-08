@@ -12,6 +12,13 @@ Type=oneshot
 # off-peak converges in ~7 days, then steady-state is a handful per day.
 ExecStart=/usr/bin/python3 %h/scripts/maint/audio-disposition-janitor.py --execute --max-items 50
 # Full-library ffprobe sweep + up to 25 large remuxes can run long.
-TimeoutStartSec=7200
+# 2h -> 5h on 2026-08-08: a bulk re-acquisition (Vanderpump S5-S12, ~190
+# episodes) fed Tdarr, Tdarr fed this janitor its dual-default output, and a
+# full --max-items 50 night of remuxes needs ~4h on a loaded box. The 2h cap
+# killed the run mid-batch (work already done was kept - each fix is atomic -
+# but the end-of-run Kuma push never fired, so the monitor read "no heartbeat"
+# on a night the janitor fixed 40+ files). 5h bounds a hung run well before
+# the next 04:30 fire while letting a legitimate max-items night finish.
+TimeoutStartSec=18000
 StandardOutput=journal
 StandardError=journal
