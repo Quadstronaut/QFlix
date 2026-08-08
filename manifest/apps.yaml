@@ -568,6 +568,26 @@ canaries:
     kuma_monitor: "Canary Unstick Rate"
     script: "scripts/canaries/unstick-rate.sh"
     schedule: "hourly"
+  entitlement-service:
+    # Added 2026-08-07. manitoba-maint-entitlement already has a dead-man
+    # ("QFlix Entitlement Gate", 15-min timer, 1h heartbeat override) but that
+    # watches the GATE, and the gate is built so a broken SERVICE is invisible
+    # from it: lib/entitlement.py grades every outage, 401 and malformed body as
+    # UNKNOWN, and UNKNOWN neither grants nor revokes. That asymmetry is the
+    # load-bearing safety property -- an API outage must freeze this system,
+    # never drain it -- but its consequence is a gate that keeps pushing green
+    # every 15 minutes while silently provisioning nobody. A frozen gate means
+    # paying members are never granted access, and nobody reports the access
+    # they didn't get. Four legs: /healthz, auth (a rotated key is otherwise
+    # indistinguishable from an outage), the `entitled` bool contract, and a
+    # sync ORACLE built from lib/access_state.py's last_entitled_at -- the only
+    # leg that can tell a lost Patreon projection (reason=unknown for an account
+    # that WAS entitled) from an ordinary cancellation (status=former_patron).
+    # Probes a synthetic RFC-2606 .invalid address so no member address enters a
+    # public repo or a Kuma message; oracle addresses are masked at runtime.
+    kuma_monitor: "Canary Entitlement Service"
+    script: "scripts/canaries/entitlement-service.sh"
+    schedule: "hourly"
   cron-liveness:
     # Added 2026-08-07. The LIVE half of the crontab plane: the offline C-01
     # detector reads jobs.yaml `cron:` declarations and demands a dead-man
