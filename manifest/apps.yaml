@@ -598,13 +598,20 @@ canaries:
     # never drain it -- but its consequence is a gate that keeps pushing green
     # every 15 minutes while silently provisioning nobody. A frozen gate means
     # paying members are never granted access, and nobody reports the access
-    # they didn't get. Four legs: /healthz, auth (a rotated key is otherwise
-    # indistinguishable from an outage), the `entitled` bool contract, and a
-    # sync ORACLE built from lib/access_state.py's last_entitled_at -- the only
-    # leg that can tell a lost Patreon projection (reason=unknown for an account
-    # that WAS entitled) from an ordinary cancellation (status=former_patron).
-    # Probes a synthetic RFC-2606 .invalid address so no member address enters a
-    # public repo or a Kuma message; oracle addresses are masked at runtime.
+    # they didn't get. Five legs: /healthz; an UNAUTHENTICATED lookup must
+    # 401/403 (added 2026-08-07 -- if the service ever fails open, entitlement
+    # status for any address is readable with no key); an AUTHENTICATED lookup
+    # must NOT 401/403 (a rotated key is otherwise indistinguishable from an
+    # outage); the `entitled` bool contract; and a payer ORACLE
+    # (lib/payer_oracle.judge(), delegated to via `qflix-entitlement.py
+    # --oracle-check` rather than re-implemented here) that answers "has the
+    # money path EVER demonstrated a real success", per the SPEC section 3
+    # verdict table -- the layer that can tell a lost Patreon projection
+    # (reason=unknown for an account that WAS entitled) from an ordinary
+    # cancellation (status=former_patron), AND catch the money path never
+    # having worked at all, which the original four-leg draft could not see.
+    # Probes a synthetic RFC-2606 .invalid address so no member address enters
+    # a public repo or a Kuma message; oracle addresses are masked at runtime.
     kuma_monitor: "Canary Entitlement Service"
     script: "scripts/canaries/entitlement-service.sh"
     schedule: "hourly"

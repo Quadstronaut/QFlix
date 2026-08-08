@@ -78,6 +78,8 @@ sys.path.insert(0, str(_HERE / "lib"))
 import access_state as ST                                    # noqa: E402
 import entitlement as ENT                                    # noqa: E402
 import members as MEM                                        # noqa: E402
+import oracle_state as OSTATE                                 # noqa: E402
+import payer_oracle as ORACLE                                 # noqa: E402
 import plexshare as PS                                       # noqa: E402
 import seerrusers as SU                                      # noqa: E402
 
@@ -110,9 +112,12 @@ DEFAULT_MAX_REDUCE_PCT = 34
 
 EXIT_OK = 0
 EXIT_PARTIAL = 1
+EXIT_ARM_CHECK_RED = 2        # --arm-check / --oracle-check: red verdict or a would-be reduction
 EXIT_ENTITLEMENT_UNAVAILABLE = 3
 EXIT_MEDIA_STACK_UNAVAILABLE = 4
 EXIT_CONFIG = 5
+
+DEFAULT_SETTLE_DAYS = ORACLE.DEFAULT_SETTLE_DAYS
 
 # Plan states. Strings so they survive into the audit manifest unchanged.
 S_EXEMPT = "exempt"
@@ -525,6 +530,94 @@ def plan_for_share(
 
 
 # ===========================================================================
+# The payer oracle -- SPEC section 3. Every function below is PURE (given
+# already-fetched facts); the only I/O is in main()'s --oracle-check /
+# --arm-check branches and in the periodic observe()/save() of the declared-
+# payer clock. lib/payer_oracle.judge() is the single implementation of the
+# verdict table; this section only ASSEMBLES its inputs from this file's own
+# data model (Roster, AccessState, Answer) so the gate and the canary never
+# carry two copies of the table itself.
+# ===========================================================================
+
+def declared_payer_households(roster: "MEM.Roster") -> List["MEM.Household"]:
+    """SPEC section 3, L1: non-exempt, non-provisional, billing.rail set, and
+    billing.amount_usd > 0. `provisional` and `exempt` households are excluded
+    even if they carry a stray amount -- both mean "not yet a real bill"."""
+    out = []
+    for h in roster.households:
+        if h.exempt or h.provisional or not h.billing:
+            continue
+        if h.billing.rail and h.billing.amount_usd and h.billing.amount_usd > 0:
+            out.append(h)
+    return out
+
+
+def household_ever_entitled(hh: "MEM.Household", state: "ST.AccessState") -> bool:
+    """True if ANY Plex account in this household has ever been entitled,
+    per lib/access_state.py's per-account memory."""
+    for email in hh.accounts:
+        acct = state.accounts.get(email.lower())
+        if acct is not None and acct.ever_entitled:
+            return True
+    return False
+
+
+def build_declared_payers(
+    roster: "MEM.Roster", state: "ST.AccessState",
+    declared_at: Dict[str, dt.datetime],
+    holder_answers: Dict[str, "ENT.Answer"],
+) -> List["ORACLE.DeclaredPayer"]:
+    """Assemble payer_oracle.DeclaredPayer rows. Pure -- every input was
+    already fetched by the caller (declared_at from oracle_state.observe(),
+    holder_answers from ent_client.lookup() per unique billing.holder)."""
+    out = []
+    for hh in declared_payer_households(roster):
+        holder = (hh.billing.holder or "").lower()
+        answer = holder_answers.get(holder)
+        out.append(ORACLE.DeclaredPayer(
+            household_id=hh.id,
+            holder=hh.billing.holder,
+            first_declared_at=declared_at.get(hh.id),
+            ever_entitled=household_ever_entitled(hh, state),
+            currently_yes=bool(answer and answer.grants),
+            currently_never_seen=bool(answer and answer.never_seen),
+        ))
+    return out
+
+
+def oracle_verdict(
+    roster: "MEM.Roster", state: "ST.AccessState",
+    declared_at: Dict[str, dt.datetime],
+    holder_answers: Dict[str, "ENT.Answer"],
+    bulk_answer: "ENT.BulkAnswer", now: dt.datetime,
+    settle_days: int = DEFAULT_SETTLE_DAYS,
+) -> "ORACLE.Verdict":
+    """The one call site both --oracle-check and --arm-check use. Pure."""
+    payers = build_declared_payers(roster, state, declared_at, holder_answers)
+    bulk_facts = ORACLE.BulkFacts.from_bulk_answer(bulk_answer)
+    return ORACLE.judge(declared=payers, bulk=bulk_facts, now=now,
+                        settle_days=settle_days)
+
+
+def arm_check_should_block(verdict: "ORACLE.Verdict", plans: Sequence[Plan]) -> bool:
+    """True iff `--arm-check` must exit red (EXIT_ARM_CHECK_RED): either the
+    oracle verdict itself is red, or the plan set contains at least one
+    account that would actually be REDUCED (state EXPIRED and mutating) if
+    this run executed. Both are 'do not arm' signals; a red oracle with zero
+    pending reductions is still a reason to hold, and vice versa."""
+    if verdict.is_red:
+        return True
+    return any(p.state == S_EXPIRED and p.mutates for p in plans)
+
+
+def would_be_reduced(plans: Sequence[Plan]) -> List[str]:
+    """The masked set --arm-check prints: exactly the accounts EXPIRED-and-
+    mutating would touch. Masked because this is diagnostic output that may
+    be read over someone's shoulder or pasted into a ticket."""
+    return sorted(mask(p.email) for p in plans if p.state == S_EXPIRED and p.mutates)
+
+
+# ===========================================================================
 # Reporting
 # ===========================================================================
 def digest_lines(plans: Sequence[Plan], now: dt.datetime) -> List[str]:
@@ -536,7 +629,10 @@ def digest_lines(plans: Sequence[Plan], now: dt.datetime) -> List[str]:
     soonest = pending[0].days_remaining
     header = ("%d household(s) not entitled; soonest reduction in %.1f day(s)"
               % (len(pending), soonest))
-    rows = ["  %s (%s) - %.1fd" % (p.household_id or "?", mask(p.email), p.days_remaining)
+    # L-1 (council ledger): household_id was emitted here raw. Discord is a
+    # durable forwarded surface, so the digest names members ONLY by masked
+    # address -- the id adds nothing the operator can't get from the manifest.
+    rows = ["  %s - %.1fd" % (mask(p.email), p.days_remaining)
             for p in pending[:20]]
     if len(pending) > 20:
         rows.append("  ... and %d more" % (len(pending) - 20))
@@ -645,6 +741,93 @@ def apply_plan(plan: Plan, *, plex: "PS.PlexShareClient", share: "PS.Share",
     return applied, failed
 
 
+class AllLookupsFailed(Exception):
+    """Every entitlement lookup this run attempted came back UNKNOWN. That is
+    an outage, not a mass lapse -- see the call site for why the caller must
+    change nothing rather than plan against it."""
+
+    def __init__(self, n: int):
+        self.n = n
+        super().__init__("all %d entitlement lookup(s) failed" % n)
+
+
+def compute_plans(
+    *, roster: "MEM.Roster", state: "ST.AccessState", ent_client: "ENT.EntitlementClient",
+    shares: Sequence["PS.Share"], full_ids: Sequence[int], minimum_ids: Sequence[int],
+    amnesty: Optional[dt.datetime], grace_days: int, new_arrival_days: int,
+    member_permissions: int, by_plex_id: Dict[int, "SU.SeerrUser"],
+    by_email: Dict[str, "SU.SeerrUser"], now: dt.datetime,
+) -> Tuple[List[Plan], Dict[str, "ENT.Answer"], int]:
+    """Look up entitlement for every billed household, record the clean
+    answers into `state`'s clocks, and build one Plan per Plex share.
+
+    SHARED by main()'s real run and --arm-check's read-only preview, so the
+    two can never compute a different answer to "what would happen" -- the
+    exact two-implementations-drift failure this whole change exists to
+    close for the oracle table, applied here too. Mutates `state` IN MEMORY
+    (record_entitled/record_not_entitled); the caller decides whether to
+    persist that by calling state.save() or not.
+
+    Raises AllLookupsFailed if every lookup failed (an outage, not a mass
+    lapse) -- the caller must change nothing on that path.
+
+    ORDER IS LOAD-BEARING: the clean answers are recorded into `state`
+    BEFORE any Plan is built. See qflix-entitlement.py's git history
+    (2026-08-07) for the defect this guards against: recording after
+    planning silently cancelled the lapse grace for the very run that first
+    observed a member going false.
+    """
+    roster_by_email = roster.by_email()
+    answers: Dict[str, ENT.Answer] = {}
+    for h in roster.households:
+        if h.exempt or not h.billing or not h.billing.holder:
+            continue
+        holder = h.billing.holder.lower()
+        if holder not in answers:
+            answers[holder] = ent_client.lookup(holder)
+
+    unanswered = sum(1 for a in answers.values() if not a.answered)
+    if answers and unanswered == len(answers):
+        raise AllLookupsFailed(len(answers))
+
+    for share in shares:
+        if not share.accepted or not share.email:
+            continue
+        hh = roster_by_email.get(share.email.lower())
+        if hh is None or hh.exempt or not hh.billing:
+            continue
+        a = answers.get((hh.billing.holder or "").lower())
+        if a is None:
+            continue
+        if a.grants:
+            state.record_entitled(share.email, now=now)
+        elif a.revokes:
+            state.record_not_entitled(share.email, now=now)
+
+    plans: List[Plan] = []
+    nameless = 0
+    for share in shares:
+        if not share.email:
+            # A share with no email cannot be matched to a household, a Seerr
+            # account, or a state row. Counted and reported rather than silently
+            # dropped: an invisible share is one the operator cannot audit, and
+            # "14 shares, 14 planned" is the only arithmetic that proves nothing
+            # was skipped.
+            nameless += 1
+            continue
+        hh = roster_by_email.get(share.email.lower())
+        holder = (hh.billing.holder.lower()
+                  if hh and hh.billing and hh.billing.holder else None)
+        answer = answers.get(holder) if holder else None
+        su = by_plex_id.get(share.user_id) or by_email.get(share.email.lower())
+        plans.append(plan_for_share(
+            share=share, household=hh, answer=answer, seerr_user=su, state=state,
+            full_ids=full_ids, minimum_ids=minimum_ids, amnesty_until=amnesty,
+            grace_days=grace_days, new_arrival_days=new_arrival_days,
+            member_permissions=member_permissions, now=now))
+    return plans, answers, nameless
+
+
 # ===========================================================================
 # Main
 # ===========================================================================
@@ -670,6 +853,19 @@ def build_args(argv=None):
     p.add_argument("--json", action="store_true", help="emit the plan as JSON")
     p.add_argument("--no-kuma", action="store_true")
     p.add_argument("--no-notify", action="store_true")
+    p.add_argument("--arm-check", action="store_true",
+                   help="read-only: report the payer-oracle verdict and the exact "
+                        "set that would be reduced if this run executed. Mutates "
+                        "nothing, pushes no Kuma beat. Exits %d if the verdict is "
+                        "red OR any account would be reduced." % EXIT_ARM_CHECK_RED)
+    p.add_argument("--oracle-check", action="store_true",
+                   help="read-only: report ONLY the payer-oracle verdict (SPEC "
+                        "section 3), no Plex/Seerr I/O at all. Used by the "
+                        "entitlement-service canary's oracle leg. Exits %d on a "
+                        "red verdict." % EXIT_ARM_CHECK_RED)
+    p.add_argument("--settle-days", type=int, default=DEFAULT_SETTLE_DAYS,
+                   help="payer_oracle settle window in days (default %d)"
+                        % DEFAULT_SETTLE_DAYS)
     return p.parse_args(argv)
 
 
@@ -704,9 +900,166 @@ def _plex_machine_id(explicit: Optional[str]) -> str:
         raise ValueError("cannot determine Plex machineIdentifier: %s" % e)
 
 
+def _oracle_check(args, now: dt.datetime) -> int:
+    """`--oracle-check`: report ONLY the payer-oracle verdict (SPEC section 3).
+    No Plex, no Seerr, no mutation of any state file, no Kuma push, no
+    notify(). This is what the entitlement-service canary's oracle leg
+    invokes on the box. Exits EXIT_ARM_CHECK_RED on a red verdict, EXIT_OK
+    otherwise -- anything else (EXIT_CONFIG, EXIT_ENTITLEMENT_UNAVAILABLE)
+    means the canary could not assert and must map that to its own exit 2."""
+    state_dir = (Path(args.state_dir) if args.state_dir
+                else ST.default_state_path().parent)
+    _open_log(state_dir)
+    try:
+        roster_path = MEM.find_roster(Path(args.members) if args.members else None)
+        roster = MEM.load(roster_path)
+    except MEM.MembersError as e:
+        warn("roster invalid: %s" % e)
+        return EXIT_CONFIG
+
+    state = ST.AccessState.load(state_dir / "state.json")
+    oracle_state = OSTATE.OracleState.load(state_dir / "oracle-state.json")
+
+    try:
+        ent_client = ENT.client_from_secrets()
+    except ValueError as e:
+        warn("entitlement client unavailable: %s" % e)
+        return EXIT_ENTITLEMENT_UNAVAILABLE
+
+    holder_answers: Dict[str, ENT.Answer] = {}
+    for hh in declared_payer_households(roster):
+        holder = (hh.billing.holder or "").lower()
+        if holder and holder not in holder_answers:
+            holder_answers[holder] = ent_client.lookup(holder)
+
+    bulk_answer = ent_client.bulk()
+    verdict = oracle_verdict(roster, state, oracle_state.first_declared_at,
+                             holder_answers, bulk_answer, now,
+                             settle_days=args.settle_days)
+
+    detail = verdict.detail.replace("\n", " ")
+    log("oracle-check: VERDICT=%s RED=%d DETAIL=%s"
+        % (verdict.verdict, int(verdict.is_red), detail))
+    print("VERDICT=%s" % verdict.verdict)
+    print("RED=%d" % int(verdict.is_red))
+    print("DETAIL=%s" % detail)
+    return EXIT_ARM_CHECK_RED if verdict.is_red else EXIT_OK
+
+
+def _arm_check(args, now: dt.datetime) -> int:
+    """`--arm-check`: read-only preview of a real run. Reports the payer-
+    oracle verdict AND the exact (masked) set of accounts that would be
+    REDUCED if this run executed with --execute.
+
+    MUTATES NOTHING: state.json and oracle-state.json are loaded but their
+    in-memory copies are never saved (compute_plans() and observe() mutate
+    those copies exactly as a real run would, so the preview is accurate --
+    the mutation is simply discarded when the process exits instead of
+    written to disk). No manifest file is written, no Kuma beat is pushed,
+    no notify() call is made.
+    """
+    state_dir = (Path(args.state_dir) if args.state_dir
+                else ST.default_state_path().parent)
+    _open_log(state_dir)
+    try:
+        roster_path = MEM.find_roster(Path(args.members) if args.members else None)
+        roster = MEM.load(roster_path)
+    except MEM.MembersError as e:
+        warn("roster invalid: %s" % e)
+        return EXIT_CONFIG
+
+    amnesty = ST.parse_amnesty(_roster_default(roster_path, "amnesty_until"))
+    new_arrival_days = int(_roster_default(roster_path, "new_arrival_days")
+                           or ST.DEFAULT_NEW_ARRIVAL_DAYS)
+    grace_days = roster.grace_days
+
+    try:
+        token = (_secrets_dir() / "plex.token").read_text(encoding="utf-8").strip()
+        plex = PS.PlexShareClient(token=token, machine_id=_plex_machine_id(args.machine_id))
+        sections = plex.sections()
+        shares = plex.shares()
+    except (PS.PlexShareError, OSError, ValueError) as e:
+        warn("Plex unavailable: %s" % e)
+        return EXIT_MEDIA_STACK_UNAVAILABLE
+
+    try:
+        minimum_ids = PS.minimum_access_ids(sections, args.welcome_section)
+    except PS.PlexShareError as e:
+        warn(str(e))
+        return EXIT_CONFIG
+    full_ids = PS.full_access_ids(sections)
+
+    try:
+        seerr = SU.client_from_secrets()
+        seerr_users = seerr.users()
+    except SU.SeerrError as e:
+        warn("Seerr unavailable: %s" % e)
+        return EXIT_MEDIA_STACK_UNAVAILABLE
+
+    by_plex_id = {u.plex_id: u for u in seerr_users if u.plex_id}
+    by_email = {u.email.lower(): u for u in seerr_users if u.email}
+
+    state = ST.AccessState.load(state_dir / "state.json")               # never .save()d
+    oracle_state = OSTATE.OracleState.load(state_dir / "oracle-state.json")  # never .save()d
+
+    try:
+        ent_client = ENT.client_from_secrets()
+    except ValueError as e:
+        warn("entitlement client unavailable: %s" % e)
+        return EXIT_ENTITLEMENT_UNAVAILABLE
+
+    try:
+        plans, answers, nameless = compute_plans(
+            roster=roster, state=state, ent_client=ent_client, shares=shares,
+            full_ids=full_ids, minimum_ids=minimum_ids, amnesty=amnesty,
+            grace_days=grace_days, new_arrival_days=new_arrival_days,
+            member_permissions=args.member_permissions, by_plex_id=by_plex_id,
+            by_email=by_email, now=now)
+    except AllLookupsFailed as e:
+        warn("all %d entitlement lookup(s) failed" % e.n)
+        return EXIT_ENTITLEMENT_UNAVAILABLE
+    if nameless:
+        warn("%d Plex share(s) carry no email address and were not planned"
+             % nameless)
+
+    declared_ids = [h.id for h in declared_payer_households(roster)]
+    # observe() mutates the in-memory OracleState only -- .save() is never
+    # called, so this preview cannot arm a settle-window clock the real gate
+    # has not itself started yet.
+    declared_at = oracle_state.observe(declared_ids, now=now)
+    bulk_answer = ent_client.bulk()
+    verdict = oracle_verdict(roster, state, declared_at, answers, bulk_answer,
+                             now, settle_days=args.settle_days)
+
+    reduced = would_be_reduced(plans)
+    blocked = arm_check_should_block(verdict, plans)
+
+    detail = verdict.detail.replace("\n", " ")
+    log("arm-check: VERDICT=%s RED=%d DETAIL=%s would_reduce=%d"
+        % (verdict.verdict, int(verdict.is_red), detail, len(reduced)))
+    print("VERDICT=%s" % verdict.verdict)
+    print("RED=%d" % int(verdict.is_red))
+    print("DETAIL=%s" % detail)
+    print("WOULD_REDUCE=%d" % len(reduced))
+    for who in reduced:
+        print("  " + who)
+    if blocked:
+        print("ARM: DO NOT ARM - %s"
+             % ("red verdict" if verdict.is_red
+                else "%d account(s) would be reduced" % len(reduced)))
+    else:
+        print("ARM: safe to arm (oracle not red, nothing would be reduced)")
+    return EXIT_ARM_CHECK_RED if blocked else EXIT_OK
+
+
 def main(argv=None) -> int:
     args = build_args(argv)
     now = dt.datetime.now(dt.timezone.utc)
+
+    if args.oracle_check:
+        return _oracle_check(args, now)
+    if args.arm_check:
+        return _arm_check(args, now)
 
     state_dir = (Path(args.state_dir) if args.state_dir
                  else ST.default_state_path().parent)
@@ -865,78 +1218,40 @@ def main(argv=None) -> int:
             _push_kuma("down", str(e))
         return EXIT_ENTITLEMENT_UNAVAILABLE
 
-    roster_by_email = roster.by_email()
-    answers: Dict[str, ENT.Answer] = {}
-    for h in roster.households:
-        if h.exempt or not h.billing or not h.billing.holder:
-            continue
-        holder = h.billing.holder.lower()
-        if holder not in answers:
-            answers[holder] = ent_client.lookup(holder)
-
-    unanswered = sum(1 for a in answers.values() if not a.answered)
-    if answers and unanswered == len(answers):
+    try:
+        plans, answers, nameless = compute_plans(
+            roster=roster, state=state, ent_client=ent_client, shares=shares,
+            full_ids=full_ids, minimum_ids=minimum_ids, amnesty=amnesty,
+            grace_days=grace_days, new_arrival_days=new_arrival_days,
+            member_permissions=args.member_permissions, by_plex_id=by_plex_id,
+            by_email=by_email, now=now)
+    except AllLookupsFailed as e:
         # Every single lookup failed. That is an outage, not a mass lapse.
         warn("all %d entitlement lookup(s) failed - treating as an outage and "
-             "changing nothing" % len(answers))
+             "changing nothing" % e.n)
         if not args.no_kuma:
             _push_kuma("down", "entitlement API unreachable for all %d lookups"
-                       % len(answers))
+                       % e.n)
         return EXIT_ENTITLEMENT_UNAVAILABLE
-
-    # ---- record the clean answers into the clocks, BEFORE planning --------
-    #
-    # ORDER IS LOAD-BEARING. An earlier version recorded after planning, on the
-    # theory that a plan should be computed against the state that produced its
-    # deadline. That reasoning quietly cancelled the lapse grace: on the very
-    # run that first observes a member going false, `went_false_at` was still
-    # None at plan time, so the 7-day clock contributed nothing and the deadline
-    # fell back to the cohort clock alone. Once the amnesty date has passed --
-    # which the roster tells the operator to delete -- that cohort clock is in
-    # the past, so the member was reduced on the same run that first noticed
-    # they had lapsed. They got zero days of the week they were promised.
-    #
-    # Recording first means the clock exists before it is read, which is the
-    # only order in which a grace period can be granted at all.
-    for share in shares:
-        if not share.accepted or not share.email:
-            continue
-        hh = roster_by_email.get(share.email.lower())
-        if hh is None or hh.exempt or not hh.billing:
-            continue
-        a = answers.get((hh.billing.holder or "").lower())
-        if a is None:
-            continue
-        if a.grants:
-            state.record_entitled(share.email, now=now)
-        elif a.revokes:
-            state.record_not_entitled(share.email, now=now)
-
-    # ---- plan ------------------------------------------------------------
-    plans: List[Plan] = []
-    nameless = 0
-    for share in shares:
-        if not share.email:
-            # A share with no email cannot be matched to a household, a Seerr
-            # account, or a state row. Counted and reported rather than silently
-            # dropped: an invisible share is one the operator cannot audit, and
-            # "14 shares, 14 planned" is the only arithmetic that proves nothing
-            # was skipped.
-            nameless += 1
-            continue
-        hh = roster_by_email.get(share.email.lower())
-        holder = (hh.billing.holder.lower()
-                  if hh and hh.billing and hh.billing.holder else None)
-        answer = answers.get(holder) if holder else None
-        su = by_plex_id.get(share.user_id) or by_email.get(share.email.lower())
-        plans.append(plan_for_share(
-            share=share, household=hh, answer=answer, seerr_user=su, state=state,
-            full_ids=full_ids, minimum_ids=minimum_ids, amnesty_until=amnesty,
-            grace_days=grace_days, new_arrival_days=new_arrival_days,
-            member_permissions=args.member_permissions, now=now))
     if nameless:
         warn("%d Plex share(s) carry no email address and were not planned; "
              "they cannot be matched to a household or a Seerr account" % nameless)
+
+    # ---- payer-oracle declared-payer clock (SPEC section 3, L1) ----------
+    # Observed on EVERY run, armed or not -- same law as cohort seeding
+    # above: a clock that only starts once the gate is armed cannot tell
+    # "declared last week" from "declared five minutes before arming", and
+    # the settle window (payer_oracle.judge() row 6) exists precisely to give
+    # a fresh declaration a couple of quiet days before anything red is said
+    # about it.
+    oracle_state = OSTATE.OracleState.load(state_dir / "oracle-state.json")
+    declared_ids = [h.id for h in declared_payer_households(roster)]
+    oracle_state.observe(declared_ids, now=now)
+    if oracle_state.dirty:
+        try:
+            oracle_state.save()
+        except OSError as e:
+            warn("could not persist the declared-payer clock: %s" % e)
 
     # ---- audit manifest BEFORE any mutation ------------------------------
     mutating = [p for p in plans if p.mutates]
