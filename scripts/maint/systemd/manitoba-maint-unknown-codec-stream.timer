@@ -1,0 +1,13 @@
+[Unit]
+Description=Manitoba maint — unknown-codec-stream janitor (daily, 04:00 UTC off-peak, ahead of audio-disposition/reaper)
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+# Spread off the exact minute; avoid colliding with other maint jobs.
+RandomizedDelaySec=10min
+# Catch up if the box was down at the scheduled time.
+Persistent=true
+Unit=manitoba-maint-unknown-codec-stream.service
+
+[Install]
+WantedBy=timers.target
