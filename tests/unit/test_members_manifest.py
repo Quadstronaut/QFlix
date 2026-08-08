@@ -225,14 +225,31 @@ def test_the_checked_in_roster_is_valid():
 
 
 @_live
-def test_the_checked_in_roster_ships_disarmed():
-    """Arming is an operator act performed with intent, never something that
-    rides along in a commit."""
+def test_arming_preconditions_hold():
+    """Armed only ever with a fully-resolved roster.
+
+    Until 2026-08-08 this test asserted `armed is False` outright: arming is an
+    operator act performed with intent, never something that rides along in a
+    commit. That intent was then exercised -- the operator armed the gate
+    deliberately after a live end-to-end test (a real subscription synced to
+    entitled:true and the first execute run applied exactly the planned
+    writes), so a permanent disarmed-assertion would now demand the gate be
+    switched off to make CI pass, which is the tail wagging the dog.
+
+    What must survive that transition is the roster's own documented
+    precondition: 'Flip to true ONLY when every household below is resolved.'
+    An armed roster with an unresolved household is the state where the gate
+    can act on a household nobody finished deciding about -- that is still a
+    bug, and it is the one this guard now catches. A disarmed roster is always
+    acceptable; report-only is safe in every state."""
     r = M.load(LIVE)
-    assert r.armed is False, (
-        "members.yaml was committed ARMED. Arming belongs to a deliberate "
-        "operator action, not to whatever branch happened to merge."
-    )
+    if r.armed:
+        unresolved = r.unresolved()
+        assert not unresolved, (
+            "members.yaml is ARMED with %d unresolved household(s). Arming "
+            "requires every household resolved; resolve them or disarm."
+            % len(unresolved)
+        )
 
 
 # Households that must never be gated, as a COUNT rather than a list.
