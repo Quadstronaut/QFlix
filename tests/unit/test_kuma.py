@@ -582,6 +582,11 @@ _AUDIT_METRICS = (
     'monitor_status{monitor_id="7",monitor_name="QFlix Audio Disposition",monitor_type="push"} 1\n'
     'monitor_status{monitor_id="8",monitor_name="qflix-anime-janitor",monitor_type="push"} 1\n'
     'monitor_status{monitor_id="9",monitor_name="QFlix Torrent Janitor",monitor_type="push"} 1\n'
+    # "QFlix Unknown Codec Stream" joined STANDALONE_SELF_PUSH_MONITORS
+    # 2026-08-08 (unknown-codec-stream-janitor: strips unmappable streams that
+    # park files in Tdarr's terminal Transcode-error state). Same no-drift
+    # rule: the fixture models a Kuma that HAS every expected monitor.
+    'monitor_status{monitor_id="13",monitor_name="QFlix Unknown Codec Stream",monitor_type="push"} 1\n'
     'monitor_status{monitor_id="10",monitor_name="QFlix Collect (workstation)",monitor_type="push"} 1\n'
     # "QFlix Audit Regime" joined STANDALONE_SELF_PUSH_MONITORS 2026-07-29 with
     # the Convergent Audit Regime (manitoba-maint-audit.timer -> qflix-audit.py,
@@ -614,11 +619,11 @@ class TestAuditMonitors:
         # "QFlix Collect (workstation)" joined STANDALONE_SELF_PUSH_MONITORS
         # 2026-07-29 (it self-pushes from the box now, see lib/kuma.py) so it
         # must appear here too, matched rather than manifest_only.
-        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Live", "QFlix Audit Regime", "QFlix Collect (workstation)", "QFlix Entitlement Gate", "QFlix Fleet", "QFlix Reaper", "QFlix Torrent Janitor", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
+        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Live", "QFlix Audit Regime", "QFlix Collect (workstation)", "QFlix Entitlement Gate", "QFlix Fleet", "QFlix Reaper", "QFlix Torrent Janitor", "QFlix Unknown Codec Stream", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
         assert report["manifest_only"] == []
         assert report["kuma_only"] == []
-        assert report["live_count"] == 13
-        assert report["manifest_count"] == 13
+        assert report["live_count"] == 14
+        assert report["manifest_count"] == 14
 
     def test_audit_manifest_only(self, monkeypatch):
         from lib.kuma import audit_monitors
