@@ -26,12 +26,24 @@ must accept out of their email.
 
 SHIPS INERT
 -----------
-Dry-run is the default. Four interlocks must ALL be satisfied to mutate:
+Dry-run is the default. FIVE conditions must ALL hold before anything mutates:
 
     1. members.yaml `armed: true`
-    2. --execute (armed on the box via a systemd drop-in, never in the repo)
-    3. not inside the Monday maintenance window / window lock
-    4. under --max-mutations for this run (overflow DEFERS to the next run)
+    2. members.yaml has ZERO UNRESOLVED HOUSEHOLDS -- every non-exempt household
+       needs amount_usd, rail, and (for email-reporting rails) payer_ref.
+       lib/members.gate_is_armed() requires this AND condition 1; flipping
+       `armed: true` while any household is unresolved leaves the gate inert.
+       It is listed separately because it is invisible: the switch is on, the
+       log says armed=False, and the natural next move -- resolving every
+       household in one edit -- arms all of them simultaneously. Resolve them
+       ONE AT A TIME.
+    3. --execute (armed on the box via a systemd drop-in, never in the repo)
+    4. not inside the Monday maintenance window / window lock
+    5. under --max-mutations for this run (overflow DEFERS to the next run)
+
+Plus one rail that cannot be satisfied, only tripped: --max-reduce-pct. If more
+than a third of governed households would be REDUCED in a single run, the run
+reduces nobody, pages Discord, and goes RED.
 
 THE LAW THIS FILE OBEYS (lib/entitlement.py, section 5.3 of the spec)
 ---------------------------------------------------------------------
@@ -426,13 +438,38 @@ def plan_for_share(
                       else member_permissions)
         plex_target = (sorted(full_ids)
                        if set(share.section_ids) != set(full_ids) else None)
+
+        # A GRANT MAY NEVER TAKE A SECTION AWAY.
+        #
+        # `full_ids` is "every section that exists right now", read fresh from
+        # plex.tv on every run. parse_sections() refuses only a ZERO-section
+        # catalogue, so a poll that returns 2 of 5 sections is accepted as
+        # truth -- and an entitled member holding all 5 is then planned down to
+        # 2, with the log calling it "raising to full access". Against a
+        # third-party API polled 96 times a day, that is not a hypothetical.
+        #
+        # The rail is a shape check, not a freshness check: while the answer
+        # GRANTS, the target must never be a strict subset of what the person
+        # already holds. Growing is fine, identical is fine, shrinking is a
+        # catalogue problem and never a decision this branch is allowed to make
+        # -- reduction lives in the expiry branch, behind the clocks, alone.
+        grant_alert = None
+        if plex_target is not None and set(full_ids) < set(share.section_ids):
+            grant_alert = (
+                "plex.tv reported only %d section(s) but %s already holds %d; "
+                "refusing to reduce an ENTITLED member on a short catalogue "
+                "read (suspected truncated poll, not a real library removal)"
+                % (len(full_ids), mask(email), len(share.section_ids)))
+            plex_target = None
+
         seerr_target = None
         if seerr_user is not None and seerr_user.permissions != want_perms:
             seerr_target = want_perms
         return Plan(email=email, state=S_ENTITLED, household_id=hid, holder=holder,
                     plex_target=plex_target, seerr_target=seerr_target,
-                    provision_plex_id=provision,
+                    provision_plex_id=provision, alert=grant_alert,
                     reason="entitled; %s" % (
+                        grant_alert if grant_alert else
                         "already at full access" if not (plex_target or seerr_target)
                         else "raising to full access"))
 
@@ -703,9 +740,42 @@ def main(argv=None) -> int:
         return EXIT_CONFIG
 
     armed_roster, arm_reason = MEM.gate_is_armed(roster)
-    amnesty = ST.parse_amnesty(_roster_default(roster_path, "amnesty_until"))
-    new_arrival_days = int(_roster_default(roster_path, "new_arrival_days")
-                           or ST.DEFAULT_NEW_ARRIVAL_DAYS)
+
+    # VALIDATE THE TWO CLOCK KNOBS THAT members.py DOES NOT.
+    #
+    # `grace_days` is validated in the roster loader. `new_arrival_days` and
+    # `amnesty_until` are read straight out of the YAML by _roster_default() and
+    # bypass every check -- which is backwards, because these two move a
+    # reduction EARLIER and grace_days only moves it later. A negative
+    # new_arrival_days yields a deadline in the past; a non-integer raised
+    # inside main() and exited 1 with no Kuma push, the same silent shape that
+    # was already fixed once for machineIdentifier.
+    raw_nad = _roster_default(roster_path, "new_arrival_days")
+    if raw_nad is None:
+        new_arrival_days = ST.DEFAULT_NEW_ARRIVAL_DAYS
+    elif isinstance(raw_nad, bool) or not isinstance(raw_nad, int) or raw_nad < 1:
+        warn("members.yaml defaults.new_arrival_days is %r; it must be an "
+             "integer >= 1. A zero or negative window puts a new member's "
+             "deadline at or before the moment they accepted." % (raw_nad,))
+        if not args.no_kuma:
+            _push_kuma("down", "invalid defaults.new_arrival_days in the roster")
+        return EXIT_CONFIG
+    else:
+        new_arrival_days = raw_nad
+
+    raw_amnesty = _roster_default(roster_path, "amnesty_until")
+    amnesty = ST.parse_amnesty(raw_amnesty)
+    if raw_amnesty is not None and amnesty is None:
+        # Present but unparseable is a typo, not an intent to remove it. Removing
+        # the key is how you retire the amnesty; a mistyped date must not read as
+        # the same thing.
+        warn("members.yaml defaults.amnesty_until is %r, which is not a date. "
+             "Delete the key to retire the amnesty; do not leave it malformed."
+             % (raw_amnesty,))
+        if not args.no_kuma:
+            _push_kuma("down", "invalid defaults.amnesty_until in the roster")
+        return EXIT_CONFIG
+
     grace_days = roster.grace_days
 
     window = in_maintenance_window(now) and not args.ignore_window
