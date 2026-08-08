@@ -64,3 +64,6 @@ scripts/local-llm/qflix-rea.ps1
 # the operator confirms nothing was accidentally swept.
 .purged-*/
 .admin-key/
+
+# migration preflight snapshot: contains the live port map + quota — secrets-class, never in the public repo
+scripts/migrate/migration-state.json
