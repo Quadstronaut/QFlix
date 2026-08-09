@@ -69,8 +69,8 @@ if ! git -C "$SRC" fetch -q origin 2>/dev/null; then
   exit 1
 fi
 
-drift=0; orphan=0; match=0; skipped=0
-drift_list=""; orphan_list=""
+drift=0; orphan=0; match=0; skipped=0; modedrift=0
+drift_list=""; orphan_list=""; modedrift_list=""
 
 while IFS= read -r f; do
   rel="${f#$DEPLOYED/}"
@@ -89,6 +89,17 @@ while IFS= read -r f; do
     else
       drift=$((drift+1)); drift_list="$drift_list $rel"
     fi
+    # THE EXEC BIT IS PART OF THE DEPLOYMENT (added 2026-08-09).
+    # A deploy rsynced -a from a checkout whose index carried 100644 and
+    # silently stripped +x from 230 deployed scripts. Content still matched,
+    # so this canary vouched for a tree where systemd got 203/EXEC on every
+    # ExecStart and the per-minute stream-cap cron ran nothing for ~9 hours.
+    # Content equality is not deployment equality; git is authoritative for
+    # the bit, and a 100755 file that is not executable on disk is drift.
+    gmode=$(git -C "$SRC" ls-tree "$REF" -- "scripts/$rel" 2>/dev/null | cut -d" " -f1)
+    if [ "$gmode" = "100755" ] && [ ! -x "$f" ]; then
+      modedrift=$((modedrift+1)); modedrift_list="$modedrift_list $rel"
+    fi
   else
     orphan=$((orphan+1)); orphan_list="$orphan_list $rel"
   fi
@@ -99,6 +110,11 @@ REFSHA=$(git -C "$SRC" rev-parse --short "$REF" 2>/dev/null || echo "?")
 if [ "$drift" -gt 0 ]; then
   printf "STAGE=deploy-drift msg=%d-of-%d-deployed-files-differ-from-%s(%s) files=%s\n" \
     "$drift" "$((drift+match))" "$REF" "$REFSHA" "$(echo $drift_list | cut -c1-160)" >&2
+  exit 1
+fi
+if [ "$modedrift" -gt 0 ]; then
+  printf "STAGE=deploy-mode-drift msg=%d-deployed-files-lost-the-exec-bit-git-says-755 files=%s\n" \
+    "$modedrift" "$(echo $modedrift_list | cut -c1-160)" >&2
   exit 1
 fi
 if [ "$orphan" -gt 0 ]; then
