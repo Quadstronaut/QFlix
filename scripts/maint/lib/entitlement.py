@@ -115,7 +115,7 @@ class Answer:
     """
 
     verdict: str
-    email: str
+    email: str = field(repr=False)      # real address; mask() before any surface
     http_status: Optional[int] = None
     error: Optional[str] = None
     stale: bool = False
