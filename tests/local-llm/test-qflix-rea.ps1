@@ -535,6 +535,36 @@ Test-Case 'a Bazarr update-check ConnectionError still pages' {
     Assert-Equal $null (Test-IsNoiseFinding $f) 'no rate-limit token => not suppressed'
 }
 
+Test-Case 'a speculative rate-limit SUMMARY cannot suppress a ConnectionError excerpt' {
+    # The v1 (2026-08-13) reshape ran on the combined hay, so a model summary
+    # guessing "possible rate limiting" completed the token pair for a
+    # ConnectionError whose excerpt had no rate-limit token at all - defeating
+    # the ConnectionError-still-pages guarantee. field='excerpt' closes it.
+    $f = @{ signature = 'bazarr:github-unreachable'
+            summary   = 'Bazarr updater cannot reach GitHub, possible rate limiting or outage'
+            excerpt   = 'Error trying to get releases from Github. Http error. requests.exceptions.ConnectionError: Max retries exceeded with url: <url>' }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'prose-poisoned summary => not suppressed'
+}
+
+Test-Case 'a benign updater line cannot borrow a rate-limit token from ANOTHER excerpt line' {
+    # (?m)^ with no (?s): both tokens must share one line. A real provider
+    # throttle (opensubtitles 429) next to a benign updater line must page.
+    $f = @{ signature = 'bazarr:providers'
+            summary   = 'Bazarr provider errors'
+            excerpt   = "Error trying to get releases from Github. Http error.`nopensubtitles.com: 429 rate limit reached, all providers throttled" }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'cross-line token join => not suppressed'
+}
+
+Test-Case 'marker in summary plus a FOREIGN rate-limit excerpt is not suppressed' {
+    # Cross-field join: v1 let a marker-phrased summary pair with an unrelated
+    # indexer rate-limit in the excerpt. field='excerpt' means the summary is
+    # never consulted, and the excerpt alone carries no updater marker.
+    $f = @{ signature = 'prowlarr:rate-limit'
+            summary   = 'Bazarr: repeated failures trying to get releases from Github'
+            excerpt   = 'Rate limit exceeded for indexer prowlarr-nzbgeek' }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'cross-field join => not suppressed'
+}
+
 Test-Case 'every noise rule has an id and a compilable regex' {
     Assert-True ($Script:NoiseFindingRules.Count -ge 4) 'at least the four known classes'
     foreach ($r in $Script:NoiseFindingRules) {
@@ -576,10 +606,26 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # model-side time field fails open. The tdarr [ERROR] grep and the bazarr
     # .err/.log tail loop must both carry the deterministic bash-side date
     # filter, and the cutoff must derive from FRESH_DAYS (single source).
+    # Every assertion here is EXACT on purpose (adversarial review 2026-08-14
+    # showed a bare invocation-count survived comparison flips, swapped substr
+    # offsets, a dropped export, and pipeline reordering):
     $h = Get-RemoteHeredoc
     Assert-True ($h -match 'FRESH_CUTOFF=\$\(date -d "-\$FRESH_DAYS days" \+%F\)') 'cutoff derived from FRESH_DAYS'
-    $filters = ([regex]::Matches($h, 'awk -v c="\$FRESH_CUTOFF"')).Count
-    Assert-True ($filters -ge 2) "both bazarr and tdarr collectors filter (found $filters)"
+    # Both awk sites run inside bash -c CHILDREN: without the export the
+    # children expand $FRESH_CUTOFF to "" and `d >= ""` is true for every
+    # line - both filters become silent no-ops with this suite green.
+    Assert-True ($h.Contains('export FRESH_CUTOFF')) 'cutoff exported to bash -c children'
+    Assert-True ($h.Contains('export FRESH_DAYS'))   'FRESH_DAYS exported (tailfresh children)'
+    # Full awk program pinned per collector: keep-direction (d >= c), the
+    # site-specific substr offset (bazarr date at col 1; tdarr skips its
+    # leading "[" via col 2), and the continuation-inheritance BEGIN{keep=1}.
+    $bazarrSite = 'tail -n 120 "$f" | awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr(\$0,1,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }"'
+    $tdarrSite  = 'awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr(\$0,2,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }"'
+    Assert-True ($h.Contains($bazarrSite)) 'bazarr filter verbatim (tail-120 context, col-1 offset)'
+    Assert-True ($h.Contains($tdarrSite))  'tdarr filter verbatim (col-2 offset)'
+    # Tdarr ordering: the filter must sit BETWEEN the [ERROR] grep and
+    # tail -n 400, so stale lines cannot eat the 400-line window.
+    Assert-True ($h -match 'grep -a "\\\[ERROR\\\]" "\$f"[\s\S]*?awk -v c="\$FRESH_CUTOFF"[\s\S]*?tail -n 400') 'tdarr filter before the 400-line window'
 }
 
 Test-Case 'system prompt protects the real faults it sits beside' {
