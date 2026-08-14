@@ -355,7 +355,7 @@ classes:
 
   - id: bazarr-github-release-check-ratelimit
     title: Bazarr update-check rate-limited by the GitHub API
-    rx: '(?im)^(?=.*(?:trying to get releases from github|morpheus65535/bazarr/releases))(?=.*rate.?limit)'
+    rx: '(?im)^(?=.*(?:trying to get releases from github|morpheus65535/bazarr/releases))(?=.*(?:rate.?limit|http error))'
     field: excerpt
     prompt_clause: 'Bazarr "Error trying to get releases from Github" GitHub API rate-limit failures'
     why: >-
@@ -401,10 +401,20 @@ classes:
       morpheus65535/bazarr/issues, api.github.com/rate_limit, or any other
       GitHub endpoint - including QFlix's own release-resolver traffic, where
       a silent rate-limit really would degrade version checks - still pages.
-      The other update-check failure shapes (Connection Error, Timeout) lack
-      the rate-limit token and are still uncovered on purpose: a persistent
-      one of those is a network fault worth seeing, and only the rate-limit
-      shape is provably external.
+      v3 (same day): token B widened to (rate.?limit|http error), because the
+      arr_logs collector's cut -c1-220 amputates the traceback - and with it
+      "rate limit exceeded", at byte ~464 post-norm - from the ONE physical
+      line Bazarr logs, so an arr_logs-sourced excerpt could never satisfy a
+      rate-limit-only token (measured live: the 00:50 UTC 403 shipped as a
+      suppressor-proof excerpt). "Http error." is check_update.py's marker
+      for requests HTTPError SPECIFICALLY (verified in deployed source:
+      ConnectionError logs "Connection Error.", Timeout logs "Timeout
+      Error.", bare RequestException logs neither) and it survives the
+      220-char cut beside the updater marker. The network-fault shapes
+      (Connection Error, Timeout) still lack both B tokens and still page:
+      a persistent one of those is a network fault worth seeing. An HTTP 5xx
+      release-check failure is now suppressed along with the 403 - equally
+      external and equally cosmetic on a --no-update install.
     added: 2026-08-06
 
 # Every ';'-delimited segment of the prompt's never-report sentence must be
