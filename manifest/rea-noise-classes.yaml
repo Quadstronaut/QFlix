@@ -355,7 +355,7 @@ classes:
 
   - id: bazarr-github-release-check-ratelimit
     title: Bazarr update-check rate-limited by the GitHub API
-    rx: '(?i)rate limit exceeded for url:\s*https://api\.github\.com/repos/morpheus65535/bazarr/releases'
+    rx: '(?is)(?=.*(?:get releases from github|morpheus65535/bazarr))(?=.*rate.?limit)'
     field: null
     prompt_clause: 'Bazarr "Error trying to get releases from Github" GitHub API rate-limit failures'
     why: >-
@@ -381,13 +381,23 @@ classes:
       hourly, so such a patch is reverted by design. (A GitHub PAT would still
       buy real headroom for QFlix's OWN api.github.com callers - the lifecycle
       resolver in Tuesday.md:73 - which is a separate, unrelated change.)
-      DELIBERATELY ANCHORED TO THE BAZARR REPO URL, not to "rate limit exceeded"
-      or to api.github.com generally. A 403 against any other GitHub endpoint -
-      including QFlix's own release-resolver traffic, where a silent rate-limit
-      really would degrade version checks - is NOT covered here and still pages.
-      The other update-check failure shapes (Connection Error, Timeout) are also
-      left uncovered: a persistent one of those is a network fault worth seeing,
-      and only the rate-limit shape is provably external.
+      RX RESHAPED 2026-08-13 (was: anchored to the full Bazarr releases URL).
+      The URL anchor was structurally dead: the arr_logs collector's norm()
+      rewrites every URL to <url> before any model sees it, cut -c1-220
+      amputates the single-line traceback long before the URL appears, and on
+      the vlogs path - which DOES deliver the URL intact - the models truncate
+      their excerpt at "rate limit exceeded" anyway. Measured live: this class
+      paged on 2026-08-13 with the rule present. The rx is now two required
+      lookaheads over the combined signature+summary+excerpt hay: the updater's
+      own "get releases from Github" message marker (or the bazarr repo slug)
+      AND a rate-limit token. Both original guarantees are preserved: a 403
+      against any other GitHub endpoint - including QFlix's own
+      release-resolver traffic, where a silent rate-limit really would degrade
+      version checks - lacks the updater marker and still pages. The other
+      update-check failure shapes (Connection Error, Timeout) lack the
+      rate-limit token and are still uncovered on purpose: a persistent one of
+      those is a network fault worth seeing, and only the rate-limit shape is
+      provably external.
     added: 2026-08-06
 
 # Every ';'-delimited segment of the prompt's never-report sentence must be
