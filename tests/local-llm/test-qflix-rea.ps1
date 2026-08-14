@@ -499,6 +499,42 @@ Test-Case 'Test-IsNoiseFinding suppresses Plex post-reap "Failed to create paren
     Assert-Equal 'plex-post-reap-scan' (Test-IsNoiseFinding $f) 'matched by rule id'
 }
 
+Test-Case 'Test-IsNoiseFinding suppresses the bazarr ratelimit finding AS MODELS EMIT IT (no URL)' {
+    # The 2026-08-13 page, verbatim shape: norm() had rewritten the URL to <url>
+    # upstream and the model truncated its excerpt at "rate limit exceeded", so
+    # the old URL-anchored rx could never match any field. The rule must catch
+    # the updater marker + rate-limit token WITHOUT seeing the releases URL.
+    $f = @{ signature = 'bazarr:github-rate-limit'
+            summary   = 'GitHub API rate limit exceeded for Bazarr release check'
+            excerpt   = 'Error trying to get releases from Github. Http error. 403 Client Error: rate limit exceeded' }
+    Assert-Equal 'bazarr-github-release-check-ratelimit' (Test-IsNoiseFinding $f) 'truncated shape suppressed'
+}
+
+Test-Case 'Test-IsNoiseFinding still suppresses the full-URL ratelimit shape (vlogs path)' {
+    $f = @{ signature = ''
+            summary   = 'Bazarr update check rate limited'
+            excerpt   = 'requests.exceptions.HTTPError: 403 Client Error: rate limit exceeded for url: https://api.github.com/repos/morpheus65535/Bazarr/releases?per_page=100' }
+    Assert-Equal 'bazarr-github-release-check-ratelimit' (Test-IsNoiseFinding $f) 'URL shape still suppressed'
+}
+
+Test-Case 'a 403 against any OTHER GitHub endpoint still pages' {
+    # Guarantee carried over from the original URL anchor: QFlix's own
+    # api.github.com callers must never be silenced by the Bazarr class.
+    $f = @{ signature = 'lifecycle:github-403'
+            summary   = 'release resolver hit GitHub rate limit'
+            excerpt   = '403 rate limit exceeded for url: https://api.github.com/repos/Sonarr/Sonarr/releases' }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'no updater marker => not suppressed'
+}
+
+Test-Case 'a Bazarr update-check ConnectionError still pages' {
+    # Deliberately uncovered (yaml note): only the rate-limit shape is provably
+    # external; a persistent connection failure is a network fault worth seeing.
+    $f = @{ signature = 'bazarr:github-release-check'
+            summary   = 'Bazarr could not reach GitHub for release check'
+            excerpt   = 'Error trying to get releases from Github. Connection Error.' }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'no rate-limit token => not suppressed'
+}
+
 Test-Case 'every noise rule has an id and a compilable regex' {
     Assert-True ($Script:NoiseFindingRules.Count -ge 4) 'at least the four known classes'
     foreach ($r in $Script:NoiseFindingRules) {
@@ -532,6 +568,18 @@ Test-Case 'tdarr source strips stack-trace continuations and reads the timestamp
     Assert-True ($h -match 'Tdarr_Server_Log\.txt')            'timestamped server log included'
     Assert-True ($h -match 'Tdarr_Node_Log\.txt')              'timestamped node log included'
     Assert-True ($h -match 'uniq -c')                          'repeated faults collapsed, not truncated away'
+}
+
+Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
+    # 2026-08-13: a 5-day-old tdarr xhr burst and 4-day-old bazarr2 SignalR
+    # blips paged because tailfresh only filters whole files by MTIME and the
+    # model-side time field fails open. The tdarr [ERROR] grep and the bazarr
+    # .err/.log tail loop must both carry the deterministic bash-side date
+    # filter, and the cutoff must derive from FRESH_DAYS (single source).
+    $h = Get-RemoteHeredoc
+    Assert-True ($h -match 'FRESH_CUTOFF=\$\(date -d "-\$FRESH_DAYS days" \+%F\)') 'cutoff derived from FRESH_DAYS'
+    $filters = ([regex]::Matches($h, 'awk -v c="\$FRESH_CUTOFF"')).Count
+    Assert-True ($filters -ge 2) "both bazarr and tdarr collectors filter (found $filters)"
 }
 
 Test-Case 'system prompt protects the real faults it sits beside' {
