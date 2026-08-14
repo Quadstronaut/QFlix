@@ -119,11 +119,17 @@ sshm "cat > ~/.apps/tdarr/configs/Tdarr_Server_Config.json" <<JSON
 JSON
 
 # ── Step 5: node config (Tdarr_Node_Config.json — registers with local server) ─
+# serverPort is a STRING here on purpose: the Node's schema validates it as
+# string, while the Server's (Step 4) wants a number — mismatching either way
+# logs "Config validation failed" at every start. Non-fatal (the node still
+# registers) but it paged REA daily until fixed 2026-08-13. The heartbeat
+# scripts' digits-only serverPort grep reads the SERVER config, so it is
+# unaffected by the quotes here.
 sshm "cat > ~/.apps/tdarr/configs/Tdarr_Node_Config.json" <<JSON
 {
   "nodeName": "manitoba-local",
   "serverIP": "127.0.0.1",
-  "serverPort": ${SERVER_PORT},
+  "serverPort": "${SERVER_PORT}",
   "handbrakePath": "",
   "ffmpegPath": "",
   "mkvpropeditPath": "",
