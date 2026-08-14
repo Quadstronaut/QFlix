@@ -652,6 +652,10 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     $tdarrSite  = 'awk -v c="$FRESH_CUTOFF" "{ d=substr(\$0,2,10); if (d ~ /^[0-9]{4}-/ && d < c) next; print }"'
     Assert-True ($h.Contains($bazarrSite)) 'bazarr filter verbatim (360 pre-window, col-1 offset, inheritance)'
     Assert-True ($h.Contains($tdarrSite))  'tdarr filter verbatim (col-2 offset, plain fail-open)'
+    # arr Error/Fatal grep (2026-08-15: expired July indexer-backoff line paged
+    # from a sparse-error file - whole-file grep needs the same date floor).
+    $arrSite = 'grep -aE "\|(Error|Fatal)\|" "$f" | awk -v c="$FRESH_CUTOFF" "{ d=substr(\$0,1,10); if (d ~ /^[0-9]{4}-/ && d < c) next; print }" | tail -n 8'
+    Assert-True ($h.Contains($arrSite)) 'arr Error/Fatal filter verbatim, before tail -8'
     Assert-True ($h -match 'BEGIN\{keep=1\}[\s\S]{0,120}\n\s*\| tail -n 120 \\\n') 'bazarr trims to 120 AFTER the filter'
     # Tdarr ordering: the filter must sit BETWEEN the [ERROR] grep and
     # tail -n 400, so stale lines cannot eat the 400-line window.
