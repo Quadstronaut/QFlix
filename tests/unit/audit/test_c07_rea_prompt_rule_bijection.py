@@ -157,6 +157,14 @@ def test_rules_match_their_canonical_log_lines(ledgers):
         ("bazarr-github-release-check-ratelimit",
          "Error trying to get releases from Github. Http error. "
          "403 Client Error: rate limit exceeded"),
+        # 2026-08-14 v3. The arr_logs shape: cut -c1-220 amputates the
+        # traceback (and the words "rate limit") from Bazarr's one-line log
+        # entry, so the pair that survives is updater marker + "Http error."
+        # - which check_update.py emits for HTTPError only.
+        ("bazarr-github-release-check-ratelimit",
+         "[/home/quadstronaut/.apps/bazarr/log/bazarr.log]       1 "
+         "2026-08-14 00:50:17|ERROR   |root  |Error trying to get releases "
+         "from Github. Http error.|<Traceback (most recent call last):"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -252,11 +260,20 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
             "a non-Bazarr-release GitHub rate-limit must still page: " + still_pages)
     # The one-line constraint itself: a benign updater line must not borrow a
     # rate-limit token from a DIFFERENT line of the same excerpt (a real
-    # provider 429 next to updater chatter must page).
+    # provider 429 next to updater chatter must page). Line 1 is the
+    # Connection Error shape - the Http error shape legitimately suppresses
+    # on its own line since the v3 token widening.
     assert not re.search(rl,
-        "Error trying to get releases from Github. Http error.\n"
+        "Error trying to get releases from Github. Connection Error.\n"
         "opensubtitles.com: 429 rate limit reached, all providers throttled"), (
         "cross-line token join must not suppress a real provider throttle")
+    # Network-fault shapes still page (check_update.py logs these sentences
+    # for ConnectionError/Timeout; only HTTPError gets "Http error.").
+    for network_fault in (
+            "Error trying to get releases from Github. Connection Error.",
+            "Error trying to get releases from Github. Timeout Error."):
+        assert not re.search(rl, network_fault), (
+            "an updater network fault must still page: " + network_fault)
 
     # The structural backstop: fires only when the excerpt has an *arr |Debug|
     # token and NO error-level token anywhere in it. The guard must span every

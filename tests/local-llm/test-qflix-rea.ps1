@@ -542,8 +542,32 @@ Test-Case 'a speculative rate-limit SUMMARY cannot suppress a ConnectionError ex
     # the ConnectionError-still-pages guarantee. field='excerpt' closes it.
     $f = @{ signature = 'bazarr:github-unreachable'
             summary   = 'Bazarr updater cannot reach GitHub, possible rate limiting or outage'
-            excerpt   = 'Error trying to get releases from Github. Http error. requests.exceptions.ConnectionError: Max retries exceeded with url: <url>' }
+            excerpt   = 'Error trying to get releases from Github. Connection Error. requests.exceptions.ConnectionError: Max retries exceeded with url: <url>' }
     Assert-Equal $null (Test-IsNoiseFinding $f) 'prose-poisoned summary => not suppressed'
+}
+
+Test-Case 'the 220-char arr_logs cut of the updater line IS suppressed (Http error marker)' {
+    # cut -c1-220 amputates "rate limit exceeded" (byte ~464 post-norm) from
+    # Bazarr's one-line traceback, so the only token pair an arr_logs excerpt
+    # can carry is the updater marker + "Http error." - check_update.py logs
+    # that sentence for HTTPError ONLY (Connection/Timeout have their own).
+    $f = @{ signature = 'bazarr:github-release-check'
+            summary   = 'Bazarr release check failed'
+            excerpt   = '[/home/quadstronaut/.apps/bazarr/log/bazarr.log]       1 2026-08-14 00:50:17|ERROR   |root  |Error trying to get releases from Github. Http error.|<Traceback (most recent call last):' }
+    Assert-Equal 'bazarr-github-release-check-ratelimit' (Test-IsNoiseFinding $f) 'cut-220 arr_logs shape suppressed'
+}
+
+Test-Case 'an ARRAY-shaped excerpt keeps its line boundaries (no cross-element borrow)' {
+    # Models sometimes emit excerpt as a JSON array of lines. A [string] cast
+    # space-joins them into ONE line, silently defeating the (?m)^-no-(?s)
+    # one-line constraint (proven 2026-08-14). Get-FieldOrEmpty must join
+    # arrays with a newline so a benign updater element cannot borrow a
+    # rate-limit token from a REAL 429 element.
+    $f = @{ signature = 'bazarr:providers'
+            summary   = 'Bazarr provider errors'
+            excerpt   = @('Error trying to get releases from Github. Connection Error.',
+                          'opensubtitles.com: 429 rate limit reached, all providers throttled') }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'array elements stay separate lines => not suppressed'
 }
 
 Test-Case 'a benign updater line cannot borrow a rate-limit token from ANOTHER excerpt line' {
@@ -551,7 +575,7 @@ Test-Case 'a benign updater line cannot borrow a rate-limit token from ANOTHER e
     # throttle (opensubtitles 429) next to a benign updater line must page.
     $f = @{ signature = 'bazarr:providers'
             summary   = 'Bazarr provider errors'
-            excerpt   = "Error trying to get releases from Github. Http error.`nopensubtitles.com: 429 rate limit reached, all providers throttled" }
+            excerpt   = "Error trying to get releases from Github. Connection Error.`nopensubtitles.com: 429 rate limit reached, all providers throttled" }
     Assert-Equal $null (Test-IsNoiseFinding $f) 'cross-line token join => not suppressed'
 }
 
@@ -619,10 +643,16 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # Full awk program pinned per collector: keep-direction (d >= c), the
     # site-specific substr offset (bazarr date at col 1; tdarr skips its
     # leading "[" via col 2), and the continuation-inheritance BEGIN{keep=1}.
-    $bazarrSite = 'tail -n 120 "$f" | awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr(\$0,1,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }"'
-    $tdarrSite  = 'awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr(\$0,2,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }"'
-    Assert-True ($h.Contains($bazarrSite)) 'bazarr filter verbatim (tail-120 context, col-1 offset)'
-    Assert-True ($h.Contains($tdarrSite))  'tdarr filter verbatim (col-2 offset)'
+    # Bazarr: inheritance awk over a 3x pre-window, trimmed to 120 AFTER, so a
+    # stale header just above the 120 cut still sheds its body. Tdarr: NO
+    # inheritance - it runs post-grep where adjacent lines are weeks apart and
+    # the only undated lines are interleave-corrupted REAL errors that must
+    # pass (fail open), not inherit a stale verdict (fail closed).
+    $bazarrSite = 'tail -n 360 "$f" | awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr(\$0,1,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }"'
+    $tdarrSite  = 'awk -v c="$FRESH_CUTOFF" "{ d=substr(\$0,2,10); if (d ~ /^[0-9]{4}-/ && d < c) next; print }"'
+    Assert-True ($h.Contains($bazarrSite)) 'bazarr filter verbatim (360 pre-window, col-1 offset, inheritance)'
+    Assert-True ($h.Contains($tdarrSite))  'tdarr filter verbatim (col-2 offset, plain fail-open)'
+    Assert-True ($h -match 'BEGIN\{keep=1\}[\s\S]{0,120}\n\s*\| tail -n 120 \\\n') 'bazarr trims to 120 AFTER the filter'
     # Tdarr ordering: the filter must sit BETWEEN the [ERROR] grep and
     # tail -n 400, so stale lines cannot eat the 400-line window.
     Assert-True ($h -match 'grep -a "\\\[ERROR\\\]" "\$f"[\s\S]*?awk -v c="\$FRESH_CUTOFF"[\s\S]*?tail -n 400') 'tdarr filter before the 400-line window'
