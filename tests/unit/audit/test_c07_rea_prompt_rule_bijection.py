@@ -150,6 +150,13 @@ def test_rules_match_their_canonical_log_lines(ledgers):
          "requests.exceptions.HTTPError: 403 Client Error: rate limit exceeded "
          "for url: https://api.github.com/repos/morpheus65535/Bazarr/releases"
          "?per_page=100"),
+        # 2026-08-13. The shape models ACTUALLY emit: norm() rewrote the URL to
+        # <url> upstream and the model truncated its excerpt right after "rate
+        # limit exceeded" — the 2026-08-13 page that forced the rx reshape.
+        # The updater's verbatim message text is the marker that survives.
+        ("bazarr-github-release-check-ratelimit",
+         "Error trying to get releases from Github. Http error. "
+         "403 Client Error: rate limit exceeded"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -221,13 +228,18 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
         "arr:db-locked The release was rejected with [Permanent] Unknown Series. "
         "|Error|SeriesService|database is locked")
 
-    # 2026-08-06. The Bazarr update-check rule is anchored to the Bazarr repo
-    # URL, NOT to "rate limit exceeded" or to api.github.com generally, because
-    # the cosmetic argument is specific to that consumer: Bazarr runs
-    # --no-update, so its release list is display-only. QFlix's OWN GitHub
-    # callers (the lifecycle resolver, Tuesday.md:73) have no such exemption —
-    # a silent rate-limit there really does degrade version resolution — so
-    # every other GitHub 403 must still page.
+    # 2026-08-06, rx reshaped 2026-08-14. The Bazarr update-check rule requires
+    # BOTH an updater marker AND a rate-limit token ON ONE LINE of the excerpt
+    # ((?m)^ without (?s), field=excerpt). The markers are Bazarr's verbatim
+    # updater text ("trying to get releases from github") or the path-anchored
+    # slug (morpheus65535/bazarr/releases) — deliberately NOT "rate limit
+    # exceeded" alone, NOT api.github.com generally, and NOT the bare repo
+    # slug, because the cosmetic argument is specific to that one consumer:
+    # Bazarr runs --no-update, so its release list is display-only. QFlix's
+    # OWN GitHub callers (the lifecycle resolver, Tuesday.md:73) have no such
+    # exemption — a silent rate-limit there really does degrade version
+    # resolution — so every other GitHub 403 must still page, including 403s
+    # against OTHER endpoints of the Bazarr repo itself.
     rl = by["bazarr-github-release-check-ratelimit"]
     for still_pages in (
             "403 Client Error: rate limit exceeded for url: "
@@ -238,6 +250,13 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
             "https://api.github.com/repos/morpheus65535/Bazarr/issues"):
         assert not re.search(rl, still_pages), (
             "a non-Bazarr-release GitHub rate-limit must still page: " + still_pages)
+    # The one-line constraint itself: a benign updater line must not borrow a
+    # rate-limit token from a DIFFERENT line of the same excerpt (a real
+    # provider 429 next to updater chatter must page).
+    assert not re.search(rl,
+        "Error trying to get releases from Github. Http error.\n"
+        "opensubtitles.com: 429 rate limit reached, all providers throttled"), (
+        "cross-line token join must not suppress a real provider throttle")
 
     # The structural backstop: fires only when the excerpt has an *arr |Debug|
     # token and NO error-level token anywhere in it. The guard must span every
