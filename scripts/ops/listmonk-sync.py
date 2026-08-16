@@ -17,6 +17,7 @@ import ssl
 import sys
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 
 HOME = os.path.expanduser("~")
 SECRETS = os.path.join(HOME, "secrets")
@@ -112,24 +113,30 @@ def upsert(email, name, list_id, source, existing_map):
 
 
 def fetch_plex_friends():
-    """Plex.tv /api/v2/friends — currently shared friends with email when available.
-    Home accounts have no email; skip them.
+    """plex.tv /api/users (XML) — every account this server is shared with.
+
+    /api/v2/friends was retired upstream and returns HTTP 410 Gone (observed
+    2026-08-16; the sync had been silently one-legged on every run since,
+    surviving only on the Seerr source). The legacy XML endpoint carries the
+    same accounts — python-plexapi's MyPlexAccount.users() still uses it —
+    with email as a User attribute. Home/managed accounts have no email and
+    are skipped, same as before.
     """
     token = s("plex.token")
-    req = urllib.request.Request(
-        f"https://plex.tv/api/v2/friends?X-Plex-Token={token}",
-        headers={"Accept": "application/json"},
-    )
+    req = urllib.request.Request(f"https://plex.tv/api/users?X-Plex-Token={token}")
     try:
         with urllib.request.urlopen(req, context=SSL_CTX, timeout=15) as r:
-            data = json.load(r)
+            root = ET.fromstring(r.read())
     except urllib.error.HTTPError as e:
-        print(f"  ! plex.tv friends fetch failed: HTTP {e.code}", file=sys.stderr)
+        print(f"  ! plex.tv users fetch failed: HTTP {e.code}", file=sys.stderr)
+        return []
+    except ET.ParseError as e:
+        print(f"  ! plex.tv users response not parseable XML: {e}", file=sys.stderr)
         return []
     out = []
-    for f in data:
-        email = (f.get("email") or "").strip()
-        title = f.get("title") or f.get("username") or ""
+    for u in root.iter("User"):
+        email = (u.get("email") or "").strip()
+        title = u.get("title") or u.get("username") or ""
         if email:
             out.append((email, title))
     return out
