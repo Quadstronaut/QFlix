@@ -1049,6 +1049,28 @@ Test-Case 'an excerpt carrying BOTH the tvdbId line and another-column constrain
     Assert-Equal $null (Test-IsNoiseFinding $f) 'bundled different-column constraint survives'
 }
 
+Test-Case 'Test-IsNoiseFinding suppresses the MediaInfo child stderr/result fragments' {
+    # Third face of the wasm-oom event: the dead child JSON stderr split by
+    # the per-line grep. Both shapes, verbatim from the 2026-08-16 blob.
+    $f = @{
+        signature = 'tdarr:result-error'
+        summary   = 'Tdarr server logging error result objects'
+        excerpt   = "      2 [2026-08-16] [ERROR] Tdarr_Server - stderr:  {`n      2 [2026-08-16] [ERROR] Tdarr_Server - { result: 'error', error: {} }"
+    }
+    Assert-Equal 'tdarr-mediainfo-result-fragment' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'a Tdarr stderr line CARRYING content still pages' {
+    # The empty shapes are the fingerprint; a stderr with an actual payload
+    # (or a result with a non-empty error) is a different, real fault.
+    $f = @{
+        signature = 'tdarr:stderr'
+        summary   = 'Tdarr server stderr output'
+        excerpt   = "      1 [2026-08-16] [ERROR] Tdarr_Server - stderr:  { fatal: disk quota exceeded }"
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'content-bearing stderr survives'
+}
+
 Test-Case 'Test-IsNoiseFinding suppresses the daily buildarr PlexServer notification warning' {
     # Fires 4x every 04:30 run since at least 2026-08-02; upstream plugin
     # limitation, connection left untouched and working. Surfaced only when
