@@ -106,6 +106,76 @@ def test_one_email_cannot_be_in_two_households(tmp_path):
         M.load(_write(tmp_path, doc))
 
 
+# --- plex_only tagalongs (mapping-form accounts, 2026-08-16) ---------------
+
+def test_mapping_account_with_plex_only_parses_and_flags(tmp_path):
+    """The +1 form: email still lands in accounts (by_email, dedupe, oracle all
+    see it) and the flag is queryable per account."""
+    doc = _base()
+    doc["households"][1]["accounts"].append(
+        {"email": "PlusOne@example.com", "plex_only": True, "note": "tagalong"})
+    r = M.load(_write(tmp_path, doc))
+    h = r.by_email()["plusone@example.com"]
+    assert h.id == "payer"
+    assert h.is_plex_only("PLUSONE@example.com"), "flag is case-insensitive"
+    assert not h.is_plex_only("pay@example.com"), "the payer is untouched"
+    assert "PlusOne@example.com" in h.accounts
+
+
+def test_mapping_account_without_plex_only_is_a_plain_member(tmp_path):
+    doc = _base()
+    doc["households"][1]["accounts"].append({"email": "kid@example.com"})
+    r = M.load(_write(tmp_path, doc))
+    assert not r.by_email()["kid@example.com"].is_plex_only("kid@example.com")
+
+
+def test_mapping_account_with_unknown_keys_is_refused(tmp_path):
+    """A typo like `plexonly:` must fail loudly, not silently grant the
+    full-member treatment the mapping form exists to withhold."""
+    doc = _base()
+    doc["households"][1]["accounts"].append(
+        {"email": "x@example.com", "plexonly": True})
+    with pytest.raises(M.MembersError, match="unknown key"):
+        M.load(_write(tmp_path, doc))
+
+
+def test_mapping_account_plex_only_must_be_boolean(tmp_path):
+    doc = _base()
+    doc["households"][1]["accounts"].append(
+        {"email": "x@example.com", "plex_only": "yes"})
+    with pytest.raises(M.MembersError, match="must be true or false"):
+        M.load(_write(tmp_path, doc))
+
+
+def test_the_billing_holder_cannot_be_a_tagalong_on_their_own_bill(tmp_path):
+    """Both readings of a plex_only payer are defensible, so the file may not
+    say it — the same rule as exempt-and-billed."""
+    doc = _base()
+    doc["households"][1]["accounts"] = [
+        {"email": "pay@example.com", "plex_only": True}]
+    with pytest.raises(M.MembersError, match="billing.holder"):
+        M.load(_write(tmp_path, doc))
+
+
+def test_an_exempt_household_cannot_carry_plex_only_accounts(tmp_path):
+    """The exempt branch returns before the flag is ever consulted, so the
+    flag would be a silent no-op — and a written-down no-op with two readings
+    is refused, same rule as exempt-and-billed."""
+    doc = _base()
+    doc["households"][0]["accounts"].append(
+        {"email": "tag@example.com", "plex_only": True})
+    with pytest.raises(M.MembersError, match="exempt AND marks"):
+        M.load(_write(tmp_path, doc))
+
+
+def test_mapping_form_still_hits_the_two_household_dedupe(tmp_path):
+    doc = _base()
+    doc["households"][1]["accounts"].append(
+        {"email": "free@example.com", "plex_only": True})
+    with pytest.raises(M.MembersError, match="cannot be in two households"):
+        M.load(_write(tmp_path, doc))
+
+
 def test_duplicate_household_ids_are_rejected(tmp_path):
     """Ids key the pause-state file. A collision restores one household to
     another household's pre-pause settings."""
