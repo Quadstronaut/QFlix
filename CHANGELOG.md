@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-08-16 — Four apps nobody opened
+
+Kavita, Komga, Calibre-Web and Audiobookshelf are gone. All four were
+bulk-installed on 2026-05-08 and never used: at retirement every backing
+directory was still empty — `~/media/{Books,Audiobooks,Comics,Manga,Podcasts}`
+totalled **24 KB between them**. That is four services being patched, probed
+every 60 s, monitored by four Kuma push monitors, auto-healed on failure and
+capable of paging the operator at 3am, in service of zero readers.
+
+**The ordering was the whole job.** Homarr's decommission in July went
+uninstall-first and produced a 31-alert storm: the app died, its port stopped
+answering, and the pusher — which had no idea the app was meant to be gone —
+kept probing and reporting DOWN. So this ran strictly backwards from that.
+Manifest entries were removed and `manitoba-maint-pusher` restarted **first**
+(it loads `apps.yaml` once at startup, so a restart is mandatory, not
+cosmetic); only then were the four Kuma monitors deleted; only then
+`app-<name> uninstall`. The paging window between "pusher stopped pushing" and
+"monitors deleted" was **about three minutes**, and the four push monitors did
+fire once inside it.
+
+**The trap this could have walked into.** `lib/ucc.py`'s UCC maintenance-gate
+detector probes `app-<probe_app> start` every five minutes to decide whether
+Ultra.cc has the slot in maintenance — and its probe app was **kavita**, with
+no `ucc.probe_app` secret ever written to override it. Uninstalling kavita
+would have pinned that detector at `probe-error` permanently, and every
+window-aware job in the fleet reads its verdict. Repointed to `sonarr` (secret
++ `_DEFAULT_PROBE_APP`) and verified live before anything was removed.
+
+Also removed: the nightly `prune-text-libraries.sh` cron and its `jobs.yaml`
+entry, the whole `library-rescan*` family (their only callers, Readarr and
+Mylar3, were purged back in May — confirmed by checking that no surviving *arr
+has a single `CustomScript` notification), the four apps' secrets from **both**
+`~/secrets/` and `~/.opt/secrets/`, their push-token keys, and three orphaned
+nginx `proxy.d` fragments that survived the uninstall still pointing at dead
+ports — one of which had been squatting a global `location /assets/`.
+`deploy-drift.sh` lost its `is_generated` exemption too: it excused a file that
+no longer exists, and an exemption outliving its file is just a hiding place.
+
+Media files were left on disk. If anyone ever asks for the shelves back, it is
+a fresh install, not an excavation.
+
 ## 2026-08-07 — A gate that freezes instead of draining
 
 QFlix is now tied to the Starhold entitlement API. The operator invites friends

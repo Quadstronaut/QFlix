@@ -90,11 +90,12 @@ def test_app_list_returns_only_lifecycle_classes():
     d = _load()
     env = d.dispatch(["app.list"])
     assert env["ok"] is True
-    # 18 ucc + 6 systemd = 24. Counted off App.class_ via the manifest loader,
-    # NOT off the `# --- group ---` comment headers in apps.yaml, which have
-    # drifted from the real class fields (postgres sits under the systemd
+    # 14 ucc + 6 systemd = 20 (was 18+6=24 until the books stack was
+    # decommissioned 2026-08-16). Counted off App.class_ via the manifest
+    # loader, NOT off the `# --- group ---` comment headers in apps.yaml, which
+    # have drifted from the real class fields (postgres sits under the systemd
     # comment but is class: ucc). cron (10) and library (1) have no lifecycle.
-    assert len(env["lines"]) == 24
+    assert len(env["lines"]) == 20
     for line in env["lines"]:
         assert line.split()[1] in ("ucc", "systemd")
 
@@ -583,9 +584,9 @@ def test_app_list_reads_the_manifest_from_manitoba_manifest_env_not_a_hardcoded_
     that does not exist there, so app.list came back ok=False with a
     ManifestError. The fix routes through lib.cli._manifest_path(), whose first
     step honours $MANITOBA_MANIFEST. Point that env var at a throwaway
-    single-app manifest (nothing like the real 24-app one) and confirm app.list
+    single-app manifest (nothing like the real 20-app one) and confirm app.list
     reflects THAT file. If _load_manifest ever reverts to a hardcoded
-    repo-relative path, this env var is ignored, the real repo manifest (24
+    repo-relative path, this env var is ignored, the real repo manifest (20
     lifecycle apps) is read instead, and the assertion below goes red."""
     d = _load()
     throwaway = tmp_path / "throwaway-apps.yaml"

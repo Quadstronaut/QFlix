@@ -480,7 +480,7 @@
       <li><a href="#sec-getting-started">1 &middot; Getting started</a></li>
       <li><a href="#sec-requests">2 &middot; Requesting media</a></li>
       <li><a href="#sec-playback">3 &middot; Watching</a></li>
-      <li><a href="#sec-books">4 &middot; Books, comics, audiobooks</a></li>
+      <li><a href="#sec-books">4 &middot; Books, comics, audiobooks (retired)</a></li>
       <li><a href="#sec-newsletter">5 &middot; Newsletter</a></li>
       <li><a href="#sec-deletion">6 &middot; Why things disappear</a></li>
     </ul>
@@ -530,13 +530,12 @@
         <h3>What is QFlix? <a class="qhash" href="#q-what-is-qflix">#</a></h3>
         <p>
           QFlix is a private media server running on a single Ultra.cc shared seedbox.
-          You watch movies, TV, anime, and read books / comics / manga / audiobooks through it.
-          One operator runs the whole thing; everything else (download, transcode, organize,
-          metadata, deletion, alerts, newsletter) is automated.
+          You watch movies, TV and anime through it. One operator runs the whole thing;
+          everything else (download, transcode, organize, metadata, deletion, alerts,
+          newsletter) is automated.
         </p>
         <p>
-          <strong>Front door for users:</strong> Plex for video, Seerr for requests,
-          Audiobookshelf / Komga / Kavita / Calibre-Web for the printed shelves.
+          <strong>Front door for users:</strong> Plex for video, Seerr for requests.
           That's it &mdash; you don't need to know about the dozen other apps holding it up.
         </p>
       </article>
@@ -551,7 +550,7 @@
         <div class="callout tip"><strong>Heads-up:</strong> the first sign-in into Seerr may take 10&ndash;20 seconds while it links to your Plex profile. Don't refresh &mdash; give it a beat.</div>
       </article>
 
-      <article class="card user" id="q-where-is-everything" data-tags="urls bookmarks links audiobookshelf komga kavita calibre">
+      <article class="card user" id="q-where-is-everything" data-tags="urls bookmarks links plex seerr tautulli dashboard">
         <h3>Where is everything? <a class="qhash" href="#q-where-is-everything">#</a></h3>
         <table class="tbl">
           <thead><tr><th>I want to...</th><th>Open this</th><th>Auth</th></tr></thead>
@@ -560,9 +559,6 @@
             <tr><td>Request a new title</td><td><a href="https://quadstronaut.seedbox.example.com/seerr/">/seerr/</a></td><td>Plex SSO</td></tr>
             <tr><td>Browse the dashboard</td><td>the operator's qflix-dash (root URL)</td><td>none for the public board</td></tr>
             <tr><td>See what's playing right now</td><td><a href="https://quadstronaut.seedbox.example.com/tautulli/">/tautulli/</a></td><td>none (read-only stats)</td></tr>
-            <tr><td>Read ebooks</td><td><code>/calibre-web/</code> or Kavita</td><td>per-app login</td></tr>
-            <tr><td>Read comics / manga</td><td>Komga or Kavita</td><td>per-app login</td></tr>
-            <tr><td>Listen to audiobooks</td><td>the Audiobookshelf subdomain</td><td>per-app login</td></tr>
           </tbody>
         </table>
       </article>
@@ -656,39 +652,19 @@
 
     <section class="deck" id="sec-books">
       <h2><span class="num">4</span>Books, comics, audiobooks</h2>
-      <p class="deck-sub">Yes, QFlix isn't just movies. Here's the printed/spoken side.</p>
+      <p class="deck-sub">These shelves were retired on 2026-08-16.</p>
 
-      <article class="card user" id="q-books-where" data-tags="ebooks epub komga kavita calibre audiobookshelf">
-        <h3>Where do I read / listen? <a class="qhash" href="#q-books-where">#</a></h3>
-        <table class="tbl">
-          <thead><tr><th>Format</th><th>Reader</th><th>Note</th></tr></thead>
-          <tbody>
-            <tr><td>EPUB / PDF ebooks</td><td>Calibre-Web or Kavita</td><td>Calibre-Web has the better catalogue UI</td></tr>
-            <tr><td>Comics (CBZ/CBR)</td><td>Komga (preferred) or Kavita</td><td>Komga has better mobile reader</td></tr>
-            <tr><td>Manga</td><td>Kavita</td><td>Designed for it</td></tr>
-            <tr><td>Audiobooks</td><td>Audiobookshelf (subdomain URL)</td><td>iOS / Android apps work great</td></tr>
-          </tbody>
-        </table>
-        <div class="callout warn"><strong>Limited library.</strong> The text-side libraries are pruned of anything &gt; 365 days unread to keep disk under control. See the next question for how to add titles.</div>
-      </article>
-
-      <article class="card user" id="q-books-request" data-tags="request books comics audiobooks upload readarr lazylibrarian no-request-mechanism">
-        <h3>How do I request a book / comic / audiobook? <a class="qhash" href="#q-books-request">#</a></h3>
-        <div class="callout warn"><strong>No request flow yet.</strong> Unlike movies / TV / anime, there is currently <em>no</em> Seerr-style request mechanism for the text-side libraries. The operator is actively investigating one (Readarr / LazyLibrarian / a Seerr fork) but nothing is wired up today.</div>
+      <article class="card user" id="q-books-where" data-tags="ebooks epub comics manga audiobooks retired decommissioned">
+        <h3>What happened to the books, comics and audiobooks? <a class="qhash" href="#q-books-where">#</a></h3>
+        <div class="callout warn"><strong>Retired 2026-08-16.</strong> The four reader apps that served the printed and spoken shelves were shut down and removed. They had no readers &mdash; the shelves were empty &mdash; so the operator retired them rather than keep four unused services patched, monitored and paged on.</div>
         <p>
-          In the meantime: <strong>you're welcome to upload your own.</strong> If you have an EPUB, CBZ, or audiobook you'd like on the shelf, send it to the operator (or drop it into the upload share if you've been given one) and it'll be filed into Calibre-Web / Komga / Kavita / Audiobookshelf for everyone to enjoy.
+          Nothing you were using went away with them: video (movies, TV, anime) is untouched, and Plex, Seerr and the dashboard all work exactly as before. The nightly job that pruned the text shelves is gone too, along with the four monitors that watched the apps.
         </p>
-        <div class="callout tip"><strong>The 365-day autoprune still applies.</strong> Anything uploaded that nobody opens for a year will be swept by <code>prune-text-libraries.sh</code> just like everything else &mdash; same rule, no exceptions. If you want a title kept around regardless, ask the operator to pin it.</div>
+        <p>
+          If you would like ebooks, comics, manga or audiobooks back on QFlix, say so &mdash; it is a question of demand, not of capability, and the operator will happily stand a reader back up if anyone actually wants one.
+        </p>
       </article>
 
-      <article class="card user" id="q-abs-app" data-tags="audiobookshelf mobile app android ios">
-        <h3>How do I use Audiobookshelf on my phone? <a class="qhash" href="#q-abs-app">#</a></h3>
-        <ol>
-          <li>Install <em>Audiobookshelf</em> from the App Store / Play Store.</li>
-          <li>Server URL: the audiobookshelf-&lt;operator&gt;.&lt;domain&gt; URL the operator gave you (it's a subdomain, not a path).</li>
-          <li>Sign in with the account the operator created for you.</li>
-        </ol>
-      </article>
     </section>
 
     <section class="deck" id="sec-newsletter">
@@ -732,13 +708,10 @@
         <div class="callout tip"><strong>Want a title preserved?</strong> The operator can pin items to skip the reaper rule. Just ask.</div>
       </article>
 
-      <article class="card user" id="q-text-prune" data-tags="ebook audiobook comic deleted text-libraries prune">
+      <article class="card user" id="q-text-prune" data-tags="ebook audiobook comic deleted text-libraries prune retired">
         <h3>An ebook / audiobook I had is gone <a class="qhash" href="#q-text-prune">#</a></h3>
         <p>
-          A separate nightly job (<code>prune-text-libraries.sh</code>) trims anything in the ebook / audiobook / comic / manga shelves that hasn't been touched in 365 days, then triggers a rescan.
-        </p>
-        <p>
-          There's no request mechanism for these libraries yet (see <a href="#q-books-request">the books-request question</a>) &mdash; to get a pruned title back, upload a copy and the operator will re-file it.
+          A separate nightly job used to trim anything in the ebook / audiobook / comic / manga shelves that hadn't been touched in 365 days. Both the job and the shelves themselves were retired on 2026-08-16 &mdash; see <a href="#q-books-where">the books question</a>.
         </p>
       </article>
     </section>
@@ -945,7 +918,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
           <tbody>
             <tr><td>1. Prowlarr</td><td>Indexer count &ge; 5; search round-trip for &ldquo;ubuntu&rdquo; returns &ge; 1</td></tr>
             <tr><td>2. *arr &harr; qBit</td><td><code>testall</code> returns 200 for sonarr / sonarr2 / radarr / radarr2</td></tr>
-            <tr><td>3. Library hygiene</td><td>Hardlink count &ge; 2 on Movies samples; rescan helpers reach Komga / Kavita / Audiobookshelf</td></tr>
+            <tr><td>3. Library hygiene</td><td>Hardlink count &ge; 2 on Movies samples</td></tr>
             <tr><td>4. App liveness</td><td>qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 32 canaries</td></tr>
             <tr><td>5. Maintenance system</td><td>Webhook <code>/health</code>, window timer scheduled, manifest validates, pusher active, Kuma drift = 0, Kuma all-up (external + parked excluded)</td></tr>
           </tbody>
@@ -1235,33 +1208,33 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
       <h2><span class="num">18</span>Nerd Corner &mdash; the tech stack</h2>
       <p class="deck-sub">Every app in QFlix is somebody's open-source project. Here's the tech behind the curtain.</p>
 
-      <article class="card tut" id="q-tech-dotnet" data-tags="dotnet .net mono c-sharp sonarr radarr prowlarr bazarr lidarr kavita recyclarr aspnet">
-        <h3>The .NET wing &mdash; Sonarr, Radarr, Prowlarr, Bazarr, Recyclarr, Kavita <a class="qhash" href="#q-tech-dotnet">#</a></h3>
+      <article class="card tut" id="q-tech-dotnet" data-tags="dotnet .net mono c-sharp sonarr radarr prowlarr bazarr lidarr recyclarr aspnet">
+        <h3>The .NET wing &mdash; Sonarr, Radarr, Prowlarr, Bazarr, Recyclarr <a class="qhash" href="#q-tech-dotnet">#</a></h3>
         <p>
           The whole *arr family is C# / ASP.NET Core. For years they ran on <strong>Mono</strong> on Linux because .NET wasn't cross-platform yet &mdash; that's why old install guides still talk about <code>mono-complete</code>. Sonarr v4 (2023) and Radarr v5 finally cut Mono and ship native .NET 6+ runtimes. Saves a lot of memory and one entire dependency layer.
         </p>
         <p>
-          <strong>Recyclarr</strong> is also C# / .NET &mdash; it just speaks to the *arr APIs to apply <a href="https://trash-guides.info/">TRaSH-Guide</a> profiles in bulk. <strong>Kavita</strong> (manga / ebook reader) is ASP.NET Core 8 &mdash; one of the few non-*arr .NET apps in the self-hosted media world.
+          <strong>Recyclarr</strong> is also C# / .NET &mdash; it just speaks to the *arr APIs to apply <a href="https://trash-guides.info/">TRaSH-Guide</a> profiles in bulk.
         </p>
       </article>
 
-      <article class="card tut" id="q-tech-python" data-tags="python flask jinja kometa buildarr tautulli flaresolverr calibre-web qflix-newsletter selenium">
-        <h3>The Python wing &mdash; Tautulli, Kometa, Buildarr, FlareSolverr, Calibre-Web, qflix-newsletter <a class="qhash" href="#q-tech-python">#</a></h3>
+      <article class="card tut" id="q-tech-python" data-tags="python flask jinja kometa buildarr tautulli flaresolverr qflix-newsletter selenium">
+        <h3>The Python wing &mdash; Tautulli, Kometa, Buildarr, FlareSolverr, qflix-newsletter <a class="qhash" href="#q-tech-python">#</a></h3>
         <p>
           <strong>Tautulli</strong> is Flask-based; it's the original community Plex stats dashboard, around since the PlexPy days. <strong>Kometa</strong> (formerly Plex Meta Manager) is a YAML-driven Python pipeline that turns config files into Plex collections + posters. <strong>Buildarr</strong> is &ldquo;Infrastructure-as-Code for *arrs&rdquo; &mdash; declarative YAML in, reconciled *arr settings out (think Terraform, but for Sonarr).
         </p>
         <p>
-          <strong>FlareSolverr</strong> drives a headless browser (Selenium / undetected-chromedriver) to solve Cloudflare challenges Prowlarr can't pass on its own. <strong>Calibre-Web</strong> is a Flask front-end on top of the canonical Calibre library DB. <strong>qflix-newsletter</strong> is bespoke &mdash; Python + Jinja2 templates + the Listmonk REST API, ~600 LoC total.
+          <strong>FlareSolverr</strong> drives a headless browser (Selenium / undetected-chromedriver) to solve Cloudflare challenges Prowlarr can't pass on its own. <strong>qflix-newsletter</strong> is bespoke &mdash; Python + Jinja2 templates + the Listmonk REST API, ~600 LoC total.
         </p>
       </article>
 
-      <article class="card tut" id="q-tech-node" data-tags="node nodejs javascript typescript nestjs nextjs uptimekuma maintainerr tdarr audiobookshelf seerr overseerr jellyseerr sveltekit vue react">
-        <h3>The Node.js wing &mdash; Uptime Kuma, Tdarr, Audiobookshelf, Seerr, qflix-dash <a class="qhash" href="#q-tech-node">#</a></h3>
+      <article class="card tut" id="q-tech-node" data-tags="node nodejs javascript typescript nestjs nextjs uptimekuma tdarr seerr overseerr jellyseerr sveltekit vue react">
+        <h3>The Node.js wing &mdash; Uptime Kuma, Tdarr, Seerr, qflix-dash <a class="qhash" href="#q-tech-node">#</a></h3>
         <p>
           <strong>Uptime Kuma</strong> is by Louis Lam &mdash; started as a personal Hong Kong side-project and became the de-facto self-hosted status page (think open-source UptimeRobot). <strong>Maintainerr</strong> (NestJS + React) was the former 60-day retention engine &mdash; it stepped in after Deleterr was abandoned but was itself decommissioned 2026-06-20 after a Plex-ID resolution bug made its deletes unfixable. The 60-day retention rule is now handled by <strong>qflix-reaper</strong> (<code>scripts/maint/qflix-reaper.py</code>), a bespoke Python script on a daily systemd timer.
         </p>
         <p>
-          <strong>Tdarr</strong> wraps FFmpeg with a Node orchestrator and a worker-node model (&ldquo;servers&rdquo; + &ldquo;nodes&rdquo;). <strong>Audiobookshelf</strong> is Node + Vue with surprisingly good iOS / Android apps for a self-hosted project. <strong>Seerr</strong> (the Overseerr / Jellyseerr family) is Next.js + TypeScript. <strong>qflix-dash</strong> &mdash; SvelteKit on the Node adapter &mdash; is the dashboard you see at the QFlix root URL. (It replaced <strong>Homarr</strong>, a Next.js board that was retired in 2026.)
+          <strong>Tdarr</strong> wraps FFmpeg with a Node orchestrator and a worker-node model (&ldquo;servers&rdquo; + &ldquo;nodes&rdquo;). <strong>Seerr</strong> (the Overseerr / Jellyseerr family) is Next.js + TypeScript. <strong>qflix-dash</strong> &mdash; SvelteKit on the Node adapter &mdash; is the dashboard you see at the QFlix root URL. (It replaced <strong>Homarr</strong>, a Next.js board that was retired in 2026.)
         </p>
       </article>
 
@@ -1272,13 +1245,6 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
         </p>
         <p>
           <strong>unpackerr</strong> is by <em>golift</em> &mdash; one tiny binary that watches *arr download directories and unrar's archives so qBittorrent and the *arrs don't have to. Runs as a long-lived systemd unit and never makes news, which is the highest praise for an unpacker.
-        </p>
-      </article>
-
-      <article class="card tut" id="q-tech-jvm" data-tags="kotlin spring boot komga jvm java opds">
-        <h3>The JVM wing &mdash; Komga (Kotlin / Spring Boot) <a class="qhash" href="#q-tech-jvm">#</a></h3>
-        <p>
-          <strong>Komga</strong> is one of the very few JVM apps in self-hosted media &mdash; Kotlin on Spring Boot, with first-class OPDS support and excellent Tachiyomi compatibility. Yes, it eats more RAM than a Go app would, but the metadata handling on comics + manga is unmatched, and the schema is sensible enough that you can poke it with plain SQL.
         </p>
       </article>
 

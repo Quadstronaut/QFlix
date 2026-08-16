@@ -61,9 +61,10 @@ classify() {
     *Tautulli.py*)                CL_LABEL=Tautulli; CL_ROLE=Stats;;
     *Tdarr_Server*)               CL_LABEL="Tdarr Server"; CL_ROLE=Transcode;;
     *Tdarr_Node*)                 CL_LABEL="Tdarr Node"; CL_ROLE=Transcode;;
-    *application.jar*)            CL_LABEL=Komga; CL_ROLE=Books;;
-    */app/kavita/Kavita*|*/Kavita) CL_LABEL=Kavita; CL_ROLE=Books;;
-    *calibre-web*|*cps.py*)       CL_LABEL=Calibre-Web; CL_ROLE=Books;;
+    # Books role (Komga/Kavita/Calibre-Web/Audiobookshelf) REMOVED 2026-08-16 -
+    # all four apps decommissioned. Their patterns were also the loosest in
+    # this table (*application.jar*, *"node index.js"*), so dropping them
+    # narrows the classifier as well as shortening it.
     *victoria-logs*)              CL_LABEL=VictoriaLogs; CL_ROLE=Stats;;
     *uptime-kuma*)                CL_LABEL="Uptime Kuma"; CL_ROLE=Stats;;
     *qflix_newsletter*|*qflix-newsletter*) CL_LABEL=Newsletter; CL_ROLE=Comms;;
@@ -72,7 +73,6 @@ classify() {
     *qflix-dash/build*)           CL_LABEL="QFlix Dash"; CL_ROLE=Web;;
     *dist/index.js*)              CL_LABEL=Seerr; CL_ROLE=Requests;;
     *postgres*)                   CL_LABEL=Postgres; CL_ROLE=Data;;
-    *"node index.js"*)            CL_LABEL=Audiobookshelf; CL_ROLE=Books;;  # entry=index.js, CONFIG_PATH=/config
     # --- tier 1: infra a UCC app container bundles; a real app in the same cgroup outranks it ---
     *redis-server*)               CL_LABEL=Redis; CL_ROLE=Data; CL_TIER=1;;
     *nginx*)                      CL_LABEL=nginx; CL_ROLE=Web;  CL_TIER=1;;

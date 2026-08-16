@@ -552,7 +552,7 @@ class TestUccDetect:
             "consecutive_clear": 0,
             "consecutive_error": 0,
             "last_probe_result": "clear",
-            "probe_op": "app-kavita start",
+            "probe_op": "app-sonarr start",
             "last_probe_at": "2026-05-24T12:00:00Z",
         }
         detect_mock = MagicMock(return_value=fake_state)
@@ -579,7 +579,7 @@ class TestUccDetect:
             "consecutive_clear": 0,
             "consecutive_error": 0,
             "last_probe_result": "gated",
-            "probe_op": "app-kavita start",
+            "probe_op": "app-sonarr start",
             "last_probe_at": "2026-05-24T12:00:00Z",
         }
         detect_mock = MagicMock(return_value=fake_state)
@@ -602,7 +602,7 @@ class TestUccStatus:
             "last_confirmed_at": "2026-05-24T23:55:00Z",
             "last_probe_at": "2026-05-24T23:55:00Z",
             "last_probe_result": "gated",
-            "probe_op": "app-kavita start",
+            "probe_op": "app-sonarr start",
             "consecutive_clear": 0,
             "consecutive_error": 0,
         }
@@ -1025,7 +1025,7 @@ class TestUccDetectCallsRespond:
         fake_state = {
             "active": True,
             "last_probe_result": "gated",
-            "probe_op": "app-kavita start",
+            "probe_op": "app-sonarr start",
             "last_probe_at": "2026-05-24T12:00:00Z",
         }
         detect_mock = MagicMock(return_value=fake_state)

@@ -214,25 +214,11 @@ else
   record "unpackerr-running" fail "no daemon process"
 fi
 
-# 9. Prune cron dry-run
-echo "9. Prune cron"
-PRUNE=$(sshm "~/scripts/post-import/prune-text-libraries.sh --dry-run 2>&1 | tail -1")
-if printf '%s' "$PRUNE" | grep -q "deletions="; then
-  record "prune-cron-dry-run" pass "$PRUNE"
-else
-  record "prune-cron-dry-run" fail "$PRUNE"
-fi
-
-# 10. Library rescan helper smoke
-echo "10. Library rescan helper"
-for tgt in komga kavita audiobookshelf; do
-  OUT=$(sshm "~/scripts/post-import/library-rescan-${tgt}.sh 2>&1" || echo "fail")
-  if printf '%s' "$OUT" | grep -qE "(triggered|HTTP 2)"; then
-    record "rescan-$tgt" pass
-  else
-    record "rescan-$tgt" fail "$(printf '%s' "$OUT" | head -c 80)"
-  fi
-done
+# 9 + 10 (prune-cron dry-run, library-rescan helper smoke): RETIRED 2026-08-16.
+# Both existed only to exercise the books stack. The four reader apps were
+# decommissioned that day and the scripts under test (prune-text-libraries.sh,
+# library-rescan-*.sh) were deleted with them, so these checks could only ever
+# have failed. Section numbers are left with a gap, as 11 already is.
 
 # 12. qBittorrent health + seeding count
 echo "12. qBittorrent"

@@ -558,19 +558,12 @@ jobs:
     adjudicated: 2026-08-08
     owner: operator
 
-  cron-prune-text-libraries:
-    cron: "scripts/post-import/prune-text-libraries.sh"
-    schedule: "0 4 * * *"
-    kuma_monitor: null
-    no_monitor_reason: >-
-      Nightly cleanup of text/ebook leftovers after import. Failure mode is
-      pure accretion: files that should have been removed stay on disk. The
-      quota canary (80% warn / 90% critical) is the real downstream signal and
-      has weeks of headroom at this job's volume, so a dedicated dead-man would
-      duplicate its concern without adding a distinct one.
-    open_gap: false
-    adjudicated: 2026-08-07
-    owner: operator
+  # cron-prune-text-libraries: RETIRED 2026-08-16 with the books stack. The job
+  # pruned aged ebook/audiobook/comic/manga/podcast files and then best-effort
+  # rescanned the four reader apps. All four were decommissioned 2026-08-16
+  # (see manifest/apps.yaml), so the job had nothing left to prune and nothing
+  # left to notify. Its 2026-08-07 no-monitor adjudication (quota canary is the
+  # real downstream signal) is moot: the crontab line and the script are gone.
 
   # cron-arr-housekeeping-missing: RETIRED 2026-08-08. The 2026-08-07
   # adjudication left this open on one unestablished fact: whether the 04:00
