@@ -21,7 +21,7 @@ back-compat).
 
 | File | Purpose | Source |
 |---|---|---|
-| `htpasswd.password` | Shared admin password (outer Ultra.cc htpasswd + Listmonk + Calibre-Web rotated to match) | Ultra.cc panel (outer htpasswd), operator-captured; consumed by 91-nginx-root-to-dash.sh + 43-listmonk-install.sh |
+| `htpasswd.password` | Shared admin password (outer Ultra.cc htpasswd + Listmonk rotated to match) | Ultra.cc panel (outer htpasswd), operator-captured; consumed by 91-nginx-root-to-dash.sh + 43-listmonk-install.sh |
 | `prowlarr.key` / `.port` / `.urlbase` | Prowlarr API | `~/.apps/prowlarr/config.xml` ApiKey + bootstrap-discover.sh |
 | `sonarr.key` / `sonarr2.key` / `radarr.key` / `radarr2.key` (+ `.port` + `.urlbase` each) | *arr API + listener | bootstrap-discover.sh scrapes config.xml + nginx upstream port |
 | `bazarr.key` / `bazarr2.key` (+ `.port`, `.urlbase`) | Subtitles API | UI / 06-bazarr2.sh |
@@ -33,11 +33,12 @@ back-compat).
 | `plex.token` / `.host` / `.port` | Plex API | https://www.plex.tv/claim or X-Plex-Token from a web session |
 | `plex.direct_host` (optional) | Direct-access Plex hostname for the dashboard's Plex tile (Ultra.cc shared boxes route a dedicated direct-IP endpoint). Falls back to `<seedbox.host>/web/` if absent. |
 | `tautulli.key` / `.port` | Tautulli API | UI → Settings → Web Interface |
-| `komga.key` / `kavita.key` / `audiobookshelf.key` / `calibre-web.key` (+ `.port` each) | Book/comic stack APIs | Per-app UI |
 | `tmdb.read_token` | TMDB API v4 read token | https://themoviedb.org → API |
 | `github.repo` (optional) | `owner/name` of the public repo whose weekly commits drive the newsletter's "Behind the scenes" recap. Defaults to `Quadstronaut/QFlix` if absent. | n/a (public repo; no token) |
 | `listmonk.api_user` / `.api_token` / `.port` / `.list_id` / `.from_email` / `.smtp_user` / `.smtp_password` | Listmonk admin + SMTP creds | 43-listmonk-install.sh provisions the API user; SMTP/from_email come from the operator |
 | `postgres.port` | Listmonk's Postgres backend | bootstrap |
+| `ucc.probe_app` | App name the UCC maintenance-gate detector probes with `app-<name> start` every 5 min (`scripts/maint/lib/ucc.py`). Currently `sonarr`; was an implicit `kavita` default until the books stack was decommissioned 2026-08-16. Must always name an INSTALLED app — an uninstalled one makes the gate detector permanently `probe-error`. | operator-written; falls back to `_DEFAULT_PROBE_APP` when absent |
+| ~~`komga.*` / `kavita.*` / `audiobookshelf.*` / `calibre-web.*`~~ | **RETIRED 2026-08-16** — books stack decommissioned; purged from `~/secrets/` and `~/.opt/secrets/` | n/a |
 | `tdarr.server_port` / `.api_key` | Tdarr Server | 50-tdarr-install.sh |
 | `uptimekuma.key` / `.port` (+ `.host` for off-box) | Kuma API (metrics scrape + push-token bootstrap) | UI → Settings → API |
 | `kuma-push-tokens.json` | Per-monitor push tokens. **Two consumers, two copies:** (a) the seedbox copy at `~/secrets/kuma-push-tokens.json` is read by `manitoba-maint-pusher.service` and the canary push pipeline; (b) the local-repo copy at `secrets/kuma-push-tokens.json` is read by `scripts/local/qflix-collect.ps1` (Windows scheduled task) for the workstation-side push. Both are written by `scripts/maint/bootstrap-kuma-monitors.py` when run from that host. Keys for apps and canaries are slug-style (`sonarr`, `canary-quota`). Keys for entries in `manifest.kuma_external_monitors` that are PUSH-typed (e.g. `QFlix Collect (workstation)`) use the **Kuma display name verbatim** — that's what `Push-Kuma` in `qflix-collect.ps1` looks up. The bootstrap seeds from any existing token file before writing, so operator-placed keys survive across runs. |

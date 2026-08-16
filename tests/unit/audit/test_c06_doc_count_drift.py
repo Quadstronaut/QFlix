@@ -43,8 +43,17 @@ def test_headline_counts_agree_with_the_manifest(ctx, repo):
     result = det.detect(ctx)
     by_id = {v.instance_id: v for v in result.verdicts}
 
-    assert "README.md:35-manifest-apps" in by_id, "expected claim missing: apps"
-    assert by_id["README.md:35-manifest-apps"].status == OK
+    # Located by SHAPE, not by the literal count -- same reasoning as the
+    # canary claim below. Pinning "README.md:35-manifest-apps" made this test
+    # fail the moment the app count moved (it did, 35 -> 31, when the books
+    # stack was decommissioned 2026-08-16). What must hold is that a
+    # manifest-apps claim EXISTS and reads ok; comparing it to the manifest is
+    # the detector's job, not this test's.
+    apps_claims = [v for iid, v in by_id.items()
+                   if re.fullmatch(r"README\.md:\d+-manifest-apps", iid)]
+    assert apps_claims, "expected claim missing: apps"
+    for v in apps_claims:
+        assert v.status == OK, f"{v.instance_id}: {v.detail}"
 
     canary_claims = [v for iid, v in by_id.items()
                      if re.fullmatch(r"inventory\.md:\d+-canary-monitors", iid)]

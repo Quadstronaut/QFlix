@@ -193,7 +193,7 @@ def _probe_http_root(app: App, timeout_s: float) -> HealthResult:
         return HealthResult(ok=False, latency_ms=None, reason=f"config error: {exc}")
 
     # path_override lets http_root probe a non-root liveness endpoint
-    # (e.g. /healthcheck for audiobookshelf, /komga/ for komga's path-mount).
+    # (e.g. /sabnzbd/ for an app served under a urlbase rather than at root).
     path = raw.get("path_override", "/")
     if not path.startswith("/"):
         path = "/" + path

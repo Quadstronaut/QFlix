@@ -10,8 +10,8 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-55%2F55_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-35_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-78%2F78_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-31_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-74%2F74_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -39,9 +39,9 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 
 | Surface | Count | State |
 |---|---:|---|
-| Apps in manifest (`manifest/apps.yaml`) | **35** | 18 UCC · 6 systemd · 10 cron · 1 library |
+| Apps in manifest (`manifest/apps.yaml`) | **31** | 14 UCC · 6 systemd · 10 cron · 1 library |
 | End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **32** | movie · anime · mobile-ux · qbit-stall · sab-stall · bazarr-ingest · tdarr-pause-integrity · stream-cap-liveness · cron-liveness · unstick-rate · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · prowlarr-app-sync · hardlink-integrity · plex-transcoder · plex-unmatched · tautulli-plex-link · quota · newsletter-digest · thread-ceiling · tdarr-scanner · tdarr-healthcheck · ucc-gate-stuck · dash-asset-integrity · timer-liveness · deploy-drift · rea-liveness |
-| Kuma push monitors (manitoba-owned) | **78** | 35 manifest apps + 32 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper" + 1 "QFlix Audio Disposition" + 1 "qflix-anime-janitor" + 1 "QFlix Torrent Janitor" + 1 "QFlix Unknown Codec Stream" + 1 "QFlix Collect" + 1 "QFlix Audit Regime" + 1 "QFlix Audit Live" + 1 "QFlix Entitlement Gate". 0 external: "QFlix Collect" was reclassified manitoba-owned on 2026-07-29 because the collector moved off the workstation onto the box on 2026-07-09, so the drift audit and `bootstrap-kuma-monitors.py` now treat it as mandatory. Its Kuma name still reads "(workstation)" — cosmetic only; renaming needs a coordinated live change. **All 78 are live** as of 2026-08-08: `manitoba-maint kuma audit` reports `manifest 78 / kuma 78 / matched 78, no drift`. The three canary monitors declared 2026-08-03 ("Canary Prowlarr App Sync", "Canary Plex Unmatched", "Canary REA Liveness") were created by `bootstrap-kuma-monitors.py` on a subsequent deploy, as was "Canary Bazarr Ingest" (2026-08-06) — see [docs/audit-regime.md](docs/audit-regime.md). A freshly created monitor is born BOTH tokenless and mute, and both halves are repaired in the same bootstrap run: Bazarr Ingest came up `+ channels [1, 2] (was NONE)` and needed its push token captured by a live `getMonitor` round trip before the install smoke would pass (63/63). |
+| Kuma push monitors (manitoba-owned) | **74** | 31 manifest apps + 32 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper" + 1 "QFlix Audio Disposition" + 1 "qflix-anime-janitor" + 1 "QFlix Torrent Janitor" + 1 "QFlix Unknown Codec Stream" + 1 "QFlix Collect" + 1 "QFlix Audit Regime" + 1 "QFlix Audit Live" + 1 "QFlix Entitlement Gate". 0 external: "QFlix Collect" was reclassified manitoba-owned on 2026-07-29 because the collector moved off the workstation onto the box on 2026-07-09, so the drift audit and `bootstrap-kuma-monitors.py` now treat it as mandatory. Its Kuma name still reads "(workstation)" — cosmetic only; renaming needs a coordinated live change. **All 74 are live** as of 2026-08-16: `manitoba-maint kuma audit` reported `manifest 78 / kuma 78 / matched 78, no drift` on 2026-08-08; the books stack was decommissioned 2026-08-16 and its four monitors deleted, taking both sides to 74. The three canary monitors declared 2026-08-03 ("Canary Prowlarr App Sync", "Canary Plex Unmatched", "Canary REA Liveness") were created by `bootstrap-kuma-monitors.py` on a subsequent deploy, as was "Canary Bazarr Ingest" (2026-08-06) — see [docs/audit-regime.md](docs/audit-regime.md). A freshly created monitor is born BOTH tokenless and mute, and both halves are repaired in the same bootstrap run: Bazarr Ingest came up `+ channels [1, 2] (was NONE)` and needed its push token captured by a live `getMonitor` round trip before the install smoke would pass (63/63). |
 | Cron + systemd timers | **55** _(live count on the box, verified 2026-08-07 via `systemctl --user list-timers` — 46 tracked in `scripts/maint/systemd/` plus the 7 installer-generated units now declared in `manifest/jobs.yaml` via `unit:`, plus the 2 canary timers added 2026-08-07. `timer-liveness` asserts every declared one is loaded+active+scheduled: 54/54 at last run, 55 once stream-cap-liveness deploys.)_ | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **1000+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -359,7 +359,7 @@ The pusher dispatches on `class` for both lifecycle ops and probe selection.
 ## Repo layout
 
 ```text
-manifest/apps.yaml           # 35 apps + 32 canaries — single source of truth
+manifest/apps.yaml           # 31 apps + 32 canaries — single source of truth
 versions.env                 # pinned versions (Tdarr only — pin policy lifted 2026-05-09)
 inventory.md                 # live snapshot of every artifact on the seedbox
 Tuesday.md                   # design doc — extending Mon window to systemd apps
@@ -449,8 +449,7 @@ QFlix runs unattended most of the week. The things worth knowing if you're readi
 | FAQ + tutorial | `https://<fqdn>/faq/` | none |
 | qflix-dash (public board) | `https://<fqdn>/` | none |
 | Tautulli (read-only stats) | `https://<fqdn>/tautulli/` | none |
-| Audiobookshelf | `https://audiobookshelf-<user>.<domain>/` | htpasswd |
-| Calibre-Web · Kavita · Komga · Listmonk archive | `https://<fqdn>/<slug>/` | per-app login or none |
+| Listmonk archive | `https://<fqdn>/<slug>/` | none |
 | Kuma status page | `https://<fqdn>/status/manitoba` | none |
 
 Every *arr admin UI, Kuma admin, Listmonk admin, and qBittorrent live behind a workstation SSH tunnel and never touch the public surface. → [FAQ §7 for the tunnel setup](https://quadstronaut.seedbox.example.com/faq/#sec-tunnel)
