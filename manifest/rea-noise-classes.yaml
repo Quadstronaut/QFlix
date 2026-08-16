@@ -474,6 +474,28 @@ classes:
       failures from one scan burst.
     added: 2026-08-16
 
+  - id: buildarr-unsupported-plex-notification
+    title: buildarr "Unsupported remote notification connection ... PlexServer" daily warning
+    rx: '(?i)unsupported remote notification connection\b.{0,60}implementation .?plexserver.?, ignoring'
+    field: null
+    prompt_clause: 'Unsupported remote notification connection'
+    why: >-
+      buildarr-radarr logs this at WARNING on every daily 04:30 run (4 lines
+      per run - main + anime radarr, two connections) because the plugin
+      cannot manage the *arr's Plex-notification connection type
+      ("implementation PlexServer") and skips it. Upstream limitation,
+      cosmetic by construction: buildarr IGNORES the connection, so radarr's
+      own Plex notification config is left exactly as it was and keeps
+      working. Continuous in buildarr.err since at least 2026-08-02; surfaced
+      as a page 2026-08-16 only because the config_sync collector gained its
+      FRESH_CUTOFF filter that same day and the class became the sole fresh
+      content of the section (models mislabel WARNING as error - the F3
+      severity lesson - so a prompt alone cannot hold this floor). Anchored
+      to the PlexServer implementation specifically: the same buildarr
+      message naming any OTHER implementation is a new, undiagnosed sync gap
+      and still pages.
+    added: 2026-08-16
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -531,6 +553,9 @@ prompt_segments:
   - index: 16
     marker: 'Seerr/Jellyseerr Plex-scan "UNIQUE constraint failed: media.tvdbId" lines'
     classes: [seerr-plex-scan-tvdbid-collision]
+  - index: 17
+    marker: 'buildarr "Unsupported remote notification connection" warnings naming implementation PlexServer'
+    classes: [buildarr-unsupported-plex-notification]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
