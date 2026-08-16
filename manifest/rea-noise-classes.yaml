@@ -101,6 +101,25 @@ classes:
     why: Direct consequence of tdarr-wasm-oom; same 2026-07-28 ruling applies.
     added: 2026-07-28
 
+  - id: tdarr-mediainfo-result-fragment
+    title: Tdarr_Server MediaInfo child-process stderr/result JSON fragments
+    rx: '(?im)tdarr_server - (stderr:\s*\{\s*$|\{ result: ''error'', error: \{\} \})'
+    field: excerpt
+    prompt_clause: "Error running MediaInfo"
+    why: >-
+      The THIRD face of the tdarr-wasm-oom event, paged 2026-08-16 once the
+      rest of the tdarr section went quiet: Tdarr_Server logs the dead
+      MediaInfo child process stderr as a JSON object, which the collector's
+      per-line [ERROR] grep splits into a bare "stderr:  {" opener line and a
+      "result: error, error: empty" fragment line - measured in lockstep with
+      the "Error running MediaInfo" lines from the same runs (6/2/2 counts,
+      same dates), never independently. Same 2026-07-28 permanently-unfixable
+      ruling, same tdarr-scanner canary ownership. Excerpt-scoped and
+      anchored to Tdarr_Server plus the exact EMPTY shapes: a stderr line
+      carrying content after the brace, or a result object with a non-empty
+      error payload, matches neither alternative and still pages.
+    added: 2026-08-16
+
   - id: plex-post-reap-scan
     title: Plex "Failed to create parent iterator" after a reap
     rx: '(?i)failed to create parent iterator'
@@ -522,7 +541,7 @@ prompt_segments:
     classes: [plex-client-abort-stream-write]
   - index: 6
     marker: "WASM out-of-memory failure"
-    classes: [tdarr-wasm-oom, mediainfo-failure]
+    classes: [tdarr-wasm-oom, mediainfo-failure, tdarr-mediainfo-result-fragment]
   - index: 7
     marker: 'Failed to create parent iterator'
     classes: [plex-post-reap-scan]
