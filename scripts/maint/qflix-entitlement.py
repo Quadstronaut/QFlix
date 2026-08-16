@@ -426,6 +426,17 @@ def plan_for_share(
     deadline = state.deadline_for(email, **clock)
     remaining = state.days_remaining(email, **clock)
 
+    # Tagalong (+1) accounts ride the household's entitlement for the Plex
+    # share ONLY (operator directive 2026-08-16). Killing `provision` here
+    # cancels the provisioning-is-independent-of-entitlement rule above for
+    # exactly this class: a tagalong never gets a Seerr account, not even a
+    # disabled stage-1 one. Revocation branches below are deliberately
+    # UNCHANGED — when the household lapses, the tagalong is reduced right
+    # alongside the payer, which is the coupling the flag exists to express.
+    tagalong = household.is_plex_only(email)
+    if tagalong:
+        provision = None
+
     # --- no answer: freeze -------------------------------------------------
     if answer is None or not answer.answered:
         why = answer.error if answer is not None else "no lookup performed"
@@ -439,7 +450,12 @@ def plan_for_share(
     # --- entitled ----------------------------------------------------------
     if answer.grants:
         acct = state.accounts.get(email.lower())
-        want_perms = (acct.seerr_perms_prior if acct and acct.seerr_perms_prior
+        # Tagalongs are pinned to DISABLED regardless of any recorded prior:
+        # a perms_prior can only exist from before the account was marked
+        # plex_only, and restoring it would re-grant the exact access the
+        # flag withdraws.
+        want_perms = (SU.PERMISSIONS_DISABLED if tagalong
+                      else acct.seerr_perms_prior if acct and acct.seerr_perms_prior
                       else member_permissions)
         plex_target = (sorted(full_ids)
                        if set(share.section_ids) != set(full_ids) else None)
@@ -473,7 +489,8 @@ def plan_for_share(
         return Plan(email=email, state=S_ENTITLED, household_id=hid, holder=holder,
                     plex_target=plex_target, seerr_target=seerr_target,
                     provision_plex_id=provision, alert=grant_alert,
-                    reason="entitled; %s" % (
+                    reason="entitled%s; %s" % (
+                        " (plex-only tagalong)" if tagalong else "",
                         grant_alert if grant_alert else
                         "already at full access" if not (plex_target or seerr_target)
                         else "raising to full access"))

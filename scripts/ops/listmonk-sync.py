@@ -160,7 +160,40 @@ def fetch_seerr_users():
     return out
 
 
+def plex_only_exclusions():
+    """Tagalong (+1) accounts ride a household's Plex share ONLY (operator
+    directive 2026-08-16) — they never get newsletter-subscribed. Read from
+    the same roster the entitlement gate enforces (~/secrets/members.yaml,
+    mapping-form accounts with plex_only: true) so the policy lives in
+    exactly one file. RAISES on any failure — the caller aborts the run.
+    Fail CLOSED here, unlike everywhere else in this file (adversarial
+    review 2026-08-16): this sync NEVER removes a subscriber, so a single
+    unfiltered run on a bad roster read subscribes a tagalong PERMANENTLY.
+    A skipped nightly is retried tomorrow; an unfiltered one cannot be
+    taken back.
+    """
+    import yaml
+    with open(os.path.join(SECRETS, "members.yaml"), encoding="utf-8") as f:
+        d = yaml.safe_load(f)
+    out = set()
+    for h in (d or {}).get("households") or []:
+        for a in h.get("accounts") or []:
+            if isinstance(a, dict) and a.get("plex_only") and isinstance(a.get("email"), str):
+                out.add(a["email"].strip().lower())
+    return out
+
+
 def main() -> int:
+    # Exclusions FIRST, before any source is touched: if they cannot be
+    # determined, no upsert may happen this run (see plex_only_exclusions).
+    try:
+        skip = plex_only_exclusions()
+    except Exception as e:
+        print(f"  ! cannot read plex_only exclusions from members.yaml ({e}); "
+              f"ABORTING before any subscribe - this sync never removes, so "
+              f"an unfiltered run is permanent", file=sys.stderr)
+        return 1
+
     list_id = int(s("listmonk.list_id"))
     existing = fetch_subscribers_by_email()
     print(f"snapshot: {len(existing)} existing subscribers (target list_id={list_id})", file=sys.stderr)
@@ -179,7 +212,9 @@ def main() -> int:
             print(f"  ! {tag} fetch failed: {e}", file=sys.stderr)
             deltas["errors"] += 1
             continue
-        print(f"  {tag}: {len(users)} users with email", file=sys.stderr)
+        nskip = sum(1 for e2, _ in users if e2.strip().lower() in skip)
+        users = [(e2, n) for e2, n in users if e2.strip().lower() not in skip]
+        print(f"  {tag}: {len(users)} users with email" + (f" ({nskip} plex_only tagalong(s) skipped)" if nskip else ""), file=sys.stderr)
         for email, name in users:
             try:
                 action = upsert(email, name, list_id, tag, existing)
