@@ -118,9 +118,7 @@ Test-Case 'rules actually suppress the log lines they were written for' {
         @{ id = 'tdarr-handbrake-binary-test'
            hay = '[2026-08-16T01:00:05.302] [ERROR] Tdarr_Node - Binary test 1: handbrakePath not working' },
         @{ id = 'seerr-plex-scan-tvdbid-collision'
-           hay = 'SQLITE_CONSTRAINT: UNIQUE constraint failed: media.tvdbId' },
-        @{ id = 'calibre-web-pywsgi-probe-garbage'
-           hay = "[2026-08-16 03:28:19,908] ERROR {pywsgi.py:1353} <gevent._socket3.socket ...>: (from ('::ffff:86.57.254.1', 6316, 0, 0)) Invalid HTTP method: 'x'" }
+           hay = 'SQLITE_CONSTRAINT: UNIQUE constraint failed: media.tvdbId' }
     )
     foreach ($c in $cases) {
         Assert-True ($c.hay -match $rules[$c.id]) "'$($c.id)' matches its canonical log line"

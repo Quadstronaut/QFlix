@@ -27,10 +27,12 @@
 #
 # GENERATED FILES
 # Some deployed scripts are legitimately produced ON the box by an installer
-# heredoc rather than copied from git (library-rescan-comics.sh is written by
-# configure/24-wire-rescan-callbacks.sh and wired into an *arr's extra_scripts).
-# Those are declared below. The list is deliberately explicit and short: an
-# exemption is how a real drift hides, so each entry names its generator.
+# heredoc rather than copied from git. Those get declared in is_generated below.
+# The list is deliberately explicit: an exemption is how a real drift hides, so
+# each entry must name its generator. As of 2026-08-16 the list is EMPTY -- its
+# only member was a rescan helper generated for the books stack, and both it and
+# its generator were deleted when that stack was decommissioned. An exemption
+# outliving the file it excused is itself a hiding place, so it went too.
 #
 # Stage labels (stderr -> Kuma msg=):
 #   src-missing        the source checkout is absent or not a git repo
@@ -54,7 +56,7 @@ REF=${QFLIX_DRIFT_REF:-origin/master}
 # writes it. Not a convenience list -- anything added here stops being checked.
 is_generated() {
   case "$1" in
-    post-import/library-rescan-comics.sh) return 0 ;;  # configure/24-wire-rescan-callbacks.sh heredoc
+    # (empty -- see GENERATED FILES above; add entries as "path) return 0 ;;  # generator")
     *) return 1 ;;
   esac
 }

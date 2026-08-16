@@ -70,8 +70,11 @@ tautulli_port="$(discover_port_via_nginx tautulli)"
 # Ombi capture removed 2026-05-15 (purged 2026-05-11). Seerr is the
 # canonical requester now — captured below.
 
-# Seerr / Maintainerr / etc — may not be installed; capture port if nginx has it
-for app in seerr flaresolverr unpackerr uptimekuma komga kavita calibre-web audiobookshelf; do
+# Seerr / etc — may not be installed; capture port if nginx has it.
+# The four books-stack apps were dropped from this loop 2026-08-16 when they
+# were decommissioned; their nginx proxy.d confs are gone, so discovery here
+# would find nothing anyway.
+for app in seerr flaresolverr unpackerr uptimekuma; do
   port="$(discover_port_via_nginx "$app")"
   [ -n "$port" ] && secret_write "$app.port" "$port"
 done
