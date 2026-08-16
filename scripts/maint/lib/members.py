@@ -139,7 +139,18 @@ class Household:
     reason: Optional[str] = None
     billing: Optional[Billing] = None
     provisional: bool = False
+    # Tagalong (+1) accounts, lowercased. A plex_only account rides this
+    # household's entitlement for the PLEX SHARE ONLY — no Seerr account is
+    # ever provisioned for it, no Seerr permissions are ever raised, and the
+    # newsletter sync skips it (operator directive 2026-08-16: "+1 accounts
+    # do not get access to anything but plex - they're just tagalongs").
+    # Revocation is unchanged: when the household lapses, tagalongs are
+    # reduced right alongside the payer — that coupling is the point.
+    plex_only_emails: frozenset = field(default_factory=frozenset)
     raw: dict = field(default_factory=dict, repr=False)
+
+    def is_plex_only(self, email: str) -> bool:
+        return email.lower() in self.plex_only_emails
 
     @property
     def resolved(self) -> bool:
@@ -267,7 +278,31 @@ def load(path: Path) -> Roster:
         _require(isinstance(accounts, list) and accounts,
                  "members.yaml: household %r has no accounts" % hid)
         norm: List[str] = []
+        plex_only: set = set()
         for a in accounts:
+            if isinstance(a, dict):
+                # Mapping form, added 2026-08-16 for tagalong (+1) accounts:
+                #   - email: someone@example.com
+                #     plex_only: true
+                # The plain-string form stays the common case. Unknown keys
+                # are refused, not ignored — a typo like `plexonly:` would
+                # otherwise silently grant the full-member treatment this
+                # form exists to withhold.
+                email_v = a.get("email")
+                _require(isinstance(email_v, str) and "@" in email_v,
+                         "members.yaml: household %r has a mapping account "
+                         "with no valid `email`" % hid)
+                po = a.get("plex_only", False)
+                _require(isinstance(po, bool),
+                         "members.yaml: household %r account %s `plex_only` "
+                         "must be true or false, got %r" % (hid, email_v, po))
+                unknown = set(a) - {"email", "plex_only", "note"}
+                _require(not unknown,
+                         "members.yaml: household %r account %s carries "
+                         "unknown key(s) %s" % (hid, email_v, sorted(unknown)))
+                if po:
+                    plex_only.add(email_v.lower())
+                a = email_v
             _require(isinstance(a, str) and "@" in a,
                      "members.yaml: household %r has a non-email account %r" % (hid, a))
             low = a.lower()
@@ -320,6 +355,25 @@ def load(path: Path) -> Roster:
                  "block. Every household is either comped or paying; there is "
                  "no third state." % hid)
 
+        # The payer cannot be a tagalong on their own bill. Both readings of
+        # "the holder is plex_only" are defensible (payer wants no Seerr vs.
+        # data error), which is exactly why the file may not say it — a payer
+        # who genuinely wants nothing but Plex still gets the full-member
+        # TREATMENT and simply never logs into Seerr.
+        _require(not (billing is not None and billing.holder.lower() in plex_only),
+                 "members.yaml: household %r marks its own billing.holder "
+                 "plex_only. The payer is a full member by definition; "
+                 "plex_only is for +1 tagalong accounts only." % hid)
+
+        # Exempt households cannot carry the flag either: the exempt branch
+        # returns before plex_only is ever consulted, so the flag would be a
+        # silent no-op — and a no-op with two readings (data error vs. an
+        # operator believing it restricts something) may not be written down.
+        _require(not (exempt and plex_only),
+                 "members.yaml: household %r is exempt AND marks account(s) "
+                 "plex_only. Exempt already means hand-managed and "
+                 "never-provisioned; the flag would do nothing there." % hid)
+
         households.append(Household(
             id=hid,
             display=row.get("display") or hid,
@@ -328,6 +382,7 @@ def load(path: Path) -> Roster:
             reason=row.get("reason"),
             billing=billing,
             provisional=bool(provisional),
+            plex_only_emails=frozenset(plex_only),
             raw=row,
         ))
 

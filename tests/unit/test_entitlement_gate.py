@@ -77,9 +77,11 @@ def share(email="member@example.com", sections=None, accepted=True, user_id=7001
     )
 
 
-def household(hid="h1", exempt=False, holder="pays@example.com", accounts=None):
+def household(hid="h1", exempt=False, holder="pays@example.com", accounts=None,
+              plex_only=()):
     billing = None if exempt else MEM_Billing(holder)
-    return MEM_Household(hid, exempt, accounts or ["member@example.com"], billing)
+    return MEM_Household(hid, exempt, accounts or ["member@example.com"], billing,
+                         plex_only=plex_only)
 
 
 class MEM_Billing:
@@ -91,13 +93,17 @@ class MEM_Billing:
 
 
 class MEM_Household:
-    def __init__(self, hid, exempt, accounts, billing):
+    def __init__(self, hid, exempt, accounts, billing, plex_only=()):
         self.id = hid
         self.exempt = exempt
         self.accounts = accounts
         self.billing = billing
         self.reason = "test"
         self.display = hid
+        self.plex_only_emails = frozenset(e.lower() for e in plex_only)
+
+    def is_plex_only(self, email):
+        return email.lower() in self.plex_only_emails
 
 
 def answer(verdict, **kw):
@@ -278,6 +284,72 @@ def test_expired_reduces_to_welcome_and_disables_seerr(tmp_path):
     assert p.state == G.S_EXPIRED
     assert p.plex_target == MINIMUM
     assert p.seerr_target == SU.PERMISSIONS_DISABLED
+
+
+# ---------------------------------------------------------------------------
+# Plex-only tagalongs (+1 accounts) — operator directive 2026-08-16:
+# "the +1 accounts do not get access to anything but plex - they're just
+# tagalongs", and "stays live as long as [the payer's] account does".
+# ---------------------------------------------------------------------------
+
+TAGALONG_HH = dict(accounts=["member@example.com"],
+                   plex_only=["member@example.com"])
+
+
+def test_tagalong_entitled_gets_plex_but_is_never_provisioned_in_seerr(tmp_path):
+    """The Plex share rides the household's entitlement; the stage-1 Seerr
+    account every other accepted share gets is withheld for tagalongs."""
+    p = plan(household=household(**TAGALONG_HH), answer=answer(ENT.YES),
+             state=state_with(tmp_path), share=share(sections=MINIMUM),
+             seerr_user=None)
+    assert p.state == G.S_ENTITLED
+    assert p.plex_target == sorted(FULL), "the tagalong's Plex share IS raised"
+    assert p.provision_plex_id is None, "no Seerr account is ever created"
+    assert p.seerr_target is None
+    assert "tagalong" in p.reason
+
+
+def test_tagalong_with_an_existing_seerr_account_is_floored_not_raised(tmp_path):
+    """If a Seerr account exists from before the flag, the grant branch pins it
+    to DISABLED instead of raising it — plex_only withdraws exactly that."""
+    p = plan(household=household(**TAGALONG_HH), answer=answer(ENT.YES),
+             state=state_with(tmp_path), share=share(sections=FULL),
+             seerr_user=seerr_user(perms=SU.MEMBER_PERMISSIONS))
+    assert p.state == G.S_ENTITLED
+    assert p.seerr_target == SU.PERMISSIONS_DISABLED
+
+
+def test_tagalong_prior_perms_are_not_restored(tmp_path):
+    """seerr_perms_prior can only predate the flag; restoring it would re-grant
+    the exact access plex_only withdraws."""
+    p = plan(household=household(**TAGALONG_HH), answer=answer(ENT.YES),
+             state=state_with(tmp_path, prior_perms=SU.MEMBER_PERMISSIONS),
+             share=share(sections=FULL),
+             seerr_user=seerr_user(perms=SU.MEMBER_PERMISSIONS))
+    assert p.seerr_target == SU.PERMISSIONS_DISABLED
+
+
+def test_tagalong_expires_right_alongside_the_payer(tmp_path):
+    """The coupling is the point: when the household lapses, the tagalong is
+    reduced exactly like the payer — same clocks, same floor."""
+    after = dt.datetime(2026, 9, 2, tzinfo=dt.timezone.utc)
+    p = plan(household=household(**TAGALONG_HH),
+             answer=answer(ENT.NO, status="former_patron"),
+             state=state_with(tmp_path), share=share(sections=FULL), now=after)
+    assert p.state == G.S_EXPIRED
+    assert p.plex_target == MINIMUM
+    assert p.provision_plex_id is None, "expiry must not provision a tagalong either"
+
+
+def test_a_full_member_in_the_same_household_is_unaffected_by_a_tagalong_sibling(tmp_path):
+    """The flag is per-ACCOUNT: the payer keeps full treatment."""
+    hh = household(accounts=["member@example.com", "plusone@example.com"],
+                   plex_only=["plusone@example.com"])
+    p = plan(household=hh, answer=answer(ENT.YES),
+             state=state_with(tmp_path), share=share(sections=MINIMUM),
+             seerr_user=seerr_user(perms=0))
+    assert p.state == G.S_ENTITLED
+    assert p.seerr_target == SU.MEMBER_PERMISSIONS, "non-tagalong sibling still raised"
 
 
 def test_never_seen_address_is_flagged_while_there_is_time_to_fix_it(tmp_path):
