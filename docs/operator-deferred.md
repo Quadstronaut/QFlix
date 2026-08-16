@@ -86,7 +86,7 @@ Every item is now asserted by machine on every smoke run:
 | Dashboard renders at root, tiles clickable | `mobile-ux` canary + `landing-page` smoke gate + `dash-asset-integrity` (asserts it can actually *hydrate*, which a human eyeball could not) |
 | Seerr request flow end-to-end | `movie` and `anime` canaries post a real request and wait for Plex availability |
 | Plex streaming a recent title | `plex-transcoder` canary probes the transcode endpoints |
-| Calibre-Web admin login | `calibre-web` app monitor (authenticated probe) |
+| Calibre-Web admin login | ~~`calibre-web` app monitor (authenticated probe)~~ — moot: Calibre-Web purged 2026-08-16 with the rest of the books stack |
 | Tautulli → Discord on Watched | `tautulli-plex-link` canary |
 
 ### Homarr `mediaReleases` widget — moot
@@ -98,7 +98,8 @@ Homarr was fully decommissioned 2026-07-13; the app no longer exists.
 ## Captured already (no operator action)
 
 All credentials are in `secrets/` and verified by the smoke test: Plex
-token/host/port, Seerr key, all five *arr keys, qBit credentials, Komga /
-Kavita / Audiobookshelf / Calibre-Web / Bazarr / Bazarr 2 / Tautulli keys,
-htpasswd password, Listmonk API user + token, Discord webhook + operator id,
-seedbox public FQDN and SSH host.
+token/host/port, Seerr key, all five *arr keys, qBit credentials, Bazarr /
+Bazarr 2 / Tautulli keys, htpasswd password, Listmonk API user + token,
+Discord webhook + operator id, seedbox public FQDN and SSH host. (The Komga /
+Kavita / Audiobookshelf / Calibre-Web keys listed here until 2026-08-16 were
+purged with the books stack.)
