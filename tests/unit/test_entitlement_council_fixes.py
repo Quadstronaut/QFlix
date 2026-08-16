@@ -61,6 +61,10 @@ class _Household:
     billing = _Billing()
     reason = "test"
     display = "h"
+    plex_only_emails = frozenset()
+
+    def is_plex_only(self, email):
+        return email.lower() in self.plex_only_emails
 
 
 # ---------------------------------------------------------------------------
