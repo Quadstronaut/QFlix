@@ -656,6 +656,25 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # from a sparse-error file - whole-file grep needs the same date floor).
     $arrSite = 'grep -aE "\|(Error|Fatal)\|" "$f" | awk -v c="$FRESH_CUTOFF" "{ d=substr(\$0,1,10); if (d ~ /^[0-9]{4}-/ && d < c) next; print }" | tail -n 8'
     Assert-True ($h.Contains($arrSite)) 'arr Error/Fatal filter verbatim, before tail -8'
+    # plex_errors (2026-08-16: a 3.5-day-old Aug-12 EAE burst paged on Aug 15 -
+    # PMS rotates weekly, so the mtime gate alone admits up to 7 days of lines,
+    # and the model omitted `time` so the ps1 backstop failed open). PMS leads
+    # with a month-name date awk cannot compare lexically, so the fresh window
+    # is an enumerated alternation of FRESH_DAYS+1 zero-padded literal dates
+    # ("Aug 01, 2026" - verified zero-padded across every rotated log). The
+    # filter must sit BETWEEN the ERROR grep and the [logfile] sed prefix so
+    # the date stays at column 1, and unmatched date-shapes must pass (fail
+    # open).
+    $plexFreshDef = 'PLEX_FRESH=$(for i in $(seq 0 "$FRESH_DAYS"); do date -d "-$i days" "+%b %d, %Y"; done | paste -sd"|" -)'
+    Assert-True ($h.Contains($plexFreshDef)) 'plex fresh-date alternation derived from FRESH_DAYS'
+    # Empty-alternation guard (adversarial review 2026-08-16): PLEX_FRESH=""
+    # would make the rx "^() ", which matches NO real PMS line - every dated
+    # ERROR silently dropped, fail CLOSED. An empty awk dynamic regex matches
+    # everything, so an empty PLEX_RX must disable the drop branch instead.
+    $plexGuard = 'PLEX_RX=""; [ -n "$PLEX_FRESH" ] && PLEX_RX="^($PLEX_FRESH) "'
+    Assert-True ($h.Contains($plexGuard)) 'plex empty-alternation fail-open guard present'
+    $plexSite = 'grep -a " ERROR - " "$f" | awk -v rx="$PLEX_RX" "{ if ($0 ~ /^[A-Z][a-z]{2} [0-9]{2}, [0-9]{4} /) { if ($0 !~ rx) next } print }" | sed -e "s#^#[${f##*/}] #"'
+    Assert-True ($h.Contains($plexSite.Replace('$0','\$0'))) 'plex filter verbatim (between ERROR grep and sed prefix, date-shape fail-open)'
     Assert-True ($h -match 'BEGIN\{keep=1\}[\s\S]{0,120}\n\s*\| tail -n 120 \\\n') 'bazarr trims to 120 AFTER the filter'
     # Tdarr ordering: the filter must sit BETWEEN the [ERROR] grep and
     # tail -n 400, so stale lines cannot eat the 400-line window.
@@ -947,6 +966,184 @@ Test-Case 'every noise rule (including field-scoped ones) has an id and a compil
         Assert-True ([bool]$r.id) "rule has an id"
         [void][regex]::new($r.rx)
     }
+}
+
+# --- 2026-08-16: the two classes behind the 2026-08-15 twelve-field page ---
+# (four root causes; kometa + plex were config/staleness fixes, these two are
+# permanent-benign and get rules). Both are enrolled in
+# manifest/rea-noise-classes.yaml (segments 15 + 16) - C-07 pins parity.
+
+Test-Case 'Test-IsNoiseFinding suppresses the tdarr handbrakePath binary self-test' {
+    # Verbatim 2026-08-15 shape: fires daily at node start; HandBrakeCLI is
+    # absent + uninstallable on this slot (ruled 2026-07-28) and nothing here
+    # ever invokes it.
+    $f = @{
+        signature = 'tdarr:ffmpeg-binary-failure'
+        summary   = 'FFmpeg binary test failure'
+        excerpt   = '[2026-08-16T01:00:05.302] [ERROR] Tdarr_Node - Binary test 1: handbrakePath not working'
+    }
+    Assert-Equal 'tdarr-handbrake-binary-test' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'a tdarr ffmpegPath binary failure still pages' {
+    # ffmpeg is the binary every transcode and health check actually uses -
+    # its self-test failing is a REAL fault the handbrake rule must never eat.
+    $f = @{
+        signature = 'tdarr:ffmpeg-binary-failure'
+        summary   = 'FFmpeg binary test failure'
+        excerpt   = '[2026-08-16T01:00:05.302] [ERROR] Tdarr_Node - Binary test 2: ffmpegPath not working'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'ffmpegPath failure survives'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses the seerr media.tvdbId scan collision' {
+    # Verbatim 2026-08-15 shape: Plex item 7693 "Monster (2022)" carries three
+    # tmdb guids resolving to one tvdbId; media row 47 already exists and is
+    # available, so the sibling-guid insert fails once per full scan.
+    $f = @{
+        signature = 'seerr:sqlite-unique-failed'
+        summary   = 'SQLITE UNIQUE constraint failed'
+        excerpt   = '.366Z [error][Plex Scan]: Failed to process Plex media {"errorMessage":"SQLITE_CONSTRAINT: UNIQUE constraint failed: media.tvdbId","title":"Monster (2022)"}'
+    }
+    Assert-Equal 'seerr-plex-scan-tvdbid-collision' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'a seerr UNIQUE constraint on any OTHER column still pages' {
+    # The rule is anchored to the media.tvdbId column; a constraint failure on
+    # a different column/table is a genuine schema or data fault.
+    $f = @{
+        signature = 'seerr:sqlite-unique-failed'
+        summary   = 'SQLITE UNIQUE constraint failed'
+        excerpt   = 'SQLITE_CONSTRAINT: UNIQUE constraint failed: user.email'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'different-column constraint survives'
+}
+
+Test-Case 'an excerpt carrying BOTH the handbrake line and a REAL binary failure pages' {
+    # Adversarial review 2026-08-16: both binary tests fire from the SAME
+    # startup self-test and the tdarr collector uniq-collapses them into one
+    # section, so a real ffmpegPath failure lands NEXT TO the benign handbrake
+    # line - a model bundling both into one excerpt must not be eaten whole.
+    $f = @{
+        signature = 'tdarr:binary-tests-failing'
+        summary   = 'Tdarr node binary tests failing'
+        excerpt   = "[2026-08-16T01:00:05.302] [ERROR] Tdarr_Node - Binary test 1: handbrakePath not working`n[2026-08-16T01:00:05.400] [ERROR] Tdarr_Node - Binary test 2: ffmpegPath not working"
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'bundled real binary failure survives'
+}
+
+Test-Case 'an excerpt carrying BOTH the tvdbId line and another-column constraint pages' {
+    $f = @{
+        signature = 'seerr:sqlite-unique-failed'
+        summary   = 'Multiple SQLITE UNIQUE constraint failures'
+        excerpt   = "SQLITE_CONSTRAINT: UNIQUE constraint failed: media.tvdbId`nSQLITE_CONSTRAINT: UNIQUE constraint failed: user.email"
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'bundled different-column constraint survives'
+}
+
+Test-Case 'the 2026-08-16 rules are excerpt-scoped: a prose-only match cannot suppress' {
+    # A model summary naming the benign phrase while the excerpt shows a
+    # DIFFERENT tdarr fault must page - same prose-poisoning law as the
+    # bazarr-ratelimit and bare-stack-continuation rules.
+    $f = @{
+        signature = 'tdarr:log-write-edquot'
+        summary   = 'tdarr errors including handbrakePath not working and quota failures'
+        excerpt   = 'log4js.fileAppender - Writing to file Tdarr_Server_Log.txt, error happened [Error: Unknown system error -122, write]'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'summary-only phrase does not suppress an EDQUOT excerpt'
+}
+
+Test-Case 'remote heredoc is syntactically valid bash (bash -n)' {
+    # 2026-08-16: an apostrophe added to a COMMENT inside the single-quoted
+    # plex_errors bash -c body terminated the quote and killed the whole
+    # remote fetch (fail reason=ssh_fail, line-247 syntax error). Substring
+    # pins cannot catch quoting damage; a real bash parse can. GIT BASH
+    # EXPLICITLY, never `Get-Command bash`: on this box that resolves to
+    # System32 bash.exe (WSL), which cannot read C:/ paths and fails 127
+    # with the suite green-looking-red. Skips (counted) where Git Bash is
+    # absent.
+    $bashExe = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+    if (-not (Test-Path $bashExe)) {
+        Assert-True $true 'Git Bash not installed - syntax check skipped'
+    } else {
+        $h = Get-RemoteHeredoc
+        $tmp = Join-Path $env:TEMP "rea-heredoc-$(Get-Random).sh"
+        # WriteAllText default is UTF-8 WITHOUT BOM - the same bytes
+        # Invoke-RemoteFetch now streams.
+        [System.IO.File]::WriteAllText($tmp, $h)
+        # Git Bash mangles backslashed Windows paths; forward slashes work in
+        # both worlds. Native stderr under EAP=Stop becomes a terminating
+        # NativeCommandError in PS 5.1, so relax it around the invocation -
+        # the assertion is on the exit code, not the stream.
+        $tmpBash = $tmp -replace '\\', '/'
+        $prevEap = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & $bashExe -n $tmpBash 2>&1 | Out-Null
+            Assert-Equal 0 $LASTEXITCODE 'bash -n exits 0 on the generated heredoc'
+        } finally {
+            $ErrorActionPreference = $prevEap
+            Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Test-Case 'app_extra covers the file-only apps, originals first, per-line capped' {
+    # 2026-08-16 source audit: kavita/komga/calibre-web/listmonk/upgradinatorr/
+    # stream-stats log to files, never to the journal, and are absent from
+    # VictoriaLogs - before this they were reachable by NO source. The three
+    # original files must stay FIRST (collect caps with head -c, oldest bytes
+    # win, so list order is budget priority), and both loops must carry the
+    # per-line cut cap so one long JSON/traceback line cannot eat the section.
+    $h = Get-RemoteHeredoc
+    foreach ($p in @('kavita/logs/kavita*.log', 'komga/logs/komga.log',
+                     'calibre-web/calibre-web.log', 'listmonk/logs/listmonk.log',
+                     'listmonk/logs/sync.log', 'upgradinatorr/logs/*.log',
+                     'stream-stats/logs/kill_stream.log')) {
+        Assert-True ($h.Contains($p)) "app_extra lists $p"
+    }
+    Assert-True ($h.IndexOf('qflix-dash/logs/app.log') -lt $h.IndexOf('kavita/logs/kavita')) 'original files precede the 2026-08-16 additions'
+    Assert-True ($h.Contains('| grep -aiE "error|exception|fail|traceback" | cut -c1-200 | tail -n 40')) 'original loop per-line capped'
+    Assert-True ($h.Contains('printf "%s\n" "$T" | cut -c1-200 | tail -n 20')) 'new loop per-line capped'
+    Assert-True ($h.Contains('ls -t ~/.apps/kavita/logs/kavita*.log 2>/dev/null | head -1')) 'kavita picks only the newest dated log'
+}
+
+Test-Case 'system prompt carries the 2026-08-16 classes with their still-report carve-outs' {
+    $sp = Get-SystemPrompt
+    Assert-True ($sp.Contains('Binary test N: handbrakePath not working')) 'handbrake clause present'
+    Assert-True ($sp.Contains('ffmpegPath not working')) 'ffmpeg carve-out present'
+    Assert-True ($sp.Contains('UNIQUE constraint failed: media.tvdbId')) 'seerr clause present'
+    Assert-True ($sp -match '(?i)other seerr sqlite_constraint') 'other-column carve-out present'
+    Assert-True ($sp.Contains('{pywsgi.py:N}')) 'calibre-web pywsgi clause present'
+    Assert-True ($sp -match '(?i)traceback, database error or any other logger IS reportable') 'calibre-web carve-out present'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses calibre-web pywsgi probe garbage' {
+    # Verbatim live shape 2026-08-16: internet scanner throwing TLS bytes at
+    # the public plaintext port, one pywsgi ERROR per probe.
+    $f = @{
+        signature = 'calibre-web:invalid-http-method'
+        summary   = 'calibre-web receiving invalid HTTP requests'
+        excerpt   = "[2026-08-16 03:28:19,908] ERROR {pywsgi.py:1353} <gevent._socket3.socket at 0x7fb892c23d90 object, fd=13, family=10, type=1, proto=0>: (from ('::ffff:86.57.254.1', 6316, 0, 0)) Invalid HTTP method: '"
+    }
+    Assert-Equal 'calibre-web-pywsgi-probe-garbage' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'a real calibre-web fault is not eaten by the pywsgi probe rule' {
+    # A traceback / DB error carries neither the {pywsgi.py:N} tag nor the
+    # garbage tokens.
+    $f = @{
+        signature = 'calibre-web:db-error'
+        summary   = 'calibre-web database failure'
+        excerpt   = '[2026-08-16 04:00:00,001] ERROR {db.py:210} sqlite3.OperationalError: database is locked'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'genuine calibre-web fault survives'
+}
+
+Test-Case 'app_extra drops calibre-web probe garbage COUNTED, with the twin-rule census' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('CWEB_RX="\{pywsgi\.py:[0-9]+\}.*(Invalid HTTP method|Expected GET method|Invalid http version|Invalid HTTP version|Invalid request line)"')) 'input-drop regex verbatim'
+    Assert-True ($h.Contains('# collector-suppressed: file=calibre-web.log n=$ND pywsgi client-garbage probe lines (twin rule calibre-web-pywsgi-probe-garbage)')) 'suppression is counted, never silent'
 }
 
 # Summary

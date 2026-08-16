@@ -114,7 +114,13 @@ Test-Case 'rules actually suppress the log lines they were written for' {
         @{ id = 'indexer-severity-field-echo'
            hay = '{"severity": "error", "message": "no results"}' },
         @{ id = 'plex-client-abort-stream-write'
-           hay = 'Caught exception trying to stream file: write: protocol is shutdown (SSL routines)' }
+           hay = 'Caught exception trying to stream file: write: protocol is shutdown (SSL routines)' },
+        @{ id = 'tdarr-handbrake-binary-test'
+           hay = '[2026-08-16T01:00:05.302] [ERROR] Tdarr_Node - Binary test 1: handbrakePath not working' },
+        @{ id = 'seerr-plex-scan-tvdbid-collision'
+           hay = 'SQLITE_CONSTRAINT: UNIQUE constraint failed: media.tvdbId' },
+        @{ id = 'calibre-web-pywsgi-probe-garbage'
+           hay = "[2026-08-16 03:28:19,908] ERROR {pywsgi.py:1353} <gevent._socket3.socket ...>: (from ('::ffff:86.57.254.1', 6316, 0, 0)) Invalid HTTP method: 'x'" }
     )
     foreach ($c in $cases) {
         Assert-True ($c.hay -match $rules[$c.id]) "'$($c.id)' matches its canonical log line"
@@ -126,6 +132,16 @@ Test-Case 'rules actually suppress the log lines they were written for' {
         if ($id -eq 'bare-stack-continuation') { continue }  # excerpt-scoped, tested above
         Assert-True (-not ($real -match $rules[$id])) "'$id' does NOT suppress a disk-quota fault"
     }
+    # Near-miss guards for the 2026-08-16 classes: the sibling shapes that ARE
+    # real faults must not match.
+    Assert-True (-not ('Binary test 2: ffmpegPath not working' -match $rules['tdarr-handbrake-binary-test'])) "'tdarr-handbrake-binary-test' does NOT suppress an ffmpegPath failure"
+    Assert-True (-not ('SQLITE_CONSTRAINT: UNIQUE constraint failed: user.email' -match $rules['seerr-plex-scan-tvdbid-collision'])) "'seerr-plex-scan-tvdbid-collision' does NOT suppress another column"
+    # ...and the BUNDLED shapes (benign line + real sibling in one excerpt)
+    # must not match either - the sibling negative lookahead is the guard.
+    $bundledTdarr = "Binary test 1: handbrakePath not working`nBinary test 2: ffmpegPath not working"
+    Assert-True (-not ($bundledTdarr -match $rules['tdarr-handbrake-binary-test'])) "'tdarr-handbrake-binary-test' does NOT suppress a bundled ffmpegPath failure"
+    $bundledSeerr = "UNIQUE constraint failed: media.tvdbId`nUNIQUE constraint failed: user.email"
+    Assert-True (-not ($bundledSeerr -match $rules['seerr-plex-scan-tvdbid-collision'])) "'seerr-plex-scan-tvdbid-collision' does NOT suppress a bundled different-column failure"
 }
 
 Test-Case 'deadman reasons load' {
