@@ -106,7 +106,7 @@ class TestClassify:
 class TestProbe:
     """probe() runs subprocess and returns (classification, probe_op, raw_output)."""
 
-    def _run_probe(self, stdout_text, returncode=0, side_effect=None, probe_app="kavita"):
+    def _run_probe(self, stdout_text, returncode=0, side_effect=None, probe_app="sonarr"):
         cp = MagicMock()
         cp.stdout = stdout_text
         cp.returncode = returncode
@@ -123,9 +123,9 @@ class TestProbe:
         cp.stdout = GATED_OUTPUT
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
-            classification, probe_op, raw = probe(probe_app="kavita")
+            classification, probe_op, raw = probe(probe_app="sonarr")
         assert classification == "gated"
-        assert "kavita" in probe_op
+        assert "sonarr" in probe_op
         assert "start" in probe_op
 
     def test_probe_clear(self):
@@ -133,7 +133,7 @@ class TestProbe:
         cp.stdout = CLEAR_OUTPUT_TRUE
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
-            classification, probe_op, raw = probe(probe_app="kavita")
+            classification, probe_op, raw = probe(probe_app="sonarr")
         assert classification == "clear"
 
     def test_probe_empty_stdout_rc0_is_clear(self):
@@ -143,7 +143,7 @@ class TestProbe:
         cp.stdout = ""
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
-            classification, probe_op, raw = probe(probe_app="kavita")
+            classification, probe_op, raw = probe(probe_app="sonarr")
         assert classification == "clear"
 
     def test_probe_empty_stdout_nonzero_rc_is_probe_error(self):
@@ -151,17 +151,17 @@ class TestProbe:
         cp.stdout = ""
         cp.returncode = 1
         with patch("subprocess.run", return_value=cp):
-            classification, probe_op, raw = probe(probe_app="kavita")
+            classification, probe_op, raw = probe(probe_app="sonarr")
         assert classification == "probe-error"
 
     def test_probe_timeout_is_probe_error(self):
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="app-kavita start", timeout=15)):
-            classification, probe_op, raw = probe(probe_app="kavita")
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="app-sonarr start", timeout=15)):
+            classification, probe_op, raw = probe(probe_app="sonarr")
         assert classification == "probe-error"
 
     def test_probe_oserror_is_probe_error(self):
         with patch("subprocess.run", side_effect=OSError("command not found")):
-            classification, probe_op, raw = probe(probe_app="kavita")
+            classification, probe_op, raw = probe(probe_app="sonarr")
         assert classification == "probe-error"
 
     def test_probe_uses_probe_app_from_secret(self):
@@ -176,7 +176,7 @@ class TestProbe:
         cmd = call_args[0][0]
         assert "myapp" in cmd or any("myapp" in str(a) for a in cmd)
 
-    def test_probe_falls_back_to_kavita_when_no_secret(self):
+    def test_probe_falls_back_to_sonarr_when_no_secret(self):
         cp = MagicMock()
         cp.stdout = CLEAR_OUTPUT_TRUE
         cp.returncode = 0
@@ -185,7 +185,7 @@ class TestProbe:
             classification, probe_op, raw = probe()
         call_args = mock_run.call_args
         cmd = call_args[0][0]
-        assert "kavita" in cmd or any("kavita" in str(a) for a in cmd)
+        assert "sonarr" in cmd or any("sonarr" in str(a) for a in cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +201,7 @@ class TestStateReadWrite:
             "last_confirmed_at": "2026-05-24T23:55:00Z",
             "last_probe_at": "2026-05-24T23:55:00Z",
             "last_probe_result": "gated",
-            "probe_op": "app-kavita start",
+            "probe_op": "app-sonarr start",
             "consecutive_clear": 0,
             "consecutive_error": 0,
         }
@@ -253,7 +253,7 @@ class TestStateMachine:
         with patch("subprocess.run", return_value=cp) if not side_effect \
                 else patch("subprocess.run", side_effect=side_effect):
             with patch("lib.notify.notify", return_value=True) as mock_notify:
-                new_state = detect(state_path=state_path, probe_app="kavita")
+                new_state = detect(state_path=state_path, probe_app="sonarr")
         return new_state, mock_notify
 
     # --- clear → active (single gated probe triggers immediately) ---
@@ -296,7 +296,7 @@ class TestStateMachine:
             cp.returncode = 0
             with patch("subprocess.run", return_value=cp):
                 with patch("lib.notify.notify", return_value=True):
-                    state = detect(state_path=state_path, probe_app="kavita")
+                    state = detect(state_path=state_path, probe_app="sonarr")
             assert state["active"] is True, f"Should still be active after {i+1} clear(s)"
 
     def test_active_to_clear_after_debounce(self, tmp_path):
@@ -315,7 +315,7 @@ class TestStateMachine:
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", return_value=True) as mock_notify:
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert state["active"] is False
         # Counter resets to 0 after the flip (matches test_clear_resets_consecutive_clear_counter).
         assert state["consecutive_clear"] == 0
@@ -337,7 +337,7 @@ class TestStateMachine:
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", return_value=True):
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         # After flip, counter resets
         assert state["consecutive_clear"] == 0
 
@@ -362,7 +362,7 @@ class TestStateMachine:
             cp.returncode = 0
             with patch("subprocess.run", return_value=cp):
                 with patch("lib.notify.notify", return_value=True):
-                    state = detect(state_path=state_path, probe_app="kavita")
+                    state = detect(state_path=state_path, probe_app="sonarr")
             # error counter must reset on the first clear
             assert state["consecutive_error"] == 0
         assert state["active"] is False, "gate must clear after debounce of silent-success probes"
@@ -381,7 +381,7 @@ class TestStateMachine:
         write_state(state_path, initial)
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
             with patch("lib.notify.notify", return_value=True) as mock_notify:
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert state["active"] is True
         assert state["consecutive_error"] == 1
         # No edge transition → notify NOT called
@@ -393,7 +393,7 @@ class TestStateMachine:
         write_state(state_path, initial)
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
             with patch("lib.notify.notify", return_value=True) as mock_notify:
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert state["active"] is False
         assert state["consecutive_error"] == 1
         mock_notify.assert_not_called()
@@ -413,7 +413,7 @@ class TestStateMachine:
         write_state(state_path, initial)
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
             with patch("lib.notify.notify", return_value=True) as mock_notify:
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert state["active"] is True
         assert state["consecutive_error"] == UCC_PROBE_ERROR_CAP - 1
         mock_notify.assert_not_called()
@@ -434,7 +434,7 @@ class TestStateMachine:
         write_state(state_path, initial)
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
             with patch("lib.notify.notify", return_value=True) as mock_notify:
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert state["active"] is False
         assert state["consecutive_error"] == UCC_PROBE_ERROR_CAP
         # Fail-open IS an edge — operator must be notified it happened.
@@ -452,7 +452,7 @@ class TestStateMachine:
         write_state(state_path, initial)
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
             with patch("lib.notify.notify", return_value=True) as mock_notify:
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert state["active"] is False
         assert state["consecutive_error"] == UCC_PROBE_ERROR_CAP + 11
         mock_notify.assert_not_called()
@@ -473,7 +473,7 @@ class TestStateMachine:
         write_state(state_path, initial)
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
             with patch("lib.notify.notify", return_value=True):
-                detect(state_path=state_path, probe_app="kavita")
+                detect(state_path=state_path, probe_app="sonarr")
         log_path = tmp_path / "ucc-transitions.jsonl"
         assert log_path.exists()
         lines = log_path.read_text(encoding="utf-8").strip().splitlines()
@@ -495,7 +495,7 @@ class TestStateMachine:
         write_state(state_path, initial)
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
             with patch("lib.notify.notify", return_value=True) as mock_notify:
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert state["active"] is False
         assert state["consecutive_error"] == UCC_PROBE_ERROR_CAP
         mock_notify.assert_not_called()
@@ -513,7 +513,7 @@ class TestStateMachine:
         write_state(state_path, initial)
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
             with patch("lib.notify.notify", return_value=True):
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert state["consecutive_clear"] == 2  # unchanged
 
     def test_gated_resets_consecutive_clear_counter(self, tmp_path):
@@ -532,7 +532,7 @@ class TestStateMachine:
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", return_value=True) as mock_notify:
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert state["active"] is True
         assert state["consecutive_clear"] == 0
         # No edge (still active) → no notify
@@ -549,7 +549,7 @@ class TestStateMachine:
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", return_value=True):
                 # Must not crash
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert isinstance(state, dict)
         assert state["active"] is True
 
@@ -560,7 +560,7 @@ class TestStateMachine:
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", return_value=True):
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert isinstance(state, dict)
         assert state["active"] is False
 
@@ -577,7 +577,7 @@ class TestStateMachine:
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", return_value=True):
-                detect(state_path=state_path, probe_app="kavita")
+                detect(state_path=state_path, probe_app="sonarr")
         log_path = tmp_path / "ucc-transitions.jsonl"
         assert log_path.exists(), "Transitions log must be created on edge"
         lines = log_path.read_text(encoding="utf-8").strip().splitlines()
@@ -600,7 +600,7 @@ class TestStateMachine:
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", return_value=True):
-                detect(state_path=state_path, probe_app="kavita")
+                detect(state_path=state_path, probe_app="sonarr")
         log_path = tmp_path / "ucc-transitions.jsonl"
         if log_path.exists():
             content = log_path.read_text(encoding="utf-8").strip()
@@ -618,7 +618,7 @@ class TestStateMachine:
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", side_effect=Exception("discord exploded")):
                 # Must not crash even if notify raises
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         # State was still written
         on_disk = read_state(state_path)
         assert on_disk["active"] is True
@@ -634,7 +634,7 @@ class TestStateMachine:
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", return_value=True):
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert "last_probe_at" in state
         assert state["last_probe_at"].endswith("Z")
 
@@ -653,7 +653,7 @@ class TestStateMachine:
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", return_value=True):
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         # last_confirmed_at should be updated on a gated probe while active
         assert state["last_confirmed_at"] != "2026-05-24T22:00:00Z"
 
@@ -666,6 +666,6 @@ class TestStateMachine:
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp):
             with patch("lib.notify.notify", return_value=True):
-                state = detect(state_path=state_path, probe_app="kavita")
+                state = detect(state_path=state_path, probe_app="sonarr")
         assert "probe_op" in state
-        assert "kavita" in state["probe_op"]
+        assert "sonarr" in state["probe_op"]

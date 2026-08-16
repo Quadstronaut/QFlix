@@ -49,6 +49,57 @@ components:
       deleted with it). The mobile-ux canary was KEPT and now guards the dash.
     allow_paths: []
 
+  - id: books-stack
+    names: [kavita, komga, calibre-web, audiobookshelf]
+    retired: 2026-08-16
+    fully_removed: 2026-08-16
+    replaced_by: null
+    why: >-
+      The four reader apps (Kavita, Komga, Calibre-Web, Audiobookshelf) were
+      bulk-installed 2026-05-08 and never used. Every backing media directory
+      was still empty at retirement (~/media/{Books,Audiobooks,Comics,Manga,
+      Podcasts} = 4-8K apiece), so four services were being patched, probed,
+      monitored and paged on for zero readers. Operator ordered the purge.
+      Retired and fully removed the same day: manifest entries dropped and the
+      pusher restarted FIRST (so no probe outlived the port -- the ordering
+      Homarr got wrong in July, which cost a 31-alert storm), then the four
+      Kuma monitors deleted, then `app-<name> uninstall` on each, then crontab
+      /scripts/secrets/nginx-conf cleanup. Media files were left on disk.
+      NOTE: `lib/ucc.py`'s maintenance-gate detector probed `app-kavita start`
+      every 5 min; repointed kavita -> sonarr (secret `ucc.probe_app` plus
+      `_DEFAULT_PROBE_APP`) BEFORE the uninstall, or the gate would have gone
+      permanently probe-error and frozen every window-aware job behind it.
+    allow_paths:
+      - path: scripts/ops/decommission-books-2026-08-16.py
+        reason: >-
+          The decommission tool itself -- it deletes the four Kuma monitors and
+          must name them to do so. Retained rather than deleted, on the
+          maintainerr precedent, so the removal stays reproducible and
+          auditable.
+      - path: docs/secrets-convention.md
+        reason: >-
+          The secrets register carries a struck-through RETIRED row for the
+          purged `komga.*` / `kavita.*` / `audiobookshelf.*` / `calibre-web.*`
+          keys. A future operator finding one of those files on an old box
+          needs the register to say it is dead, not to stay silent about it.
+      - path: scripts/maint/lib/ucc.py
+        reason: >-
+          The probe-app default carries the kavita -> sonarr repoint in its
+          comment. Naming the app it moved off is the whole point of the note:
+          it tells the next reader WHY the default is not arbitrary and what
+          breaks if it is repointed at something else uninstallable.
+      - path: tests/unit/test_no_pii_in_repo.py
+        reason: >-
+          NOT a reference to our app. `audiobookshelf-username` is a whitelist
+          LABEL in the PII guard's vendor carve-out: Ultra.cc's own vendored
+          reference doc (docs/external/ultracc-reference.md, the Audiobookshelf
+          section) quotes a generic example URL built from that placeholder.
+          That file is third-party and deliberately unedited, so the label must
+          keep matching or the PII guard would start reporting the vendor's
+          placeholder as a leaked hostname. Deleting it would break a safety
+          test to satisfy a hygiene one. (The literal example URL is not
+          repeated here — this very ledger is scanned by that same guard.)
+
   - id: quadstronix
     names: [quadstronix]
     retired: 2026-07-16

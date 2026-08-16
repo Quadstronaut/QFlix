@@ -173,46 +173,28 @@ apps:
       port_secret: tautulli.port
       expect_status: 200
 
-  audiobookshelf:
-    class: ucc
-    ucc_slug: audiobookshelf
-    kuma_monitor: "Audiobookshelf"
-    health:
-      kind: http_root
-      port_secret: audiobookshelf.port
-      path_override: "/healthcheck"
-      expect_status: 200
-
-  kavita:
-    class: ucc
-    ucc_slug: kavita
-    kuma_monitor: "Kavita"
-    health:
-      kind: http_api
-      path_template: "/api/health"
-      auth_header: "Authorization"
-      auth_secret: kavita.key
-      port_secret: kavita.port
-      expect_status: 200
-
-  komga:
-    class: ucc
-    ucc_slug: komga
-    kuma_monitor: "Komga"
-    health:
-      kind: http_root
-      port_secret: komga.port
-      path_override: "/komga/"
-      expect_status: 200
-
-  calibre-web:
-    class: ucc
-    ucc_slug: calibre-web
-    kuma_monitor: "Calibre-Web"
-    health:
-      kind: http_root
-      port_secret: calibre-web.port
-      expect_status: 200
+  # BOOKS STACK (audiobookshelf, kavita, komga, calibre-web): DECOMMISSIONED
+  # 2026-08-16 — operator-ordered purge; nobody used any of the four. All were
+  # installed 2026-05-08 by scripts/install/15-bulk-books-comics.sh and never
+  # accumulated content (every media dir was still empty at retirement:
+  # ~/media/{Books,Audiobooks,Comics,Manga,Podcasts} = 4-8K apiece). Four Kuma
+  # monitors ("Audiobookshelf","Kavita","Komga","Calibre-Web") were REMOVED by
+  # scripts/ops/decommission-books-2026-08-16.py; all four UCC apps uninstalled;
+  # ~/secrets/{kavita,komga,audiobookshelf}.key + the four *.port secrets purged.
+  # ORDER WAS DELIBERATE: manifest entries removed and the pusher restarted
+  # BEFORE the uninstalls, so the probes were already gone when the ports died.
+  # (Homarr, below, was uninstalled first and produced a 31-alert storm.)
+  # Retired scripts: scripts/install/{15-bulk-books-comics.sh,
+  # 23-library-rescan-helper.sh}, scripts/configure/24-wire-rescan-callbacks.{sh,py},
+  # scripts/post-import/{prune-text-libraries.sh,library-rescan.sh,
+  # library-rescan-{kavita,komga,calibre-web,audiobookshelf,comics}.sh} - all removed - and the
+  # cron-prune-text-libraries job in manifest/jobs.yaml.
+  # PROBE REPOINT: lib/ucc.py's UCC maintenance-gate detector probed
+  # `app-kavita start` every 5 min; since kavita is retired it now probes
+  # sonarr instead (secret ~/secrets/ucc.probe_app + _DEFAULT_PROBE_APP),
+  # changed BEFORE the uninstall — otherwise the gate detector would have gone
+  # permanently probe-error and frozen every window-aware job behind it.
+  # Media files were left on disk untouched.
 
   # homarr: DECOMMISSIONED 2026-07-13 — fully uninstalled (app-homarr +
   # app-homarr-upstream), replaced as the public root by qflix-dash on

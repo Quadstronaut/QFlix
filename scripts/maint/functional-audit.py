@@ -241,7 +241,7 @@ def main():
     # (replaced by scripts/maint/qflix-reaper.py). The reaper self-pushes the
     # "QFlix Reaper" Kuma monitor; there is no HTTP feature surface to probe.
 
-    section("PLEX-ADJACENT (Tautulli / Seerr / Audiobookshelf / Kavita / Komga / Calibre-Web / FlareSolverr)")
+    section("PLEX-ADJACENT (Tautulli / Seerr / FlareSolverr)")
     # Tautulli — api_v2 with api_key
     tp = _read("tautulli.port")
     if not tp:
@@ -297,40 +297,10 @@ def main():
         except Exception:
             row("seerr users", code, "")
 
-    # Audiobookshelf
-    ap = _read("audiobookshelf.port")
-    akey = _read("audiobookshelf.key")
-    if ap and akey:
-        ah = {"Authorization": f"Bearer {akey}"}
-        code, body = _get(f"http://127.0.0.1:{ap}/api/libraries", ah)
-        try:
-            d = json.loads(body) if code == 200 else {}
-            libs = d.get("libraries", [])
-            row("audiobookshelf libs", code, f"libs={len(libs)} titles={[l.get('name') for l in libs[:4]]}")
-        except Exception:
-            row("audiobookshelf libs", code, body[:60])
-
-    # Kavita — bearer in /api/Auth/login first
-    kvp = _read("kavita.port")
-    if kvp:
-        code, body = _get(f"http://127.0.0.1:{kvp}/api/health")
-        row("kavita /api/health", code, body[:40])
-
-    # Komga
-    kgp = _read("komga.port")
-    if kgp:
-        code, body = _get(f"http://127.0.0.1:{kgp}/actuator/health")
-        try:
-            d = json.loads(body) if code == 200 else {}
-            row("komga actuator", code, f"status={d.get('status', '?')}")
-        except Exception:
-            row("komga actuator", code, body[:40])
-
-    # Calibre-Web — port-only check (no API)
-    cwp = _read("calibre-web.port")
-    if cwp:
-        code, body = _get(f"http://127.0.0.1:{cwp}/")
-        row("calibre-web /", code, "(login page)" if "login" in body.lower() else body[:40])
+    # BOOKS STACK section removed 2026-08-16 — the four reader apps were
+    # decommissioned that day (operator-ordered purge; nothing used them). Their
+    # ports and API-key secrets are gone, so every probe here would have been a
+    # permanent no-op guarded by an empty _read().
 
     # Homarr — DECOMMISSIONED 2026-07-13 (uninstalled, replaced by qflix-dash).
 
