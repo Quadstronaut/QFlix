@@ -417,6 +417,87 @@ classes:
       external and equally cosmetic on a --no-update install.
     added: 2026-08-06
 
+  - id: tdarr-handbrake-binary-test
+    title: Tdarr node binary self-test failing on the absent HandBrakeCLI
+    rx: '(?is)\A(?!.*binary test \d+:\s*(?!handbrakepath\b)\S+ not working\b).*binary test \d+:\s*handbrakepath not working\b'
+    field: excerpt
+    prompt_clause: 'Binary test N: handbrakePath not working'
+    why: >-
+      The Tdarr node re-tests its configured binaries at every start (daily
+      01:00 UTC restart cycle - 111 occurrences in Tdarr_Node_Log.txt measured
+      2026-08-16) and HandBrakeCLI is absent AND uninstallable on this slot:
+      ruled 2026-07-28, the same day every library health check was forced to
+      ffmpegscan because handbrakescan is 100% dead here by design (see the
+      tdarr-healthcheck history - it ran silently broken for 68 days).
+      Permanent and cosmetic: no flow, no transcode and no health check
+      references HandBrake. Anchored to handbrakePath SPECIFICALLY - a
+      "Binary test N: ffmpegPath not working" line means the binary every
+      transcode actually uses is broken, which is a REAL fault and must still
+      page; the \d+ keeps the test number free so Tdarr renumbering its test
+      sequence cannot resurrect the class.
+      EXCERPT-SCOPED WITH A SIBLING LOOKAHEAD (adversarial review 2026-08-16,
+      first shape was a bare field-null phrase match): both binary tests fire
+      from the SAME startup self-test with an identical line template, and
+      the tdarr collector uniq-collapses them into the same section, so a
+      real ffmpegPath failure is structurally guaranteed to sit NEXT TO the
+      benign handbrake line - exactly when a model bundles both into one
+      excerpt, which a field-null rule would then eat whole. The negative
+      lookahead declines the match when ANY other "Binary test N: <binary>
+      not working" shares the excerpt, and excerpt scoping keeps a model
+      prose summary from completing the match for an unrelated fault. Same
+      hazard class the arr-parsing/arr-debug rules already paid down.
+    added: 2026-08-16
+
+  - id: seerr-plex-scan-tvdbid-collision
+    title: Seerr Plex-scan UNIQUE constraint on media.tvdbId (multi-guid anthology)
+    rx: '(?is)\A(?!.*unique constraint failed:\s*(?!media\.tvdbid\b)\S+).*unique constraint failed:\s*media\.tvdbid\b'
+    field: excerpt
+    prompt_clause: 'UNIQUE constraint failed: media.tvdbId'
+    why: >-
+      Jellyseerr's Plex full scan processes each guid a Plex item carries; an
+      anthology show matched by the TMDB agent can carry SEVERAL tmdb guids
+      that all resolve to one tvdbId. Proven live 2026-08-16: Plex item 7693
+      "Monster (2022)" carries tmdb 113988 + 138807 + 225634 and tvdb 389492;
+      seerr media row id 47 (tmdbId 113988, tvdbId 389492, status 5 =
+      available) already exists, so the scan's insert for the sibling tmdb
+      guids fails the UNIQUE index once per full scan. Nothing is broken for
+      members - the item is tracked and available - and there is no local
+      lever: the guid set comes from Plex's TMDB agent and the insert is
+      upstream Jellyseerr code. Anchored to the media.tvdbId column so any
+      OTHER Seerr SQLITE_CONSTRAINT (a different column or table would be a
+      genuine schema/data fault) still pages - and, same adversarial-review
+      finding as the handbrake rule above, excerpt-scoped with a sibling
+      negative lookahead so an excerpt that ALSO carries a constraint
+      failure on a DIFFERENT column pages instead of being eaten together
+      with the benign tvdbId line. Seerr reaches REA only through the vlogs
+      source, whose 25-row batch can co-land multiple distinct constraint
+      failures from one scan burst.
+    added: 2026-08-16
+
+  - id: calibre-web-pywsgi-probe-garbage
+    title: calibre-web pywsgi ERROR lines from internet probes on the public port
+    rx: '(?i)\{pywsgi\.py:\d+\}.*(invalid http (method|version)|expected get method|invalid request line)'
+    field: null
+    prompt_clause: 'Invalid HTTP method'
+    why: >-
+      calibre-web listens on a PUBLIC Ultra.cc slot port
+      (169.150.251.170:42004) and gevent pywsgi logs one ERROR per malformed
+      request - TLS ClientHello bytes and fuzzer garbage thrown at the
+      plaintext socket by internet scanners, measured 2026-08-16 at ~1 line
+      per 2 minutes from scanner IPs (e.g. 86.57.254.1 walking sequential
+      source ports). External and cosmetic: the app is healthy and every
+      route sits behind auth; there is nothing to fix on a port the platform
+      exposes by design. Enrolled together with the app_extra collector
+      widening that first made these lines reachable at all - suppression
+      shipped WITH the coverage, so the new source never produced a standing
+      false page. INPUT half is the counted app_extra drop (census line
+      "# collector-suppressed: file=calibre-web.log ..."); this rule is the
+      OUTPUT backstop, same two-surface contract as the plex_errors classes.
+      Anchored to the brace-form "{pywsgi.py:N}" logger tag PLUS the exact
+      garbage tokens, so a genuine calibre-web fault - a Python traceback, a
+      database error, any other logger - matches neither and still pages.
+    added: 2026-08-16
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -468,6 +549,15 @@ prompt_segments:
   - index: 14
     marker: 'Bazarr "Error trying to get releases from Github" GitHub API rate-limit failures'
     classes: [bazarr-github-release-check-ratelimit]
+  - index: 15
+    marker: 'Tdarr node "Binary test N: handbrakePath not working" lines'
+    classes: [tdarr-handbrake-binary-test]
+  - index: 16
+    marker: 'Seerr/Jellyseerr Plex-scan "UNIQUE constraint failed: media.tvdbId" lines'
+    classes: [seerr-plex-scan-tvdbid-collision]
+  - index: 17
+    marker: 'calibre-web pywsgi "{pywsgi.py:N}" ERROR lines'
+    classes: [calibre-web-pywsgi-probe-garbage]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
