@@ -7,7 +7,7 @@ pin Kuma incidents, or run heals.
 Probe
 -----
 Runs `app-<probe_app> start` via subprocess (timeout 15s). probe_app
-resolves from secret `ucc.probe_app` → fallback `kavita`.
+resolves from secret `ucc.probe_app` → fallback `sonarr`.
 
 Classification
 --------------
@@ -74,8 +74,12 @@ UCC_PROBE_ERROR_CAP: int = 3
 # Probe subprocess timeout in seconds.
 _PROBE_TIMEOUT_S: int = 15
 
-# Default probe app when the secret is not set.
-_DEFAULT_PROBE_APP: str = "kavita"
+# Default probe app when the secret is not set. kavita was decommissioned
+# 2026-08-16 with the rest of the books stack, so this repointed to sonarr. The
+# probe only needs an app the lifecycle CLI knows about, and sonarr is
+# load-bearing enough that it will never be the next thing uninstalled out from
+# under this detector.
+_DEFAULT_PROBE_APP: str = "sonarr"
 
 # State file name (under MANITOBA_STATE_DIR).
 _STATE_FILE = "ucc-window.json"

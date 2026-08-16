@@ -1060,10 +1060,17 @@ Test-Case 'remote heredoc is syntactically valid bash (bash -n)' {
     # pins cannot catch quoting damage; a real bash parse can. GIT BASH
     # EXPLICITLY, never `Get-Command bash`: on this box that resolves to
     # System32 bash.exe (WSL), which cannot read C:/ paths and fails 127
-    # with the suite green-looking-red. Skips (counted) where Git Bash is
-    # absent.
-    $bashExe = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
-    if (-not (Test-Path $bashExe)) {
+    # with the suite green-looking-red. Candidate list, not one pinned
+    # path: the operator workstation runs scoop-managed Git, so the
+    # Program Files pin silently skipped this test on the ONE machine the
+    # ps1 actually runs on (caught 2026-08-16). Skips (counted) only when
+    # no candidate exists.
+    $bashExe = @(
+        (Join-Path $env:USERPROFILE 'scoop\apps\git\current\bin\bash.exe'),
+        (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe')
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $bashExe) {
         Assert-True $true 'Git Bash not installed - syntax check skipped'
     } else {
         $h = Get-RemoteHeredoc
@@ -1089,23 +1096,24 @@ Test-Case 'remote heredoc is syntactically valid bash (bash -n)' {
 }
 
 Test-Case 'app_extra covers the file-only apps, originals first, per-line capped' {
-    # 2026-08-16 source audit: kavita/komga/calibre-web/listmonk/upgradinatorr/
-    # stream-stats log to files, never to the journal, and are absent from
-    # VictoriaLogs - before this they were reachable by NO source. The three
-    # original files must stay FIRST (collect caps with head -c, oldest bytes
-    # win, so list order is budget priority), and both loops must carry the
-    # per-line cut cap so one long JSON/traceback line cannot eat the section.
+    # 2026-08-16 source audit: listmonk/upgradinatorr/stream-stats log to files,
+    # never to the journal, and are absent from VictoriaLogs - before this they
+    # were reachable by NO source. The three original files must stay FIRST
+    # (collect caps with head -c, oldest bytes win, so list order is budget
+    # priority), and both loops must carry the per-line cut cap so one long
+    # JSON/traceback line cannot eat the section.
+    # The kavita/komga/calibre-web pins that shipped with this case were removed
+    # the same day, when the books stack was decommissioned 2026-08-16: asserting
+    # a collector reads a log directory that no longer exists is a false pin.
     $h = Get-RemoteHeredoc
-    foreach ($p in @('kavita/logs/kavita*.log', 'komga/logs/komga.log',
-                     'calibre-web/calibre-web.log', 'listmonk/logs/listmonk.log',
-                     'listmonk/logs/sync.log', 'upgradinatorr/logs/*.log',
+    foreach ($p in @('listmonk/logs/listmonk.log', 'listmonk/logs/sync.log',
+                     'upgradinatorr/logs/*.log',
                      'stream-stats/logs/kill_stream.log')) {
         Assert-True ($h.Contains($p)) "app_extra lists $p"
     }
-    Assert-True ($h.IndexOf('qflix-dash/logs/app.log') -lt $h.IndexOf('kavita/logs/kavita')) 'original files precede the 2026-08-16 additions'
+    Assert-True ($h.IndexOf('qflix-dash/logs/app.log') -lt $h.IndexOf('listmonk/logs/listmonk.log')) 'original files precede the 2026-08-16 additions'
     Assert-True ($h.Contains('| grep -aiE "error|exception|fail|traceback" | cut -c1-200 | tail -n 40')) 'original loop per-line capped'
     Assert-True ($h.Contains('printf "%s\n" "$T" | cut -c1-200 | tail -n 20')) 'new loop per-line capped'
-    Assert-True ($h.Contains('ls -t ~/.apps/kavita/logs/kavita*.log 2>/dev/null | head -1')) 'kavita picks only the newest dated log'
 }
 
 Test-Case 'system prompt carries the 2026-08-16 classes with their still-report carve-outs' {
@@ -1114,36 +1122,6 @@ Test-Case 'system prompt carries the 2026-08-16 classes with their still-report 
     Assert-True ($sp.Contains('ffmpegPath not working')) 'ffmpeg carve-out present'
     Assert-True ($sp.Contains('UNIQUE constraint failed: media.tvdbId')) 'seerr clause present'
     Assert-True ($sp -match '(?i)other seerr sqlite_constraint') 'other-column carve-out present'
-    Assert-True ($sp.Contains('{pywsgi.py:N}')) 'calibre-web pywsgi clause present'
-    Assert-True ($sp -match '(?i)traceback, database error or any other logger IS reportable') 'calibre-web carve-out present'
-}
-
-Test-Case 'Test-IsNoiseFinding suppresses calibre-web pywsgi probe garbage' {
-    # Verbatim live shape 2026-08-16: internet scanner throwing TLS bytes at
-    # the public plaintext port, one pywsgi ERROR per probe.
-    $f = @{
-        signature = 'calibre-web:invalid-http-method'
-        summary   = 'calibre-web receiving invalid HTTP requests'
-        excerpt   = "[2026-08-16 03:28:19,908] ERROR {pywsgi.py:1353} <gevent._socket3.socket at 0x7fb892c23d90 object, fd=13, family=10, type=1, proto=0>: (from ('::ffff:86.57.254.1', 6316, 0, 0)) Invalid HTTP method: '"
-    }
-    Assert-Equal 'calibre-web-pywsgi-probe-garbage' (Test-IsNoiseFinding $f) 'matched by rule id'
-}
-
-Test-Case 'a real calibre-web fault is not eaten by the pywsgi probe rule' {
-    # A traceback / DB error carries neither the {pywsgi.py:N} tag nor the
-    # garbage tokens.
-    $f = @{
-        signature = 'calibre-web:db-error'
-        summary   = 'calibre-web database failure'
-        excerpt   = '[2026-08-16 04:00:00,001] ERROR {db.py:210} sqlite3.OperationalError: database is locked'
-    }
-    Assert-Equal $null (Test-IsNoiseFinding $f) 'genuine calibre-web fault survives'
-}
-
-Test-Case 'app_extra drops calibre-web probe garbage COUNTED, with the twin-rule census' {
-    $h = Get-RemoteHeredoc
-    Assert-True ($h.Contains('CWEB_RX="\{pywsgi\.py:[0-9]+\}.*(Invalid HTTP method|Expected GET method|Invalid http version|Invalid HTTP version|Invalid request line)"')) 'input-drop regex verbatim'
-    Assert-True ($h.Contains('# collector-suppressed: file=calibre-web.log n=$ND pywsgi client-garbage probe lines (twin rule calibre-web-pywsgi-probe-garbage)')) 'suppression is counted, never silent'
 }
 
 # Summary
