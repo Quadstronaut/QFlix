@@ -118,7 +118,9 @@ Test-Case 'rules actually suppress the log lines they were written for' {
         @{ id = 'tdarr-handbrake-binary-test'
            hay = '[2026-08-16T01:00:05.302] [ERROR] Tdarr_Node - Binary test 1: handbrakePath not working' },
         @{ id = 'seerr-plex-scan-tvdbid-collision'
-           hay = 'SQLITE_CONSTRAINT: UNIQUE constraint failed: media.tvdbId' }
+           hay = 'SQLITE_CONSTRAINT: UNIQUE constraint failed: media.tvdbId' },
+        @{ id = 'buildarr-unsupported-plex-notification'
+           hay = "buildarr_radarr.config.settings.notifications [WARNING] <radarr> (main) Unsupported remote notification connection 'Plex Media Server' with implementation 'PlexServer', ignoring" }
     )
     foreach ($c in $cases) {
         Assert-True ($c.hay -match $rules[$c.id]) "'$($c.id)' matches its canonical log line"
@@ -140,6 +142,7 @@ Test-Case 'rules actually suppress the log lines they were written for' {
     Assert-True (-not ($bundledTdarr -match $rules['tdarr-handbrake-binary-test'])) "'tdarr-handbrake-binary-test' does NOT suppress a bundled ffmpegPath failure"
     $bundledSeerr = "UNIQUE constraint failed: media.tvdbId`nUNIQUE constraint failed: user.email"
     Assert-True (-not ($bundledSeerr -match $rules['seerr-plex-scan-tvdbid-collision'])) "'seerr-plex-scan-tvdbid-collision' does NOT suppress a bundled different-column failure"
+    Assert-True (-not ("Unsupported remote notification connection 'Discord' with implementation 'DiscordWebhook', ignoring" -match $rules['buildarr-unsupported-plex-notification'])) "'buildarr-unsupported-plex-notification' does NOT suppress another implementation"
 }
 
 Test-Case 'deadman reasons load' {
