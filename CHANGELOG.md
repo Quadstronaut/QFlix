@@ -41,6 +41,41 @@ no longer exists, and an exemption outliving its file is just a hiding place.
 Media files were left on disk. If anyone ever asks for the shelves back, it is
 a fresh install, not an excavation.
 
+## 2026-08-16 — The twelve-finding morning
+
+A REA page arrived carrying twelve fields that boiled down to four root
+causes, and the triage fixed all four plus the auditor that mis-told the
+story. Kometa had been throwing twelve error lines every night since May
+because its generated config referenced blank `metadata: {}` stubs — the
+stubs and their `metadata_path` keys are gone, libraries run
+operations-only, and the nightly run now finishes with zero errors. Seerr's
+`UNIQUE constraint failed: media.tvdbId` turned out to be a Plex anthology
+item carrying three tmdb guids that resolve to one tvdbId (benign, upstream,
+no local lever) and Tdarr's daily `handbrakePath not working` self-test is
+permanent on a slot where HandBrakeCLI cannot exist — both became
+enforcement-layer noise classes, each excerpt-scoped with a sibling negative
+lookahead so the REAL siblings (an `ffmpegPath` failure, a different
+constraint column) still page even when bundled into the same excerpt. And
+the Plex EAE-timeout finding was 3.5 days stale: PMS rotates weekly and
+month-name dates defeat lexical comparison, so plex_errors now enumerates
+the fresh window as a literal-date alternation (fail-open guard included) —
+measured live, 1012 ERROR lines to 482 fresh, the stale burst gone.
+
+The same audit widened REA's reach and the new reach paid immediately:
+kavita, komga, calibre-web, listmonk, upgradinatorr and stream-stats logged
+to files no source ever read, and the first collection from listmonk's
+sync.log exposed that plex.tv had retired `/api/v2/friends` (HTTP 410) —
+the nightly subscriber sync had been silently one-legged for weeks, riding
+on Seerr alone. Switched to the legacy `/api/users` XML endpoint: eleven
+Plex accounts back in the sync, zero errors. A same-day follow-up taught
+journal_errors that a `Failed to start` line whose unit systemd no longer
+holds failed is history, not news — every maintenance action used to echo
+for 24 hours. Two hardening lessons rode along: one apostrophe in a
+`bash -c` comment killed the entire remote fetch (a real `bash -n` parse of
+the generated heredoc now gates the suite), and a UTF-8 console made the
+stdin writer prepend a BOM that remote bash read as a command (explicit
+BOM-less bytes now).
+
 ## 2026-08-07 — A gate that freezes instead of draining
 
 QFlix is now tied to the Starhold entitlement API. The operator invites friends
