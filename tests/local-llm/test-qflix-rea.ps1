@@ -1053,6 +1053,19 @@ Test-Case 'the 2026-08-16 rules are excerpt-scoped: a prose-only match cannot su
     Assert-Equal $null (Test-IsNoiseFinding $f) 'summary-only phrase does not suppress an EDQUOT excerpt'
 }
 
+Test-Case 'journal_errors drops RESOLVED failed-to-start lines, counted, systemd-verified' {
+    # 2026-08-16: two "Failed to start manitoba-maint-canary-deploy-drift"
+    # lines paged for a unit that had been green again within the hour - the
+    # 24h journal window replays every maintenance blip for a day. A start
+    # failure is current only while systemd holds the unit failed, so the
+    # collector asks systemd per matched unit and drops resolved lines with
+    # a census. Everything else passes untouched (fail open).
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('grep -oE "Failed to start [A-Za-z0-9@._-]+\.(service|timer|socket|mount|path)"')) 'failed-to-start shape matched verbatim'
+    Assert-True ($h.Contains('[ "$(systemctl --user is-failed "$u" 2>/dev/null)" != "failed" ]')) 'systemd is the arbiter of CURRENT failure'
+    Assert-True ($h.Contains('# collector-suppressed: section=journal_errors n=$ND resolved failed-to-start lines (unit not in failed state at fetch time)')) 'suppression counted, never silent'
+}
+
 Test-Case 'remote heredoc is syntactically valid bash (bash -n)' {
     # 2026-08-16: an apostrophe added to a COMMENT inside the single-quoted
     # plex_errors bash -c body terminated the quote and killed the whole
