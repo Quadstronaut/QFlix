@@ -675,6 +675,14 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     Assert-True ($h.Contains($plexGuard)) 'plex empty-alternation fail-open guard present'
     $plexSite = 'grep -a " ERROR - " "$f" | awk -v rx="$PLEX_RX" "{ if ($0 ~ /^[A-Z][a-z]{2} [0-9]{2}, [0-9]{4} /) { if ($0 !~ rx) next } print }" | sed -e "s#^#[${f##*/}] #"'
     Assert-True ($h.Contains($plexSite.Replace('$0','\$0'))) 'plex filter verbatim (between ERROR grep and sed prefix, date-shape fail-open)'
+    # config_sync (2026-08-16: buildarr.err is append-only with a fresh mtime
+    # every run - plain tailfresh shipped a 60-line window spanning 14 days
+    # and Aug-02 buildarr warnings paged. Bazarr-style inheritance awk over a
+    # 3x pre-window, trimmed to the 60-line budget AFTER, so a stale header
+    # just above the cut still sheds its undated traceback body.)
+    $cfgSite = 'tail -n 180 "$f" | awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr($0,1,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }" | tail -n 60'
+    Assert-True ($h.Contains($cfgSite.Replace('$0','\$0'))) 'config_sync filter verbatim (inheritance, 180 pre-window, trim to 60 after)'
+    Assert-False ($h.Contains("collect config_sync bash -c 'tailfresh")) 'config_sync no longer ships a raw tailfresh window'
     Assert-True ($h -match 'BEGIN\{keep=1\}[\s\S]{0,120}\n\s*\| tail -n 120 \\\n') 'bazarr trims to 120 AFTER the filter'
     # Tdarr ordering: the filter must sit BETWEEN the [ERROR] grep and
     # tail -n 400, so stale lines cannot eat the 400-line window.
@@ -1039,6 +1047,28 @@ Test-Case 'an excerpt carrying BOTH the tvdbId line and another-column constrain
         excerpt   = "SQLITE_CONSTRAINT: UNIQUE constraint failed: media.tvdbId`nSQLITE_CONSTRAINT: UNIQUE constraint failed: user.email"
     }
     Assert-Equal $null (Test-IsNoiseFinding $f) 'bundled different-column constraint survives'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses the daily buildarr PlexServer notification warning' {
+    # Fires 4x every 04:30 run since at least 2026-08-02; upstream plugin
+    # limitation, connection left untouched and working. Surfaced only when
+    # config_sync gained its FRESH_CUTOFF filter and this became the sole
+    # fresh content of the section.
+    $f = @{
+        signature = 'buildarr:unsupported-notification'
+        summary   = 'Buildarr cannot manage the Plex notification connection'
+        excerpt   = "2026-08-16 04:30:08,776 buildarr:2912293 buildarr_radarr.config.settings.notifications [WARNING] <radarr> (main) Unsupported remote notification connection 'Plex Media Server' with implementation 'PlexServer', ignoring"
+    }
+    Assert-Equal 'buildarr-unsupported-plex-notification' (Test-IsNoiseFinding $f) 'matched by rule id'
+}
+
+Test-Case 'a buildarr unsupported-connection warning for any OTHER implementation still pages' {
+    $f = @{
+        signature = 'buildarr:unsupported-notification'
+        summary   = 'Buildarr cannot manage a notification connection'
+        excerpt   = "2026-08-16 04:30:08,776 buildarr:2912293 [WARNING] <radarr> (main) Unsupported remote notification connection 'Discord' with implementation 'DiscordWebhook', ignoring"
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'different implementation survives'
 }
 
 Test-Case 'the 2026-08-16 rules are excerpt-scoped: a prose-only match cannot suppress' {
