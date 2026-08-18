@@ -132,6 +132,14 @@ def test_state_from_an_older_version_upgrades_safely(tmp_path):
 # H3 (HIGH) -- a grant that demotes
 # ---------------------------------------------------------------------------
 
+# Welcome is DISJOINT from full access -- plexshare.full_access_ids() subtracts
+# it by construction. An earlier version of this helper passed
+# `minimum_ids=[full_ids[0]]`, which put Welcome INSIDE the full set and so
+# could not express the case that actually matters: an entitled member who
+# still carries the floor section from a previous lapse. Keep it separate.
+WELCOME = 999
+
+
 def _plan_with(full_ids, holds, tmp_path, name):
     m = _gate(name)
     share = PS.Share(shared_server_id=1, user_id=7, email="member@example.com",
@@ -146,7 +154,7 @@ def _plan_with(full_ids, holds, tmp_path, name):
         seerr_user=SU.SeerrUser(id=1, email="member@example.com", username="u",
                                 permissions=SU.MEMBER_PERMISSIONS,
                                 user_type=1, plex_id=7),
-        state=st, full_ids=full_ids, minimum_ids=[full_ids[0]],
+        state=st, full_ids=full_ids, minimum_ids=[WELCOME],
         amnesty_until=None, grace_days=7, new_arrival_days=30,
         member_permissions=SU.MEMBER_PERMISSIONS, now=NOW)
 
@@ -183,19 +191,51 @@ def test_a_grant_with_an_identical_set_still_emits_nothing(tmp_path):
     assert p.alert is None
 
 
+def test_a_grant_drops_welcome_without_calling_it_a_reduction(tmp_path):
+    """OPERATOR DIRECTIVE 2026-08-17. Welcome holds the "go activate your
+    subscription" video and is addressed to NON-entitled accounts, so an
+    entitled member must not be able to see it. A member who lapsed and came
+    back holds full+Welcome, which the shape check read as "plex.tv returned a
+    short catalogue" -- and the write it cancelled was the very write that
+    would have dropped Welcome, so the state was self-sealing and re-alerted
+    daily forever.
+    """
+    m, p = _plan_with([101, 102, 103], [101, 102, 103, WELCOME], tmp_path, "qe_h3d")
+    assert p.state == m.S_ENTITLED
+    assert p.alert is None, "dropping Welcome from an entitled member is not a reduction"
+    assert p.plex_target == [101, 102, 103], "Welcome must actually be removed"
+    assert "Welcome" in p.reason
+
+
+def test_the_short_catalogue_rail_survives_a_member_who_also_holds_welcome(tmp_path):
+    """The Welcome carve-out must not become a hole in the rail: a genuinely
+    truncated poll still has to be refused even when the member carries the
+    floor section as well."""
+    m, p = _plan_with([101, 105], [101, 102, 103, 104, 105, WELCOME],
+                      tmp_path, "qe_h3e")
+    assert p.plex_target is None, "a truncated catalogue still may not reduce anyone"
+    assert p.alert and "refusing to reduce an ENTITLED member" in p.alert
+
+
 # ---------------------------------------------------------------------------
 # H5 (MEDIUM) -- the backstop went silent at the moment of harm
 # ---------------------------------------------------------------------------
 
-def test_never_seen_is_still_shouted_when_the_reduction_happens():
-    """The typo backstop alerted only while PENDING, so it fell silent on
-    exactly the run that took the member's libraries away -- the one run where
-    "we may have written their address down wrong" is worth saying out loud."""
-    seg = GATE_SRC[GATE_SRC.index("expired_alert = None"):
+def test_never_seen_is_still_recorded_when_the_reduction_happens():
+    """H5 REVISED 2026-08-17. The original hazard was that never-seen fell
+    silent on exactly the run that took a member's libraries away. The FACT
+    must still be recorded there -- what changed is that it is no longer a
+    Discord page, because never-seen is now an ordinary steady state for
+    manual-rail and non-Patreon households and EXPIRED is terminal, so the
+    page repeated daily per household forever. Reported in `reason` and in the
+    --json plan; the rare actionable variant still pages from
+    payer_oracle.judge() row 3.
+    """
+    seg = GATE_SRC[GATE_SRC.index("# NEVER-SEEN IN EXPIRED"):
                    GATE_SRC.index("return Plan(email=email, state=S_EXPIRED")]
     assert "answer.never_seen" in seg
-    assert "NEVER SEEN" in seg
     assert "billing.holder" in seg, "say what to fix, not just that something is wrong"
+    assert "alert=" not in seg, "never-seen must not page from the EXPIRED branch"
 
 
 # ---------------------------------------------------------------------------
