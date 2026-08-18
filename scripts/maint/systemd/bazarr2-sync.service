@@ -14,7 +14,13 @@ Type=oneshot
 # Empty by default; populated by scripts/maint/bootstrap-kuma-monitors.py
 # after the "Bazarr 2 Sync" push monitor is created in Kuma.
 Environment="BAZARR2_SYNC_KUMA_TOKEN="
-ExecStart=%h/.apps/bazarr2/venv/bin/python %h/.opt/maint/bazarr2-sync.py
+# %h/scripts, NOT %h/.opt/maint (changed 2026-08-18): the install-time copy in
+# .opt/maint sat outside the deploy-drift canary's ~/scripts scope, so the
+# running script silently pinned at its May 11 install version while the repo
+# moved on - found when the frontend-heal fix deployed everywhere except the
+# copy the timer actually executes. ~/scripts is byte-compared against
+# origin/master by scripts/canaries/deploy-drift.sh, closing that class.
+ExecStart=%h/.apps/bazarr2/venv/bin/python %h/scripts/maint/bazarr2-sync.py
 StandardOutput=append:%h/.opt/maint/bazarr2-sync.log
 StandardError=append:%h/.opt/maint/bazarr2-sync.err
 
