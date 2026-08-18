@@ -148,13 +148,24 @@ classes:
 
   - id: external-indexer-5xx-html
     title: Cloudflare / nginx error-page HTML relayed from an EXTERNAL indexer
-    rx: '(?i)(cloudflare.{0,80}(ray id|error 5\d\d)|ray id:\s*[0-9a-f]{8,}|<center>nginx(?:/[\d.]+)?</center>)'
+    rx: '(?im)(cloudflare.{0,80}(ray id|error 5\d\d)|ray id:\s*[0-9a-f]{8,}|<center>nginx(?:/[\d.]+)?</center>|^\s*error code:\s*52\d\b)'
     field: null
     prompt_clause: "nginx error-page HTML returned to an *arr from an EXTERNAL indexer/proxy"
     why: >-
       Transient upstream hiccup on someone else's server, not a fault in our
       stack. Deliberately NOT a bare "5xx" or "error" term — that would also hit
       our own services' genuine 5xx responses.
+      WIDENED 2026-08-18 to Cloudflare's BARE error body. Cloudflare serves a
+      minimal page whose entire content is the single line "error code: 522",
+      with no ray id and no "cloudflare" token anywhere in it — so all three
+      original alternatives missed it, and prowlarr's 522s from Tokyo Toshokan
+      paged even though this class's own prompt clause already says "Cloudflare
+      5xx (52x)" in so many words. That is exactly the
+      prompt-asks-but-rule-does-not-enforce shape this file exists to catch,
+      found in the live 2026-08-17 REA run. The new alternative is LINE-ANCHORED
+      because every log line our own stack emits carries a timestamp or level
+      token first, so a bare body line can only be a relayed third-party
+      response.
     added: 2026-07-29
 
   - id: indexer-severity-field-echo
@@ -515,6 +526,74 @@ classes:
       and still pages.
     added: 2026-08-16
 
+  - id: plex-network-service-shutdown
+    title: Plex Network Service advertiser socket cancelled during shutdown
+    rx: '(?im)^(?=.*network service)(?=.*advertis)(?=.*(?:operation canceled|abandoning))'
+    field: excerpt
+    prompt_clause: 'Network Service: Error in advertiser handle read'
+    why: >-
+      PMS logs this at ERROR while tearing down its GDM/DLNA announce socket on
+      the way out. SHUTDOWN IS PROVEN, NOT ASSUMED: it appears exactly ONCE in
+      each of the five rotated logs (Plex Media Server.1 through .5) and ZERO
+      times in the live one, it is the LAST error line in every file, and in
+      every case the next lines are "JobManager: Could not find job for handle",
+      "Killing process: Plex EAE Service" and "Network Service: Abandoning
+      advertise socket" - the log ends there because the server stopped. errno
+      125 is ECANCELED and the line carries socket=-1, so the handle was closed
+      locally rather than failing against the network. Scoped to the
+      CANCELLATION specifically and to the excerpt field: an advertiser error
+      with a different cause (98/EADDRINUSE, a refused connection) carries
+      neither token, is not a teardown, and still pages.
+    added: 2026-08-18
+
+  - id: bazarr-signalr-reconnect
+    title: Bazarr SignalR client dropping and re-establishing its *arr subscription
+    rx: '(?i)bazarr signalr client for \w+ connection as been lost'
+    field: null
+    prompt_clause: 'SignalR client for Sonarr/Radarr connection as been lost'
+    why: >-
+      Bazarr subscribes to Sonarr/Radarr over SignalR for live library events.
+      When the *arr restarts, the subscription drops and Bazarr reconnects by
+      itself. SELF-HEALING IS PROVEN, NOT ASSUMED: bazarr2.err carries 38
+      "connection as been lost" lines against 55 "is connected" lines, and every
+      single loss is followed by a matching connect within 20-35 seconds. The
+      losses also CLUSTER - 2026-08-10 13:04-13:12 and 2026-08-17 13:04-13:08
+      box-local, which is 11:04-11:12 UTC, inside the Monday maintenance window
+      (lib/window.py) - so the cause is our own scheduled *arr restarts and not
+      an unexplained network fault. Anchored to Bazarr's verbatim "as been lost"
+      (the upstream typo, signalr_client:159 for Sonarr and :226 for Radarr),
+      which a model paraphrasing the line into "has been lost" cannot invent, so
+      this rule can only fire on raw log text. A loss with NO following
+      reconnect still pages: this rule has no pairing or rate dimension and does
+      not claim one.
+    added: 2026-08-18
+
+  - id: arr-indexer-unavailable-backoff
+    title: External indexer unreachable, plus Prowlarr's own 429 backoff for it
+    rx: '(?i)(indexer is disabled till .{0,60}due to recent failures|indexer.s server is unavailable\. try again later)'
+    field: null
+    prompt_clause: 'external indexer unavailability relayed by Prowlarr'
+    why: >-
+      Two halves of one external event. Prowlarr cannot reach a third-party
+      indexer, logs "Indexer's server is unavailable. Try again later", and
+      disables it temporarily; Sonarr/Radarr then receive Prowlarr's own 429
+      carrying description="Indexer is disabled till <time> due to recent
+      failures." for as long as the backoff lasts. Neither half is a fault in
+      our stack and neither needs an operator.
+      TRANSIENT IS PROVEN, NOT ASSUMED, and that is why this is suppressed
+      rather than fixed by deleting the indexer: Tokyo Toshokan (prowlarr id 38)
+      has returned Cloudflare 522 intermittently since 2026-05-25 - 2,644
+      failure lines against 23,009 total, a ~11.5% rate on scattered days - so
+      it works the other ~88% of the time and is a live anime source. Contrast
+      tvsubtitles, disabled outright on 2026-08-14 because its domain had gone
+      SERVFAIL permanently: dead gets removed, flaky gets suppressed. The
+      backoff also clears itself - prowlarr's /api/v1/indexerstatus was already
+      EMPTY minutes after the 429s that produced the 2026-08-17 page.
+      Anchored to Prowlarr's two verbatim strings. A bare "429.TooManyRequests",
+      or a 5xx with no such description, is NOT covered and still pages - which
+      keeps a rate-limit against one of OUR OWN services reportable.
+    added: 2026-08-18
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -575,6 +654,15 @@ prompt_segments:
   - index: 17
     marker: 'buildarr "Unsupported remote notification connection" warnings naming implementation PlexServer'
     classes: [buildarr-unsupported-plex-notification]
+  - index: 18
+    marker: 'Network Service: Error in advertiser handle read'
+    classes: [plex-network-service-shutdown]
+  - index: 19
+    marker: 'SignalR client for Sonarr/Radarr connection as been lost'
+    classes: [bazarr-signalr-reconnect]
+  - index: 20
+    marker: 'external indexer unavailability relayed by Prowlarr'
+    classes: [arr-indexer-unavailable-backoff]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
