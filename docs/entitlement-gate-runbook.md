@@ -59,13 +59,22 @@ on `holder`, applied to every address in `accounts`.
 
 | State | Plex | Seerr |
 |---|---|---|
-| accepted, not entitled | `QFlix - Welcome` only | permissions `0` |
-| entitled | all five libraries | permissions restored |
-| revoked, past grace | `QFlix - Welcome` only | permissions `0` |
+| accepted, not entitled | `QFlix - Welcome` **only** | permissions `0` |
+| entitled | the content libraries, **without** `QFlix - Welcome` | permissions restored |
+| revoked, past grace | `QFlix - Welcome` **only** | permissions `0` |
 
 Revoked is deliberately identical to stage 1. The **share object is kept** — a
 revoked member is put back in front of the pitch, not evicted. Restoring them
 needs no new invite and no re-acceptance.
+
+**The two levels are disjoint, not nested.** Welcome holds one video whose
+entire content is "go to Patreon and activate your subscription", so an entitled
+member must never be able to see it — they would be pitched something they
+already pay for. `plexshare.full_access_ids()` subtracts Welcome by
+construction, and a grant to an entitled member who still carries Welcome from a
+previous lapse **removes it**. That removal is not a reduction and does not
+alert; it is the disjointness rule being enforced. See *Safety properties* for
+the short-catalogue rail it has to coexist with.
 
 ---
 
@@ -144,11 +153,28 @@ systemctl --user daemon-reload
 #    secrets/members.yaml -> armed: true
 ```
 
-> **Before arming, resolve the ten `NEVER SEEN` households.** Every non-exempt
-> household currently reports that the entitlement service has never seen its
-> `billing.holder`. That is *correct today* — the campaign has no members — but
-> it is also exactly what a typo looks like. Arming while a real supporter's
-> address is misspelled cuts them off on 1 September.
+> **Before arming, check the households the service has no record of.** A
+> non-exempt household whose `billing.holder` the entitlement service has never
+> heard of shows `never_seen: true` on its plan and says so in `reason`. It is
+> *usually* correct — the household pays on a rail the service cannot see, or is
+> not a Patreon supporter at all — but it is also exactly what a typo looks
+> like, and arming while a real supporter's address is misspelled cuts them off.
+> Read them out of a report-only run:
+>
+> ```bash
+> python3 ~/scripts/maint/qflix-entitlement.py --json |
+> jq -r '.plans[] | select(.never_seen) | [.state, .email, .household] | @tsv'
+> ```
+>
+> **This does not page** (operator directive, 2026-08-17). It used to, and the
+> alert was retired because the Patreon behind the entitlement service now
+> carries non-QFlix members while QFlix carries households on rails the service
+> cannot see — so `never_seen` became an ordinary steady state for a growing
+> slice of the roster rather than an anomaly. Since `expired` is terminal, that
+> meant a permanent daily Discord page, per household, on a fact that was not
+> going to change. The rare, genuinely actionable form of the signal — an
+> **ever-entitled** declared payer going never-seen, i.e. the sync projection
+> died — still pages, from the payer oracle (verdict `DEAD`, row 3 below).
 
 ---
 
@@ -158,14 +184,18 @@ systemctl --user daemon-reload
 shares=14 exempt=4 pending=10
   exempt    kh***@gmail.com   household is exempt (...); access is never gated
   pending   sa***@gmail.com   not entitled, 24.8 day(s) of grace remain -- the
-                              entitlement service has NEVER SEEN sa***@gmail.com
+                              entitlement service has no record of sa***@gmail.com
+                              at all (unknown address, or a rail it cannot see)
+  entitled  jo***@gmail.com   entitled; dropping the Welcome library (entitled
+                              members are not shown the activate-your-subscription
+                              video)
 ```
 
 | State | Meaning | Your move |
 |---|---|---|
 | `exempt` | never gated, never provisioned | none |
 | `entitled` | full access | none |
-| `pending` | not entitled, clock running | fix a `NEVER SEEN` address, or wait |
+| `pending` | not entitled, clock running | fix a `never_seen` address, or wait |
 | `expired` | reduced to Welcome | none — working as designed |
 | `no-answer` | the API did not answer; **nothing moved** | check `entitlements.starhold.app` |
 | `unnamed-share` | accepted share with no household | **add them to the roster** |
@@ -202,6 +232,16 @@ not reach the API" must never share an exit status.
   how one roster typo evicts a real person. You get a Discord page instead.
 - **An empty Plex section list is refused unconditionally.** plex.tv reads `[]`
   as "unshare this server", which deletes the share and evicts the person.
+- **A grant may never take a content section away.** `full_ids` is re-read from
+  plex.tv every run and a short poll is accepted as truth, so an entitled member
+  holding 5 could be planned down to 2 with the log calling it "raising to full
+  access". While the answer *grants*, the target may never be a strict subset of
+  the content the member already holds; reduction lives in the expiry branch,
+  behind the clocks, alone. **Welcome is excluded from that comparison** — it is
+  the floor, not content, and an entitled member carrying it must lose it. Before
+  2026-08-17 it was counted, so a returning member held full+1, the rail read
+  that as a truncated catalogue, and it cancelled the very write that would have
+  dropped Welcome — self-sealing, and it re-alerted daily.
 - **Prior Seerr permissions are saved before being zeroed**, so a restore is an
   exact replay rather than a guess at what the default used to be.
 - **Most of the membership cannot be reduced in one run.** See the tripwire
@@ -219,6 +259,8 @@ not reach the API" must never share an exit status.
 | New Plex section `QFlix - Welcome` (key 7, id 145397557) | the floor the whole design rests on. All 14 shares received it automatically via `allLibraries=1`. |
 | `entitlement.key` on Starhold + box | QFlix-scoped, **lookup only** — bulk correctly 403s. |
 | `grace_days` 3 → 7 | operator, 2026-08-06 |
+| `never_seen` demoted from Discord alert to plan field | operator, 2026-08-17. Patreon now carries non-QFlix members and QFlix carries invisible rails, so never-seen is a steady state, not an anomaly. Still in `reason`, in `--json`, and still paging from the payer oracle when an *ever-entitled* payer goes never-seen. |
+| Welcome excluded from the grant branch's short-catalogue comparison | operator, 2026-08-17. Entitled members who carried Welcome from a previous lapse were pinned there forever by the rail meant to protect them. |
 
 ---
 
