@@ -352,15 +352,19 @@ def test_a_full_member_in_the_same_household_is_unaffected_by_a_tagalong_sibling
     assert p.seerr_target == SU.MEMBER_PERMISSIONS, "non-tagalong sibling still raised"
 
 
-def test_never_seen_address_is_flagged_while_there_is_time_to_fix_it(tmp_path):
-    """`reason: unknown` is a definitive no, but in this system it is
-    overwhelmingly a typo in billing.holder rather than someone who never
-    subscribed. The clocks give weeks; this is what makes those weeks
-    actionable."""
+def test_never_seen_address_is_recorded_on_the_plan_but_does_not_page(tmp_path):
+    """`reason: unknown` means the service has no record of the address at all.
+    That used to page, on the theory it was overwhelmingly a billing.holder
+    typo. It is no longer an anomaly — the Patreon behind the service carries
+    non-QFlix members, and QFlix carries rails the service cannot see — so it is
+    now reported on the plan and in --json, and paged nowhere (operator
+    directive 2026-08-17). See tests/unit/test_entitlement_expired_alert.py."""
     p = plan(answer=answer(ENT.NO, reason="unknown"), state=state_with(tmp_path),
              share=share(sections=FULL))
     assert p.state == G.S_PENDING
-    assert p.alert and "NEVER SEEN" in p.alert
+    assert p.never_seen is True
+    assert "no record" in p.reason
+    assert p.alert is None, "never-seen must not page from PENDING either"
     assert p.plex_target is None
 
 
