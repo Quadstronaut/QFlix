@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-08-18 (II) — The reboot, the 113 alerts, and the three silences
+
+The Ultra.cc host crashed and rebooted (down 06:17-06:22 UTC; Kuma itself was
+gone 04:38-07:36). The 113-alert Discord storm was the fleet dying and coming
+back: every "could not be started after 3 attempts" page landed while the box
+was still assembling itself, and by 08:03 UTC everything had self-healed —
+auto-heal fixed the qBittorrent WebUI bind race on cue, listmonk crash-looped
+36 times until postgres was up and then settled, and Ultra's own app-manager
+was throwing the flaresolverr traceback, not our code. A 15-agent audit
+afterwards verified 20/20 services answering, 61/61 timers armed, 74/74
+monitors accounted for, deploy parity intact, and the entitlement gate frozen
+(not draining) throughout — the fail-closed design doing exactly what it
+promises. The interesting failures were the three things that stayed QUIET:
+
+**REA went blind for 10.5 hours and said so once.** The storm maxed every blob
+section cap (~45KB vs ~15KB on a quiet day), and `Invoke-Model` set no
+`num_ctx` — so Ollama silently truncated the prompt FROM THE TOP, amputating
+the JSON-format instructions, and all 3 models answered prose. 22 consecutive
+hourly runs graded `all_models_noop`; the box-side liveness canary caught it
+(the one dead-man that worked, red all day). Fixed with an explicit
+`num_ctx=24576`, `num_predict` 2048 → 3072, a prompt-level cap of 10 findings,
+a truncation-salvage pass in `Extract-JsonArray` that recovers the complete
+leading elements of a budget-cut array, and a 420s model timeout (at the
+bigger window the larger models need longer prefill; 240s graded storm runs
+`models=1/3`). Verified live against the still-storm-fat blob:
+`ok findings=18 models=3/3`.
+
+**Kuma restart swallowed three missed runs — the new L-07 class.** The reaper,
+torrent-janitor and audit-regime all ran into dead services pre-reboot and
+their failure-pushes were refused too. Kuma's push-timeout timers are
+in-process state that RESETS on restart: all three deadlines were re-armed
+from Kuma boot, landing past each job's next scheduled run, so all three sat
+GREEN on 36-38h-old beats and the lost day could never page. (The REA canary
+alone paged because its 70-minute window expired before its next beat — the
+window/cadence ratio decided who got caught.) All three jobs were re-run
+manually (reaper: 0 candidates, 1 Seerr orphan reconciled; janitor: 0 reaps;
+audit: clean) and the gap is now a detector: `qflix-audit-live.py` L-07 flags
+any active push monitor that is green on a beat older than 1.25x its own
+window, every 6 hours, from `kuma.db` — the only place the silence is visible.
+
+**bazarr2 has had no web UI since July 6 and nobody noticed** — surfaced by the
+audit's port sweep, unrelated to the reboot. `bazarr2-sync` pins bazarr2 by
+GIT TAG checkout, but upstream ships the built Vite frontend only in the
+release zip: a tag checkout leaves `bin/frontend/` as unbuilt source, so every
+UI request 500s with `TemplateNotFound` while the API — the only part the
+stack actually uses — stays perfectly healthy. Six weeks of a dead UI, zero
+alerts, because all automation is API-driven. `bazarr2-sync` now installs the
+prebuilt `frontend/build/` from the matching release asset on every version
+change, heals a missing build on its hourly no-op path, and treats a failed
+frontend fetch as degraded-not-fatal (a GitHub hiccup must not abort a
+version sync).
+
+Also from the audit: the entitlement runbook's manual-inspection example now
+passes `--no-kuma` (`--no-notify` silences Discord only; the heartbeat is a
+separate flag, and a manual run was quietly feeding the gate's dead-man).
+
 ## 2026-08-18 — An alert about code that no longer exists
 
 REA paged on eight findings. All eight were noise, and the most instructive one

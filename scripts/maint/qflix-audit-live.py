@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""qflix-audit-live — the LIVE half of the Convergent Audit Regime (L-01..L-06).
+"""qflix-audit-live — the LIVE half of the Convergent Audit Regime (L-01..L-07).
 
 Runs ON THE BOX, on its OWN timer, pushing its OWN Kuma monitor. It is
 deliberately NOT folded into functional-audit.py or qflix-collect.py: the
@@ -17,6 +17,9 @@ WHY THIS CANNOT BE PART OF qflix-audit.py
       L-04 declared secret keys exist with a sane mode
       L-05 every self-pusher has a PERSISTED push token (the born-mute class)
       L-06 quota / thread-ceiling headroom
+      L-07 stale-green push monitors (Kuma restart resets its push-timeout
+           timers, so a monitor whose beat was already overdue at restart
+           re-greens before it ever pages -- the missed run is invisible)
     These will keep producing new findings forever. That is registered honestly
     in docs/audit-residual-risk.md; it is not a defect of the design.
 
@@ -203,6 +206,70 @@ def _kuma_monitor_names() -> set[str] | None:
         return None
 
 
+def stale_green_pushers(rows, now: _dt.datetime, slack: float = 1.25) -> list[dict]:
+    """L-07, the pure half. `rows` = (name, interval_s, last_beat_utc_str,
+    last_status); returns a finding per ACTIVE push monitor whose latest beat
+    is GREEN yet older than its own heartbeat window (with slack).
+
+    WHY (2026-08-18 storm audit): Kuma's push-timeout timers live in process
+    memory and RESET when Kuma restarts. The host reboot took Kuma down
+    04:38-07:36 UTC; the daily self-pushers (reaper, torrent-janitor, audit
+    regime) had all just failed against dead services, and on restart their
+    25h deadlines were re-armed FROM KUMA BOOT -- pushed past each job's next
+    scheduled run, so all three sat GREEN on 36-38h-old beats and the lost
+    day could never page. Contrast the REA-liveness canary (70min window):
+    its re-armed deadline expired BEFORE the next beat, so it alone paged.
+
+    The slack factor absorbs RandomizedDelaySec and one slow run; 1.25 x 25h
+    ~= 31h, well under the 2-day age that means a genuinely lost run.
+
+    Fails open per row: an unparseable beat time yields no finding -- this
+    detector exists to catch silence, not to manufacture it from format
+    drift. (Kuma writes naive UTC 'YYYY-MM-DD HH:MM:SS.mmm' today.)
+    """
+    out = []
+    for name, interval_s, beat_time, status in rows:
+        if status != 1 or not interval_s:
+            continue  # red monitors already page; interval 0 has no window
+        try:
+            t = _dt.datetime.fromisoformat(str(beat_time).split(".")[0])
+            t = t.replace(tzinfo=_dt.timezone.utc)
+        except ValueError:
+            continue
+        age = (now - t).total_seconds()
+        if age > interval_s * slack:
+            out.append({
+                "class_id": "L-07", "instance_id": name,
+                "detail": "stale-green-%dh-beat-vs-%dh-window"
+                          % (age // 3600, interval_s // 3600),
+            })
+    return out
+
+
+def _push_monitor_beats():
+    """DB half of L-07: (name, interval, latest beat time, latest status) for
+    every ACTIVE push-type monitor. None when kuma.db is not readable."""
+    if not KUMA_DB.exists():
+        return None
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{KUMA_DB}?mode=ro", uri=True, timeout=3)
+        try:
+            rows = con.execute(
+                "SELECT m.name, m.interval, h.time, h.status "
+                "FROM monitor m JOIN heartbeat h ON h.id = ("
+                "  SELECT id FROM heartbeat WHERE monitor_id = m.id "
+                "  ORDER BY time DESC LIMIT 1) "
+                "WHERE m.active = 1 AND m.type = 'push'").fetchall()
+        finally:
+            con.close()
+        return rows
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"qflix-audit-live: kuma.db unreadable for L-07: {exc}",
+              file=sys.stderr)
+        return None
+
+
 def collect(expected_monitors: list[str]) -> dict:
     findings: list[dict] = []
     coverage: dict[str, str] = {}
@@ -283,6 +350,15 @@ def collect(expected_monitors: list[str]) -> dict:
         if pct >= 90:
             findings.append({"class_id": "L-06", "instance_id": "home-quota",
                              "detail": f"quota-{pct}pct"})
+
+    # L-07 ---------------------------------------------------------------
+    beats = _push_monitor_beats()
+    if beats is None:
+        coverage["L-07"] = "unavailable"
+    else:
+        coverage["L-07"] = "checked"
+        findings.extend(
+            stale_green_pushers(beats, _dt.datetime.now(_dt.timezone.utc)))
 
     return {"coverage": coverage, "findings": findings}
 

@@ -91,7 +91,7 @@ message that names which.
 | C-08 | decommissioned-still-referenced | advisory | `decommissioned.yaml` × every tracked text file |
 | C-09 | silent-exit-on-missing-prerequisite | advisory | clean-exit sites in canaries + self-pushing jobs |
 | C-10 | test-not-in-CI / subject-not-tracked | **enforced** | tracked test files ∪ their subjects ∪ declared CI jobs |
-| L-01…L-06 | live classes | **residual** | box state; `scripts/maint/qflix-audit-live.py` (Phase 5) |
+| L-01…L-07 | live classes | **residual** | box state; `scripts/maint/qflix-audit-live.py` (Phase 5) |
 
 `advisory` is not a synonym for *ignored*. An advisory class **enumerates
 exhaustively and reports**; its findings simply do not fail the build, because
