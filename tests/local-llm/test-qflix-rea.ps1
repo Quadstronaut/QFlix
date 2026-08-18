@@ -656,6 +656,28 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # from a sparse-error file - whole-file grep needs the same date floor).
     $arrSite = 'grep -aE "\|(Error|Fatal)\|" "$f" | awk -v c="$FRESH_CUTOFF" "{ d=substr(\$0,1,10); if (d ~ /^[0-9]{4}-/ && d < c) next; print }" | tail -n 8'
     Assert-True ($h.Contains($arrSite)) 'arr Error/Fatal filter verbatim, before tail -8'
+    # app_extra (2026-08-18: a 2026-06-22 Gemini 429 paged as a live fault from
+    # a code path that no longer EXISTS in the deployed tree). These files are
+    # append-only and some are written WEEKLY, so the mtime gate calls the file
+    # fresh while `tail -n 120` reaches back months - qflix-newsletter.err is
+    # 843 lines covering ten weekly runs and its tail-120 window spanned
+    # 2026-06-15 to 2026-08-17. Factored as a REUSABLE `freshlines` filter
+    # rather than a fourth copy of the awk, because this section has two loops
+    # and eight files. Pinned three ways: the function must exist, be exported
+    # to the bash -c child (without the export the child has no such command and
+    # the pipeline dies), and be wired into BOTH loops - a filter defined but
+    # piped into only one loop is exactly the half-fix this pin exists to catch.
+    Assert-True ($h.Contains('freshlines() {'))     'freshlines helper defined'
+    Assert-True ($h.Contains('export -f freshlines')) 'freshlines exported to bash -c children'
+    # Inheritance (BEGIN{keep=1}) so a stale multi-line traceback goes with its
+    # dated header instead of surviving headless - the Gemini finding's own
+    # shape. gsub accepts listmonk's YYYY/MM/DD alongside ISO dates.
+    Assert-True ($h -match 'BEGIN \{ keep = 1 \}')                    'freshlines inherits across undated continuation lines'
+    Assert-True ($h.Contains('gsub("/", "-", d)'))                     'freshlines accepts slash-separated dates (listmonk)'
+    $extraLoop1 = 'tail -n 120 "$f" | freshlines | grep -aiE "error|exception|fail|traceback"'
+    $extraLoop2 = 'T=$(tail -n 120 "$f" | freshlines | grep -aiE "error|exception|fail|traceback" || true)'
+    Assert-True ($h.Contains($extraLoop1)) 'app_extra original loop filters lines before the error grep'
+    Assert-True ($h.Contains($extraLoop2)) 'app_extra widened loop filters lines before the error grep'
     # plex_errors (2026-08-16: a 3.5-day-old Aug-12 EAE burst paged on Aug 15 -
     # PMS rotates weekly, so the mtime gate alone admits up to 7 days of lines,
     # and the model omitted `time` so the ps1 backstop failed open). PMS leads

@@ -120,7 +120,17 @@ Test-Case 'rules actually suppress the log lines they were written for' {
         @{ id = 'seerr-plex-scan-tvdbid-collision'
            hay = 'SQLITE_CONSTRAINT: UNIQUE constraint failed: media.tvdbId' },
         @{ id = 'buildarr-unsupported-plex-notification'
-           hay = "buildarr_radarr.config.settings.notifications [WARNING] <radarr> (main) Unsupported remote notification connection 'Plex Media Server' with implementation 'PlexServer', ignoring" }
+           hay = "buildarr_radarr.config.settings.notifications [WARNING] <radarr> (main) Unsupported remote notification connection 'Plex Media Server' with implementation 'PlexServer', ignoring" },
+        # The four 2026-08-18 classes, quoted verbatim from the 2026-08-17 run
+        # that paged on them.
+        @{ id = 'plex-network-service-shutdown'
+           hay = 'Aug 17, 2026 11:01:30.579 [140110926211896] ERROR - Network Service: Error in advertiser handle read: 125 (Operation canceled) socket=-1' },
+        @{ id = 'bazarr-signalr-reconnect'
+           hay = '2026-08-17 13:07:56,782 - root (7f72ea5fc700) :  ERROR (signalr_client:159) - BAZARR SignalR client for Sonarr connection as been lost. Trying to reconnect...' },
+        @{ id = 'arr-indexer-unavailable-backoff'
+           hay = '<error code="429" description="Indexer is disabled till 08/18/2026 02:27:55 due to recent failures." />' },
+        @{ id = 'external-indexer-5xx-html'
+           hay = 'error code: 522' }
     )
     foreach ($c in $cases) {
         Assert-True ($c.hay -match $rules[$c.id]) "'$($c.id)' matches its canonical log line"
@@ -143,6 +153,32 @@ Test-Case 'rules actually suppress the log lines they were written for' {
     $bundledSeerr = "UNIQUE constraint failed: media.tvdbId`nUNIQUE constraint failed: user.email"
     Assert-True (-not ($bundledSeerr -match $rules['seerr-plex-scan-tvdbid-collision'])) "'seerr-plex-scan-tvdbid-collision' does NOT suppress a bundled different-column failure"
     Assert-True (-not ("Unsupported remote notification connection 'Discord' with implementation 'DiscordWebhook', ignoring" -match $rules['buildarr-unsupported-plex-notification'])) "'buildarr-unsupported-plex-notification' does NOT suppress another implementation"
+
+    # ---- near-miss guards for the 2026-08-18 classes ---------------------
+    # Each of these is the SIBLING SHAPE that is a real fault. If a rule ever
+    # widens far enough to eat one of them, it has stopped being narrow.
+
+    # An advertiser error that is NOT a cancellation is a bind/connect failure,
+    # not a teardown. This is the whole reason the rule requires the cancel
+    # token rather than just the advertiser marker.
+    Assert-True (-not ('ERROR - Network Service: Error in advertiser handle read: 98 (Address already in use) socket=7' -match $rules['plex-network-service-shutdown'])) "'plex-network-service-shutdown' does NOT suppress an EADDRINUSE advertiser failure"
+    # A model's own prose summary must not be able to complete the match on its
+    # own - that is what field='excerpt' is for, and this asserts the rule text
+    # would not match a summary-only haystack either.
+    Assert-True (-not ('Network service advertiser handle read failure' -match $rules['plex-network-service-shutdown'])) "'plex-network-service-shutdown' does NOT fire on a model summary alone"
+
+    # Bazarr's typo is the anchor. A model that paraphrases it into correct
+    # English is writing prose, not quoting the log, and must not suppress.
+    Assert-True (-not ('BAZARR SignalR client for Radarr connection has been lost' -match $rules['bazarr-signalr-reconnect'])) "'bazarr-signalr-reconnect' does NOT fire on the paraphrased 'has been lost'"
+
+    # A bare rate-limit with no Prowlarr backoff description could be one of
+    # OUR services throttling, which is reportable.
+    Assert-True (-not ('HTTP Error - Res: HTTP/1.1 [GET] http://127.0.0.1:17024/prowlarr/api: 429.TooManyRequests' -match $rules['arr-indexer-unavailable-backoff'])) "'arr-indexer-unavailable-backoff' does NOT suppress a bare 429 with no backoff description"
+
+    # The Cloudflare bare-body alternative is LINE-ANCHORED. Our own logs put a
+    # timestamp or level token first, so a genuine 5xx from one of our services
+    # can never present as a bare body line.
+    Assert-True (-not ('2026-08-18 04:00:00 ERROR qflix-dash returned error code: 522 to the client' -match $rules['external-indexer-5xx-html'])) "'external-indexer-5xx-html' does NOT suppress our own service quoting an error code mid-line"
 }
 
 Test-Case 'deadman reasons load' {
