@@ -162,7 +162,9 @@ systemctl --user daemon-reload
 > Read them out of a report-only run:
 >
 > ```bash
-> python3 ~/scripts/maint/qflix-entitlement.py --json |
+> # --no-kuma: a manual inspection must not feed the gate's dead-man heartbeat
+> # (--no-notify silences Discord only; the Kuma push is a separate flag)
+> python3 ~/scripts/maint/qflix-entitlement.py --json --no-notify --no-kuma |
 > jq -r '.plans[] | select(.never_seen) | [.state, .email, .household] | @tsv'
 > ```
 >

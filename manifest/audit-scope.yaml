@@ -84,7 +84,7 @@ surfaces:
     enumerability: LIVE ONLY
     note: >-
       Deployed unit files, live Kuma monitor set, secret existence and modes,
-      push tokens, quota, thread ceiling. Classes L-01..L-06 in
+      push tokens, quota, thread ceiling, stale-green pushers. Classes L-01..L-07 in
       manifest/defect-classes.yaml. Offline detectors CANNOT see this and do
       not pretend to.
     live_detector: scripts/maint/qflix-audit-live.py
@@ -408,7 +408,7 @@ residuals:
     owner: operator
     review_cadence_days: 30
     last_reviewed: 2026-07-29
-    residual: Live box drift between audit runs (L-01..L-06). Bounded only by cadence.
+    residual: Live box drift between audit runs (L-01..L-07). Bounded only by cadence.
   - id: R3
     owner: operator
     review_cadence_days: 90

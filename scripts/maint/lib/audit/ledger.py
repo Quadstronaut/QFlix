@@ -274,7 +274,7 @@ def check_residual_discipline(
     (a) every `residuals:` entry has an owner, a cadence, and a last_reviewed
         inside that cadence;
     (b) every residual entry has a ROW in docs/audit-residual-risk.md;
-    (c) every residual-status defect class (L-01..L-06) also has a row, so a
+    (c) every residual-status defect class (L-01..L-07) also has a row, so a
         live class can never be silently dropped from the ledger pair.
     """
     problems: List[str] = []

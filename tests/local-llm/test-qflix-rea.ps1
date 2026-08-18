@@ -207,6 +207,41 @@ Test-Case 'Extract-JsonArray returns null on garbage' {
     Assert-True ($null -eq $arr) 'no array returns null'
 }
 
+Test-Case 'Invoke-Model pins an explicit context window and output budget' {
+    # 2026-08-18: no num_ctx meant the server-default window, and a storm-fat
+    # blob silently truncated the PROMPT from the top - amputating the JSON
+    # format instructions - so all 3 models answered prose and 22 consecutive
+    # hourly runs graded all_models_noop. The exact option values are pinned
+    # because "some options" is not the guard; the WINDOW is.
+    $src = Get-Content -Raw $ScriptPath
+    Assert-True ($src -match 'num_ctx\s*=\s*24576') 'num_ctx pinned at 24576'
+    Assert-True ($src -match 'num_predict\s*=\s*3072') 'num_predict raised to 3072'
+    # 420s: at 24576 ctx the larger models prefill slower; 240s graded storm
+    # runs models=1/3 with two timeouts (measured 2026-08-18).
+    Assert-True ($src -match '\$Script:ModelTimeoutSec = 420') 'model timeout holds the big models on a fat blob'
+}
+
+Test-Case 'system prompt caps the findings count' {
+    $p = Get-SystemPrompt
+    Assert-True ($p.Contains('AT MOST 10 findings')) 'findings cap present'
+    Assert-True ($p.Contains('Return ONLY a JSON array')) 'JSON-only instruction retained'
+}
+
+Test-Case 'Extract-JsonArray salvages a num_predict-truncated array' {
+    # The storm shape: complete findings, then the token budget cuts the last
+    # element mid-string. The complete leading elements must survive.
+    $trunc = '[{"signature":"a","severity":"error"},{"signature":"b","severity":"warning"},{"signature":"c","sev'
+    $r = Extract-JsonArray $trunc
+    Assert-True ($null -ne $r) 'truncated array parsed'
+    Assert-Equal 2 (@($r).Count) 'both complete elements recovered, half element dropped'
+    Assert-Equal 'b' (@($r)[1].signature) 'second element intact'
+}
+
+Test-Case 'Extract-JsonArray salvage does not invent structure from garbage' {
+    Assert-True ($null -eq (Extract-JsonArray '[this is not json at all')) 'unclosed prose stays null'
+    Assert-True ($null -eq (Extract-JsonArray 'no array here')) 'no bracket stays null'
+}
+
 Test-Case 'Extract-JsonArray handles nested brackets and strings with brackets' {
     $arr = Extract-JsonArray 'preamble [{"x":"a [b] c","y":[1,2,3]}] postamble'
     Assert-True ($arr -is [array]) 'parsed (is array)'
