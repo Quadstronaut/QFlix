@@ -407,3 +407,19 @@ classes:
       change out-of-band (128 cores visible, ulimit -u 2000; ulimit -v 10GB).
     live_detector: scripts/maint/qflix-audit-live.py
     residual_row: L-06
+
+  - id: L-07
+    title: stale-green push monitor (Kuma restart swallowed a missed run)
+    status: residual
+    detector: null
+    test: null
+    why_not_offline: >-
+      Kuma's push-timeout timers are in-process state that RESETS on restart.
+      A push monitor whose beat was already overdue when Kuma restarts gets a
+      fresh deadline counted from Kuma boot; when that lands past the job's
+      next scheduled run, the monitor re-greens without ever paging and the
+      missed run is structurally invisible. Found 2026-08-18: the host reboot
+      cost the reaper, torrent-janitor and audit-regime their daily runs, and
+      all three sat green on 36-38h-old beats. Only kuma.db can show it.
+    live_detector: scripts/maint/qflix-audit-live.py
+    residual_row: L-07
