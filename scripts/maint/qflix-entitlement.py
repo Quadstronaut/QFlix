@@ -327,6 +327,10 @@ class Plan:
     deadline: Optional[dt.datetime] = None
     days_remaining: Optional[float] = None
     alert: Optional[str] = None                  # something a human must see now
+    # The entitlement service has no record of this household's billing.holder
+    # at all (as opposed to "has a record, and it says no"). REPORTED, NEVER
+    # PAGED -- see the never-seen note in the PENDING branch for why.
+    never_seen: bool = False
 
     @property
     def mutates(self) -> bool:
@@ -347,6 +351,7 @@ class Plan:
             "days_remaining": (round(self.days_remaining, 2)
                                if self.days_remaining is not None else None),
             "alert": self.alert,
+            "never_seen": self.never_seen,
         }
 
 
@@ -460,27 +465,45 @@ def plan_for_share(
         plex_target = (sorted(full_ids)
                        if set(share.section_ids) != set(full_ids) else None)
 
-        # A GRANT MAY NEVER TAKE A SECTION AWAY.
+        # A GRANT MAY NEVER TAKE A *CONTENT* SECTION AWAY.
         #
-        # `full_ids` is "every section that exists right now", read fresh from
-        # plex.tv on every run. parse_sections() refuses only a ZERO-section
-        # catalogue, so a poll that returns 2 of 5 sections is accepted as
-        # truth -- and an entitled member holding all 5 is then planned down to
-        # 2, with the log calling it "raising to full access". Against a
-        # third-party API polled 96 times a day, that is not a hypothetical.
+        # `full_ids` is "every section that exists right now, MINUS Welcome",
+        # read fresh from plex.tv on every run. parse_sections() refuses only a
+        # ZERO-section catalogue, so a poll that returns 2 of 5 sections is
+        # accepted as truth -- and an entitled member holding all 5 is then
+        # planned down to 2, with the log calling it "raising to full access".
+        # Against a third-party API polled 96 times a day, that is not a
+        # hypothetical.
         #
         # The rail is a shape check, not a freshness check: while the answer
-        # GRANTS, the target must never be a strict subset of what the person
-        # already holds. Growing is fine, identical is fine, shrinking is a
-        # catalogue problem and never a decision this branch is allowed to make
-        # -- reduction lives in the expiry branch, behind the clocks, alone.
+        # GRANTS, the target must never be a strict subset of the content the
+        # person already holds. Growing is fine, identical is fine, shrinking is
+        # a catalogue problem and never a decision this branch is allowed to
+        # make -- reduction lives in the expiry branch, behind the clocks, alone.
+        #
+        # WELCOME IS EXCLUDED FROM THE COMPARISON (operator directive
+        # 2026-08-17). full_access_ids() subtracts Welcome by construction, so
+        # an entitled member who still carries Welcome from a previous lapse
+        # holds full+1 -- and a naive `full_ids < share.section_ids` reads that
+        # one extra floor section as a truncated catalogue, fires the alert, and
+        # cancels the write. That is self-sealing: the write it cancels is the
+        # very write that would have dropped Welcome, so the member keeps being
+        # shown the "go activate your subscription" video forever WHILE PAYING,
+        # and the alert re-fires every day. Removing Welcome from an entitled
+        # member is not a reduction, it is the disjointness rule in
+        # plexshare.full_access_ids() being enforced. Compare content to
+        # content: subtract the floor from both sides first.
+        held_content = set(share.section_ids) - set(minimum_ids)
+        drops_only_welcome = (plex_target is not None
+                              and set(full_ids) == held_content)
         grant_alert = None
-        if plex_target is not None and set(full_ids) < set(share.section_ids):
+        if plex_target is not None and set(full_ids) < held_content:
             grant_alert = (
-                "plex.tv reported only %d section(s) but %s already holds %d; "
-                "refusing to reduce an ENTITLED member on a short catalogue "
-                "read (suspected truncated poll, not a real library removal)"
-                % (len(full_ids), mask(email), len(share.section_ids)))
+                "plex.tv reported only %d content section(s) but %s already "
+                "holds %d; refusing to reduce an ENTITLED member on a short "
+                "catalogue read (suspected truncated poll, not a real library "
+                "removal)"
+                % (len(full_ids), mask(email), len(held_content)))
             plex_target = None
 
         seerr_target = None
@@ -493,20 +516,38 @@ def plan_for_share(
                         " (plex-only tagalong)" if tagalong else "",
                         grant_alert if grant_alert else
                         "already at full access" if not (plex_target or seerr_target)
+                        else "dropping the Welcome library (entitled members are "
+                        "not shown the activate-your-subscription video)"
+                        if drops_only_welcome
                         else "raising to full access"))
 
     # --- not entitled: pending or expired ----------------------------------
     if now < deadline:
+        # NEVER-SEEN IS REPORTED, NOT PAGED (operator directive 2026-08-17).
+        #
+        # "Never seen" used to mean "almost certainly a typo in billing.holder",
+        # because the entitlement service's universe and the QFlix roster were
+        # the same set of people. That premise is gone: the Patreon behind the
+        # service now carries non-QFlix members, and QFlix carries households
+        # that pay on rails the service has no visibility into at all. Under
+        # those conditions never-seen is an ORDINARY STEADY STATE for a growing
+        # share of the roster, not an anomaly -- and an anomaly channel that
+        # fires on a steady state is a channel that gets muted, taking the
+        # unnamed-share page and the arm-check with it.
+        #
+        # So the fact is kept and the page is dropped: it stays in `reason`, in
+        # the --json plan as `never_seen`, and in payer_oracle's arm-check --
+        # where it is still load-bearing, because "an EVER-ENTITLED declared
+        # payer went never-seen" means the sync projection died and is a
+        # genuinely rare event (SPEC section 3, row 3).
         note = ""
         if answer.never_seen:
-            # Overwhelmingly this is a typo in billing.holder, not a person who
-            # never subscribed. Say so while there is still time to fix it.
-            note = (" -- the entitlement service has NEVER SEEN %s; check "
-                    "billing.holder for a typo" % mask(holder or "?"))
+            note = (" -- the entitlement service has no record of %s at all "
+                    "(unknown address, or a rail it cannot see)"
+                    % mask(holder or "?"))
         return Plan(email=email, state=S_PENDING, household_id=hid, holder=holder,
                     provision_plex_id=provision, deadline=deadline,
-                    days_remaining=remaining,
-                    alert=(note.strip(" -") or None) if answer.never_seen else None,
+                    days_remaining=remaining, never_seen=answer.never_seen,
                     reason="not entitled, %.1f day(s) of grace remain%s"
                            % (remaining, note))
 
@@ -515,35 +556,38 @@ def plan_for_share(
     seerr_target = None
     if seerr_user is not None and seerr_user.permissions != SU.PERMISSIONS_DISABLED:
         seerr_target = SU.PERMISSIONS_DISABLED
-    # THE NEVER-SEEN ALERT MUST SURVIVE INTO EXPIRED (2026-08-07).
-    # It used to fire only in the PENDING branch above, on the reasoning that
-    # you want to hear about a typo "while there is still time to fix it". That
-    # is backwards: PENDING costs nobody anything, and EXPIRED is the moment the
-    # person is actually reduced. So the one warning that distinguishes "did not
-    # subscribe" from "we are looking up the wrong address" went silent at
-    # exactly the moment it mattered, and stayed silent on every subsequent run
-    # because the state never leaves EXPIRED on its own.
+    # NEVER-SEEN IN EXPIRED: STILL RECORDED, NO LONGER PAGED.
     #
-    # Concretely: a member subscribes on Patreon under a different address than
-    # billing.holder, the entitlement service is never asked about the address
-    # they actually pay with, and they are reduced to Welcome as a non-payer —
-    # while paying. Louder here than in PENDING, not quieter, because here it is
-    # already costing someone their access.
-    expired_alert = None
+    # History, because this line has moved twice. It was PENDING-only, then
+    # 2026-08-07 added it here too on the reasoning that EXPIRED is the moment
+    # the reduction actually costs someone access, so the warning that
+    # distinguishes "did not subscribe" from "we are looking up the wrong
+    # address" must not be silent there. That reasoning was right about WHERE
+    # the fact matters and is preserved -- the note is in `reason` and the flag
+    # is in the --json plan.
+    #
+    # What changed 2026-08-17 is the base rate. EXPIRED is terminal: nothing
+    # moves an account out of it except the member becoming entitled, so this
+    # alert re-fired daily, per account, forever. With never-seen now an
+    # ordinary condition for manual-rail and non-Patreon households, that is a
+    # permanent daily page per household on a fact that is not going to change.
+    # The rare, genuinely actionable version of this signal -- an EVER-ENTITLED
+    # declared payer going never-seen, i.e. the sync projection dying -- is
+    # caught by payer_oracle.judge() row 3 and still pages.
+    note = ""
     if answer is not None and answer.never_seen:
-        expired_alert = (
-            "REDUCING %s but the entitlement service has NEVER SEEN that "
-            "address — if they pay under a different one, billing.holder is "
-            "wrong and this reduction is a false positive"
-            % mask(holder or "?"))
+        note = ("; the entitlement service has no record of %s at all, so if "
+                "they pay on a rail it cannot see, billing.holder is the thing "
+                "to check" % mask(holder or "?"))
     return Plan(email=email, state=S_EXPIRED, household_id=hid, holder=holder,
                 plex_target=plex_target, seerr_target=seerr_target,
                 provision_plex_id=provision, deadline=deadline,
-                days_remaining=remaining, alert=expired_alert,
-                reason="not entitled and grace expired %.1f day(s) ago; %s"
+                days_remaining=remaining,
+                never_seen=bool(answer is not None and answer.never_seen),
+                reason="not entitled and grace expired %.1f day(s) ago; %s%s"
                        % (-remaining,
                           "already at the floor" if not (plex_target or seerr_target)
-                          else "reducing to Welcome + Seerr disabled"))
+                          else "reducing to Welcome + Seerr disabled", note))
 
 
 # ===========================================================================

@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-08-17 — Two alerts that were describing the past
+
+Two entitlement-gate signals were firing every day about conditions that were
+either normal or self-inflicted, and both were fixed by changing what the code
+believes rather than by muting a channel.
+
+**Welcome is the floor, not content.** `QFlix - Welcome` holds one video that
+says "go to Patreon and activate your subscription", so `full_access_ids()`
+subtracts it: the two access levels are disjoint by construction, and an
+entitled member must never be able to see the pitch for something they already
+pay for. But the grant branch's short-catalogue rail — the guard that refuses to
+reduce an entitled member when plex.tv returns a truncated section list —
+compared `full_ids` against the member's **entire** share. A member who lapsed
+and came back holds full + Welcome, which is full + 1, which the rail read as
+"plex.tv returned fewer sections than this person holds" and refused. The write
+it cancelled was the write that would have dropped Welcome. So the state was
+**self-sealing**: the member sat entitled and pitched forever, and the alert
+re-fired daily. The comparison now subtracts the floor from both sides —
+truncated polls are still refused, and dropping Welcome from an entitled member
+is correctly not a reduction at all.
+
+**`NEVER SEEN` was demoted from a page to a field.** It means the entitlement
+service has no record of a household's `billing.holder` *at all*, and it used to
+page because the service's universe and the QFlix roster were the same set of
+people, so never-seen was almost always a typo. That premise is gone — the
+Patreon behind the service now carries non-QFlix members, and QFlix carries
+households paying on rails the service cannot see. Never-seen became an ordinary
+steady state for a growing slice of the roster, and because `expired` is
+terminal, it was a permanent daily page per household about a fact that was not
+going to change. The fact is kept (`Plan.never_seen`, the `--json` plan, and the
+`reason` string) and the page is dropped. The rare actionable form of the signal
+still pages: an **ever-entitled** declared payer going never-seen means the sync
+projection died, and that is `payer_oracle.judge()` row 3, unchanged.
+
+Both alerts had been added deliberately, nine days apart, for reasons that were
+correct when written. Neither was wrong about what mattered — they were wrong
+about the base rate.
+
 ## 2026-08-16 — Four apps nobody opened
 
 Kavita, Komga, Calibre-Web and Audiobookshelf are gone. All four were

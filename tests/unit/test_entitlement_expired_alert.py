@@ -1,30 +1,37 @@
-"""The NEVER-SEEN alert must survive into EXPIRED, not just PENDING.
+"""NEVER-SEEN in the EXPIRED branch: recorded on the plan, never paged.
 
 WHY THIS EXISTS
 ---------------
-`plan_for_share` grades a share and returns a Plan. When the entitlement
-service has never heard of an address at all, that is overwhelmingly a typo in
-`billing.holder` rather than a person who never subscribed — the address being
-looked up is simply not the address they pay with.
+`plan_for_share` grades a share and returns a Plan. "Never seen" means the
+entitlement service has no record of the household's `billing.holder` AT ALL,
+as distinct from having a record that says no.
 
-That warning used to fire ONLY in the PENDING branch, on the reasoning that you
-want to hear about it "while there is still time to fix it". That is backwards.
-PENDING costs nobody anything; EXPIRED is the moment the person is actually
-reduced to Welcome and has their Seerr disabled. So the one signal that
-distinguishes "did not subscribe" from "we are asking about the wrong address"
-went quiet at exactly the moment it started costing someone access — and stayed
-quiet on every subsequent run, because a household does not leave EXPIRED on its
-own.
+The original 2026-08-07 version of this file pinned an ALERT here. The reasoning
+was sound for its moment: never-seen was overwhelmingly a typo in
+`billing.holder`, and it used to fire only in PENDING — which costs nobody
+anything — while going quiet in EXPIRED, the moment the member is actually
+reduced to Welcome and has Seerr disabled. So the one signal distinguishing "did
+not subscribe" from "we are asking about the wrong address" was silent exactly
+when it started costing someone access.
 
-The live shape of this, 2026-08-07: ten households sit PENDING with 24.2 days of
-grace and amnesty expiring 2026-09-01, every one of them flagged NEVER SEEN. One
-of them is expected to start paying via Patreon. If their Patreon address
-differs from `billing.holder`, they get reduced as a non-payer WHILE PAYING, and
-under the old behaviour the operator would have been told nothing.
+WHAT CHANGED 2026-08-17 (operator directive)
+--------------------------------------------
+The base rate flipped. The Patreon behind the entitlement service now carries
+non-QFlix members, and QFlix carries households paying on rails the service
+cannot see at all, so never-seen became an ordinary steady state for a growing
+slice of the roster rather than an anomaly. Combined with EXPIRED being terminal
+— a household does not leave it on its own — the alert became a permanent daily
+page, per household, on a fact that was not going to change. A channel that
+fires on a steady state is a channel that gets muted, and muting THIS one would
+also bury the unnamed-share page and the arm-check.
 
-These tests pin both halves: the alert fires in EXPIRED when never_seen, and it
-stays absent when the service gave a real answer (so the alert keeps meaning
-"look at the address", not "someone was reduced").
+So the fact is kept and the page is dropped: `Plan.never_seen` carries it into
+the --json plan, `Plan.reason` says it in words, and the rare genuinely
+actionable variant — an EVER-ENTITLED declared payer going never-seen, meaning
+the sync projection died — still pages from `payer_oracle.judge()` row 3.
+
+These tests pin both halves: EXPIRED + never_seen records the fact and emits NO
+alert, and a real not-entitled answer records nothing.
 """
 from __future__ import annotations
 
@@ -113,24 +120,28 @@ def _plan(gate, libs, *, never_seen, days_past_deadline, tmp_path):
         grace_days=7, new_arrival_days=30, member_permissions=0, now=now)
 
 
-def test_expired_and_never_seen_raises_an_alert(gate, libs, tmp_path):
-    """THE REGRESSION. Reducing someone the service has never heard of must say
-    so — that is the difference between a non-payer and a wrong address."""
+def test_expired_and_never_seen_is_recorded_but_never_paged(gate, libs, tmp_path):
+    """Reducing someone the service has never heard of must still be
+    DISTINGUISHABLE from reducing a known non-payer — on the plan, not in
+    Discord. Losing the distinction entirely would leave a wrong-address
+    reduction indistinguishable from a real lapse."""
     plan = _plan(gate, libs, never_seen=True, days_past_deadline=14,
                  tmp_path=tmp_path)
     assert plan.state == gate.S_EXPIRED
-    assert plan.alert, (
-        "EXPIRED + never_seen produced no alert — the typo warning went silent "
-        "at exactly the moment the reduction happens")
-    assert "NEVER SEEN" in plan.alert.upper()
+    assert plan.never_seen is True, "the fact must survive on the plan"
+    assert "billing.holder" in plan.reason, "and say what to check"
+    assert plan.to_json()["never_seen"] is True, "and reach the --json surface"
+    assert not plan.alert, (
+        "never-seen paged from EXPIRED — that is a permanent daily alert per "
+        "household on a fact that does not change (operator directive 2026-08-17)")
 
 
-def test_expired_with_a_real_answer_stays_quiet(gate, libs, tmp_path):
-    """The alert must keep meaning 'check the address'. If it fired on every
-    expiry it would be noise, and an operator learns to scroll past noise."""
+def test_expired_with_a_real_answer_records_nothing_extra(gate, libs, tmp_path):
+    """never_seen must keep meaning 'the service has no record', not 'someone
+    was reduced' — otherwise the JSON field is as useless as the old alert."""
     plan = _plan(gate, libs, never_seen=False, days_past_deadline=14,
                  tmp_path=tmp_path)
     assert plan.state == gate.S_EXPIRED
-    assert not plan.alert, (
-        "a definitively not-entitled member produced a typo alert — that makes "
-        "the signal meaningless")
+    assert plan.never_seen is False
+    assert "billing.holder" not in plan.reason
+    assert not plan.alert
