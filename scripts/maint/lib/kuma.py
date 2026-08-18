@@ -183,7 +183,7 @@ STANDALONE_SELF_PUSH_MONITORS = {
     # stream aborts the matroska muxer). Daily 04:00 UTC; destructive
     # automation (remux + atomic replace) must never run silent.
     "QFlix Unknown Codec Stream": "qflix-unknown-codec-stream",
-    # The LIVE half of the audit regime (L-01..L-06). The offline detectors
+    # The LIVE half of the audit regime (L-01..L-07). The offline detectors
     # above audit SOURCE; this audits what is actually RUNNING -- staged units
     # vs what systemd loaded, the live Kuma monitor set, persisted push tokens,
     # secret modes, quota. Registered here or `kuma audit` calls it orphan drift.

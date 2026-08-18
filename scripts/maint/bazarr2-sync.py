@@ -128,6 +128,79 @@ def _git_tag_exists(tag):
     return tag in cp.stdout
 
 
+def _ensure_frontend(version, force=False):
+    """Install the PREBUILT web UI for `version` into bin/frontend/build/.
+
+    WHY THIS EXISTS (2026-08-18 audit finding): this script pins bazarr2 by
+    checking out a GIT TAG, but the web UI is a Vite app that upstream only
+    ships PREBUILT in the release zip — a tag checkout leaves bin/frontend/
+    as unbuilt source with no build/ directory, app/ui.py 404s its Jinja
+    loader, and every UI request 500s with TemplateNotFound. That was the
+    state since the Jul 6 install: API perfectly healthy, UI dead for six
+    weeks, and nothing noticed because all automation is API-driven.
+
+    Building the frontend on the box is a non-starter (no node toolchain on
+    the slot, and a build would need re-running on every sync). Instead pull
+    the release asset for the SAME tag the checkout pinned and extract only
+    frontend/build/. Idempotent: skips when build/index.html already exists,
+    unless force=True (version just changed, so the old build is stale).
+
+    Returns True on success, False on failure — callers treat a missing UI
+    as DEGRADED, not fatal: the API (the part the stack depends on) is
+    untouched either way, so a GitHub hiccup must not abort a version sync.
+    """
+    import shutil
+    import tempfile
+    import zipfile
+
+    build_dir = BAZARR2_BIN / "frontend" / "build"
+    if not force and (build_dir / "index.html").exists():
+        return True
+
+    url = ("https://github.com/morpheus65535/bazarr/releases/download/v"
+           + version + "/bazarr.zip")
+    log("installing prebuilt frontend from " + url)
+    tmp = None
+    try:
+        with urllib.request.urlopen(url, timeout=300) as resp:
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
+                shutil.copyfileobj(resp, f)
+                tmp = Path(f.name)
+        with zipfile.ZipFile(tmp) as z:
+            # The release zip's internal prefix has moved before; locate
+            # frontend/build/ by content rather than assuming a root layout.
+            members = [m for m in z.namelist() if "frontend/build/" in m
+                       and not m.startswith("/") and ".." not in m]
+            if not members:
+                log("ERROR: release zip has no frontend/build/ members")
+                return False
+            if (build_dir / "index.html").exists():
+                shutil.rmtree(build_dir)
+            for m in members:
+                rel = m[m.index("frontend/build/"):]
+                dest = BAZARR2_BIN / rel
+                if m.endswith("/"):
+                    dest.mkdir(parents=True, exist_ok=True)
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(m) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+        if not (build_dir / "index.html").exists():
+            log("ERROR: extraction finished but build/index.html is absent")
+            return False
+        log("frontend build installed (" + str(len(members)) + " files)")
+        return True
+    except Exception as exc:
+        log("ERROR: frontend install failed: " + str(exc))
+        return False
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def _apply_patches():
     server_py = BAZARR2_BIN / "bazarr" / "app" / "server.py"
     text = server_py.read_text()
@@ -202,6 +275,11 @@ def sync_to(target_version, bazarr2_key):
 
     _apply_patches()
 
+    if not _ensure_frontend(target_version, force=True):
+        # Degraded, not fatal: the UI is cosmetic relative to the subtitle
+        # pipeline. Say so loudly and carry on with the version sync.
+        log("WARN: continuing sync WITHOUT a web UI (frontend install failed)")
+
     venv_pip = HOME / ".apps" / "bazarr2" / "venv" / "bin" / "pip"
     cp = subprocess.run(
         [str(venv_pip), "install", "--quiet", "-r", str(BAZARR2_BIN / "requirements.txt")],
@@ -258,6 +336,20 @@ def main():
 
     log("bazarr-1=" + repr(v1) + "  bazarr-2=" + repr(v2))
     if _semver_eq(v1, v2):
+        # Versions agree, but a tag checkout ships no web UI (see
+        # _ensure_frontend) - heal that here so a missing build is a
+        # one-tick outage, not a permanent one. Restart only when the
+        # build was actually (re)installed.
+        if not (BAZARR2_BIN / "frontend" / "build" / "index.html").exists():
+            if _ensure_frontend(v2):
+                _systemctl("restart", "bazarr2.service")
+                if not _wait_for_bazarr2(b2_key, timeout_s=60):
+                    log("ERROR: bazarr2 did not come back after frontend heal")
+                    _push_kuma("down", "bazarr2 down after frontend heal")
+                    return 1
+                log("frontend healed and bazarr2 restarted")
+            else:
+                log("WARN: web UI still missing (frontend install failed); API unaffected")
         log("versions match; no-op")
         _push_kuma("up", "in sync at " + v1)
         return 0
