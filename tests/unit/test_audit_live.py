@@ -90,3 +90,54 @@ def test_collect_degrades_to_unavailable_not_to_clean(live, monkeypatch, tmp_pat
 def test_monitor_name_matches_the_self_push_registration(live):
     from lib.kuma import STANDALONE_SELF_PUSH_MONITORS
     assert live.MONITOR_NAME in STANDALONE_SELF_PUSH_MONITORS
+
+
+# ---------------------------------------------------------------------------
+# L-07 — stale-green push monitors (2026-08-18 storm audit)
+# ---------------------------------------------------------------------------
+# Kuma's push-timeout timers reset when Kuma restarts, so a push monitor whose
+# beat was already overdue at restart re-greens before it ever pages. The host
+# reboot proved it: reaper + torrent-janitor + audit-regime all lost their
+# daily runs and sat GREEN on 36-38h-old beats. These pin the decision logic.
+
+def _now():
+    return _dt.datetime(2026, 8, 18, 19, 0, tzinfo=_dt.timezone.utc)
+
+
+def test_stale_green_pusher_is_flagged(live):
+    # The live shape: 25h window (90000s), beat 37.6h ago, still status=1.
+    rows = [("QFlix Reaper", 90000, "2026-08-17 05:18:09.455", 1)]
+    out = live.stale_green_pushers(rows, _now())
+    assert len(out) == 1
+    assert out[0]["class_id"] == "L-07"
+    assert out[0]["instance_id"] == "QFlix Reaper"
+    assert "stale-green" in out[0]["detail"]
+
+
+def test_fresh_beat_within_window_is_clean(live):
+    rows = [("QFlix Reaper", 90000, "2026-08-18 05:18:09.455", 1)]
+    assert live.stale_green_pushers(rows, _now()) == []
+
+
+def test_slack_absorbs_randomized_delay(live):
+    # 26h-old beat on a 25h window is inside 1.25x slack — one slow run must
+    # not page, or this becomes the flappy alert the storm channel already is.
+    rows = [("QFlix Reaper", 90000, "2026-08-17 17:00:00.000", 1)]
+    assert live.stale_green_pushers(rows, _now()) == []
+
+
+def test_red_monitor_is_not_double_reported(live):
+    # status=0 already pages through Kuma's own notification path; L-07 exists
+    # for the SILENT case only.
+    rows = [("QFlix Reaper", 90000, "2026-08-16 05:00:00.000", 0)]
+    assert live.stale_green_pushers(rows, _now()) == []
+
+
+def test_unparseable_beat_time_fails_open(live):
+    rows = [("QFlix Reaper", 90000, "not-a-time", 1)]
+    assert live.stale_green_pushers(rows, _now()) == []
+
+
+def test_zero_interval_has_no_window(live):
+    rows = [("weird", 0, "2026-08-01 00:00:00.000", 1)]
+    assert live.stale_green_pushers(rows, _now()) == []

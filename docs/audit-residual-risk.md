@@ -20,7 +20,7 @@ cadence. A missing row or a lapsed review is a **REGIME INTEGRITY** failure
 | id | residual | why it cannot be closed | owner | cadence (days) | last reviewed |
 |---|---|---|---|---|---|
 | R1 | Upstream / platform change — Tdarr, the *arr suite, Plex, SABnzbd, the Ultra.cc platform. | Unbounded and out of our control. "Never again" would be a claim about third parties' future behaviour. In-tree evidence: the entire tdarr-WASM-OOM saga, and the UCC kernel re-IP that broke Tautulli. | operator | 90 | 2026-07-29 |
-| R2 | Live box drift between audit runs (classes L-01..L-06). | Deployed state mutates out-of-band; offline detectors cannot see it. Bounded only by how often `qflix-audit-live.py` runs. | operator | 30 | 2026-07-29 |
+| R2 | Live box drift between audit runs (classes L-01..L-07). | Deployed state mutates out-of-band; offline detectors cannot see it. Bounded only by how often `qflix-audit-live.py` runs. | operator | 30 | 2026-07-29 |
 | R3 | Semantic defects with no syntactic signature — a policy contradiction between two config surfaces that share no token, a wrong threshold, wrong business logic. | Undecidable in general (Rice). The regime trades semantic completeness for syntactic exhaustiveness, deliberately. **This is what an LLM audit is genuinely good at**; the regime does not replace it, it shrinks the LLM's job from "search everything" to "search the residual". | operator | 90 | 2026-07-29 |
 | R4 | S2 untracked file bodies — `scripts/local-llm/qflix-rea.ps1`, `scripts/manitoba-tunnel.ps1`. | Only their extracted **policy** is guarded (`manifest/rea-noise-classes.yaml`, C-07). A body edit that does not touch policy is invisible to CI, and that part cannot be closed while the files stay out of a public repo. **What changed 2026-08-03: it is no longer also _unrecoverable_.** `scripts/local-llm/backup-untracked.ps1` reads the S2 member list, copies each file hourly into the same `B:\BAKS\Documents` mirror `Backup-Documents` uses, keeps a content-addressed version history *outside* the `/MIR` purge scope, SHA256-verifies all three, and exits non-zero + pages Discord on any divergence. Measured the day it landed: the mirror was **22 hours and two edits behind** `qflix-rea.ps1` while every surface reported success. | operator | 90 | 2026-08-03 |
 | R5 | **CI itself is unwatched.** If GitHub Actions silently stops running, everything above stays green and the digest stops changing for the most boring possible reason. | The mitigation (assert the last successful `master` run is < 7 days old via the GitHub API) needs network and a token; every detector in this regime is offline by construction. **Not implemented.** This is the last turtle and it is named so it is never a surprise. | operator | 30 | 2026-07-29 |
@@ -34,7 +34,7 @@ cadence. A missing row or a lapsed review is a **REGIME INTEGRITY** failure
 | R-WORKSTATION-OLLAMA-SERVICE | The local ollama service and its model set. | Live workstation state. The model store was relocated to `B:\AIModels` on 2026-07-24 after a deletion killed `serve` on every boot. | operator | 90 | 2026-07-29 |
 | R-DASH-CI | `apps/qflix-dash` has a `svelte-check` gate that this repo's CI does not run. | 16 errors -> 0 was a manual milestone (`8a694da`), not an enforced one. Enrolling it means a Node toolchain in CI. | operator | 90 | 2026-07-29 |
 
-## Live defect classes (L-01..L-06)
+## Live defect classes (L-01..L-07)
 
 These are **named** classes with **no offline detector**, by construction. They
 belong to `scripts/maint/qflix-audit-live.py` (its own module, its own timer,
@@ -49,6 +49,7 @@ classes that will keep producing new findings forever.
 | L-04 | Every declared secret key exists on the box with the correct mode. | Secrets are never in git (public repo). Existence and file mode are properties of the box's filesystem only. |
 | L-05 | Every self-pusher has a **persisted** push token. | The born-mute class: a push token is a live Kuma artifact in `~/secrets/kuma-push-tokens.json`, and a missing one makes the job exit 0 silently. Nothing in the repo can observe it. |
 | L-06 | Quota / thread ceiling / disk. | Inherently live numbers on a shared seedbox whose limits Ultra.cc can change out-of-band (128 cores visible, `ulimit -u` 2000, `ulimit -v` 10GB). |
+| L-07 | Stale-green push monitors. | Kuma's push-timeout timers reset on Kuma restart; a beat already overdue at restart gets a fresh deadline that can land past the job's next run, so the missed run never pages (2026-08-18: reaper + torrent-janitor + audit-regime, green on 36-38h beats after the host reboot). Only live `kuma.db` shows beat age vs window. |
 
 ## Known, unclosed dead-man gaps
 
