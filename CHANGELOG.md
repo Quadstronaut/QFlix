@@ -1,5 +1,57 @@
 # Changelog
 
+## 2026-08-18 — An alert about code that no longer exists
+
+REA paged on eight findings. All eight were noise, and the most instructive one
+was a Gemini API quota failure — from a code path that had been deleted.
+
+**The stale-log leak.** `qflix-newsletter.err` is append-only and written once a
+week. The `app_extra` collector gates it with `find -mtime`, which asks "was
+this file touched recently" — it was, every Monday — and then reads `tail -n
+120`, which on a file that grows two lines a week reaches back **63 days**. So a
+`Gemini call failed: 429` line dated **2026-06-22** was shipped to the models as
+current, and they correctly reported what they were shown. There is no `ai.py`
+anywhere in the deployed tree; the Gemini path was retired weeks ago.
+
+The irony is that `Test-IsStaleFinding` names this exact file in its own
+docstring as the case it exists to catch. It fails open when a model omits the
+`time` field, which is precisely what happened. Six collectors already carried a
+deterministic bash-side line-date filter for this reason; `app_extra` — eight
+files, two loops, the only section reading weekly-cadence logs — had none. It
+now shares a `freshlines` helper instead of a seventh copy of the awk, with
+inheritance so a stale traceback goes with its dated header rather than
+surviving headless. Verified by running the real generated collector against the
+box: the newsletter section comes back empty and the blob carries zero Gemini
+lines.
+
+**The other seven were one story told twice.** Five findings — a Plex
+"Network Service: Error in advertiser handle read: 125 (Operation canceled)" and
+four Bazarr "SignalR connection as been lost" lines — were **the Monday
+maintenance window restarting services**, seen from two logs in two timezones.
+The Plex line appears exactly once in each of the five rotated logs, always as
+the last error in the file, always immediately before "Killing process: Plex EAE
+Service": it is the shutdown sequence. Every Bazarr disconnect is followed by a
+matching "is connected" within 20-35 seconds, and they cluster at 11:04-11:12
+UTC on consecutive Mondays.
+
+The last two were one external outage: Tokyo Toshokan behind Cloudflare returned
+522, and Prowlarr's own 429 backoff for it propagated to Sonarr. Suppressed
+rather than removed, because unlike tvsubtitles — disabled outright on
+2026-08-14 once its domain went permanently SERVFAIL — this indexer works ~88% of
+the time and has done so since May. **Dead gets removed, flaky gets suppressed.**
+
+**One finding was the file's own defect class, self-inflicted.** The prompt
+clause for the Cloudflare rule already said "Cloudflare 5xx (52x)" in so many
+words — but the enforcing regex required a ray id or a `<center>nginx</center>`
+tag, and Cloudflare's minimal error body is the single line `error code: 522`
+with neither. Prompt asking, rule not enforcing: exactly the C-07 shape
+`rea-noise-classes.yaml` was created to make impossible. Now line-anchored, so
+our own services quoting an error code mid-line still page.
+
+Twenty-two noise classes became twenty-five. Every one carries measured evidence
+rather than an assumption, and every one is pinned by a near-miss test asserting
+the sibling shape that *is* a real fault still pages.
+
 ## 2026-08-17 — Two alerts that were describing the past
 
 Two entitlement-gate signals were firing every day about conditions that were
