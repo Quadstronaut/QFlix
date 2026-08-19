@@ -131,3 +131,46 @@ def test_network_failure_is_degraded_not_fatal(mod, monkeypatch):
         raise OSError("github unreachable")
     monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
     assert mod._ensure_frontend("1.5.3") is False
+
+
+# ---------------------------------------------------------------------------
+# COUNCIL 2026-08-18 (gen-opus-1 F-03 / gen-opus-2 QF-01): a failed heal used
+# to push Kuma "up: in sync" - the six-week silent-UI class re-opened on the
+# heal's own failure branch. A missing UI must be a signal, not a logfile WARN.
+# ---------------------------------------------------------------------------
+
+def _wire_main(mod, monkeypatch, *, heal_result):
+    """Drive main() down the versions-match path with a missing build."""
+    pushes = []
+    monkeypatch.setattr(mod, "_read_apikey", lambda p: "k")
+    monkeypatch.setattr(mod, "_api_version", lambda base, key: "1.6.0")
+    monkeypatch.setattr(mod, "_ensure_frontend", lambda v, force=False: heal_result)
+    monkeypatch.setattr(mod, "_systemctl", lambda *a: 0)
+    monkeypatch.setattr(mod, "_wait_for_bazarr2", lambda key, timeout_s=60: True)
+    monkeypatch.setattr(mod, "_push_kuma", lambda status, msg: pushes.append((status, msg)))
+    return pushes
+
+
+def test_failed_heal_pushes_down_not_up(mod, monkeypatch):
+    pushes = _wire_main(mod, monkeypatch, heal_result=False)
+    rc = mod.main()
+    assert rc == 1
+    assert pushes and pushes[-1][0] == "down"
+    assert "UI" in pushes[-1][1], "the reason must name the UI, not a generic failure"
+
+
+def test_successful_heal_pushes_up(mod, monkeypatch):
+    pushes = _wire_main(mod, monkeypatch, heal_result=True)
+    rc = mod.main()
+    assert rc == 0
+    assert pushes[-1] == ("up", "in sync at 1.6.0")
+
+
+def test_present_build_stays_up_without_healing(mod, monkeypatch):
+    build = mod.BAZARR2_BIN / "frontend" / "build"
+    build.mkdir(parents=True)
+    (build / "index.html").write_text("ui")
+    pushes = _wire_main(mod, monkeypatch, heal_result=False)  # heal must not run
+    rc = mod.main()
+    assert rc == 0
+    assert pushes[-1] == ("up", "in sync at 1.6.0")

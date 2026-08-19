@@ -563,9 +563,14 @@ classes:
       an unexplained network fault. Anchored to Bazarr's verbatim "as been lost"
       (the upstream typo, signalr_client:159 for Sonarr and :226 for Radarr),
       which a model paraphrasing the line into "has been lost" cannot invent, so
-      this rule can only fire on raw log text. A loss with NO following
-      reconnect still pages: this rule has no pairing or rate dimension and does
-      not claim one.
+      this rule can only fire on raw log text.
+      KNOWN BLINDNESS, accepted (council 2026-08-18): with no pairing
+      dimension a PERMANENT loss is suppressed identically to a transient
+      one - no rule over raw text can see the ABSENCE of a later reconnect
+      line, so no carve-out is promised. Bounded: a wedged SignalR client
+      only loses LIVE event delivery; Bazarr's scheduled sync/search
+      continues, and a genuinely wedged Bazarr surfaces through its own
+      non-suppressed errors.
     added: 2026-08-18
 
   - id: arr-indexer-unavailable-backoff
