@@ -275,9 +275,11 @@ def sync_to(target_version, bazarr2_key):
 
     _apply_patches()
 
-    if not _ensure_frontend(target_version, force=True):
-        # Degraded, not fatal: the UI is cosmetic relative to the subtitle
-        # pipeline. Say so loudly and carry on with the version sync.
+    frontend_ok = _ensure_frontend(target_version, force=True)
+    if not frontend_ok:
+        # Degraded, not fatal: the version sync must still complete (the API
+        # is the contract the stack depends on) - but the final Kuma push
+        # carries the degradation so it is a signal, not a logfile WARN.
         log("WARN: continuing sync WITHOUT a web UI (frontend install failed)")
 
     venv_pip = HOME / ".apps" / "bazarr2" / "venv" / "bin" / "pip"
@@ -313,6 +315,9 @@ def sync_to(target_version, bazarr2_key):
         return 1
 
     log("SUCCESS: bazarr2 now at " + str(final))
+    if not frontend_ok:
+        _push_kuma("down", "synced to " + str(final) + " but UI missing (frontend install failed)")
+        return 1
     _push_kuma("up", "synced to " + str(final))
     return 0
 
@@ -349,7 +354,17 @@ def main():
                     return 1
                 log("frontend healed and bazarr2 restarted")
             else:
-                log("WARN: web UI still missing (frontend install failed); API unaffected")
+                # DOWN, not a log-file WARN (council 2026-08-18, gen-opus-1
+                # F-03 / gen-opus-2 QF-01): pushing "up: in sync" over a
+                # missing UI is the EXACT six-week silent-UI class the heal
+                # was built to close, re-opened on its own failure branch.
+                # Nothing else observes the UI (the app probe is API-only),
+                # so this push is the one place the silence can become a
+                # signal. Self-clearing: the next hourly tick re-heals and
+                # pushes up.
+                log("ERROR: web UI still missing (frontend install failed); API unaffected")
+                _push_kuma("down", "UI missing and frontend install failed; API healthy")
+                return 1
         log("versions match; no-op")
         _push_kuma("up", "in sync at " + v1)
         return 0

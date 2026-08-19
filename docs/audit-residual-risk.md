@@ -53,6 +53,15 @@ classes that will keep producing new findings forever.
 
 ## Known, unclosed dead-man gaps
 
+- **Deployed systemd unit CONTENT drift is invisible to every auditor**
+  (council 2026-08-18). `deploy-drift.sh` byte-compares only `*.py`/`*.sh`
+  under `~/scripts`; L-01/L-02 compare unit NAME SETS. A deployed unit whose
+  ExecStart, Environment or token line diverges from the repo's copy is seen
+  by nothing - f72910f's stale-ExecStart find was manual. Expected divergences
+  (bootstrap-written tokens, on-box arming drop-ins) make a naive byte-compare
+  wrong by design, so closing this needs a field-aware comparison, not a glob
+  extension. Accepted residual until designed.
+
 Adjudicated in `manifest/jobs.yaml` with `open_gap: true`. Each is reported as an
 **advisory finding on every run** — `open_gap` moves a gap from *unknown* to
 *known, dated and owned*; it does not make it disappear.

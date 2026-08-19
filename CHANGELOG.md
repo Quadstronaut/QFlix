@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-08-18 (III) — The council audits the auditors
+
+An adversarial council (v2: blind generation, five verification lenses, Fable
+arbitration; ~2.3M tokens, every finding backed by an executed artifact) was
+turned on this session's own work and the live box. Verdict on the day's
+changes: no session-caused live regression anywhere. But the council earned
+its keep — its findings, each arbiter-verified at source, and each now fixed:
+
+- **The grant rail had a second hole, pre-existing and sharper than the one
+  d1d1b9d fixed.** The guard tested `set(full_ids) < held_content` — strict
+  subset. A truncated poll that BOTH drops held sections AND carries one the
+  member does not hold (a library created in the same 15-minute window as the
+  short read) is not a subset of anything, so it sailed through and silently
+  reduced an entitled member with `alert=None`. Quadruple-confirmed by
+  candidates, reproduced by the boundaries reviewer, verified by the arbiter
+  at `qflix-entitlement.py:500`. The question was never "is the target
+  smaller" — it is "does the target REMOVE any held content section". Now it
+  asks exactly that.
+- **The entitlement run lock was check-then-act.** No `O_CREAT|O_EXCL`, so
+  the 15-minute timer racing a manual run could both take the lock and both
+  mutate state (the concurrency reviewer double-acquired it 200/200).
+  Acquisition is atomic now; stale-takeover retries exclusively and stands
+  down if it loses the race.
+- **The bazarr2 heal could fail silently — the exact class it was built to
+  close.** A failed frontend install still pushed Kuma "up: in sync", and
+  nothing else observes the UI. A missing UI is now a DOWN with a reason on
+  the sync monitor, self-clearing on the next hourly heal.
+- **REA's parser anchored on the FIRST `[` in the model's text**, so a prose
+  bracket or decorative `[]` prefix discarded real findings; the salvage cut
+  was not quote-aware; and the 10-finding cap was prompt text enforced
+  nowhere. Every `[` is a candidate now (object arrays preferred), salvage
+  cuts at the last complete element outside strings, the cap is enforced in
+  code, and both lossy paths write audit-log lines — suppression was already
+  counted; truncation now is too.
+- **L-07 could be silenced by one bad row**: a TEXT-typed interval raised
+  TypeError past the ValueError-only guard and aborted the whole live audit;
+  an offset-carrying timestamp would have been overwritten to UTC rather than
+  converted. Per-row fail-open now, with conversion. And the live-drift Kuma
+  page read `f["class"]` where every emitter writes `class_id`, so every page
+  ever sent rendered "?" — L-07's only outbound path, now correct and pinned.
+- **The installer still wrote the `.opt` orphan** that f72910f retired — a
+  reinstall would have re-created the drift-invisible copy. It installs to
+  the drift-audited `~/scripts` path now. The wider lesson is recorded as an
+  accepted residual: deployed systemd unit CONTENT drift is visible to no
+  auditor (deploy-drift globs `*.py`/`*.sh`; L-01/L-02 compare name sets).
+- **The SignalR noise rule promised a carve-out it cannot express** ("a loss
+  with no reconnect still pages" — no rule over raw text can see the absence
+  of a later line). The promise is withdrawn on all three policy surfaces;
+  the blindness is documented as accepted and bounded instead of denied.
+
+Also confirmed by the council, for the record: L-07 cannot false-page on a
+healthy system (Kuma's own DOWN threshold sits strictly below L-07's for
+every live monitor), and the day's entitlement/REA/bazarr2 changes behave as
+designed on the live box. Council process defects and eight unresolved
+dissents are logged in `.claude/council-ledger.jsonl`.
+
 ## 2026-08-18 (II) — The reboot, the 113 alerts, and the three silences
 
 The Ultra.cc host crashed and rebooted (down 06:17-06:22 UTC; Kuma itself was

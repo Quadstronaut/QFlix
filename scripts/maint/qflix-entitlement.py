@@ -195,22 +195,51 @@ def _take_lock(path: Path) -> bool:
     outage of both provisioning and protection.
     """
     import atexit
+
+    def _create_exclusive() -> bool:
+        """Atomically create the lock. O_CREAT|O_EXCL is the whole fix
+        (council 2026-08-18): the old exists()->read->write sequence was
+        check-then-act, so the 15-minute timer racing a manual run could BOTH
+        pass the check and BOTH mutate state. With O_EXCL the kernel picks
+        exactly one winner."""
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            os.write(fd, ("%d\n" % os.getpid()).encode("utf-8"))
+        finally:
+            os.close(fd)
+        return True
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
+        try:
+            return _create_exclusive() and _register_release(path, atexit)
+        except FileExistsError:
+            pass
+        # Lock exists. Decide live vs stale, then RETRY EXCLUSIVELY - the
+        # unlink+create window is itself a race, and losing that race must
+        # mean standing down, not overwriting the winner.
+        try:
+            pid = int(path.read_text(encoding="utf-8").split()[0])
+        except (ValueError, IndexError, OSError):
+            pid = None
+        if pid and os.name == "posix":
             try:
-                pid = int(path.read_text(encoding="utf-8").split()[0])
-            except (ValueError, IndexError, OSError):
-                pid = None
-            if pid and os.name == "posix":
-                try:
-                    os.kill(pid, 0)
-                    return False                      # a live run holds it
-                except ProcessLookupError:
-                    pass                              # stale, take it over
-                except PermissionError:
-                    return False                      # someone else's live pid
-        path.write_text("%d\n" % os.getpid(), encoding="utf-8")
+                os.kill(pid, 0)
+                return False                      # a live run holds it
+            except ProcessLookupError:
+                pass                              # stale, take it over
+            except PermissionError:
+                return False                      # someone else's live pid
+        # Stale (dead pid / unreadable), or non-posix where liveness cannot
+        # be asked (dev workstation - the gate's production home is the box).
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        try:
+            return _create_exclusive() and _register_release(path, atexit)
+        except FileExistsError:
+            return False                          # lost the takeover race
     except OSError as e:
         # A lock we cannot write is not a reason to refuse to run; it is a
         # reason to say so. Refusing would let a read-only state directory
@@ -218,6 +247,11 @@ def _take_lock(path: Path) -> bool:
         warn("could not take the run lock (%s); continuing unlocked" % e)
         return True
 
+
+def _register_release(path: Path, atexit) -> bool:
+    """Arm the atexit release for a lock we now own. Split out of _take_lock
+    so both exclusive-create sites arm it identically. Always True, so the
+    call composes as `_create_exclusive() and _register_release(...)`."""
     def _release():
         try:
             if path.exists() and path.read_text(encoding="utf-8").strip() == str(os.getpid()):
@@ -496,14 +530,26 @@ def plan_for_share(
         held_content = set(share.section_ids) - set(minimum_ids)
         drops_only_welcome = (plex_target is not None
                               and set(full_ids) == held_content)
+        # ANY-REMOVAL, NOT STRICT-SUBSET (council 2026-08-18, arbiter-verified).
+        # This guard used to test `set(full_ids) < held_content`. Strict subset
+        # has a hole: a truncated poll that BOTH drops held sections AND
+        # carries one the member does not hold (a library created in the same
+        # 15-minute window as the short read) is not a subset of anything, so
+        # the guard stayed False and the member was silently reduced with
+        # alert=None. The correct question was never "is the target smaller" -
+        # it is "does the target REMOVE any content this member holds". Growing
+        # is fine, identical is fine, reshuffling that keeps every held section
+        # is fine; a plan that drops even one held content section while the
+        # answer GRANTS is a catalogue problem, refused and paged.
+        removed = held_content - set(full_ids)
         grant_alert = None
-        if plex_target is not None and set(full_ids) < held_content:
+        if plex_target is not None and removed:
             grant_alert = (
-                "plex.tv reported only %d content section(s) but %s already "
-                "holds %d; refusing to reduce an ENTITLED member on a short "
-                "catalogue read (suspected truncated poll, not a real library "
-                "removal)"
-                % (len(full_ids), mask(email), len(held_content)))
+                "plex.tv catalogue read would drop %d content section(s) %s "
+                "already holds (reported %d, held %d); refusing to reduce an "
+                "ENTITLED member on a short catalogue read (truncated poll, or "
+                "a stale section id in the share - never a grant's decision)"
+                % (len(removed), mask(email), len(full_ids), len(held_content)))
             plex_target = None
 
         seerr_target = None
