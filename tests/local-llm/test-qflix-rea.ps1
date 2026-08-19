@@ -242,6 +242,58 @@ Test-Case 'Extract-JsonArray salvage does not invent structure from garbage' {
     Assert-True ($null -eq (Extract-JsonArray 'no array here')) 'no bracket stays null'
 }
 
+Test-Case 'Extract-JsonArray skips a prose bracket prefix and finds the real array' {
+    # COUNCIL 2026-08-18 (reviewer-reproduced live): IndexOf('[') anchored on
+    # the FIRST bracket, so a "[INFO]"-style prose prefix made the real
+    # findings unreachable. Every '[' is a candidate now.
+    $t = '[INFO] scanning logs... result: [{"signature":"a","severity":"error"}]'
+    $r = Extract-JsonArray $t
+    Assert-True ($null -ne $r) 'parsed despite prose bracket prefix'
+    Assert-Equal 1 (@($r).Count) 'one finding'
+    Assert-Equal 'a' (@($r)[0].signature) 'the real array won, not [INFO]'
+}
+
+Test-Case 'Extract-JsonArray prefers the object array over a decorative empty one' {
+    $t = '[] and here are the findings: [{"signature":"b","severity":"warning"}]'
+    $r = Extract-JsonArray $t
+    Assert-Equal 1 (@($r).Count) 'object array preferred over leading []'
+    Assert-Equal 'b' (@($r)[0].signature) 'correct element'
+}
+
+Test-Case 'Extract-JsonArray still returns a bare [] for a clean run' {
+    $r = Extract-JsonArray 'all clean: []'
+    Assert-True ($null -ne $r) 'parsed'
+    Assert-Equal 0 (@($r).Count) 'empty means clean, not null'
+}
+
+Test-Case 'Extract-JsonArray salvage cut is quote-aware' {
+    # The old salvage cut at LastIndexOf('}'), which lands INSIDE the string
+    # value here and produced an unparseable candidate - whole batch lost.
+    $t = '[{"signature":"a","severity":"error"},{"signature":"b","excerpt":"brace } inside","severity":"warn'
+    $r = Extract-JsonArray $t
+    Assert-True ($null -ne $r) 'salvaged'
+    Assert-Equal 1 (@($r).Count) 'only the complete element survives'
+    Assert-Equal 'a' (@($r)[0].signature) 'complete element intact'
+    Assert-True $Script:LastExtractSalvaged 'salvage is flagged for the audit log'
+}
+
+Test-Case 'Extract-JsonArray clean parse resets the salvage flag' {
+    $null = Extract-JsonArray '[{"signature":"a","severity":"error"},{"signature":"b","sev'
+    Assert-True $Script:LastExtractSalvaged 'salvage sets the flag'
+    $null = Extract-JsonArray '[{"signature":"c"}]'
+    Assert-False $Script:LastExtractSalvaged 'a clean parse clears it'
+}
+
+Test-Case 'findings cap is enforced in code, not just asked for in the prompt' {
+    # COUNCIL 2026-08-18: the 10-finding cap was prompt text only. Pin the
+    # call-site enforcement + its audit line.
+    $src = Get-Content -Raw $scriptPath
+    Assert-True ($src -match '\@\(\$arr\)\.Count -gt 10') 'overflow check present'
+    Assert-True ($src.Contains('Select-Object -First 10')) 'cap enforced'
+    Assert-True ($src.Contains('overflow model=')) 'overflow is audit-logged'
+    Assert-True ($src.Contains('salvaged model=')) 'salvage is audit-logged'
+}
+
 Test-Case 'Extract-JsonArray handles nested brackets and strings with brackets' {
     $arr = Extract-JsonArray 'preamble [{"x":"a [b] c","y":[1,2,3]}] postamble'
     Assert-True ($arr -is [array]) 'parsed (is array)'

@@ -207,6 +207,28 @@ def test_a_grant_drops_welcome_without_calling_it_a_reduction(tmp_path):
     assert "Welcome" in p.reason
 
 
+def test_a_partially_overlapping_truncated_poll_is_also_refused(tmp_path):
+    """COUNCIL 2026-08-18, arbiter-verified. The rail used strict-subset
+    (`set(full_ids) < held_content`), which has a hole: a poll that BOTH drops
+    held sections AND carries one the member does not hold (a library created
+    in the same 15-minute window as the short read) is not a subset of
+    anything - the guard stayed False and the member was silently reduced
+    with alert=None. The question is any-REMOVAL, not smaller-set."""
+    m, p = _plan_with([101, 999], [101, 102, 103, 104, 105], tmp_path, "qe_h3f")
+    assert p.state == m.S_ENTITLED
+    assert p.plex_target is None, \
+        "a poll dropping 4 held sections must not reduce, subset or not"
+    assert p.alert and "refusing to reduce an ENTITLED member" in p.alert
+
+
+def test_a_reshuffle_that_keeps_every_held_section_still_writes(tmp_path):
+    """The any-removal rail must not overreach: full = held + new library is
+    a pure GROW and must plan the write with no alert."""
+    m, p = _plan_with([101, 102, 103, 999], [101, 102, 103], tmp_path, "qe_h3g")
+    assert p.plex_target == [101, 102, 103, 999]
+    assert p.alert is None
+
+
 def test_the_short_catalogue_rail_survives_a_member_who_also_holds_welcome(tmp_path):
     """The Welcome carve-out must not become a hole in the rail: a genuinely
     truncated poll still has to be refused even when the member carries the

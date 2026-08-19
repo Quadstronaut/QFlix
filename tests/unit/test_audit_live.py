@@ -141,3 +141,43 @@ def test_unparseable_beat_time_fails_open(live):
 def test_zero_interval_has_no_window(live):
     rows = [("weird", 0, "2026-08-01 00:00:00.000", 1)]
     assert live.stale_green_pushers(rows, _now()) == []
+
+
+def test_text_typed_interval_fails_open_not_typeerror(live):
+    # COUNCIL 2026-08-18: the first cut guarded only the timestamp parse, so a
+    # TEXT interval raised TypeError at the compare and one malformed row
+    # aborted the ENTIRE live audit - a detector for silence, silenced.
+    rows = [("weird", "not-a-number", "2026-08-17 05:18:09.455", 1),
+            ("QFlix Reaper", 90000, "2026-08-17 05:18:09.455", 1)]
+    out = live.stale_green_pushers(rows, _now())
+    assert [f["instance_id"] for f in out] == ["QFlix Reaper"], \
+        "the bad row must be skipped and the good row still graded"
+
+
+def test_numeric_string_interval_still_grades(live):
+    rows = [("QFlix Reaper", "90000", "2026-08-17 05:18:09.455", 1)]
+    assert len(live.stale_green_pushers(rows, _now())) == 1
+
+
+def test_offset_aware_beat_is_converted_not_overwritten(live):
+    # 19:00Z now; beat 18:30+02:00 = 16:30Z = 2.5h old on a 1h window -> stale.
+    # replace(tzinfo=UTC) would have read it as 18:30Z (30 min old) -> clean.
+    rows = [("offset", 3600, "2026-08-18T18:30:00+02:00", 1)]
+    out = live.stale_green_pushers(rows, _now())
+    assert len(out) == 1, "offset must be CONVERTED to UTC, not overwritten"
+
+
+def test_malformed_row_shape_fails_open(live):
+    rows = [("only-two-fields", 90000), None,
+            ("QFlix Reaper", 90000, "2026-08-17 05:18:09.455", 1)]
+    out = live.stale_green_pushers(rows, _now())
+    assert [f["instance_id"] for f in out] == ["QFlix Reaper"]
+
+
+def test_drift_page_renders_class_ids_not_question_marks(live):
+    """COUNCIL 2026-08-18 (gen-opus-1 F-09): main() read f['class'] while every
+    emitter writes 'class_id', so each live-drift page rendered '?'. Pin the
+    source: the push block must read class_id and the stale key must be gone."""
+    src = SCRIPT.read_text(encoding="utf-8")
+    assert 'f.get("class_id", "?")' in src
+    assert 'f.get("class", "?")' not in src
