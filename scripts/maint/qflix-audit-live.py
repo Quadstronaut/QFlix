@@ -228,21 +228,35 @@ def stale_green_pushers(rows, now: _dt.datetime, slack: float = 1.25) -> list[di
     drift. (Kuma writes naive UTC 'YYYY-MM-DD HH:MM:SS.mmm' today.)
     """
     out = []
-    for name, interval_s, beat_time, status in rows:
-        if status != 1 or not interval_s:
-            continue  # red monitors already page; interval 0 has no window
+    for row in rows:
+        # WHOLE ROW inside the guard (council 2026-08-18): the first cut
+        # caught ValueError from the timestamp parse only, so a TEXT-typed
+        # `interval` column raised TypeError at the compare, escaped the
+        # fail-open, and one malformed row aborted the ENTIRE live audit.
+        # A detector that exists to catch silence must not be silenceable by
+        # a single row it cannot read.
         try:
+            name, interval_s, beat_time, status = row
+            interval_s = int(interval_s)
+            if status != 1 or not interval_s:
+                continue  # red monitors already page; interval 0 has no window
             t = _dt.datetime.fromisoformat(str(beat_time).split(".")[0])
-            t = t.replace(tzinfo=_dt.timezone.utc)
-        except ValueError:
-            continue
-        age = (now - t).total_seconds()
-        if age > interval_s * slack:
-            out.append({
-                "class_id": "L-07", "instance_id": name,
-                "detail": "stale-green-%dh-beat-vs-%dh-window"
-                          % (age // 3600, interval_s // 3600),
-            })
+            if t.tzinfo is None:
+                # Kuma writes naive UTC today; naive means UTC here.
+                t = t.replace(tzinfo=_dt.timezone.utc)
+            else:
+                # An offset-carrying stamp must be CONVERTED, not overwritten -
+                # replace() on "18:30+02:00" would shift the beat by the offset.
+                t = t.astimezone(_dt.timezone.utc)
+            age = (now - t).total_seconds()
+            if age > interval_s * slack:
+                out.append({
+                    "class_id": "L-07", "instance_id": str(name),
+                    "detail": "stale-green-%dh-beat-vs-%dh-window"
+                              % (age // 3600, interval_s // 3600),
+                })
+        except Exception:                                  # noqa: BLE001
+            continue                                       # fail open per row
     return out
 
 
@@ -454,7 +468,11 @@ def main(argv: list[str] | None = None) -> int:
         # run that could not look must never read as a clean one.
         n = len(result["findings"])
         if n:
-            kinds = sorted({f.get("class", "?") for f in result["findings"]})
+            # class_id, not class: every emitter in collect() writes class_id,
+            # and this line is the ONLY outbound rendering of a live finding -
+            # with the wrong key every page read "live-drift N finding(s): ?"
+            # (council 2026-08-18, pre-existing since the file was born).
+            kinds = sorted({f.get("class_id", "?") for f in result["findings"]})
             _push_kuma("down",
                        "live-drift " + str(n) + " finding(s): " + ",".join(kinds))
         elif partial:

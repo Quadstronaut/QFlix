@@ -235,7 +235,11 @@ sshm "cat > ~/.config/systemd/user/bazarr2-sync.service" \
   < "$REPO_ROOT/scripts/maint/systemd/bazarr2-sync.service"
 sshm "cat > ~/.config/systemd/user/bazarr2-sync.timer" \
   < "$REPO_ROOT/scripts/maint/systemd/bazarr2-sync.timer"
-sshm "cat > ~/.opt/maint/bazarr2-sync.py && chmod 755 ~/.opt/maint/bazarr2-sync.py" \
+# ~/scripts/maint, NOT ~/.opt/maint (2026-08-18): the unit's ExecStart runs the
+# ~/scripts copy, which deploy-drift byte-compares against origin/master. The
+# old .opt copy sat outside every auditor's scope and silently pinned at its
+# install version - the exact drift f72910f had to dig out by hand.
+sshm "mkdir -p ~/scripts/maint && cat > ~/scripts/maint/bazarr2-sync.py && chmod 755 ~/scripts/maint/bazarr2-sync.py" \
   < "$REPO_ROOT/scripts/maint/bazarr2-sync.py"
 
 sshm 'systemctl --user daemon-reload
