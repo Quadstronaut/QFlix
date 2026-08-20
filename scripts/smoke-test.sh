@@ -413,6 +413,19 @@ if [ -n "$TD_PORT" ]; then
   else
     record "tdarr-throttle-held" fail "live worker cap '${TD_LIVE:-?}' != manifest '${TD_CAP:-?}'"
   fi
+  # ffmpeg thread cap. NOT cosmetic: `ulimit -u` is 2000 on this slot and
+  # uncapped ffmpeg threads to core count on 128 cores, so one job held 129-273
+  # threads. Two transcode workers without this took the box to 2000 tasks on
+  # 2026-08-20, where bash could not fork and cron plus every canary died with
+  # it. A Tdarr upgrade unzips over node_modules and removes the shim, which is
+  # why this is asserted and not assumed. If it goes red, drop
+  # tdarr-node.throttle back to 1 transcode worker before anything else.
+  TD_SHIM=$(sshm 'R=$(cd ~ && pwd -P); D=$R/.apps/tdarr/Tdarr_Node/node_modules/ffmpeg-static; if [ -x "$D/ffmpeg.real" ] && head -3 "$D/ffmpeg" 2>/dev/null | grep -q ffmpeg-threadcap; then echo present; else echo MISSING; fi' 2>/dev/null)
+  if [ "$TD_SHIM" = "present" ]; then
+    record "tdarr-ffmpeg-threadcap" pass "shim installed over ffmpeg-static"
+  else
+    record "tdarr-ffmpeg-threadcap" fail "thread-cap shim ${TD_SHIM:-unreadable} — 2 workers will hit the task ceiling"
+  fi
   # worker1.js cleanup-handler null-guard patch — without this, Tdarr 2.17.01
   # crashes the entire node on every job completion (TypeError: worker2[T(...)]
   # is not a function inside the Exit handler).  Patch marker is injected by
@@ -429,6 +442,7 @@ else
   record "tdarr-flow-engaged" skip "no server_port"
   record "tdarr-247-no-pause-timers" skip "no server_port"
   record "tdarr-throttle-held" skip "no server_port"
+  record "tdarr-ffmpeg-threadcap" skip "no server_port"
   record "tdarr-worker-patch" skip "no server_port"
 fi
 

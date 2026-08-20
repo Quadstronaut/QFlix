@@ -347,24 +347,34 @@ apps:
     # + 1 health-check = 3 concurrent jobs, because Tdarr runs the two kinds
     # side by side (a "2/2" cap is FOUR workers — the trap 50b's comment block
     # records from 2026-08-07).
-    # STAGED AT 1, NOT THE TARGET. Went to 2 on 2026-08-20 and the slot hit its
-    # `ulimit -u 2000` task ceiling within minutes — bash could not fork, which
-    # takes down cron, the canaries and every *arr, not just Tdarr. Measured:
-    # node off 962 tasks, ONE transcode worker 1411 (70.5%, already past the
-    # thread-ceiling canary's 65% warn), two workers 2000 and wedged.
+    # 2 transcode + 1 health-check = THREE concurrent jobs. Tdarr counts the two
+    # pipelines separately, so "2/2" would be FOUR — the 2026-08-07 ~94% CPU
+    # episode. Do not read this pair as one number.
     #
-    # The binding constraint on this slot is tasks, not CPU, and the reason is
-    # that ffmpeg is uncapped: on a 128-core box it threads to core count, so a
-    # single job holds 129-273 threads. Until ffmpeg is thread-capped, "a couple
-    # of files at once" is not affordable at any worker count — and once it IS
-    # capped, two workers should cost LESS than one does today.
+    # THIS NUMBER IS ONLY AFFORDABLE BECAUSE ffmpeg IS THREAD-CAPPED. The
+    # binding constraint on this slot is `ulimit -u 2000` TASKS, not CPU, and
+    # ffmpeg threads to core count on a 128-core box. Measured 2026-08-20:
     #
-    # Raise to 2 only after the cap is in place and measured. This number is
-    # audited hourly against the live node, so staging it here is not a
-    # bookkeeping detail: setting it to 2 before the box can hold 2 makes the
-    # canary page, correctly.
+    #   node off ......................................  962  (48%)
+    #   1 worker, ffmpeg UNCAPPED ..................... 1411  (70.5%)  <- past
+    #                                                    the 65% warn trip
+    #   2 workers, ffmpeg UNCAPPED .................... 2000  wedged; bash
+    #                                                    could not fork, taking
+    #                                                    cron and every canary
+    #                                                    down with it
+    #   1 worker, ffmpeg capped to 8 threads .......... 1030  (51.5%)
+    #   2 workers, ffmpeg capped to 8 threads ......... 1055  (52%)
+    #
+    # A capped job holds ~34 threads instead of 129-273, so the SECOND worker
+    # costs ~25 tasks. Two capped workers are cheaper than one uncapped one.
+    #
+    # The cap lives in scripts/ops/ffmpeg-threadcap-shim.sh, installed as
+    # Tdarr's ffmpeg binary because the health-check caller is inside Tdarr's
+    # obfuscated bundle and takes no configuration. A Tdarr upgrade REMOVES it —
+    # 50-tdarr-install.sh re-applies it and smoke-test.sh asserts it. If that
+    # assertion ever goes red, drop this back to 1 before anything else.
     throttle:
-      transcode_workers: 1
+      transcode_workers: 2
       health_check_workers: 1
     health:
       kind: systemd_only
