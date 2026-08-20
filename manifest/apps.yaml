@@ -347,8 +347,24 @@ apps:
     # + 1 health-check = 3 concurrent jobs, because Tdarr runs the two kinds
     # side by side (a "2/2" cap is FOUR workers — the trap 50b's comment block
     # records from 2026-08-07).
+    # STAGED AT 1, NOT THE TARGET. Went to 2 on 2026-08-20 and the slot hit its
+    # `ulimit -u 2000` task ceiling within minutes — bash could not fork, which
+    # takes down cron, the canaries and every *arr, not just Tdarr. Measured:
+    # node off 962 tasks, ONE transcode worker 1411 (70.5%, already past the
+    # thread-ceiling canary's 65% warn), two workers 2000 and wedged.
+    #
+    # The binding constraint on this slot is tasks, not CPU, and the reason is
+    # that ffmpeg is uncapped: on a 128-core box it threads to core count, so a
+    # single job holds 129-273 threads. Until ffmpeg is thread-capped, "a couple
+    # of files at once" is not affordable at any worker count — and once it IS
+    # capped, two workers should cost LESS than one does today.
+    #
+    # Raise to 2 only after the cap is in place and measured. This number is
+    # audited hourly against the live node, so staging it here is not a
+    # bookkeeping detail: setting it to 2 before the box can hold 2 makes the
+    # canary page, correctly.
     throttle:
-      transcode_workers: 2
+      transcode_workers: 1
       health_check_workers: 1
     health:
       kind: systemd_only
