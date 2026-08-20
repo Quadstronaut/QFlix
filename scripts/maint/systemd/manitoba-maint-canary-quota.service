@@ -1,5 +1,5 @@
 [Unit]
-Description=Manitoba canary — disk-quota threshold + autonomous Maintainerr reclaim
+Description=Manitoba canary — disk-quota threshold + autonomous qflix-reaper reclaim
 After=network-online.target
 
 [Service]

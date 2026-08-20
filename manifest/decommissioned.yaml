@@ -128,10 +128,6 @@ allowed_context_paths:
     reason: >-
       Carries struck-through (~~name~~) DECOMMISSIONED rows on purpose, so an
       operator reading the inventory learns what used to exist and why it went.
-  - path: WARN.md
-    reason: Known-issue log; entries predate the retirements and are dated.
-  - path: Tuesday.md
-    reason: Dated session log — a history surface.
   - path: todo-after-claude.md
     reason: Dated operator worklist; entries reference the decommission work itself.
   - path: docs/arr-audit-2026-05-09.md

@@ -362,7 +362,6 @@ The pusher dispatches on `class` for both lifecycle ops and probe selection.
 manifest/apps.yaml           # 31 apps + 34 canaries — single source of truth
 versions.env                 # pinned versions (Tdarr only — pin policy lifted 2026-05-09)
 inventory.md                 # live snapshot of every artifact on the seedbox
-Tuesday.md                   # design doc — extending Mon window to systemd apps
 
 docs/
   internal-app-tunnels.md    # public/internal split + ssh -L command per INTERNAL app
