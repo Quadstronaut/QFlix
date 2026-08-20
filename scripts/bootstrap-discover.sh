@@ -88,9 +88,6 @@ log_warn "qbittorrent.password — capture manually from Ultra.cc panel into sec
 # Operator must capture this from the Plex web UI: https://app.plex.tv → settings → account → X-Plex-Token
 log_info "Plex token: capture manually from https://app.plex.tv (X-Plex-Token in URL after sign-in) into secrets/plex.token"
 
-# Maintainerr API — generated in DB at first-run; capture from UI Settings → API
-log_info "Maintainerr key: capture manually from UI (Settings > API) into secrets/maintainerr.key"
-
 # Seerr API — config is inside the Docker container `seerr-quadstronaut`.
 # Operator must capture from Seerr UI → Settings → General → API Key into secrets/seerr.key.
 log_info "Seerr key: capture manually from UI (Settings > General > API Key) into secrets/seerr.key"

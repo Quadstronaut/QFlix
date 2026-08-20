@@ -31,14 +31,16 @@ HOME = os.path.expanduser("~")
 # closes the Phase 29.2 "18 orphan library rows" item.
 # "Anime Movies" added 2026-08-20: the 59-brdisk-block / containerFilter door
 # was closed on Movies/TV/Anime only, leaving radarr2's second root unscanned
-# by Tdarr. Welcome (one hand-placed 2.4 MB clip, no *arr feeds it) stays out.
-REAL_LIBRARY_NAMES = {"Movies", "TV", "Anime", "Anime Movies"}
+# by Tdarr. Welcome added the same day on the operator's "all libraries, all
+# files" directive (one hand-placed clip today, but the policy is universal).
+REAL_LIBRARY_NAMES = {"Movies", "TV", "Anime", "Anime Movies", "Welcome"}
 
 LIBRARIES = [
     {"name": "Movies", "folder": f"{HOME}/media/Movies"},
     {"name": "TV",     "folder": f"{HOME}/media/TV Shows"},
     {"name": "Anime",  "folder": f"{HOME}/media/Anime"},
     {"name": "Anime Movies", "folder": f"{HOME}/media/Anime Movies"},
+    {"name": "Welcome", "folder": f"{HOME}/media/Welcome"},
 ]
 
 # Path to the Flow JSON (resolved relative to this script in repo, or
