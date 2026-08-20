@@ -61,8 +61,11 @@ class Canary:
 class PauseWindow:
     """An app's intentional daily downtime, expressed in UTC hours.
 
-    Used by the pusher to avoid treating a deliberately-stopped unit (e.g.
-    tdarr-node during fair-use quiet hours) as a fault. The window is
+    Used by the pusher to avoid treating a deliberately-stopped unit as a
+    fault. NOTE: NO app declares one as of 2026-08-20 — tdarr-node was the only
+    holder and went 24/7 (fair-use is its `throttle` now). The mechanism is
+    kept, tested and load-bearing for the next app that needs it; do not read
+    the examples below as describing live config. The window is
     [start_hour_utc, end_hour_utc) — start inclusive, end exclusive — so it
     lines up exactly with the systemd OnCalendar pause/resume timers and the
     heartbeat's `HOUR_UTC >= start && < end` guard.
@@ -78,6 +81,30 @@ class PauseWindow:
             return s <= hour_utc < e
         # wrap-around window that spans midnight (e.g. 22..6)
         return hour_utc >= s or hour_utc < e
+
+
+@dataclass
+class Throttle:
+    """An app's concurrency cap — how many jobs it may run at once.
+
+    Added 2026-08-20 when tdarr-node's fair-use policy moved off the clock
+    (see PauseWindow, retired for that app) and onto the worker cap. On a
+    SHARED seedbox slot the cap is the whole social contract, so it gets a
+    validated manifest field rather than a literal restated per surface: it
+    already has to agree with 50b-tdarr-config.py's NODE_WORKER_LIMITS and
+    with whatever the live node reports, and the 2026-08-07 drift (global set
+    to 1/1, node still running four workers) is what those two disagreeing
+    looks like.
+
+    transcode/health_check are counted SEPARATELY because Tdarr runs them
+    concurrently — a 2/1 cap is three simultaneous jobs, not two.
+    """
+    transcode: int
+    health_check: int
+
+    @property
+    def total(self) -> int:
+        return self.transcode + self.health_check
 
 
 @dataclass
@@ -107,6 +134,7 @@ class App:
     upgrade: Optional[UpgradeConfig] = None
     parked: bool = False
     pause_window: Optional["PauseWindow"] = None
+    throttle: Optional["Throttle"] = None
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -220,6 +248,37 @@ def _parse_pause_window(raw_pw, *, app_name: str) -> "PauseWindow":
     return PauseWindow(start_hour_utc=start, end_hour_utc=end)
 
 
+def _parse_throttle(raw_t, *, app_name: str) -> "Throttle":
+    if not isinstance(raw_t, dict):
+        raise ManifestError(
+            f"App '{app_name}' throttle must be a mapping with "
+            f"transcode_workers + health_check_workers"
+        )
+    try:
+        transcode = int(raw_t["transcode_workers"])
+        health = int(raw_t["health_check_workers"])
+    except KeyError as exc:
+        raise ManifestError(
+            f"App '{app_name}' throttle missing required key {exc}"
+        )
+    except (TypeError, ValueError) as exc:
+        raise ManifestError(
+            f"App '{app_name}' throttle workers must be integers: {exc}"
+        )
+    # Zero is legal (that IS a full stop, expressed as a throttle rather than
+    # as a pause window). Negative is not, and neither is a cap so wide it
+    # stops being one — on a shared slot an unbounded worker count is the
+    # failure this field exists to prevent, so it is rejected at parse time
+    # rather than politely honoured.
+    for label, n in (("transcode_workers", transcode),
+                     ("health_check_workers", health)):
+        if not (0 <= n <= 8):
+            raise ManifestError(
+                f"App '{app_name}' throttle {label}={n} out of range 0..8"
+            )
+    return Throttle(transcode=transcode, health_check=health)
+
+
 # Mirror of health._PROBES keys, duplicated here to avoid a circular import
 # at module load. Update both lists when adding a new probe kind.
 VALID_HEALTH_KINDS: frozenset[str] = frozenset({
@@ -304,6 +363,12 @@ def load(path: str | Path) -> Manifest:
             if raw_pw is not None else None
         )
 
+        raw_throttle = app_data.get("throttle")
+        throttle = (
+            _parse_throttle(raw_throttle, app_name=app_name)
+            if raw_throttle is not None else None
+        )
+
         apps[app_name] = App(
             name=app_name,
             class_=class_,
@@ -313,6 +378,7 @@ def load(path: str | Path) -> Manifest:
             upgrade=upgrade,
             parked=bool(app_data.get("parked", False)),
             pause_window=pause_window,
+            throttle=throttle,
             raw=app_data,
         )
 

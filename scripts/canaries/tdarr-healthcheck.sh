@@ -39,9 +39,7 @@
 #      reports PASS-WARN forever — i.e. this canary would reproduce the exact
 #      green-while-dead failure it was built to prevent. Progress is persisted
 #      to a state file; any increase in completed refreshes the clock. FAILs
-#      after STALL_HOURS with a non-empty queue and a RUNNING node (the node is
-#      intentionally stopped 18:00-23:00 UTC, and no progress then is correct,
-#      so the threshold also sits above that 5h pause).
+#      after STALL_HOURS with a non-empty queue and a RUNNING node.
 #
 # Thresholds (override via env QFLIX_CANARY_TDARR_HC_*):
 #   20% WARN → annotate Kuma msg, stay UP. Worth a look; could be real corruption.
@@ -78,9 +76,19 @@ WARN_PCT=${QFLIX_CANARY_TDARR_HC_WARN_PCT:-20}
 FAIL_PCT=${QFLIX_CANARY_TDARR_HC_FAIL_PCT:-50}
 MIN_SAMPLE=${QFLIX_CANARY_TDARR_HC_MIN_SAMPLE:-20}
 # Hours with a non-empty queue, a running node, and ZERO new completed checks
-# before we call the pipeline wedged. Must exceed the 5h quiet-hours pause so a
-# normal pause can never look like a stall; 8h leaves margin either side.
-STALL_HOURS=${QFLIX_CANARY_TDARR_HC_STALL_HOURS:-8}
+# before we call the pipeline wedged.
+#
+# Was 8h until 2026-08-20, and that number was NOT about how long a wedge may
+# hide -- it existed only to clear the 5h quiet-hours pause, during which zero
+# progress was correct. The node runs 24/7 now, that pause is retired, and 8h
+# of slack bought against a window that no longer exists is just 8h a wedge
+# goes unreported.
+#
+# 6h, not 4h: the floor is set by the LONGEST legitimate gap between two
+# completions, and with only 2 transcode workers a pair of feature-length
+# encodes can genuinely hold both for hours. 6h clears that with margin while
+# cutting blind time by a quarter.
+STALL_HOURS=${QFLIX_CANARY_TDARR_HC_STALL_HOURS:-6}
 # Overridable so the fail/warn/indeterminate branches can be exercised against
 # fixtures instead of only ever the one state the live box happens to be in.
 DB_ROOT=${QFLIX_CANARY_TDARR_HC_DB:-}
@@ -222,7 +230,10 @@ except OSError:
 
 stalled_s = now - last_progress
 # Only judge while the node is actually up: it is intentionally stopped
-# 18:00-23:00 UTC (fair-use quiet hours) and no progress then is correct.
+# 18:00-23:00 UTC (fair-use quiet hours) and no progress then was correct.
+# RETIRED 2026-08-20: the node runs 24/7, so idleness with a non-empty queue is
+# never expected any more. Left in place because the predicate is still the
+# right one to consult -- it just answers "not paused" at every hour now.
 if queued > 0 and node == "active" and stalled_s > stall_s:
     fail("tdarr-hc-stalled",
          "no-new-completed-checks-in-%.1fh-queued=%d-completed=%d-node=active-"

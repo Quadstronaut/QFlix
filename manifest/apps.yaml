@@ -323,15 +323,33 @@ apps:
     class: systemd
     unit: tdarr-node.service
     kuma_monitor: "Tdarr Node"
-    # Fair-use quiet hours: tdarr-node-pause.timer STOPS this unit 18:00-23:00
-    # UTC (scripts/configure/50c-tdarr-quiet-hours.sh). Declaring the window
-    # here tells the pusher the unit is intentionally down — it pushes UP
-    # (Kuma green, "[paused…]") and skips probe + auto-heal instead of reviving
-    # it ~2min into the pause every day (the false-recovery bug, 2026-06-12).
-    # Keep in sync with 50c's OnCalendar AND heartbeat-tdarr-node.sh's guard.
-    pause_window:
-      start_hour_utc: 18
-      end_hour_utc: 23
+    # NO pause_window — tdarr-node runs 24/7 as of 2026-08-20 (operator
+    # directive). Fair-use on this shared slot is now enforced by CONCURRENCY,
+    # not by clock: 50b-tdarr-config.py caps the node at 2 transcode workers +
+    # 1 health-check worker, and the unit runs Nice=10. That is a throttle the
+    # box feels every hour, rather than a five-hour hole in coverage.
+    #
+    # The old 18:00-23:00 UTC pause cost ~21% of transcode capacity and left a
+    # 39-file hevc/av1 backlog that Plex then had to transcode on the fly for
+    # every client — the failures the pause was nominally protecting. It also
+    # blinded every monitoring surface for exactly those five hours (pusher
+    # suppression, an 8h stall threshold, a whole canary). Deleting the window
+    # un-blinds all of them for free: with no pause_window the pusher probes
+    # and auto-heals this unit around the clock, so "Tdarr Node" going red IS
+    # the 24/7 liveness assertion. Nothing replaces that half.
+    #
+    # What the window's removal does NOT cover is the throttle drifting back
+    # up — see the tdarr-throttle-integrity canary below.
+    #
+    # THIS is the fair-use number now, and it is the SINGLE source of truth:
+    # 50b-tdarr-config.py writes it to both Tdarr layers and
+    # tdarr-throttle-integrity.sh audits the live node against it. 2 transcode
+    # + 1 health-check = 3 concurrent jobs, because Tdarr runs the two kinds
+    # side by side (a "2/2" cap is FOUR workers — the trap 50b's comment block
+    # records from 2026-08-07).
+    throttle:
+      transcode_workers: 2
+      health_check_workers: 1
     health:
       kind: systemd_only
       expect: active
@@ -626,18 +644,31 @@ canaries:
     kuma_monitor: "Canary Stream Cap Liveness"
     script: "scripts/canaries/stream-cap-liveness.sh"
     schedule: "every-15min"
-  tdarr-pause-integrity:
-    # Added 2026-08-06. The fair-use quiet-hours pause (18:00-23:00 UTC) had NO
-    # surface that could see it fail: pusher.py pushes "Tdarr Node" UP and skips
-    # the probe entirely inside the window (correctly - otherwise it auto-healed
-    # the node 2min into every pause), and tdarr-healthcheck.sh holds its stall
-    # threshold above the 5h pause. So a disabled/masked/rebuilt-away
-    # tdarr-node-pause.timer let the node transcode straight through the
-    # streaming peak with every monitor green. Asserts the missing direction:
-    # during the window the node must be INACTIVE. Detect-only - stopping it
-    # here would fight the pusher's suppression and the recovery breaker.
-    kuma_monitor: "Canary Tdarr Pause Integrity"
-    script: "scripts/canaries/tdarr-pause-integrity.sh"
+  tdarr-throttle-integrity:
+    # Was tdarr-pause-integrity (2026-08-06 to 2026-08-20), which asserted the
+    # node was INACTIVE during the 18:00-23:00 UTC fair-use pause. The pause is
+    # gone (tdarr-node runs 24/7), so that predicate is retired — but the
+    # CONCERN is not. Fair-use just moved from the clock to the worker cap, and
+    # the worker cap has the same shape of blind spot the pause had: nothing
+    # else on the box can see it drift.
+    #
+    # Proven drift, 2026-08-07: the GLOBAL worker limit was set to 1/1 and the
+    # node went right on running FOUR workers, because Tdarr seeds
+    # NodeJSONDB.workerLimits from the global exactly once, at first
+    # registration, and never re-reads it. Two layers, one of which lies. A
+    # throttle nobody audits is a throttle that quietly becomes no throttle —
+    # on a SHARED slot, that is the failure that gets the account noticed.
+    #
+    # Asserts the live per-node workerLimits against manifest tdarr.throttle
+    # (never a restated literal — that number already lives in 50b's
+    # NODE_WORKER_LIMITS, and a second copy is how it drifts). Detect-only:
+    # rewriting limits here would fight 50b, and one concern per module.
+    #
+    # The node's 24/7 LIVENESS is deliberately NOT this canary's job — with
+    # pause_window gone the pusher probes and auto-heals tdarr-node around the
+    # clock, so "Tdarr Node" already owns that direction.
+    kuma_monitor: "Canary Tdarr Throttle Integrity"
+    script: "scripts/canaries/tdarr-throttle-integrity.sh"
     schedule: "hourly"
   bazarr-ingest:
     # Added 2026-08-06. Both Bazarr instances hold a language profile their

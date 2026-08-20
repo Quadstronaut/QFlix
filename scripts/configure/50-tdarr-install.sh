@@ -147,14 +147,34 @@ cat > ~/.config/systemd/user/tdarr-server.service <<'UNIT'
 Description=Tdarr Server (transcoding orchestrator)
 After=network-online.target
 Wants=network-online.target
+# A crash-loop on a SHARED slot is antisocial, so cap it: 5 starts in 5
+# minutes, then stay visibly failed and let "Tdarr Server" go red. Systemd's
+# default burst is tuned for fast-failing units, not for one that takes ~20s
+# to come up.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
+# serverIP/HOST pin the listener to loopback (nginx fronts it). This lived only
+# on the box until 2026-08-20 — the installer wrote a unit without it, so any
+# re-run silently un-pinned the listener.
+Environment="HOST=127.0.0.1" "serverIP=127.0.0.1"
 Type=simple
 WorkingDirectory=%h/.apps/tdarr/Tdarr_Server
+# Wait for the previous listener to actually let go of the port before binding.
+# Without this, restart-then-bind races the old process out of the socket and
+# the replacement dies on EADDRINUSE — 6 occurrences across 2026-08-18/20, on
+# every restart path (deploy, heartbeat, on-failure). ExecStartPre is the one
+# place all of them pass through. `-` prefix is deliberately ABSENT: a drain
+# that cannot clear the port must block the start, not be ignored.
+ExecStartPre=%h/scripts/ops/tdarr-port-drain.sh
 ExecStart=%h/.apps/tdarr/Tdarr_Server/Tdarr_Server
 Restart=on-failure
 RestartSec=10s
 TimeoutStopSec=30
+# Kill the whole cgroup on stop, so a lingering child cannot keep the port and
+# hand the next start the very race the drain exists to absorb.
+KillMode=control-group
 StandardOutput=append:%h/.apps/tdarr/logs/server.log
 StandardError=append:%h/.apps/tdarr/logs/server.err
 
