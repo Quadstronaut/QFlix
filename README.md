@@ -290,6 +290,10 @@ timeline
             : SABnzbd manifested (33→34 apps) + Kuma monitor "SABnzbd" added
             : qui (orphaned autobrr qBit web-UI, port 42010) removed
             : VictoriaLogs crash-loop fixed (GOMAXPROCS=4 thread-cap)
+  2026-08-20 : Arbiter-led e2e audit (11 finders + refuters) — 0 P0 · 2402 tests · 76/76 Kuma green
+            : red canaries now write WHY to journald (was Kuma-msg only) · reaper logs delete-failure reason
+            : Tdarr = universal H.264 8-bit High@4.1 on all 5 libraries (hevc/av1 re-encoded, 39 queued)
+            : Maintainerr remnants + Tuesday.md/WARN.md trashed · radarr2 remote-path health cleared
 ```
 
 ---

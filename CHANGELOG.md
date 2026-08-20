@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026-08-20 (II) — The arbiter audit, and the flow that would have made things worse
+
+A Fable-arbitrated end-to-end audit followed the 15-hour session above:
+eleven read-only finders (live box, Kuma, 35 canaries, every self-healer,
+logs, apps, and four code-plus-deploy-parity reviewers over c71a557..63f62f2),
+every non-trivial finding handed to an adversarial refuter that had to
+reproduce the evidence itself. 13 agents, 1.1M subagent tokens, eleven
+minutes. Verdict: **healthy** — 2402 tests green, 76/76 Kuma monitors green,
+0 failed units, deployed code byte-identical to the repo, and the three new
+canaries genuinely exercise what they claim (plex-playback hits the real
+transcode-decision endpoint; container-sanity scanned 548 files; the hardlink
+ledger tracks linkcounts). Zero findings were refuted; one was corrected
+upward by its refuter after a timezone slip (journald is CEST, the reaper log
+and Kuma are UTC — finders double-counted runs).
+
+What was actually wrong, and what changed (`e560693`, `6406b2f`, `5054751`,
+`fe0d6ba`):
+
+- **A red canary left nothing in journald.** `lib/cli.py` ran canaries with
+  `capture_output=True`, so deploy-drift's nine red runs that day showed only
+  `status=2/INVALIDARGUMENT`; the *what drifted* lived solely in the Kuma
+  heartbeat message. (The canary was right, incidentally: three files had
+  been hand-edited on the box for ~7.5 h before the commit landed. That is the
+  signal working as designed, and it stays that way — no deploy lock.) The
+  failure line is now mirrored to stderr. It caught a stale file of the
+  auditor's own within the hour.
+- **`DELETE FAILED 'Greyhound'` with no reason anywhere** — the exact event
+  `dc061de` fixed — now logs the HTTP status and the re-read outcome into the
+  durable reaper logfile. `qflix-audit-live` likewise emits one `FINDING`
+  line per finding, so a transient nonzero run survives the next run
+  overwriting `last-audit.json`.
+- **radarr2 health error** `RemotePathMappingCheck`: the qBittorrent category
+  directory `downloads/qbittorrent/radarr-anime` had simply never been
+  created. Created; health is `[]`.
+- **smoke-test false FAIL every evening:** `tdarr-node-registered` asked
+  `get-nodes` during the 18:00–23:00 UTC quiet-hours pause. It now asks the
+  box's own `suppression.in_pause_window` and reports *paused*.
+- **Tdarr covered 3 of 5 member-visible roots.** Anime Movies and Welcome were
+  outside every Tdarr door the disc-media work had closed. Both added
+  (`50b-tdarr-config.py REAL_LIBRARY_NAMES`, smoke-test asserts 5/5).
+- **The flow was surgical; the directive is universal.** `qflix-direct-play-fix`
+  re-encoded only vc1/mpeg2 and let 27 HEVC + 12 AV1 files (107 GB, all
+  1080p 10-bit SDR) through — AV1 is undecodable on most TVs before ~2021 and
+  on every Apple device. The flow now sends hevc and av1 down the h264 branch
+  too, through a **Force 8-bit node** (`-pix_fmt:v yuv420p -profile:v high
+  -level:v 4.1`). That node is the whole point: the box's libx264 accepts
+  `yuv420p10le` and, unpinned, would have emitted **High 10** H.264 — less
+  compatible than the HEVC it replaced. Verified on a 10 s sample:
+  `h264 / High / yuv420p / 41`. Tdarr never revisits a file after a flow
+  change, so `requeue_noncompliant_video()` flips `Not required` /
+  `Transcode success` non-h264 records back to `Queued` (idempotent;
+  `Transcode error` excluded so a flow bug cannot loop). 39 files queued; the
+  node works them after quiet hours.
+- **C-08 advisories evaluated, not waived.** Of 96 live references to retired
+  components, ~85 were comments and changelog sentences — history, not debt.
+  The real remnants went: four dead Maintainerr install scripts, a logrotate
+  stanza for a directory that no longer exists, a bootstrap prompt for a
+  Maintainerr API key, two unit/comment descriptions claiming Maintainerr
+  still reclaims quota, `Tuesday.md` and `WARN.md` from the repo root, and six
+  on-box leftovers. Advisory count 166 → 135; enforced stays 0.
+
+Accepted as-is: the empty `first-run.log` for the container-sanity canary,
+`~/media/Music` living outside every scanner (not *arr-managed), and the
+deploy-drift canary paging during uncommitted on-box edits.
+
 ## 2026-08-20 — Every movie was unplayable for 26 days and every light was green
 
 One member's Plex client played no MOVIE at all from 2026-07-25 onward while TV
