@@ -66,7 +66,10 @@ between roughly 2026-08-19 and 2026-09-30 anyway, so `--execute` buys days
 instead of six weeks at a cost of ~572 GB of re-download and the quota that
 burns. **Deferred and stated plainly: as of this writing profile 6 still allows
 Remux-1080p on the live box (verified 2026-08-20). The cap has not been
-applied.**
+applied.** *Later the same day:* `58-remux-cap-enforce.py` landed on the box at
+06:22 CEST and removed Remux-1080p from profile 6 — see the
+[incidents appendix](docs/incidents.md); the deferral above is history, not
+current state.
 
 **The board's only red that week was a false one.** Kuma monitor #90
 (hardlink-integrity) went red every 30 minutes from 20:01Z for six hours with
