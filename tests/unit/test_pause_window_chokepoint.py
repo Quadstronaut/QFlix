@@ -158,12 +158,17 @@ class TestTdarrThrottleIsTheFairUseLever:
         m = manifest_load(os.path.join(_REPO, "manifest", "apps.yaml"))
         t = m.app("tdarr-node").throttle
         assert t is not None
-        assert (t.transcode, t.health_check) == (2, 1)
+        # STAGED AT 1. Target is 2, blocked on capping ffmpeg's thread count.
+        # Raising this without that cap took the slot to its `ulimit -u 2000`
+        # task ceiling on 2026-08-20 — bash could not fork, so cron and every
+        # canary went down with it, not just Tdarr. Measured that night: node
+        # off 962 tasks, one worker 1411 (70.5%), two workers 2000 and wedged.
+        #
         # Tdarr runs the two pipelines concurrently, so the load the box feels
-        # is the sum, not the max. 2/2 would be FOUR workers — the 2026-08-07
-        # ~94% CPU episode. Pinned so a "bump transcode to 3" edit has to read
-        # this line and decide deliberately.
-        assert t.total == 3
+        # is the sum, not the max. Pinned so a "bump transcode to 2" edit has
+        # to read this line and confirm the cap landed first.
+        assert (t.transcode, t.health_check) == (1, 1)
+        assert t.total == 2
 
     def test_50b_writes_the_same_numbers_to_both_tdarr_layers(self):
         with open(os.path.join(_REPO, "scripts", "configure",
