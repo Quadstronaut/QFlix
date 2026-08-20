@@ -57,10 +57,27 @@ class FakeArr:
             return 200, self.movies
         if path == "/series":
             return 200, self.series
+        # Single-record reads. do_delete_* re-reads here after a non-2xx
+        # delete, and 404 is its proof that the delete landed anyway, so this
+        # fake has to answer from its OWN state instead of blanket-404ing.
+        # While it did, a FlakyArr that returned 500 without removing anything
+        # was read as a successful delete and the two partial-failure guards
+        # below silently stopped testing partial failure.
+        for prefix, rows in (("/movie/", self.movies), ("/series/", self.series)):
+            if path.startswith(prefix):
+                ident = path[len(prefix):]
+                if ident.isdigit() and any(r.get("id") == int(ident) for r in rows):
+                    return 200, None
+                return 404, None
         return 404, None
 
     def delete(self, path, query="", timeout=None):
         self.deletes.append((path, query))
+        for prefix, rows in (("/movie/", self.movies), ("/series/", self.series)):
+            if path.startswith(prefix):
+                ident = path[len(prefix):]
+                if ident.isdigit():
+                    rows[:] = [r for r in rows if r.get("id") != int(ident)]
         return 200, ""
 
 
@@ -1034,3 +1051,82 @@ def test_cap_abort_does_not_consume_weekly_reminder(reaper, tmpdir, monkeypatch)
     assert rc == reaper.EXIT_CAP
     st = _read_state(_os.environ["QFLIX_REAPER_ORPHAN_STATE"])["orphans"]["tvdb:1"]
     assert "last_warned" not in st          # reminder NOT consumed on abort
+
+
+# ---------------------------------------------------------------------------
+# A SLOW DELETE IS NOT A FAILED DELETE (2026-08-20)
+#
+# The reaper graded do_delete_movie purely on the DELETE's own status code. On
+# 2026-08-20 a 23-movie remux re-grab left Radarr main running 17 concurrent
+# downloads with 23 queued MoviesSearch commands; the reaper's delete of
+# 'Greyhound' (arrId=407) took 30s, answered non-2xx, and was logged
+# DELETE FAILED -- while GET /movie/407 returned Not Found and the directory
+# was already gone from disk. The run exited 1, the unit went to systemd
+# failed, and Kuma #97 went red for work that had completed. Six clean runs
+# preceded it, so it read as a real new fault.
+#
+# These pin the re-read contract: 404 on re-read is proof, everything else
+# stays a failure, because "I could not confirm" must never be optimistic.
+# ---------------------------------------------------------------------------
+class _DelClient:
+    """Minimal ArrClient stand-in: one canned delete status, one canned get."""
+
+    def __init__(self, delete_status, get_status=None, get_raises=False):
+        self._delete_status = delete_status
+        self._get_status = get_status
+        self._get_raises = get_raises
+        self.deleted = []
+        self.gets = []
+
+    def delete(self, path, query=""):
+        self.deleted.append((path, query))
+        return self._delete_status, None
+
+    def get(self, path, query="", timeout=None):
+        self.gets.append(path)
+        if self._get_raises:
+            raise OSError("connection reset")
+        return self._get_status, None
+
+
+def test_2xx_delete_is_trusted_without_a_re_read(reaper):
+    c = _DelClient(200)
+    assert reaper.do_delete_movie(c, 407) is True
+    assert c.gets == [], "a successful delete must not cost an extra GET"
+
+
+def test_non_2xx_delete_that_actually_landed_counts_as_deleted(reaper):
+    """The Greyhound case: HTTP said no, the server had already done it."""
+    c = _DelClient(500, get_status=404)
+    assert reaper.do_delete_movie(c, 407) is True
+    assert c.gets == ["/movie/407"]
+
+
+def test_non_2xx_delete_with_the_record_still_present_is_a_failure(reaper):
+    c = _DelClient(500, get_status=200)
+    assert reaper.do_delete_movie(c, 407) is False
+
+
+def test_non_2xx_delete_is_a_failure_when_the_re_read_itself_fails(reaper):
+    """Unconfirmable is reported, never assumed successful."""
+    c = _DelClient(500, get_raises=True)
+    assert reaper.do_delete_movie(c, 407) is False
+
+
+def test_series_delete_has_the_same_re_read_contract(reaper):
+    assert reaper.do_delete_series(_DelClient(200), 12) is True
+    assert reaper.do_delete_series(_DelClient(504, get_status=404), 12) is True
+    assert reaper.do_delete_series(_DelClient(504, get_status=200), 12) is False
+    assert reaper.do_delete_series(_DelClient(504, get_raises=True), 12) is False
+
+
+def test_delete_still_asks_for_files_and_no_import_exclusion(reaper):
+    """The re-read must not have changed what the DELETE requests."""
+    c = _DelClient(200)
+    reaper.do_delete_movie(c, 407)
+    assert c.deleted == [("/movie/407",
+                          "deleteFiles=true&addImportExclusion=false")]
+    s = _DelClient(200)
+    reaper.do_delete_series(s, 12)
+    assert s.deleted == [("/series/12",
+                          "deleteFiles=true&addImportListExclusion=false")]
