@@ -437,6 +437,45 @@ else
   record "recyclarr-no-4k" fail "$UHD_COUNT UHD entries found — policy violation"
 fi
 
+# 13n. Remux cap policy - live re-read gate for scripts/configure/58-remux-cap-enforce.py
+#
+# WHY: 58 is a one-shot policy WRITE with no verification surface of its own.
+# A UI click, a Radarr upgrade that restores factory profile defaults, or a
+# recyclarr sync can silently re-allow Remux-1080p, and the only symptom is a
+# member's Plex client failing every movie again (2026-07-25 through
+# 2026-08-19: 23 of 46 movies-with-a-file were Remux-1080p, 20-37 Mbps against
+# a 1927 kbps transcode-only client). 13f is that same shape for the no-4k
+# policy; this is its remux twin.
+#
+# THE WALK IS RECURSIVE AND THAT IS NOT DECORATION. 13f above walks items[]
+# non-recursively; Radarr/Sonarr items[] is a NESTED tree where a group entry
+# carries its own items[] list. Measured on the box 2026-08-19: sonarr2 scores
+# flat=0 / recursive=1 remux entries - a copy of 13f would report that instance
+# clean while it allows a remux tier. The lambda below recurses (an entry with
+# a non-empty items[] is a group; anything else is a leaf quality).
+#
+# SCOPE: radarr main only, matching 58's own SCOPE block. sonarr main and the
+# two anime instances knowingly allow remux (recyclarr owns sonarr2's profile),
+# so gating them here would be a permanent, meaningless red.
+echo "13n. Remux cap policy (radarr main)"
+RX_KEY=$(secret_read radarr.key 2>/dev/null || echo "")
+RX_PORT=$(secret_read radarr.port 2>/dev/null || echo "")
+RX_BASE=$(secret_read radarr.urlbase 2>/dev/null || echo radarr)
+if [ -n "$RX_KEY" ] && [ -n "$RX_PORT" ]; then
+  RX_OUT=$(sshm "curl -sf -m 15 -H 'X-Api-Key: $RX_KEY' http://127.0.0.1:$RX_PORT/$RX_BASE/api/v3/qualityprofile 2>/dev/null | python3 -c 'import sys,json; w=lambda its:[x for i in (its or []) for x in (w(i.get(\"items\")) if i.get(\"items\") else [i])]; ps=json.load(sys.stdin); bad=sorted(str(p.get(\"id\")) for p in ps if any(i.get(\"allowed\") and \"remux\" in ((i.get(\"quality\") or {}).get(\"name\") or \"\").lower() for i in w(p.get(\"items\")))); print(str(len(bad))+\" \"+(\",\".join(bad) or \"-\"))'" 2>/dev/null)
+  RX_N="${RX_OUT%% *}"
+  RX_IDS="${RX_OUT#* }"
+  if [ -z "$RX_OUT" ]; then
+    record "remux-cap-radarr" fail "could not read radarr qualityprofile"
+  elif [ "${RX_N:-1}" = 0 ]; then
+    record "remux-cap-radarr" pass "no profile allows a remux tier (per policy)"
+  else
+    record "remux-cap-radarr" fail "$RX_N profile(s) allow remux: $RX_IDS - run scripts/configure/58-remux-cap-enforce.py"
+  fi
+else
+  record "remux-cap-radarr" skip "no radarr key/port"
+fi
+
 # 13. Listmonk health + subscribers (mass-comms Phase 19+20)
 echo "13. Listmonk"
 LM_API_USER=$(secret_read listmonk.api_user 2>/dev/null || echo "")
