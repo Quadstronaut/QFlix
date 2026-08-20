@@ -322,6 +322,48 @@ def requeue_errored_healthchecks() -> int:
     return requeued
 
 
+# Video codecs the flow treats as universally direct-playable. Anything else is
+# re-encoded to h264 8-bit High@4.1 by qflix-direct-play-fix (operator
+# directive 2026-08-20: every file must play on every TV/phone/tablet).
+DIRECT_PLAY_VIDEO_CODECS = {"h264"}
+
+
+def requeue_noncompliant_video() -> int:
+    """Re-queue files Tdarr already stamped 'Not required' / 'Transcode
+    success' whose video codec is outside DIRECT_PLAY_VIDEO_CODECS.
+
+    Tdarr caches the flow's verdict per file and never revisits it when the
+    flow changes, so widening the flow (hevc/av1 -> h264, 2026-08-20) would
+    have left the 39 pre-existing hevc/av1 files untouched forever. Idempotent:
+    a file that has been re-encoded reads back as h264 and no longer matches;
+    a file whose transcode ERRORED is left alone (its verdict is not 'Not
+    required'), so a flow bug cannot become a retry loop."""
+    db_dir = f"{HOME}/.apps/tdarr/server/Tdarr/DB2/FileJSONDB"
+    requeued = 0
+    for path in glob.glob(f"{db_dir}/*.json"):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        # 'Transcode success' too: a file the OLD flow processed for audio only
+        # still carries its hevc/av1 video and would otherwise never be revisited.
+        # 'Transcode error' is deliberately NOT here (no retry loop on a flow bug).
+        if doc.get("TranscodeDecisionMaker") not in ("Not required", "Transcode success"):
+            continue
+        codec = doc.get("video_codec_name")
+        if not codec or codec in DIRECT_PLAY_VIDEO_CODECS:
+            continue
+        doc["TranscodeDecisionMaker"] = "Queued"
+        doc["lastTranscodeDate"] = 0
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        os.replace(path + ".tmp", path)
+        print(f"[requeue] {codec} -> h264: {os.path.basename(doc.get('file', path))[:80]}")
+        requeued += 1
+    return requeued
+
+
 def ensure_healthcheck_engine() -> int:
     """Force every real library onto the ffmpeg health-check engine.
 
@@ -606,6 +648,7 @@ def main() -> int:
     # broken HandBrake engine are meaningless, but a real ffmpeg-found Error must
     # be allowed to stick so it surfaces as an actual corrupt file.
     hc_requeued = requeue_errored_healthchecks() if hc_engine_changed else 0
+    video_requeued = requeue_noncompliant_video()
     print()
     print(f"Orphan libraries purged: {orphans_purged}")
     print(f"Skeleton libraries healed (re-created with full defaults): {libs_healed}")
@@ -619,9 +662,10 @@ def main() -> int:
     print(f"Libraries enabled for live transcoding: {libs_enabled}")
     print(f"Libraries switched to ffmpeg health-check engine: {hc_engine_changed}")
     print(f"Stale HandBrake-era health-check errors re-queued: {hc_requeued}")
+    print(f"Non-h264 files re-queued for the direct-play flow: {video_requeued}")
     if any([config_changed, workers_changed, node_changed, libs_patched,
             orphans_purged, flow_changed, libs_attached, libs_enabled,
-            hc_engine_changed]):
+            hc_engine_changed, video_requeued]):
         print("\nNote: restart tdarr-server.service + tdarr-node.service "
               "for changes to take effect:")
         print("  systemctl --user restart tdarr-server.service "
