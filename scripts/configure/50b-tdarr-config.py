@@ -79,8 +79,13 @@ DECISION_MAKER_FLOWS = {
 # pipelines are counted separately, not shared) and that was driving ~94% CPU on
 # a SHARED slot. 128-core EPYC.
 #
-# 2026-08-20 -- set to 2 transcode + 1 health-check (THREE concurrent, not
-# four) as the node went 24/7. This is now the WHOLE fair-use mechanism: the
+# 2026-08-20 -- STAGED BACK TO 1 the same night. 2 transcode workers drove the
+# slot into its `ulimit -u 2000` task ceiling within minutes (bash could not
+# fork, which breaks cron and every canary, not just Tdarr). Root cause is not
+# the worker count: ffmpeg is uncapped and threads to core count on a 128-core
+# box, so ONE job holds 129-273 threads and one worker already sits at 70.5% of
+# the ceiling. Cap ffmpeg first, then raise this. Target stays 2 transcode +
+# 1 health-check (THREE concurrent, not four) once the node went 24/7. This is now the WHOLE fair-use mechanism: the
 # 18:00-23:00 UTC quiet-hours pause is retired, so nothing else throttles this
 # node at any hour. Read the numbers from manifest/apps.yaml
 # tdarr-node.throttle -- that is the single source of truth, and
@@ -105,13 +110,13 @@ DECISION_MAKER_FLOWS = {
 # cruddb is avoided elsewhere here; the caller is responsible for stopping
 # tdarr-server first (see 50b's own deploy notes).
 WORKER_LIMITS = {
-    "transcodeWorkerLimit": 2,
+    "transcodeWorkerLimit": 1,
     "healthcheckWorkerLimit": 1,
     "transcodeWorkerLimitGpu": 0,
     "healthcheckWorkerLimitGpu": 0,
 }
 NODE_WORKER_LIMITS = {
-    "transcodecpu": 2,
+    "transcodecpu": 1,
     "transcodegpu": 0,
     "healthcheckcpu": 1,
     "healthcheckgpu": 0,
