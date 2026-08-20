@@ -175,7 +175,8 @@ def push_once(
             continue
 
         # Fair-use pause window: the app is INTENTIONALLY stopped right now
-        # (e.g. tdarr-node 18:00-23:00 UTC, stopped by tdarr-node-pause.timer).
+        # (historically tdarr-node 18:00-23:00 UTC; retired 2026-08-20, and no
+        # app declares a pause_window today — this branch is dormant, not dead).
         # Without this, the pusher probed it `inactive`, accrued strikes, and
         # auto-healed it ~2min into the pause every day — a false "recovered"
         # alert that also defeated the 5h fair-use pause. Treat the window like
