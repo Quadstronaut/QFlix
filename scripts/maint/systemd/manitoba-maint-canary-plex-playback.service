@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - Plex playback (real transcoded segment for the worst-case movie)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push plex-playback
+StandardOutput=journal
+StandardError=journal

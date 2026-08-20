@@ -159,6 +159,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer \
     scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.service \
     scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.timer \
+    scripts/maint/systemd/manitoba-maint-canary-plex-playback.service \
+    scripts/maint/systemd/manitoba-maint-canary-plex-playback.timer \
     scripts/maint/systemd/manitoba-maint-canary-quota.service \
     scripts/maint/systemd/manitoba-maint-canary-quota.timer \
     scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.service \
@@ -240,6 +242,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/prowlarr-indexer-health.sh \
     scripts/canaries/hardlink-integrity.sh \
     scripts/canaries/plex-transcoder.sh \
+    scripts/canaries/plex-playback.sh \
     scripts/canaries/quota.sh \
     scripts/canaries/tautulli-plex-link.sh \
     scripts/canaries/newsletter-digest-stale.sh \
@@ -527,6 +530,8 @@ for unit in \
     manitoba-maint-canary-hardlink-integrity.timer \
     manitoba-maint-canary-plex-transcoder.service \
     manitoba-maint-canary-plex-transcoder.timer \
+    manitoba-maint-canary-plex-playback.service \
+    manitoba-maint-canary-plex-playback.timer \
     manitoba-maint-canary-quota.service \
     manitoba-maint-canary-quota.timer \
     manitoba-maint-canary-tautulli-plex-link.service \
@@ -664,6 +669,14 @@ systemctl --user enable --now manitoba-maint-canary-hardlink-integrity.timer
 # /:/prefs endpoints. Catches transcoder daemon stalls before customers
 # hit "Conversion failed" — main /identity stays 200 OK during this fault.
 systemctl --user enable --now manitoba-maint-canary-plex-transcoder.timer
+# plex-playback: every 30 min, actually PLAY the library worst-case movie --
+# forced downscale + EasyAudioEncoder downmix -- and assert real MPEG-TS
+# bytes arrive at better than 80% of realtime. plex-transcoder above cannot
+# see a playback failure at all; it was green on every tick of the 26-day
+# window in which every movie failed to play. This is the leg that performs
+# the failing action, so it burns real CPU -- hence the slower cadence and
+# its own monitor rather than another leg bolted onto the API probe.
+systemctl --user enable --now manitoba-maint-canary-plex-playback.timer
 # quota: track per-user Ultra.cc quota at 80%/90%/98% (warn/crit/fail).
 # At 90% fires Maintainerr execute + collections/handle autonomously to
 # reclaim space before the 100% wall causes SQLite I/O errors stack-wide.
@@ -956,7 +969,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-pause-integrity tdarr-transcode-error stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity plex-transcoder plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-pause-integrity tdarr-transcode-error stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity plex-transcoder plex-playback plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"

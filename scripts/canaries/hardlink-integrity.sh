@@ -57,6 +57,51 @@
 # rolling window, not an unbounded ledger a decade-old fixed regression could
 # haunt. Full rationale is in the embedded python next to the ledger code.
 #
+# 2026-08-19 fix — the EXTENSION-LIST false positive, and what a zero-resolved
+# run actually means. Kuma monitor #90 went red every 30 min from 20:01Z with
+# STAGE=qbit-no-completed while nothing at all was wrong. The completed pool
+# held exactly one torrent: a BDMV disc rip (category radarr,
+# ~/downloads/qbittorrent/radarr/Bull.Durham.1988 rus/BDMV/STREAM/00000.m2ts,
+# 19,307,427,840 bytes — the ONLY video-bearing file in that tree; the rest is
+# .bdmv/.mpls/.clpi index metadata). VIDEO_EXTS did not list .m2ts, so the
+# multi-file walk found no target, the torrent was skipped, resolved stayed 0,
+# and resolved==0 was wired straight to a red.
+#
+# TWO separate defects, fixed separately:
+#
+#   1. VIDEO_EXTS was incomplete. .m2ts (Blu-ray/BDMV STREAM payload) and .ts
+#      (MPEG transport stream — DVB/HDTV captures arrive this way) are now
+#      listed. DO NOT TRIM THIS LIST. It is the ONE constant feeding BOTH the
+#      library index — which needs .m2ts to ever find an inode twin for a
+#      disc-shaped import — AND torrent target resolution. Dropping an
+#      extension here does not skip a check, it silently removes torrents from
+#      the sample, which is how a healthy box looked like a storage emergency
+#      for six hours.
+#
+#   2. resolved==0 was the WRONG predicate for the failure it names. That stage
+#      is documented as "qBit data dir nuked / mount evaporated / downloads
+#      tree moved" — all STORAGE facts. But `resolved` only increments after a
+#      content path passes an existence check AND the extension filter, so a
+#      perfectly intact pool holding only unrecognised shapes (disc rips,
+#      music, ISOs, software grabs) scored identically to a vanished
+#      filesystem. The predicate is now split:
+#        present  — content_path exists on disk. present==0 against a non-empty
+#                   completed list IS the storage signal, and still reds as
+#                   STAGE=qbit-no-completed.
+#        resolved — present AND a VIDEO_EXTS file was found inside. present>0
+#                   with resolved==0 is NOT an incident. The pool is intact;
+#                   this run simply contributes no new evidence, exactly like
+#                   an empty pool. It falls through to the accumulated-ledger
+#                   assertion, so the 2026-08-19 run would have evaluated its 7
+#                   stored observations and passed on real evidence rather than
+#                   reding on none.
+#      Reding an unclassifiable torrent shape is not conservatism; it is the
+#      third repeat of this canary's founding mistake — a tiny denominator
+#      converted into an alarm. Blindness is already covered, and covered
+#      better, by the vacuity clock: it pages only when the guard asserts
+#      NOTHING for MAX_VACUOUS_DAYS. Unrecognised-shape runs are counted there
+#      (reason=no-classifiable-torrents), not paged here.
+#
 # Thresholds (tunable via env on the seedbox systemd unit's
 # Environment= lines) — all evaluated over the orphan-EXCLUDED, ACCUMULATED
 # sample:
@@ -73,7 +118,10 @@
 # Stage labels (printed to stderr on failure → Kuma msg=):
 #   qbit-up-fail            qBit WebAPI unreachable
 #   qbit-auth-fail          qBit auth rejected (password drift?)
-#   qbit-no-completed       qBit reports zero completed torrents on disk (suspicious)
+#   qbit-no-completed       qBit reports completed torrents but NOT ONE content
+#                           path exists on disk (data dir nuked / mount gone).
+#                           NOT fired when the paths are present but hold no
+#                           recognised video — see the 2026-08-19 note above.
 #   library-empty           media/ contains zero scanable video files
 #   hardlink-regression     detached count and pct both exceed thresholds
 #   hardlink-blind          canary has passed without asserting anything for
@@ -329,7 +377,13 @@ observations, pruned_n = _prune_observations(_load_observations(), NOW,
 # accumulator from prior runs is still evaluated below.
 pool_empty_this_run = not torrents
 
-resolved = 0                  # torrents THIS RUN resolved to an on-disk file
+# present and resolved are DELIBERATELY different counters (2026-08-19 — see the
+# module header). present = the torrent content path exists on disk, which is
+# the storage fact qbit-no-completed is actually about. resolved = present AND a
+# VIDEO_EXTS file was found inside it, which is merely whether this run had
+# anything classifiable to say.
+present = 0                   # THIS RUN torrents whose content_path is on disk
+resolved = 0                  # THIS RUN torrents that also yielded a video file
 run_detached_samples = []     # THIS RUN (category, name) detached samples, for the failure msg
 orphans = 0                   # THIS RUN benign orphans (never recorded to the ledger)
 
@@ -345,7 +399,17 @@ if not pool_empty_this_run:
                  "/home/quadstronaut/media/TV Shows",
                  "/home/quadstronaut/media/Anime",
                  "/home/quadstronaut/media/Anime Movies"]
-    VIDEO_EXTS = (".mkv", ".mp4", ".m4v", ".avi", ".mov")
+    # DO NOT TRIM. One constant, TWO consumers: the library index below and
+    # the torrent target walk further down. An extension missing here does not
+    # skip a check — it silently drops that torrent from the sample and, before
+    # the 2026-08-19 split of present-vs-resolved, converted it into a red.
+    # .m2ts was the 2026-08-19 incident: the sole torrent in the pool was a BDMV rip
+    # whose lone video file is BDMV/STREAM/00000.m2ts, so resolved=0 and monitor
+    # #90 paged every 30 min for six hours on a completely healthy box.
+    # .ts (MPEG transport stream) is listed alongside it — same disc/broadcast
+    # family, same trap. Largest-file selection makes the TypeScript-source
+    # collision harmless: the .ts files in a code torrent are kilobytes.
+    VIDEO_EXTS = (".mkv", ".mp4", ".m4v", ".avi", ".mov", ".m2ts", ".ts")
     library = {}
     by_size = {}
     lib_count = 0
@@ -381,6 +445,7 @@ if not pool_empty_this_run:
         cp = t.get("content_path", "")
         if not cp or not os.path.exists(cp):
             continue
+        present += 1
         if os.path.isdir(cp):
             target = None
             biggest = 0
@@ -432,12 +497,23 @@ if not pool_empty_this_run:
             continue
         _record_observation(observations, h, verdict, NOW)
 
-    if resolved == 0:
-        # qBit reported completed torrents but none of them resolve to on-disk
-        # files — qBit data dir was nuked, a remote mount evaporated, or
-        # someone moved the downloads tree out from under qBit. All suspicious.
-        sys.stderr.write("STAGE=qbit-no-completed msg=zero-content-paths-on-disk\n")
+    if present == 0:
+        # qBit reported completed torrents but NOT ONE content path exists on
+        # disk — the qBit data dir was nuked, a remote mount evaporated, or
+        # someone moved the downloads tree out from under qBit. All suspicious,
+        # and all genuinely storage. This tested `resolved` until 2026-08-19,
+        # which folded "every torrent is a shape VIDEO_EXTS does not list" into
+        # the same red; see the header.
+        sys.stderr.write("STAGE=qbit-no-completed msg=zero-content-paths-on-disk"
+                         " torrents=%d\n" % len(torrents))
         sys.exit(1)
+    if resolved == 0:
+        # Paths are on disk, nothing inside is classifiable (disc rip, music,
+        # ISO, software grab). Not an incident — this run just contributes no
+        # evidence, exactly like an empty pool. Fall through to the accumulated
+        # ledger; the vacuity clock is what notices if this keeps up.
+        print("note: %d completed torrent(s) present on disk, none holding a "
+              "VIDEO_EXTS file — no new observations this run" % present)
 
 # Persist regardless of whether this run added anything new — a run that only
 # pruned stale entries still needs that pruning to stick.
@@ -451,7 +527,7 @@ span_days = ((NOW - min(r["first_seen"] for r in observations.values())) / 86400
              if observations else 0.0)
 summary = (f"observed={total}/{min_sample} over {span_days:.0f}d "
           f"(hardlinked={hardlinked_total} detached={detached_total}) "
-          f"pruned={pruned_n}")
+          f"pruned={pruned_n} this_run=present:{present}/resolved:{resolved}")
 
 if total < min_sample:
     # Too few DISTINCT torrents have been observed, accumulated across runs, to
@@ -464,8 +540,17 @@ if total < min_sample:
     #
     # Timed on the same clock either way: an accumulator that never grows past
     # min_sample blinds this guard just as completely as an empty one.
-    _vacuous_exit("empty-pool" if pool_empty_this_run else "below-min-sample",
-                 summary)
+    # Three distinct ways to be inconclusive, all timed on the same clock. The
+    # third (2026-08-19) is named so the operator can tell "the pool holds only
+    # shapes I cannot classify" apart from "the pool is just small" — the two
+    # have different remedies (extend VIDEO_EXTS vs wait for imports).
+    if pool_empty_this_run:
+        reason = "empty-pool"
+    elif resolved == 0:
+        reason = "no-classifiable-torrents"
+    else:
+        reason = "below-min-sample"
+    _vacuous_exit(reason, summary)
 
 detached_pct = 100.0 * detached_total / total
 max_n = int(os.environ.get("MAX_DETACHED", "2"))

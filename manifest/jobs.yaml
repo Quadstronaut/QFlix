@@ -92,6 +92,33 @@ jobs:
     timer: scripts/maint/systemd/manitoba-maint-torrent-janitor.timer
     kuma_monitor: "QFlix Torrent Janitor"
 
+  # Carries a SECOND assertion beyond "did the collector run" (added
+  # 2026-08-19): a log-coverage ledger. listmonk stopped appearing in the
+  # collected payload and nobody noticed, because logs.py emits nothing at all
+  # for an app with an empty `lines` list, so "healthy and quiet" and "dropped
+  # out of the routing table" were byte-identical absences. The ledger records
+  # which apps have ever produced lines and grades every cycle three ways:
+  #   roster-drop   in the ledger, absent from logs.py's payload keys -> RED
+  #   source-error  payload entry carries an `error` -> RED
+  #   dark          present but silent past its own self-calibrated tolerance
+  #                 -> reported in the Kuma msg and journald, NEVER red
+  # `dark` is deliberately not a red: quiet-healthy and gone are
+  # indistinguishable, and monitor 79 sits in the PUBLIC status page's
+  # "Infrastructure & Observability" group, so an unclearable red would show
+  # customer-side and get muted. Do not promote `dark` without first giving it
+  # a private monitor of its own.
+  #
+  # RETIRING AN APP -- the written exemption path. A decommission is an
+  # explicit operator act, never an automatic decay: a removed app stays a
+  # roster-drop (and therefore a red) forever until it is named in the
+  # comma-separated QFLIX_COLLECT_LOG_ROSTER_IGNORE, set as an Environment=
+  # line in a systemd drop-in on this timer's service. Named apps are dropped
+  # from the ledger entirely, so the red clears on the next cycle with no state
+  # file to hand-edit. Same principle as deploy-drift.sh's is_generated list:
+  # an exemption that expires on its own is a hiding place, so this one does
+  # not expire. The books-stack purge (2026-08-16, ef136e1) is the shape of
+  # change that needs it -- four apps removed at once, each of which would
+  # otherwise page from the first cycle after the uninstall.
   qflix-collect:
     timer: scripts/maint/systemd/qflix-collect.timer
     kuma_monitor: "QFlix Collect (workstation)"
@@ -224,6 +251,19 @@ jobs:
   manitoba-maint-canary-plex-transcoder:
     timer: scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.timer
     kuma_monitor: "Canary Plex Transcoder"
+  # Added 2026-08-19. Deliberately a SECOND Plex timer, not a fourth leg bolted
+  # onto plex-transcoder above -- and the reason is the sharpest case for the
+  # compartmentalise law in this file. That canary probes /identity,
+  # /transcode/sessions and /:/prefs for HTTP 200; it stayed green on every tick
+  # of a 26-day window in which every movie failed to play, because a healthy
+  # HTTP handler satisfies all three whether or not the transcoder can produce a
+  # frame. No threshold on that timer could have caught it. This one performs
+  # the failing action instead: worst-case item, forced downscale + EAE downmix,
+  # real MPEG-TS segment bytes. Different signal, different cadence (every-30min
+  # vs every-10min, because it burns actual CPU), independently swappable.
+  manitoba-maint-canary-plex-playback:
+    timer: scripts/maint/systemd/manitoba-maint-canary-plex-playback.timer
+    kuma_monitor: "Canary Plex Playback"
   manitoba-maint-canary-newsletter-digest:
     timer: scripts/maint/systemd/manitoba-maint-canary-newsletter-digest.timer
     kuma_monitor: "Canary Newsletter Digest"

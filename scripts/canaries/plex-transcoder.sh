@@ -1,16 +1,45 @@
 #!/usr/bin/env bash
-# Plex-transcoder canary: assert Plex's transcoding subsystem is responsive.
+# Plex-transcoder canary: assert Plex's transcode-related HTTP ENDPOINTS are
+# responsive. It is an API liveness probe. It is NOT a playback test.
 #
-# Why this exists: if Plex's transcoder daemon dies or its session manager
-# stalls, every customer playback that needs a transcode (per Tautulli's
-# 60% recent rate) will buffer or fail with "Conversion failed." The Plex
-# server's main API will still return 200 OK on /identity, and Kuma will
-# show green, so the issue is invisible until a customer complains.
+# ── WHAT THIS DOES NOT COVER (read this first) ───────────────────────────────
+# Every leg below is a GET that a healthy HTTP handler satisfies. Nothing here
+# decodes a frame, spawns Plex Transcoder, runs EasyAudioEncoder, or moves one
+# byte of transcoded output. That is not a tuning gap — it is a structural one:
+# this probe and a member's playback failure are ORTHOGONAL signals, so no
+# threshold change to this file could ever make it see one.
 #
-# Probe: hit /transcode/sessions (lists active transcodes; returns empty
-# array if none, which is fine) AND /:/prefs (returns the long config
-# blob, which exercises the metadata subsystem the transcoder needs). If
-# either hangs >10s or returns non-2xx, transcoder is degraded.
+# It was measured. During a 26-day window in which EVERY movie failed to play for
+# a real member, this canary was green on every single tick, and correctly so:
+# /identity, /transcode/sessions and /:/prefs were all genuinely fine the whole
+# time. Same shape as tdarr-healthcheck (transcodes succeeded while 100% of
+# health checks failed for 68 days) and dash-asset-integrity (/healthz answered
+# while the served shell could not hydrate for ~22h).
+#
+# The actual playback assertion lives in its own module, its own timer and its
+# own Kuma monitor — scripts/canaries/plex-playback.sh, "Canary Plex Playback" —
+# which picks the library's worst-case item (highest-bitrate title with lossless
+# multichannel audio), forces a full software downscale plus an EAE downmix, and
+# fails unless real MPEG-TS segment bytes come back. Separate module per the
+# operator compartmentalise-for-migration law: a 10-minute liveness probe and a
+# 30-minute load test have different cadences, different failure modes and
+# different remedies, and one monitor meaning two things helps nobody.
+#
+# KEEP BOTH. This one is cheap, runs 3x more often, and distinguishes "the
+# transcode API is wedged" (this file reds, playback reds) from "the API is fine
+# and the transcoder produces nothing" (only plex-playback reds) — different
+# faults, different operator action. Its logic is deliberately unchanged.
+#
+# ── WHAT THIS DOES COVER ─────────────────────────────────────────────────────
+# If Plex's session manager stalls or its transcode endpoints hang, every
+# playback that needs a transcode (per Tautulli, ~60% of recent sessions) will
+# buffer or fail with "Conversion failed" while /identity still returns 200 OK
+# and the app monitor stays green.
+#
+# Probe: hit /transcode/sessions (lists active transcodes; an empty array is a
+# healthy answer) AND /:/prefs (the long config blob, which exercises the
+# metadata subsystem the transcoder reads on every session start). If either
+# hangs >10s or returns non-2xx, the transcode API is degraded.
 #
 # Stage labels (failure messages on stderr → Kuma msg=):
 #   STAGE=plex-up-fail          Plex /identity returned non-200 (server-down)
@@ -18,7 +47,9 @@
 #   STAGE=prefs-api-fail        /:/prefs returned non-200 or hung
 #
 # Exits:
-#   0 — pass (both endpoints respond in <10s with 2xx)
+#   0 — pass (both endpoints respond in <10s with 2xx). NOTE: this says the
+#       endpoints answered, and nothing whatsoever about whether a member can
+#       play a file. plex-playback.sh answers that question.
 #   1 — fail (STAGE label on stderr)
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

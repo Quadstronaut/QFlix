@@ -243,21 +243,87 @@ def test_the_short_catalogue_rail_survives_a_member_who_also_holds_welcome(tmp_p
 # H5 (MEDIUM) -- the backstop went silent at the moment of harm
 # ---------------------------------------------------------------------------
 
-def test_never_seen_is_still_recorded_when_the_reduction_happens():
-    """H5 REVISED 2026-08-17. The original hazard was that never-seen fell
-    silent on exactly the run that took a member's libraries away. The FACT
-    must still be recorded there -- what changed is that it is no longer a
-    Discord page, because never-seen is now an ordinary steady state for
-    manual-rail and non-Patreon households and EXPIRED is terminal, so the
-    page repeated daily per household forever. Reported in `reason` and in the
-    --json plan; the rare actionable variant still pages from
+def _miss_plan(tmp_path, name, *, reason="unknown", status=None):
+    """The H5 fixture: an account whose clocks have all run out, graded NO.
+
+    Same shape as _plan_with above, but the answer is a negative one, because
+    H5 has always been about what happens on the run that REDUCES somebody.
+    """
+    m = _gate(name)
+    share = PS.Share(shared_server_id=1, user_id=7, email="member@example.com",
+                     username="u", section_ids={101, 102, 103},
+                     all_libraries=False, accepted_at=LONG_AGO)
+    st = ST.AccessState.load(tmp_path / "s.json")
+    st.first_run_at = NOW - dt.timedelta(days=400)
+    st.seed([("member@example.com", LONG_AGO)], now=NOW - dt.timedelta(days=300))
+    return m, m.plan_for_share(
+        share=share, household=_Household(),
+        answer=ENT.Answer(verdict=ENT.NO, email="payer@example.com",
+                          http_status=200, reason=reason, status=status),
+        seerr_user=SU.SeerrUser(id=1, email="member@example.com", username="u",
+                                permissions=SU.MEMBER_PERMISSIONS,
+                                user_type=1, plex_id=7),
+        state=st, full_ids=[101, 102, 103], minimum_ids=[WELCOME],
+        amnesty_until=None, grace_days=7, new_arrival_days=30,
+        member_permissions=SU.MEMBER_PERMISSIONS, now=NOW)
+
+
+def test_a_lookup_miss_can_no_longer_reach_the_reduction_at_all(tmp_path):
+    """H5, THIRD REVISION 2026-08-19.
+
+    The original hazard (2026-08-07) was that never-seen fell silent on exactly
+    the run that took a member's libraries away, so a wrong-address reduction
+    looked identical to a real lapse. 2026-08-17 dropped the page and kept the
+    fact, because never-seen had become an ordinary steady state for
+    manual-rail and non-Patreon households and EXPIRED is terminal, so the page
+    repeated daily per household forever.
+
+    That left the actual hazard standing. Not paging about a reduction taken on
+    an absence of evidence is not a fix for taking it -- and live on 2026-08-20
+    five of twelve shares were counting down to exactly that. A miss is UNKNOWN,
+    so it is now frozen in its own state and the reduction never happens. H5 is
+    closed by removing the event it was watching, which is the stronger form.
+
+    The rare genuinely actionable variant -- an EVER-ENTITLED declared payer
+    going never-seen, i.e. the sync projection dying -- is unaffected: it is fed
+    from the ANSWER, not from the plan state, and still pages from
     payer_oracle.judge() row 3.
     """
-    seg = GATE_SRC[GATE_SRC.index("# NEVER-SEEN IN EXPIRED"):
+    m, p = _miss_plan(tmp_path, "qe_h5a")
+    assert p.state == m.S_UNKNOWN_PAYER
+    assert p.plex_target is None, "a lookup miss planned a real reduction"
+    assert p.seerr_target is None
+    assert p.alert is None, "and it must not page either"
+    assert p.never_seen is True, "the fact still has to be legible"
+    assert m.unknown_payers([p]) == [m.mask("member@example.com")], \
+        "and it must surface in the masked roll-up, not just a reason string"
+
+
+def test_a_real_negative_verdict_is_untouched_by_that_freeze(tmp_path):
+    """The narrowness control. `reason='unknown'` is the miss; a status-bearing
+    NO is a verdict, stays on the lapse ladder, and is still reducible. Without
+    this, H5's fix could be widened into "never revoke" invisibly."""
+    m, p = _miss_plan(tmp_path, "qe_h5b", reason="not_entitled",
+                      status="former_patron")
+    assert p.state in (m.S_PENDING, m.S_EXPIRED)
+    assert p.never_seen is False
+    assert m.unknown_payers([p]) == []
+
+
+def test_the_expired_branch_no_longer_consults_never_seen():
+    """Belt and braces on the source: EXPIRED is the reducing branch, and it
+    must not be reachable from, or re-derive, a miss. If someone re-adds an
+    `answer.never_seen` read here, the two states have started overlapping
+    again and the freeze above has a hole."""
+    seg = GATE_SRC[GATE_SRC.index("# NEVER-SEEN NO LONGER REACHES EXPIRED AT ALL"):
                    GATE_SRC.index("return Plan(email=email, state=S_EXPIRED")]
-    assert "answer.never_seen" in seg
-    assert "billing.holder" in seg, "say what to fix, not just that something is wrong"
+    assert "payer_oracle.judge() row 3" in seg, \
+        "say where the actionable variant still pages"
     assert "alert=" not in seg, "never-seen must not page from the EXPIRED branch"
+    tail = GATE_SRC[GATE_SRC.index("return Plan(email=email, state=S_EXPIRED"):]
+    tail = tail[:tail.index("\n\n\n")]
+    assert "never_seen=False" in tail, \
+        "an EXPIRED plan is a real verdict by construction; pin that it says so"
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,12 @@ server would be a second, weaker allowlist that can silently disagree with it.
     stage 2  entitled                -> every library, Seerr perms restored
     stage 3  revoked, past grace     -> back to stage 1, share object KEPT
 
+There is a fourth outcome that is not a stage because it is not a position on
+that ladder: a household the entitlement service has NO RECORD of. That is a
+lookup MISS, not a verdict, and it is frozen in place (S_UNKNOWN_PAYER) rather
+than walked down the ladder -- ten of the live roster's households are on
+`rail: manual`, which the service cannot see by construction.
+
 Stage 3 is deliberately identical to stage 1: a revoked member is returned to
 the pitch, not evicted. Deleting the Plex share would force a fresh invite they
 must accept out of their email.
@@ -90,6 +96,11 @@ DEFAULT_WELCOME_SECTION = "QFlix - Welcome"
 DEFAULT_MAX_MUTATIONS = 10
 LOG_RETENTION_DAYS = 30
 
+# How many audit manifests survive. See prune_manifests() for the whole WHY;
+# 672 is grace_days(7) x 96 runs/day, i.e. full-resolution coverage of the
+# entire grace window a disputed reduction can live inside.
+MANIFEST_RETENTION_RUNS = 672
+
 # Blast-radius tripwire: the fraction of governed households that may be REDUCED
 # in a single run before the run refuses to reduce anyone at all.
 #
@@ -125,6 +136,12 @@ S_ENTITLED = "entitled"
 S_PENDING = "pending"
 S_EXPIRED = "expired"
 S_NO_ANSWER = "no-answer"
+# A LOOKUP MISS. The service answered cleanly and its answer was "I have no
+# record of this address at all" (HTTP 200, entitled:false, reason:"unknown").
+# That is an absence of evidence, not evidence of absence -- see the branch in
+# plan_for_share() for the whole argument. Frozen exactly like S_NO_ANSWER:
+# nothing is granted, nothing is reduced, and the lapse clock does not advance.
+S_UNKNOWN_PAYER = "unknown-payer"
 S_UNNAMED = "unnamed-share"
 S_NOT_ACCEPTED = "not-accepted"
 
@@ -143,21 +160,92 @@ def _open_log(state_dir: Path) -> None:
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
         _LOG_FH = open(state_dir / ("entitlement-%s.log" % stamp), "a", encoding="utf-8")
         cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - LOG_RETENTION_DAYS * 86400
-        # Manifests are pruned on the SAME retention as the logs. They were
-        # previously written and never removed: 96 a day, forever, each one a
-        # per-member decision record. That is both an unbounded disk leak on a
-        # shared slot and a growing pile of member data whose lifetime nobody
-        # chose -- the logs beside them already had an answer, and there is no
-        # reason for the two to disagree.
-        for pattern in ("entitlement-*.log", "manifest-*.json"):
-            for old in state_dir.glob(pattern):
-                try:
-                    if old.stat().st_mtime < cutoff:
-                        old.unlink()
-                except OSError:
-                    pass
+        # Logs rotate DAILY, so an age rule alone bounds them at 30 files.
+        # Manifests do not -- they are per-RUN, 96 a day -- so they are pruned
+        # by COUNT in prune_manifests(), called after the manifest is written.
+        for old in state_dir.glob("entitlement-*.log"):
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
     except Exception:
         _LOG_FH = None
+
+
+def prune_manifests(state_dir: Path, keep: int = MANIFEST_RETENTION_RUNS) -> int:
+    """Retain the `keep` newest manifest-*.json. Returns how many were removed.
+
+    WHY THIS EXISTS
+    ---------------
+    Observed live 2026-08-19: 1259 manifest-*.json / 14 MB / 1275 dirents in one
+    flat ~/.opt/maint/entitlement/, back to the first armed run on 2026-08-07 --
+    thirteen days of a writer that never stops. The 30-day age rule that shipped
+    with these files had simply never fired yet, and would not have saved the
+    directory when it did: at 96 runs a day a 30-day age rule settles at ~2880
+    files. An age rule is the right shape for the daily-rotated LOG beside it
+    and the wrong shape for a per-run artefact.
+
+    The house pattern for a per-run artefact is a COUNT (prune-app-backups.sh
+    keeps 3 per app, for the same reason: an age rule on a bursty writer either
+    keeps nothing or keeps everything, depending on the burst).
+
+    WHY 672 AND NOT SOME ROUND NUMBER
+    ---------------------------------
+    The thing a manifest has to be able to settle is a disputed grant or
+    revoke: "why did this household lose their libraries on the 14th". Every
+    reduction is the end of a grace clock (defaults.grace_days = 7 in the live
+    roster), so the decision record that matters is every run between the clock
+    starting and access changing. 7 days x 96 runs/day = 672 manifests keeps
+    that entire window at full resolution -- not a sample of it.
+
+    Older than that is not lost, it is just coarser: the durable log beside
+    these files carries the same per-member `state / masked-address / reason`
+    line for every run and is kept 30 days. So the pair is deliberate --
+    machine-readable snapshots for the disputable window, human-readable text
+    for the month. Steady state is ~7.5 MB and 672 dirents instead of unbounded.
+
+    Both rules apply, whichever bites first: past the count, or past
+    LOG_RETENTION_DAYS. The second only matters if the timer cadence ever
+    slows -- 672 hourly manifests would be 28 days of history and the member
+    decision records inside them would outlive the lifetime the logs declare.
+
+    THE NEWEST FILE IS NEVER DELETED, under any rule, even if it is somehow
+    older than the age cutoff (a restored backup, a clock step). A state dir
+    with zero manifests cannot answer anything.
+
+    Deleting is done from ONE snapshot listing, sorted by filename -- the name
+    carries a fixed-width UTC stamp, so lexicographic order IS chronological
+    and it survives the mtime rewrite a copy or a restore would cause. A
+    manifest written concurrently sorts newest and can therefore never appear
+    in a delete list computed from the older snapshot. unlink() is the atomic
+    primitive; nothing is moved, truncated, or rewritten in place, so an
+    interrupted prune leaves a strictly smaller valid set of manifests.
+    """
+    try:
+        found = sorted(state_dir.glob("manifest-*.json"), key=lambda p: p.name,
+                       reverse=True)
+    except OSError:
+        return 0
+    if len(found) <= 1:
+        return 0
+    keep = max(1, int(keep))
+    cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - LOG_RETENTION_DAYS * 86400
+    doomed = list(found[keep:])                       # past the count cap
+    for p in found[1:keep]:                           # index 0 is never touched
+        try:
+            if p.stat().st_mtime < cutoff:
+                doomed.append(p)
+        except OSError:
+            pass
+    removed = 0
+    for p in doomed:
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def _file_log(line: str) -> None:
@@ -567,73 +655,112 @@ def plan_for_share(
                         if drops_only_welcome
                         else "raising to full access"))
 
+    # --- the service has NO RECORD of this address: freeze -----------------
+    #
+    # A LOOKUP MISS IS NOT A NEGATIVE VERDICT (2026-08-19).
+    #
+    # entitlement.Answer grades `{"entitled": false, "reason": "unknown"}` as a
+    # clean NO, and that grading is deliberately left alone here: it was
+    # correct while the service's universe and the QFlix roster were the same
+    # set of people, and lib/entitlement.py is right that "never subscribed"
+    # has to be revocable or nobody could ever be revoked.
+    #
+    # That premise is gone, and the file already says so twice below. The
+    # Patreon behind the service carries non-QFlix members, and -- the half
+    # that matters here -- the live roster carries TEN households on
+    # `rail: manual` with `amount_usd: 0`, an operator-encoded "no arrangement
+    # in place". The entitlement service cannot see a manual rail. It is not
+    # the authority for those households and never was, so its "no record"
+    # is not a report about their entitlement; it is a report about its own
+    # coverage. Grading coverage as a verdict is exactly the operator law
+    # against using missing data as an interlock, pointed the other way:
+    # instead of an absence blocking an action, an absence is DRIVING one.
+    #
+    # What it was driving, live on 2026-08-19: five of twelve shares sat
+    # `pending` with a 12-day countdown to reduction, every one of them
+    # never-seen. On day twelve all five would have gone EXPIRED together --
+    # 5 of 9 governed households, 55%, straight through the 34% blast-radius
+    # tripwire. So the miss was never going to mass-revoke; it was going to
+    # spend the tripwire on a non-event and then page Discord daily forever
+    # about a state that cannot change. A tripwire that fires on a steady
+    # state is a tripwire that gets muted, and it is the same channel the
+    # unnamed-share page depends on.
+    #
+    # So the answer is not re-graded, the DECISION is. Same freeze as
+    # S_NO_ANSWER: nothing granted, nothing reduced, clock does not advance.
+    #
+    # DELIBERATELY NOT AN AUTO-GRANT. These households keep exactly what they
+    # already hold -- Welcome only, for anyone who was never entitled. The
+    # freeze changes nobody's access today; it removes a scheduled reduction
+    # that would have been taken on no evidence.
+    #
+    # And deliberately NOT PAGED (operator directive 2026-08-17): never-seen is
+    # an ordinary steady state now. It is REPORTED -- its own plan state so it
+    # stops hiding inside `pending=5`, its own masked roll-up line in the run
+    # summary, and `unknown_payers` in the audit manifest and --json.
+    #
+    # The two operator levers, both in members.yaml, both explicit:
+    #   * they do pay, on a rail the service sees -> set billing.rail +
+    #     payer_ref and they resume normal grading on the next run;
+    #   * they are comped or hand-managed -> mark the household exempt.
+    # Neither is a switch this file may throw on their behalf.
+    if answer.never_seen:
+        return Plan(email=email, state=S_UNKNOWN_PAYER, household_id=hid,
+                    holder=holder, provision_plex_id=provision,
+                    deadline=deadline, days_remaining=remaining,
+                    never_seen=True,
+                    reason="the entitlement service has no record of %s at all "
+                           "(unknown address, or a rail it cannot see); a lookup "
+                           "MISS is not a no, so nothing is granted, nothing is "
+                           "reduced and the lapse clock is frozen. Set "
+                           "billing.rail + payer_ref if they pay on a visible "
+                           "rail, or mark the household exempt"
+                           % mask(holder or "?"))
+
     # --- not entitled: pending or expired ----------------------------------
     if now < deadline:
-        # NEVER-SEEN IS REPORTED, NOT PAGED (operator directive 2026-08-17).
-        #
-        # "Never seen" used to mean "almost certainly a typo in billing.holder",
-        # because the entitlement service's universe and the QFlix roster were
-        # the same set of people. That premise is gone: the Patreon behind the
-        # service now carries non-QFlix members, and QFlix carries households
-        # that pay on rails the service has no visibility into at all. Under
-        # those conditions never-seen is an ORDINARY STEADY STATE for a growing
-        # share of the roster, not an anomaly -- and an anomaly channel that
-        # fires on a steady state is a channel that gets muted, taking the
-        # unnamed-share page and the arm-check with it.
-        #
-        # So the fact is kept and the page is dropped: it stays in `reason`, in
-        # the --json plan as `never_seen`, and in payer_oracle's arm-check --
-        # where it is still load-bearing, because "an EVER-ENTITLED declared
-        # payer went never-seen" means the sync projection died and is a
-        # genuinely rare event (SPEC section 3, row 3).
-        note = ""
-        if answer.never_seen:
-            note = (" -- the entitlement service has no record of %s at all "
-                    "(unknown address, or a rail it cannot see)"
-                    % mask(holder or "?"))
+        # PENDING is now only ever a REAL negative verdict -- the service has a
+        # record and it says not entitled (status=former_patron / declined /
+        # lapsed). The never-seen population that used to share this branch
+        # returned above as S_UNKNOWN_PAYER, so `never_seen` is False here by
+        # construction and the countdown in the digest counts only households
+        # the service can actually see.
         return Plan(email=email, state=S_PENDING, household_id=hid, holder=holder,
                     provision_plex_id=provision, deadline=deadline,
-                    days_remaining=remaining, never_seen=answer.never_seen,
-                    reason="not entitled, %.1f day(s) of grace remain%s"
-                           % (remaining, note))
+                    days_remaining=remaining, never_seen=False,
+                    reason="not entitled (%s), %.1f day(s) of grace remain"
+                           % (answer.status or "no status reported", remaining))
 
     plex_target = (sorted(minimum_ids)
                    if set(share.section_ids) != set(minimum_ids) else None)
     seerr_target = None
     if seerr_user is not None and seerr_user.permissions != SU.PERMISSIONS_DISABLED:
         seerr_target = SU.PERMISSIONS_DISABLED
-    # NEVER-SEEN IN EXPIRED: STILL RECORDED, NO LONGER PAGED.
+    # NEVER-SEEN NO LONGER REACHES EXPIRED AT ALL.
     #
-    # History, because this line has moved twice. It was PENDING-only, then
-    # 2026-08-07 added it here too on the reasoning that EXPIRED is the moment
-    # the reduction actually costs someone access, so the warning that
-    # distinguishes "did not subscribe" from "we are looking up the wrong
-    # address" must not be silent there. That reasoning was right about WHERE
-    # the fact matters and is preserved -- the note is in `reason` and the flag
-    # is in the --json plan.
+    # History, because this line has moved three times. It was PENDING-only,
+    # then 2026-08-07 added a never-seen note here too on the reasoning that
+    # EXPIRED is the moment the reduction actually costs someone access, then
+    # 2026-08-17 dropped the page and kept the note because never-seen had
+    # become an ordinary steady state for manual-rail households.
     #
-    # What changed 2026-08-17 is the base rate. EXPIRED is terminal: nothing
-    # moves an account out of it except the member becoming entitled, so this
-    # alert re-fired daily, per account, forever. With never-seen now an
-    # ordinary condition for manual-rail and non-Patreon households, that is a
-    # permanent daily page per household on a fact that is not going to change.
-    # The rare, genuinely actionable version of this signal -- an EVER-ENTITLED
-    # declared payer going never-seen, i.e. the sync projection dying -- is
-    # caught by payer_oracle.judge() row 3 and still pages.
-    note = ""
-    if answer is not None and answer.never_seen:
-        note = ("; the entitlement service has no record of %s at all, so if "
-                "they pay on a rail it cannot see, billing.holder is the thing "
-                "to check" % mask(holder or "?"))
+    # 2026-08-19 finished the thought. If never-seen is an ordinary steady
+    # state, it is not a verdict about the member, and a state whose whole job
+    # is to REDUCE somebody must never be entered on one -- see the
+    # S_UNKNOWN_PAYER branch above. The note is gone from here because the
+    # condition is: this branch is now reached only when the service HAS a
+    # record and that record says no. The one genuinely actionable never-seen
+    # signal -- an EVER-ENTITLED declared payer going never-seen, i.e. the sync
+    # projection dying -- is caught by payer_oracle.judge() row 3 and still
+    # pages, and is unaffected by any of this.
     return Plan(email=email, state=S_EXPIRED, household_id=hid, holder=holder,
                 plex_target=plex_target, seerr_target=seerr_target,
                 provision_plex_id=provision, deadline=deadline,
-                days_remaining=remaining,
-                never_seen=bool(answer is not None and answer.never_seen),
-                reason="not entitled and grace expired %.1f day(s) ago; %s%s"
-                       % (-remaining,
+                days_remaining=remaining, never_seen=False,
+                reason="not entitled (%s) and grace expired %.1f day(s) ago; %s"
+                       % (answer.status or "no status reported", -remaining,
                           "already at the floor" if not (plex_target or seerr_target)
-                          else "reducing to Welcome + Seerr disabled", note))
+                          else "reducing to Welcome + Seerr disabled"))
 
 
 # ===========================================================================
@@ -717,6 +844,18 @@ def arm_check_should_block(verdict: "ORACLE.Verdict", plans: Sequence[Plan]) -> 
     return any(p.state == S_EXPIRED and p.mutates for p in plans)
 
 
+def unknown_payers(plans: Sequence[Plan]) -> List[str]:
+    """The masked addresses the entitlement service has no record of.
+
+    Sorted and masked because it lands in the audit manifest, in --json and in
+    a log line, all of which are durable and forwardable surfaces. This is the
+    ANSWER to "which five are stuck": before S_UNKNOWN_PAYER existed they were
+    indistinguishable from real lapses inside a `pending=5` count, and the only
+    way to find them was to read every reason string.
+    """
+    return sorted(mask(p.email) for p in plans if p.state == S_UNKNOWN_PAYER)
+
+
 def would_be_reduced(plans: Sequence[Plan]) -> List[str]:
     """The masked set --arm-check prints: exactly the accounts EXPIRED-and-
     mutating would touch. Masked because this is diagnostic output that may
@@ -743,6 +882,16 @@ def digest_lines(plans: Sequence[Plan], now: dt.datetime) -> List[str]:
             for p in pending[:20]]
     if len(pending) > 20:
         rows.append("  ... and %d more" % (len(pending) - 20))
+    # Unknown-payer households ride along as an APPENDIX and never trigger a
+    # send on their own -- should_send_digest() is deliberately left keyed on
+    # the pending countdown. They have no countdown to report and the state
+    # does not change on its own, so making them a send reason would turn the
+    # weekly digest into a weekly reminder of a fact the operator already
+    # knows. Attached to a digest that was going out anyway, it costs nothing.
+    unknown = unknown_payers(plans)
+    if unknown:
+        rows.append("also frozen (service has no record, nothing reduced): "
+                    + ", ".join(unknown[:20]))
     return [header] + rows
 
 
@@ -908,7 +1057,42 @@ def compute_plans(
             continue
         if a.grants:
             state.record_entitled(share.email, now=now)
-        elif a.revokes:
+        elif a.revokes and not a.never_seen:
+            # THE CLOCK MUST FREEZE ON A MISS TOO, NOT JUST THE DECISION.
+            #
+            # plan_for_share() returns S_UNKNOWN_PAYER for a never-seen answer
+            # and its reason string promises "the lapse clock is frozen". This
+            # line was where that promise leaked: `never_seen` is graded
+            # verdict=NO (lib/entitlement.py:155 -- NO plus reason=="unknown"),
+            # so `a.revokes` was True and a lookup MISS was recorded here as a
+            # clean negative verdict. The decision was frozen upstream; the
+            # clock underneath it kept running. Half a freeze is not a freeze.
+            #
+            # Harmless today by luck, not by design: deadline_for() never reads
+            # first_not_entitled_at, and it returns max(candidates), so an extra
+            # candidate can only push a reduction LATER. Both of those are
+            # access_state's business and either could change without anyone
+            # thinking about this file.
+            #
+            # Not harmless in the one case that matters. For an EVER-ENTITLED
+            # account, record_not_entitled() also stamps went_false_at, which
+            # deadline_for() DOES read as `went_false_at + grace_days`. So a
+            # paying member whose entitlement projection dies -- the service
+            # stops knowing them at all, payer_oracle.judge() row 3, the exact
+            # upstream failure this system is built to survive -- silently burns
+            # their entire 7-day grace while frozen, and is reducible on the
+            # first run after the projection comes back with a real NO. An
+            # outage would have spent the grace it was supposed to suspend.
+            # That is the section-5.3 asymmetry ("no answer advances nothing")
+            # defeated by a miss being spelled NO rather than UNKNOWN.
+            #
+            # Costs nothing to be right: a household the service can see is
+            # unaffected, and a miss that later becomes a genuine NO starts its
+            # grace from THAT run -- the first moment there was a verdict to
+            # start it from. Verified against the live state.json 2026-08-20:
+            # every account reads went_false_at=null, so no clock is stale today
+            # and this fix is purely forward-looking. It stays because the next
+            # never-seen account will be one that used to pay.
             state.record_not_entitled(share.email, now=now)
 
     plans: List[Plan] = []
@@ -1381,6 +1565,12 @@ def main(argv=None) -> int:
         "full_section_ids": full_ids,
         "minimum_section_ids": minimum_ids,
         "seerr_default_permissions_drift": drift,
+        # The masked roll-up of every household the entitlement service has no
+        # record of. Denormalised out of `plans` on purpose: this is the one
+        # list that carries an operator TODO (fix billing.rail, or mark the
+        # household exempt), and it must be greppable across manifests without
+        # reparsing every plan to find which ones were frozen.
+        "unknown_payers": unknown_payers(plans),
         "plans": [p.to_json() for p in plans],
     }
     try:
@@ -1388,6 +1578,17 @@ def main(argv=None) -> int:
         mpath.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     except OSError as e:
         warn("could not write audit manifest (continuing): %s" % e)
+    # AFTER the write, not before: pruning here makes the cap exact (the file
+    # this run just added is already counted, and is the one file the sort
+    # guarantees is kept). Never fatal -- a full or read-only state dir must
+    # not take the gate down, it is a housekeeping chore, not a decision.
+    try:
+        gone = prune_manifests(state_dir)
+        if gone:
+            log("pruned %d old audit manifest(s) (keeping the newest %d)"
+                % (gone, MANIFEST_RETENTION_RUNS))
+    except Exception as e:                                   # noqa: BLE001
+        warn("manifest prune failed (continuing): %s" % e)
 
     if args.json:
         print(json.dumps(manifest, indent=2))
@@ -1399,11 +1600,27 @@ def main(argv=None) -> int:
     log("shares=%d %s" % (len(plans), " ".join("%s=%d" % kv for kv in sorted(counts.items()))))
     for p in plans:
         log("  %-14s %-22s %s" % (p.state, mask(p.email), p.reason))
+    # One roll-up line naming the frozen households, so the operator TODO is
+    # visible in the log without reading twelve per-member rows. LOG ONLY --
+    # deliberately not _notify()'d: never-seen is a steady state and a channel
+    # that fires 96 times a day on a steady state gets muted (2026-08-17).
+    unknown = unknown_payers(plans)
+    if unknown:
+        log("unknown to the entitlement service (frozen, no clock, nothing "
+            "reduced): %s -- set billing.rail + payer_ref if they pay on a "
+            "visible rail, or mark the household exempt" % ", ".join(unknown))
 
     # ---- blast-radius tripwire -------------------------------------------
     reducing = [p for p in mutating if p.state == S_EXPIRED]
+    # S_UNKNOWN_PAYER counts as GOVERNED even though it is frozen, exactly as
+    # S_NO_ANSWER does: the tripwire denominator is "households this gate is
+    # responsible for", not "households it moved this run". Leaving the frozen
+    # ones out would shrink the denominator and make the 34% rail hair-trigger
+    # -- with 4 visible households, a single ordinary lapse is 25% and two are
+    # 50%, so the rail would start refusing routine reductions.
     governed = [p for p in plans
-                if p.state in (S_ENTITLED, S_PENDING, S_EXPIRED, S_NO_ANSWER)]
+                if p.state in (S_ENTITLED, S_PENDING, S_EXPIRED, S_NO_ANSWER,
+                               S_UNKNOWN_PAYER)]
     tripped = False
     if args.max_reduce_pct > 0 and reducing and governed:
         pct = 100.0 * len(reducing) / len(governed)

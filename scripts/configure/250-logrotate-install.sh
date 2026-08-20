@@ -144,6 +144,38 @@ nomail
   missingok
 }
 
+# --- user-nginx HTTP logs (added 2026-08-19) ---
+# Why: QFlix served its whole public stack with NO access logging from
+# 2026-05-08 until 2026-08-19 (~/.apps/nginx/logs/access.log sat at 0 bytes,
+# error.log's last line was 2026-06-27). The nginx phase restored it by
+# declaring access_log/error_log inside the QFlix-owned location blocks
+# (scripts/qflix-dash/qflix-dash.nginx.conf.tmpl, scripts/data/qflix-faq.conf,
+# scripts/data/qflix-images.conf) -> logs/qflix-{dash,faq,images}.{access,
+# error}.log. This config had ZERO nginx entries at that moment (verified on
+# the box 2026-08-19: `grep -ci nginx ~/.config/logrotate.conf` = 0), so those
+# freshly-restored logs would have grown unbounded on a slot already at
+# 2231G/2794G (80%) quota -- the same log-mass-eats-the-quota failure as the
+# 2026-05-21 incident, re-armed by the fix for a different bug.
+#
+# copytruncate is REQUIRED here (nginx holds the log fd open across a rotation
+# and keeps writing to the rotated inode until a reload), and it is already
+# set GLOBALLY at the top of this file, so it is deliberately NOT repeated in
+# this block -- a duplicate would be a lie about where the setting lives.
+#
+# The glob deliberately also covers the panel's own logs/access.log and
+# logs/error.log. Rotating a log FILE is not editing panel-templated CONFIG,
+# so this stays inside the "don't hand-edit panel config" line.
+#
+# NOTE: these paths are deliberately absent from the Step 2 one-shot purge
+# below. That loop `rm`s matching files older than 7 days, live ones included;
+# unlinking a log nginx has open makes it keep writing to a now-invisible
+# inode -- silent log loss, exactly the outage class this whole change exists
+# to end. logrotate + copytruncate is the only safe path for nginx.
+"/home/quadstronaut/.apps/nginx/logs/*.log" {
+  size 50M
+  missingok
+}
+
 # --- Plex (under PlexMediaServer's own dir; large server log) ---
 "/home/quadstronaut/.apps/plex/Library/Application Support/Plex Media Server/Logs/*.log" {
   size 50M
