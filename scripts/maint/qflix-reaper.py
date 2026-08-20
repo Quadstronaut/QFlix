@@ -820,6 +820,9 @@ def do_delete_movie(client, movie_id) -> bool:
              + str(status) + " but the record is GONE on re-read - counting it "
              "as deleted (slow delete, not a failed one)")
         return True
+    # Durable logfile is the audit trail, not journald: say WHY it failed here.
+    warn("delete of movie " + str(movie_id) + " answered HTTP " + str(status)
+         + " and the re-read did NOT return 404 (record still there, or unreadable)")
     return False
 
 
@@ -836,6 +839,8 @@ def do_delete_series(client, series_id) -> bool:
              + str(status) + " but the record is GONE on re-read - counting it "
              "as deleted (slow delete, not a failed one)")
         return True
+    warn("delete of series " + str(series_id) + " answered HTTP " + str(status)
+         + " and the re-read did NOT return 404 (record still there, or unreadable)")
     return False
 
 
