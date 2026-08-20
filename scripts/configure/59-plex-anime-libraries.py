@@ -3,8 +3,8 @@
 and ~/media/Anime Movies. Idempotent — skips if a library with the same
 name already exists.
 
-After creation, this script does NOT trigger the Maintainerr 60-day rule
-re-run — invoke 27b-maintainerr-rules.py separately for that.
+Retention is add-date based and owned by qflix-reaper, which discovers
+libraries from Plex on each run — nothing to re-trigger after creation.
 
 Run on the seedbox via the python-plexapi venv:
     ~/.apps/python-plexapi/venv/bin/python 59-plex-anime-libraries.py
