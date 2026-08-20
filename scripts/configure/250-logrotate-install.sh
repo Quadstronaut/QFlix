@@ -109,7 +109,7 @@ nomail
   size 50M
 }
 
-# --- Kometa / Recyclarr / Buildarr / Upgradinatorr / Maintainerr ---
+# --- Kometa / Recyclarr / Buildarr / Upgradinatorr ---
 "/home/quadstronaut/.apps/kometa/config/logs/*.log" {
   size 50M
 }
@@ -118,10 +118,6 @@ nomail
 }
 "/home/quadstronaut/.apps/buildarr/logs/*.log" {
   size 50M
-}
-"/home/quadstronaut/.apps/maintainerr/logs/*.log" {
-  size 50M
-  missingok
 }
 
 # --- qBittorrent ---
@@ -210,7 +206,6 @@ for pattern in \
     "/home/quadstronaut/.apps/kometa/config/logs/*.log" \
     "/home/quadstronaut/.apps/recyclarr/logs/*.log" \
     "/home/quadstronaut/.apps/buildarr/logs/*.log" \
-    "/home/quadstronaut/.apps/maintainerr/logs/*.log" \
     "/home/quadstronaut/.apps/qbittorrent/logs/*.log" \
     "/home/quadstronaut/.apps/stream-stats/logs/*.log" \
     "/home/quadstronaut/.apps/qflix-newsletter/logs/*.log" \
