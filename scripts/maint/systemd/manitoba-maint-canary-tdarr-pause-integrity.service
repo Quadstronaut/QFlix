@@ -1,9 +1,0 @@
-[Unit]
-Description=Manitoba canary - Tdarr fair-use pause integrity (node must be INACTIVE during quiet hours)
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=%h/scripts/maint/manitoba-maint canary push tdarr-pause-integrity
-StandardOutput=journal
-StandardError=journal
