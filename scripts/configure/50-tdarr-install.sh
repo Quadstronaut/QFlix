@@ -182,6 +182,42 @@ StandardError=append:%h/.apps/tdarr/logs/server.err
 WantedBy=default.target
 UNIT
 
+# --- ffmpeg thread cap ------------------------------------------------------
+# Install scripts/ops/ffmpeg-threadcap-shim.sh AS Tdarr's ffmpeg binary, in
+# BOTH bundles. Same fragility class as the worker1.js null-guard patch above:
+# a Tdarr upgrade unzips over node_modules and removes it, so this is
+# re-applied on every install and asserted by smoke-test.sh.
+#
+# Not optional on this slot. `ulimit -u` is 2000 and uncapped ffmpeg threads to
+# core count on 128 cores, so ONE job held 129-273 threads: a single transcode
+# worker sat at 70.5% of the task ceiling and two took the box to 2000, where
+# bash could not fork and cron plus every canary died with it. Capped to 8, a
+# job holds ~34 and two workers sit at 52%. See manifest/apps.yaml
+# tdarr-node.throttle for the measured table.
+#
+# Idempotent: the presence of ffmpeg.real means the real binary has already
+# been moved aside, and re-copying the shim over the shim is a no-op.
+sshm "bash -s" <<'SHIMSCRIPT'
+set -uo pipefail
+R=$(cd ~ && pwd -P)
+for D in "$R/.apps/tdarr/Tdarr_Node/node_modules/ffmpeg-static" \
+         "$R/.apps/tdarr/Tdarr_Server/node_modules/ffmpeg-static"; do
+  [ -d "$D" ] || continue
+  if [ ! -e "$D/ffmpeg.real" ]; then
+    mv "$D/ffmpeg" "$D/ffmpeg.real"
+  fi
+  cp "$R/scripts/ops/ffmpeg-threadcap-shim.sh" "$D/ffmpeg"
+  chmod +x "$D/ffmpeg" "$D/ffmpeg.real"
+done
+# Prove the shim did not brick the binary BEFORE the node ever calls it — a
+# broken ffmpeg here means every transcode fails, silently, at job time.
+V=$("$R/.apps/tdarr/Tdarr_Node/node_modules/ffmpeg-static/ffmpeg" -version 2>&1 | head -1)
+case "$V" in
+  ffmpeg\ version*) echo "ffmpeg shim OK: $V" ;;
+  *) echo "ffmpeg shim BROKEN: $V" >&2; exit 1 ;;
+esac
+SHIMSCRIPT
+
 cat > ~/.config/systemd/user/tdarr-node.service <<'UNIT'
 [Unit]
 Description=Tdarr Node (transcoding worker)

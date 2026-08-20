@@ -79,13 +79,21 @@ DECISION_MAKER_FLOWS = {
 # pipelines are counted separately, not shared) and that was driving ~94% CPU on
 # a SHARED slot. 128-core EPYC.
 #
-# 2026-08-20 -- STAGED BACK TO 1 the same night. 2 transcode workers drove the
-# slot into its `ulimit -u 2000` task ceiling within minutes (bash could not
-# fork, which breaks cron and every canary, not just Tdarr). Root cause is not
-# the worker count: ffmpeg is uncapped and threads to core count on a 128-core
-# box, so ONE job holds 129-273 threads and one worker already sits at 70.5% of
-# the ceiling. Cap ffmpeg first, then raise this. Target stays 2 transcode +
-# 1 health-check (THREE concurrent, not four) once the node went 24/7. This is now the WHOLE fair-use mechanism: the
+# 2026-08-20 -- 2 transcode + 1 health-check (THREE concurrent, not four) as
+# the node went 24/7. Reached only after ffmpeg was thread-capped, and the
+# order mattered: raising this first drove the slot into its `ulimit -u 2000`
+# TASK ceiling within minutes (bash could not fork, which breaks cron and every
+# canary, not just Tdarr).
+#
+# The constraint here is tasks, not CPU. Uncapped ffmpeg threads to core count
+# on a 128-core box, so ONE job held 129-273 threads and a single worker
+# already sat at 70.5% of the ceiling. Capped to 8 threads a job holds ~34, so
+# the second worker costs ~25 tasks: 1 worker 1411 -> 1030, 2 workers 1055.
+# Two capped workers are cheaper than one uncapped one.
+#
+# The cap is scripts/ops/ffmpeg-threadcap-shim.sh, installed as Tdarr ffmpeg
+# binary by 50-tdarr-install.sh. If that shim is ever missing, put these back
+# to 1 -- see manifest/apps.yaml tdarr-node.throttle for the full table. This is now the WHOLE fair-use mechanism: the
 # 18:00-23:00 UTC quiet-hours pause is retired, so nothing else throttles this
 # node at any hour. Read the numbers from manifest/apps.yaml
 # tdarr-node.throttle -- that is the single source of truth, and
@@ -110,13 +118,13 @@ DECISION_MAKER_FLOWS = {
 # cruddb is avoided elsewhere here; the caller is responsible for stopping
 # tdarr-server first (see 50b's own deploy notes).
 WORKER_LIMITS = {
-    "transcodeWorkerLimit": 1,
+    "transcodeWorkerLimit": 2,
     "healthcheckWorkerLimit": 1,
     "transcodeWorkerLimitGpu": 0,
     "healthcheckWorkerLimitGpu": 0,
 }
 NODE_WORKER_LIMITS = {
-    "transcodecpu": 1,
+    "transcodecpu": 2,
     "transcodegpu": 0,
     "healthcheckcpu": 1,
     "healthcheckgpu": 0,
