@@ -161,6 +161,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.timer \
     scripts/maint/systemd/manitoba-maint-canary-plex-playback.service \
     scripts/maint/systemd/manitoba-maint-canary-plex-playback.timer \
+    scripts/maint/systemd/manitoba-maint-canary-library-container-sanity.service \
+    scripts/maint/systemd/manitoba-maint-canary-library-container-sanity.timer \
     scripts/maint/systemd/manitoba-maint-canary-quota.service \
     scripts/maint/systemd/manitoba-maint-canary-quota.timer \
     scripts/maint/systemd/manitoba-maint-canary-tautulli-plex-link.service \
@@ -243,6 +245,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/hardlink-integrity.sh \
     scripts/canaries/plex-transcoder.sh \
     scripts/canaries/plex-playback.sh \
+    scripts/canaries/library-container-sanity.sh \
     scripts/canaries/quota.sh \
     scripts/canaries/tautulli-plex-link.sh \
     scripts/canaries/newsletter-digest-stale.sh \
@@ -532,6 +535,8 @@ for unit in \
     manitoba-maint-canary-plex-transcoder.timer \
     manitoba-maint-canary-plex-playback.service \
     manitoba-maint-canary-plex-playback.timer \
+    manitoba-maint-canary-library-container-sanity.service \
+    manitoba-maint-canary-library-container-sanity.timer \
     manitoba-maint-canary-quota.service \
     manitoba-maint-canary-quota.timer \
     manitoba-maint-canary-tautulli-plex-link.service \
@@ -677,6 +682,51 @@ systemctl --user enable --now manitoba-maint-canary-plex-transcoder.timer
 # the failing action, so it burns real CPU -- hence the slower cadence and
 # its own monitor rather than another leg bolted onto the API probe.
 systemctl --user enable --now manitoba-maint-canary-plex-playback.timer
+# library-container-sanity: daily 04:30 UTC, assert every payload in the
+# member-visible libraries is a container a Plex client can open. Two legs: a
+# filesystem walk (disc-image extensions, BDMV/VIDEO_TS directories, and any
+# payload-sized file with an unlisted extension) and an *arr grading check for
+# BR-DISK / Raw-HD. Added after a 47.6 GB BR-DISK .iso imported into Movies on
+# 2026-08-20 with every monitor green -- Radarr graded the release Bluray-1080p
+# from the release NAME, re-graded the FILE to BR-DISK at import, and imported
+# it anyway, which no quality profile can prevent. Daily because the fault is
+# per-title and permanent until an operator acts; it does not cascade.
+#
+# FIRST-RUN GATE - do NOT enable a monitor that is born red.
+# This canary is red on arrival as of 2026-08-20 and legitimately so: Radarr
+# still holds a BR-DISK movieFile for In the Mouth of Madness (1995) - the .iso
+# was replaced at 11:03 by a 42,341,133,540-byte .mkv that is STILL graded
+# BR-DISK. That is a real finding, so the predicate must not be weakened to make
+# the install green. The remediation is a SEPARATE change landing this same
+# round (re-grab at a capped quality, then a Radarr rescan so the stale BR-DISK
+# record clears); this installer must not care whether that has landed yet.
+# A monitor enabled into a permanent red is a monitor that gets muted within the
+# week - which is how Kuma #39 spent 31 alerts before Homarr was decommissioned.
+# So: run it once by hand, and enable the timer only if it comes back clean.
+# An ALREADY-enabled timer is re-armed unconditionally - a gate that could
+# DISABLE a live monitor because today happens to be red would be a silencer.
+# Manual sequence if the gate declines:
+#   ssh <box> "bash ~/scripts/canaries/library-container-sanity.sh"   # see it
+#   ...fix the finding, then...
+#   ssh <box> "systemctl --user enable --now manitoba-maint-canary-library-container-sanity.timer"
+LCS_TIMER=manitoba-maint-canary-library-container-sanity.timer
+if systemctl --user is-enabled "$LCS_TIMER" >/dev/null 2>&1; then
+  systemctl --user enable --now "$LCS_TIMER"
+  echo "library-container-sanity: timer already enabled, re-armed (gate skipped)"
+else
+  mkdir -p ~/.opt/maint/library-container-sanity
+  LCS_LOG=~/.opt/maint/library-container-sanity/first-run.log
+  # `if` keeps a non-zero exit off the `set -e` path: a red canary must leave
+  # the timer disabled, not abort the whole maintenance install.
+  if timeout 600 bash ~/scripts/canaries/library-container-sanity.sh >"$LCS_LOG" 2>&1; then
+    systemctl --user enable --now "$LCS_TIMER"
+    echo "library-container-sanity: first run clean, timer enabled"
+  else
+    echo "WARN library-container-sanity: first run NOT clean, timer left DISABLED"
+    echo "WARN library-container-sanity: $(tail -2 "$LCS_LOG" | tr '\n' ' ')"
+    echo "WARN library-container-sanity: fix, then systemctl --user enable --now $LCS_TIMER"
+  fi
+fi
 # quota: track per-user Ultra.cc quota at 80%/90%/98% (warn/crit/fail).
 # At 90% fires Maintainerr execute + collections/handle autonomously to
 # reclaim space before the 100% wall causes SQLite I/O errors stack-wide.
@@ -969,7 +1019,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-pause-integrity tdarr-transcode-error stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity plex-transcoder plex-playback plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-pause-integrity tdarr-transcode-error stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"

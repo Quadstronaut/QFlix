@@ -248,6 +248,18 @@ jobs:
   manitoba-maint-canary-hardlink-integrity:
     timer: scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer
     kuma_monitor: "Canary Hardlink Integrity"
+  # Added 2026-08-20. A THIRD library-facing timer, and deliberately not another
+  # leg on hardlink-integrity above: that one runs every 30 min and answers an
+  # inode question about the qBit pool, this one runs daily and answers a
+  # container question about the library. Folding them would couple a
+  # half-hourly inode check to a whole-library walk plus ~45 *arr calls, and
+  # leave the operator one monitor meaning two unrelated things (operator design
+  # law, memory qflix-compartmentalize-for-migration). Exists because a 47.6 GB
+  # BR-DISK .iso imported into Movies on 2026-08-20 and no monitor in the fleet
+  # could see it.
+  manitoba-maint-canary-library-container-sanity:
+    timer: scripts/maint/systemd/manitoba-maint-canary-library-container-sanity.timer
+    kuma_monitor: "Canary Library Container Sanity"
   manitoba-maint-canary-plex-transcoder:
     timer: scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.timer
     kuma_monitor: "Canary Plex Transcoder"

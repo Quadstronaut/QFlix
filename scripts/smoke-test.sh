@@ -368,6 +368,20 @@ if [ -n "$TD_PORT" ]; then
     3/3) record "tdarr-flow-engaged" pass "$TD_FLOW libs attached to qflix-direct-play-fix" ;;
     *)   record "tdarr-flow-engaged" fail "$TD_FLOW libs attached (expected 3/3)" ;;
   esac
+  # Disc containers must NOT be scannable. Tdarr's stock containerFilter carries
+  # vob/evo/iso, and on 2026-08-20 the folder watcher picked up a 47.6 GB .iso
+  # that had slipped past the *arr grab-time levers and spent ~2h of node time
+  # laundering it into a 39.4 GiB .mkv that Radarr did not know existed - so the
+  # *arr side could not evict it and the disc survived cleanup by changing its
+  # own extension. 50b-tdarr-config.py owns the filter; this re-reads it live,
+  # because a Tdarr upgrade or an add_library() call restores the stock default.
+  # m2ts/ts stay allowed on purpose: both are real standalone payloads here.
+  TD_DISC=$(sshm "curl -sf -m 5 -X POST http://127.0.0.1:$TD_PORT/api/v2/cruddb -H 'Content-Type: application/json' -d '{\"data\":{\"collection\":\"LibrarySettingsJSONDB\",\"mode\":\"getAll\"}}' 2>/dev/null | python3 -c 'import sys,json; libs=json.load(sys.stdin); bad=[l.get(\"name\") for l in libs if [e for e in (l.get(\"containerFilter\") or \"\").split(\",\") if e.strip() in (\"iso\",\"vob\",\"evo\")]]; print((\",\".join(bad)) if bad else (\"clean:\"+str(len(libs))))'" 2>/dev/null)
+  case "$TD_DISC" in
+    clean:[1-9]*) record "tdarr-no-disc-containers" pass "$TD_DISC librar(ies), no iso/vob/evo scannable" ;;
+    "")           record "tdarr-no-disc-containers" fail "could not read containerFilter from Tdarr" ;;
+    *)            record "tdarr-no-disc-containers" fail "disc containers scannable on: $TD_DISC" ;;
+  esac
   # Quiet-hours timers armed (18:00-23:00 UTC pause to spare streaming users).
   TD_QH=$(sshm "systemctl --user list-timers tdarr-node-pause.timer tdarr-node-resume.timer --no-pager 2>/dev/null | grep -cE 'tdarr-node-(pause|resume).timer'" 2>/dev/null)
   if [ "${TD_QH:-0}" -ge 2 ]; then
@@ -454,26 +468,200 @@ fi
 # clean while it allows a remux tier. The lambda below recurses (an entry with
 # a non-empty items[] is a group; anything else is a leaf quality).
 #
-# SCOPE: radarr main only, matching 58's own SCOPE block. sonarr main and the
-# two anime instances knowingly allow remux (recyclarr owns sonarr2's profile),
-# so gating them here would be a permanent, meaningless red.
-echo "13n. Remux cap policy (radarr main)"
-RX_KEY=$(secret_read radarr.key 2>/dev/null || echo "")
-RX_PORT=$(secret_read radarr.port 2>/dev/null || echo "")
-RX_BASE=$(secret_read radarr.urlbase 2>/dev/null || echo radarr)
-if [ -n "$RX_KEY" ] && [ -n "$RX_PORT" ]; then
+# SCOPE: radarr, radarr2 and sonarr, matching 58's own SCOPE block after the
+# 2026-08-20 widening. sonarr2 is deliberately NOT gated - its profile 7 is
+# recyclarr TRaSH template 20e0fc959f1f1704bed501f23bdae76f, so a cap there
+# drifts back on the next sync and the gate would be a permanent red for a
+# condition nobody is allowed to fix here.
+echo "13n. Remux cap policy (radarr, radarr2, sonarr)"
+RX_BAD=""
+RX_SEEN=0
+RX_SKIPPED=""
+for RX_APP in radarr radarr2 sonarr; do
+  RX_KEY=$(secret_read "$RX_APP.key" 2>/dev/null || echo "")
+  RX_PORT=$(secret_read "$RX_APP.port" 2>/dev/null || echo "")
+  RX_BASE=$(secret_read "$RX_APP.urlbase" 2>/dev/null || echo "$RX_APP")
+  if [ -z "$RX_KEY" ] || [ -z "$RX_PORT" ]; then
+    RX_SKIPPED="$RX_SKIPPED $RX_APP"
+    continue
+  fi
   RX_OUT=$(sshm "curl -sf -m 15 -H 'X-Api-Key: $RX_KEY' http://127.0.0.1:$RX_PORT/$RX_BASE/api/v3/qualityprofile 2>/dev/null | python3 -c 'import sys,json; w=lambda its:[x for i in (its or []) for x in (w(i.get(\"items\")) if i.get(\"items\") else [i])]; ps=json.load(sys.stdin); bad=sorted(str(p.get(\"id\")) for p in ps if any(i.get(\"allowed\") and \"remux\" in ((i.get(\"quality\") or {}).get(\"name\") or \"\").lower() for i in w(p.get(\"items\")))); print(str(len(bad))+\" \"+(\",\".join(bad) or \"-\"))'" 2>/dev/null)
+  if [ -z "$RX_OUT" ]; then
+    RX_SKIPPED="$RX_SKIPPED $RX_APP(unreadable)"
+    continue
+  fi
+  RX_SEEN=$((RX_SEEN + 1))
   RX_N="${RX_OUT%% *}"
   RX_IDS="${RX_OUT#* }"
-  if [ -z "$RX_OUT" ]; then
-    record "remux-cap-radarr" fail "could not read radarr qualityprofile"
-  elif [ "${RX_N:-1}" = 0 ]; then
-    record "remux-cap-radarr" pass "no profile allows a remux tier (per policy)"
-  else
-    record "remux-cap-radarr" fail "$RX_N profile(s) allow remux: $RX_IDS - run scripts/configure/58-remux-cap-enforce.py"
-  fi
+  [ "${RX_N:-1}" = 0 ] || RX_BAD="$RX_BAD $RX_APP:$RX_IDS"
+done
+# A skipped instance must never read as an armed one - that is how 13o was
+# found reporting green while it had checked 1 of 3.
+if [ "$RX_SEEN" -lt 3 ]; then
+  record "remux-cap-radarr" fail "only checked $RX_SEEN/3 instance(s); skipped:${RX_SKIPPED:- none}"
+elif [ -n "$RX_BAD" ]; then
+  record "remux-cap-radarr" fail "profiles allow remux:$RX_BAD - run scripts/configure/58-remux-cap-enforce.py"
 else
-  record "remux-cap-radarr" skip "no radarr key/port"
+  record "remux-cap-radarr" pass "$RX_SEEN/3 instances, no profile allows a remux tier (sonarr2 excluded, recyclarr-owned)"
+fi
+
+# 13o. Full-disc block policy - live re-read gate for
+#      scripts/configure/59-brdisk-block.py. Twin of 13n (remux cap).
+#
+# WHY: on 2026-08-20 Radarr grabbed a release whose NAME said "1080p Blu-ray"
+# (graded Bluray-1080p, allowed) and whose BYTES were a 44.38 GiB BD-50 .iso.
+# Radarr re-graded it BR-DISK on import and imported it anyway. On radarr MAIN
+# the quality profile could not stop it - BR-DISK is disallowed on all four of
+# its profiles, and the profile gate fires on the PARSED name, which was clean.
+# The import decision engine was measured that day and rejects nothing on
+# custom-format score, so there is no import-side gate to assert. Everything 59
+# arms is therefore a GRAB-time gate, and this is its only standing
+# verification surface.
+#
+# DO NOT GENERALISE THAT TO "the profile is never the lever" - an earlier
+# version of this comment did, and it was wrong. Re-measured live 2026-08-20,
+# radarr2 profile 1 "Any" ALLOWED the BR-DISK quality outright (3 of its 6
+# movies sit there) and sonarr profile 6 ALLOWED Raw-HD, which is Sonarr's
+# disc-class tier, on every one of its 36 series. Those profiles needed no
+# fooling at all: a correctly-parsed disc release was simply accepted. 59 now
+# disallows both, and lever 3 below is the standing guard for it.
+#
+# THREE LEVERS, ALL ASSERTED, BECAUSE EACH ALONE LEAVES A HOLE OPEN:
+#   1. config/indexer.maximumSize - an absolute per-release MiB ceiling. This
+#      is the one that catches a MISLABELLED payload, the actual incident. It
+#      sat at 0 ("Maximum size is not set." in every debug log line, for years)
+#      on both Radarr instances. Asserted as: set, and no looser than policy.
+#      A tighter hand-set value passes - 59 never loosens one either.
+#   2. The TRaSH "BR-DISK" custom format scored -10000. Catches disc-shaped
+#      release TITLES. It existed on all three instances and was scored 0 on
+#      the profiles holding essentially the whole library (radarr p6 = 109 of
+#      111 movies, sonarr p6 = all 36 series). Asserted per profile, and only
+#      on profiles that actually carry the format - PLUS a count of how many
+#      profiles carry it at all. "Only on profiles that carry it" is how this
+#      gate could iterate, match nothing, and print OK if the custom format
+#      were ever deleted or pruned off every profile. Zero carriers is red.
+#   3. The disc-class QUALITY disallowed on every profile. This one is
+#      UNCONDITIONAL in Radarr/Sonarr - no score to sum, no size to misreport -
+#      and it is a single UI checkbox away from being flipped back, which is
+#      why it is asserted live rather than trusted. The walk is RECURSIVE: a
+#      group entry nests its own items[], and a flat walk measured 2026-08-19
+#      called sonarr2 clean while it allowed a remux tier.
+#
+# minFormatScore IS PART OF THE ASSERTION, NOT DECORATION. Radarr rejects when
+# total format score < minFormatScore. Push minFormatScore to -10000 and a
+# -10000 block silently stops blocking while every field still reads correct in
+# the UI. The gate fails on that too.
+#
+# SCOPE mirrors 59's INSTANCES exactly because it is READ FROM IT (see the
+# BD_SPECS derivation below) - widening INSTANCES in 59 widens this gate in the
+# same commit, with nothing to remember. sonarr carries levers 2 and 3 only:
+# its ceiling is deliberately left at 0 because maximumSize is per RELEASE and
+# a legitimate season pack dwarfs any single movie, so a movie-sized ceiling
+# would silently starve TV. sonarr2 is absent from INSTANCES - it has no
+# BR-DISK custom format at all - so it is absent here too.
+echo "13o. Full-disc (BR-DISK) block policy"
+BD_BAD=""
+BD_SEEN=0
+BD_SKIPPED=""
+# THE SPEC LIST IS DERIVED FROM 59, NOT RETYPED. An earlier version of this
+# gate hardcoded "radarr 25000" / "radarr2 42000". A ceiling and the guard that
+# asserts it are the same policy expressed twice, and the second copy drifts
+# silently: change INSTANCES in 59 and this gate keeps asserting the OLD number
+# forever, passing on a box that no longer matches policy. Parsing the shipped
+# table with ast.literal_eval (never importing it - importing would execute the
+# module and reach for ~/secrets) makes that drift structurally impossible.
+BD_SRC="$HERE/configure/59-brdisk-block.py"
+BD_SPECS=$(python3 - "$BD_SRC" <<'PYEOF' 2>/dev/null
+import ast, sys
+tree = ast.parse(open(sys.argv[1], encoding="utf-8").read())
+inst = None
+for node in tree.body:
+    if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", "") == "INSTANCES" for t in node.targets):
+        inst = ast.literal_eval(node.value)
+if not inst:
+    sys.exit(1)
+# max_size_mb None means "deliberately uncapped"; the gate renders that as
+# 0 = do not assert a ceiling, matching 59's own semantics for the same field.
+# Emitted as app:cap so the shell can iterate with a plain `for` - see below.
+for arr in sorted(inst):
+    cap = inst[arr].get("max_size_mb")
+    print(arr + ":" + str(int(cap) if cap else 0))
+PYEOF
+)
+BD_TOTAL=$(printf '%s\n' $BD_SPECS | grep -c .)
+if [ -z "$BD_SPECS" ] || [ "${BD_TOTAL:-0}" -eq 0 ]; then
+  # Cannot read the policy => cannot assert it. Never fall back to literals.
+  record "brdisk-block" fail "could not parse INSTANCES from $BD_SRC"
+else
+# ITERATE WITH `for`, NEVER `while read ... done <<EOF`. sshm() calls plain
+# `ssh` with no -n (scripts/lib/ssh.sh), and ssh SLURPS STDIN. Feeding the loop
+# from a heredoc puts the remaining spec lines on stdin, the first sshm inside
+# the body eats them, and the loop silently ends after ONE instance. Measured
+# 2026-08-20 while building this gate: it reported "1/3 checked" with an EMPTY
+# skip list, because the other two were never iterated at all rather than
+# skipped. `for` over a whitespace-split app:cap list touches no stdin.
+for BD_SPEC in $BD_SPECS; do
+  BD_APP="${BD_SPEC%%:*}"
+  BD_CAP="${BD_SPEC##*:}"
+  [ -n "$BD_APP" ] || continue
+  BD_KEY=$(secret_read "$BD_APP.key" 2>/dev/null || echo "")
+  BD_PORT=$(secret_read "$BD_APP.port" 2>/dev/null || echo "")
+  BD_BASE=$(secret_read "$BD_APP.urlbase" 2>/dev/null || echo "$BD_APP")
+  if [ -z "$BD_KEY" ] || [ -z "$BD_PORT" ]; then
+    BD_SKIPPED="$BD_SKIPPED $BD_APP"
+    continue
+  fi
+  BD_URL="http://127.0.0.1:$BD_PORT/$BD_BASE/api/v3"
+  # Both documents are fetched into ONE json object so a failed curl yields
+  # malformed input and an empty result, rather than a half-checked pass.
+  BD_OUT=$(sshm "{ printf '{\"idx\":'; curl -sf -m 15 -H 'X-Api-Key: $BD_KEY' $BD_URL/config/indexer; printf ',\"profiles\":'; curl -sf -m 15 -H 'X-Api-Key: $BD_KEY' $BD_URL/qualityprofile; printf '}'; } | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+cap=$BD_CAP
+bad=[]
+m=int((d.get(\"idx\") or {}).get(\"maximumSize\") or 0)
+if cap > 0 and (m == 0 or m > cap): bad.append(\"maximumSize=\" + str(m) + \" want 1..\" + str(cap))
+def leaves(items):
+    out = []
+    for i in (items or []):
+        if i.get(\"items\"): out.extend(leaves(i.get(\"items\")))
+        else: out.append(i)
+    return out
+def isdisc(n):
+    n = (n or \"\").lower()
+    return \"disk\" in n or \"disc\" in n or n == \"raw-hd\"
+carriers = 0
+for p in (d.get(\"profiles\") or []):
+    sc = [i.get(\"score\") for i in (p.get(\"formatItems\") or []) if i.get(\"name\") == \"BR-DISK\"]
+    if sc:
+        carriers += 1
+        if int(sc[0] or 0) > -10000: bad.append(\"p\" + str(p.get(\"id\")) + \" BR-DISK=\" + str(sc[0]))
+        if int(p.get(\"minFormatScore\") or 0) <= -10000: bad.append(\"p\" + str(p.get(\"id\")) + \" minFormatScore=\" + str(p.get(\"minFormatScore\")))
+    da = sorted(set(str((l.get(\"quality\") or {}).get(\"name\")) for l in leaves(p.get(\"items\")) if l.get(\"allowed\") and isdisc((l.get(\"quality\") or {}).get(\"name\"))))
+    if da: bad.append(\"p\" + str(p.get(\"id\")) + \" ALLOWS \" + \",\".join(da))
+if carriers == 0: bad.append(\"no profile carries the BR-DISK custom format\")
+print(\"OK\" if not bad else \", \".join(bad))'" 2>/dev/null)
+  if [ -z "$BD_OUT" ]; then
+    BD_BAD="$BD_BAD [$BD_APP: unreadable]"
+  elif [ "$BD_OUT" != "OK" ]; then
+    BD_BAD="$BD_BAD [$BD_APP: $BD_OUT]"
+  fi
+  BD_SEEN=$((BD_SEEN + 1))
+done
+if [ -n "$BD_BAD" ]; then
+  record "brdisk-block" fail "$BD_BAD - run scripts/configure/59-brdisk-block.py"
+elif [ "$BD_SEEN" = 0 ]; then
+  record "brdisk-block" skip "no arr key/port for:$BD_SKIPPED"
+elif [ "$BD_SEEN" -lt "$BD_TOTAL" ]; then
+  # A PARTIAL PASS IS NOT A PASS. An instance whose key/port is unreadable used
+  # to be dropped into BD_SKIPPED and continued past, and BD_SKIPPED was only
+  # ever consulted in the BD_SEEN=0 branch - so a run that checked 2 of 3
+  # instances printed a green "2 instance(s)" line with the third invisible.
+  # Un-checked is un-known, and un-known reports as skip, never as pass.
+  record "brdisk-block" skip "$BD_SEEN/$BD_TOTAL checked, no key/port for:$BD_SKIPPED"
+else
+  record "brdisk-block" pass "$BD_TOTAL/$BD_TOTAL instance(s): size ceiling + BR-DISK block + disc-quality ban armed"
+fi
 fi
 
 # 13. Listmonk health + subscribers (mass-comms Phase 19+20)
