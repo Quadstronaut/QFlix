@@ -116,14 +116,20 @@ SAFETY ENVELOPE (reaper / torrent-janitor parity)
     targets[:-1], which is not a cap at all - it took 22 of the 23 targets and
     issued 22 DELETEs. A negative cap does not shrink the blast radius, it
     inverts the slice and WIDENS it. run() clamps as a second belt.
-  - IT UNLINKS, IT DOES NOT FREE. Radarr main runs copyUsingHardlinks=true with
-    an EMPTY recycleBin (both re-read live 2026-08-19), so DELETE /moviefile
-    drops ONE hardlink of a file qBittorrent is still seeding through the other.
-    Zero bytes come back at delete time. The space is reclaimed later, when
-    qflix-torrent-janitor reaps the still-seeding qBit copy at ratio >= 2.0.
-    Every byte figure this script prints is therefore "unlinked", never "freed",
-    and the re-download starts immediately while the old bytes are still on
-    disk - budget for BOTH copies, not the net.
+  - UNLINK VS FREE DEPENDS ON THE FILE, NOT ON THE CONFIG FLAG. Radarr main runs
+    copyUsingHardlinks=true with an EMPTY recycleBin, so a movie file that STILL
+    has a seeding qBittorrent twin has st_nlink >= 2: DELETE /moviefile drops one
+    link and zero bytes come back until qflix-torrent-janitor reaps the other at
+    ratio >= 2.0. A file with st_nlink == 1 has no twin (usenet import, or the
+    torrent was already reaped) and its bytes come back AT DELETE TIME.
+    The first version of this script asserted the pessimistic case
+    unconditionally, reasoning from the config flag alone. That was wrong on the
+    2026-08-20 run: all 23 targets were st_nlink == 1, the quota went 2231G ->
+    1658G the moment the deletes landed, and an operator who had believed the
+    printed warning would have budgeted for a peak that could not occur. Reading
+    a flag is not the same as measuring the file. So this script now STATS each
+    target and reports the two buckets separately - reclaimed-now vs
+    unlinked-pending-reap. Budget for both copies only for the pending bucket.
   - --force overrides --max-items (logged). It does NOT imply --execute.
   - MANIFEST written BEFORE the first delete, to --manifest-dir (default
     ~/.opt/maint/remux-regrab), and printed to stdout on every run including
@@ -401,6 +407,45 @@ def _file_quality_name(movie_file) -> str:
     return str(q.get("name") or "")
 
 
+def _bytes_verdict(rows):
+    """Report reclaimed-now vs unlinked-pending-reap from MEASURED link counts.
+
+    The predecessor printed one unconditional "space reclaims only when
+    qflix-torrent-janitor reaps" clause because Radarr's config says
+    copyUsingHardlinks=true. That describes how files ARRIVE, not whether a
+    given file still has its twin, and on 2026-08-20 every one of the 23
+    targets was st_nlink == 1 -- the bytes came back at delete time and the
+    warning was pure noise pointed at the operator's capacity planning.
+    """
+    now = round(sum(r["size_gb"] for r in rows if r.get("nlink") == 1), 2)
+    pend = round(sum(r["size_gb"] for r in rows if (r.get("nlink") or 0) >= 2), 2)
+    unk = round(sum(r["size_gb"] for r in rows if r.get("nlink") is None), 2)
+    parts = []
+    if now:
+        parts.append("freed " + str(now) + " GB now (no seeding twin)")
+    if pend:
+        parts.append("unlinked " + str(pend) + " GB pending torrent-janitor "
+                     "reap at ratio>=2.0 - both copies on disk until then")
+    if unk:
+        parts.append("removed " + str(unk) + " GB of unstat-able files "
+                     "(link count unknown, assume pending)")
+    return "; ".join(parts) if parts else "0 GB"
+
+
+def _nlink(path):
+    """st_nlink for a movie file path, or None if it cannot be stat'ed.
+
+    Never raises: a target whose link count is unknown is reported in the
+    unknown bucket rather than silently counted as either freed or pending.
+    """
+    if not path:
+        return None
+    try:
+        return os.stat(path).st_nlink
+    except OSError:
+        return None
+
+
 def _gb(nbytes) -> float:
     try:
         return round(int(nbytes) / (1024 ** 3), 2)
@@ -589,6 +634,12 @@ def select_targets(movies, remux_profile_ids, capped_profile_ids):
             "size_gb": _gb(mf.get("size")),
             "date_added": mf.get("dateAdded") or "",
             "quality_profile_id": pid,
+            # MEASURED, not inferred from copyUsingHardlinks. st_nlink == 1
+            # means no seeding twin, so the delete frees the bytes immediately;
+            # >= 2 means the space waits on qflix-torrent-janitor. Reasoning
+            # from the config flag alone got this backwards on 2026-08-20 (see
+            # the UNLINK VS FREE note in the header). None = could not stat.
+            "nlink": _nlink(mf.get("path")),
         }
         if pid in remux_profile_ids:
             # skip_class is the machine-readable half of `reason`. The two skip
@@ -773,10 +824,8 @@ def run(args) -> int:
     if dry_run:
         log("dry-run: " + str(len(to_fix)) + " movie file(s) would be DELETED and "
             "re-searched. Nothing was changed. Add --execute to arm.")
-        log("note: the delete UNLINKS one hardlink (copyUsingHardlinks=true, "
-            "empty recycleBin) - 0 bytes come back until qflix-torrent-janitor "
-            "reaps the still-seeding qBit copy at ratio>=2.0, so both copies "
-            "are on disk while the re-download runs.")
+        log("note: " + _bytes_verdict(to_fix) + " (recycleBin is empty, so "
+            "nothing is staged for later cleanup either way)")
         log("zero-action alternative: qflix-reaper's 45-day add-date retention "
             "removes these on its own by ~2026-09-30 - see the header.")
         return EXIT_OK
@@ -816,11 +865,9 @@ def run(args) -> int:
                  "re-derived as targets, because a file-less movie is not a "
                  "remux target.")
 
-    unlinked = round(sum(r["size_gb"] for r in deleted), 2)
     summary = ("repaired " + str(len(deleted)) + " of " + str(len(to_fix))
-               + " target(s), unlinked " + str(unlinked) + " GB (space reclaims "
-               "only when qflix-torrent-janitor reaps the still-seeding qBit "
-               "copy at ratio>=2.0), deferred " + str(len(deferred))
+               + " target(s), " + _bytes_verdict(deleted)
+               + ", deferred " + str(len(deferred))
                + ", failures " + str(failures))
     log(summary)
 
