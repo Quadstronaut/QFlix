@@ -329,15 +329,59 @@ def test_an_unwritable_lock_does_not_stop_the_run(tmp_path):
 # FINDINGS 15 / 16 / 18 (low) -- manifests grew forever
 # ---------------------------------------------------------------------------
 
-def test_audit_manifests_are_pruned_on_the_same_retention_as_logs():
+def test_both_durable_artefacts_are_bounded_each_by_the_rule_that_fits_it():
     """96 a day, forever, each a per-member decision record: an unbounded disk
     leak on a shared slot AND a growing pile of member data with a lifetime
-    nobody chose."""
+    nobody chose.
+
+    The ORIGINAL fix put manifests on the log's 30-day age rule, and this test
+    pinned that by reading the glob list inside _open_log. It was pinning the
+    implementation, and the implementation was wrong: logs rotate DAILY, so an
+    age rule bounds them at 30 files, while manifests are per-RUN, so the same
+    rule settles at ~2880 and had not fired once in the thirteen days before it
+    was found (1264 files / 14 MB live on 2026-08-20). An age rule bounds a
+    daily artefact; only a COUNT bounds a bursty one.
+
+    So this asserts the PROPERTY -- each artefact is bounded -- and leaves the
+    two rules free to differ, because they should. The count rule's own
+    contract (keeps the newest, idempotent, never prunes under budget) lives in
+    tests/unit/test_entitlement_manifest_prune.py.
+    """
     src = (ROOT / "scripts" / "maint" / "qflix-entitlement.py").read_text(encoding="utf-8")
     fn = src[src.index("def _open_log"):]
     fn = fn[:fn.index("\ndef ")]
-    assert "manifest-*.json" in fn
-    assert "entitlement-*.log" in fn
+    assert "entitlement-*.log" in fn, "the daily log keeps its age rule"
+    assert "LOG_RETENTION_DAYS" in fn
+    assert G.MANIFEST_RETENTION_RUNS > 0, "the manifest bound must be a real cap"
+    assert callable(G.prune_manifests)
+
+
+def test_the_manifest_cap_actually_bounds_the_directory(tmp_path):
+    """The bound, exercised rather than grepped: a directory over budget comes
+    back to the cap, and the newest record -- the one an operator asks about
+    first -- is never the one that goes."""
+    made = []
+    for i in range(12):
+        p = tmp_path / ("manifest-20260820T%04dZ.json" % i)
+        p.write_text("{}\n", encoding="utf-8")
+        made.append(p)
+    assert G.prune_manifests(tmp_path, keep=4) == 8
+    survivors = sorted(q.name for q in tmp_path.glob("manifest-*.json"))
+    assert len(survivors) == 4
+    assert made[-1].name in survivors, "the newest manifest must never be pruned"
+
+
+def test_the_prune_runs_after_the_manifest_is_written():
+    """Order is the difference between a cap and a cap-plus-one-per-run: prune
+    BEFORE the write and the run's own file lands outside the count every time.
+    It must also be non-fatal -- a full or read-only state dir is a housekeeping
+    problem, never a reason for an armed gate to stop deciding."""
+    src = (ROOT / "scripts" / "maint" / "qflix-entitlement.py").read_text(encoding="utf-8")
+    write_at = src.index("mpath.write_text(")
+    prune_at = src.index("prune_manifests(state_dir)")
+    assert write_at < prune_at, "pruning before the write leaks one file per run"
+    seg = src[prune_at - 400:prune_at + 400]
+    assert "warn(" in seg, "a failed prune must warn, not raise"
 
 
 # ---------------------------------------------------------------------------

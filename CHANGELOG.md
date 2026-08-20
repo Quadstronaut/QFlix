@@ -1,5 +1,201 @@
 # Changelog
 
+## 2026-08-20 — Every movie was unplayable for 26 days and every light was green
+
+One member's Plex client played no MOVIE at all from 2026-07-25 onward while TV
+on that same client kept working the entire time. (Identity stays out of this
+repo by operator directive; the affected account is named only in the box-side
+roster.) The cause was a quality policy, not a fault, which is why nothing
+alerted: Radarr main profile 6 "HD 720p/1080p" — **112 of 114 movies** — had
+**Remux-1080p allowed, at the top of its `items[]` list**, with `cutoff=6`
+(Bluray-720p) and `upgradeAllowed=false`. That last flag is the trap: it stops
+UPGRADES, it does not stop the INITIAL grab from taking the best allowed
+release. Layer qflix-reaper's add-date retention on top (`DEFAULT_THRESHOLD_DAYS
+= 45`; the on-box drop-in adds only `--execute --max-pct 100`, so the repo
+constant is what runs) and the whole movie library churns through re-grabs that
+each land on the top allowed tier. Measured on the live stack 2026-08-19: **23
+of the 46 movies-with-a-file were Remux-1080p** — 20-37 Mbps video with TrueHD /
+DTS-HD MA 6-8 channel audio, 572 GB across 23 files, every one added between
+2026-07-05 and 2026-08-16. The client negotiates `targetBitrate` **1927 kbps**
+with `videoDecision=transcode` and `HardwareAcceleratedCodecs=0`, on a shared
+seedbox with no GPU. So every movie became a full software downscale from ~30
+Mbps to ~1.9 Mbps **plus** an EasyAudioEncoder downmix from lossless
+multichannel to 2-channel AAC, simultaneously; TV episodes (WEB-DL 1080p,
+roughly 4-8 Mbps, already AAC) needed neither leg and played fine. The library
+was converging on 100% unplayable-for-that-client by construction.
+
+**An earlier audit agent blamed profile 7 "HD Bluray + WEB" and was wrong.**
+Re-read against the live API: profile 7 allows **no** Remux quality and holds
+exactly **1** movie. The error comes from walking `profile.items[]`
+non-recursively — Radarr's items list is a NESTED tree where a group entry
+("WEB 1080p", id 1002) carries its own `allowed` flag AND its own `items[]` of
+real qualities, so a flat read attributes the wrong allowed-set to the wrong
+profile. Every walker in the new tooling is recursive for that reason, and the
+correction cost a cycle that a live re-read would have saved.
+
+**The canary was green on every single tick, and correctly so.**
+`plex-transcoder.sh` curls `/identity`, `/transcode/sessions` and `/:/prefs` for
+HTTP 200 under 10s. All three were genuinely healthy for all 26 days. It is not
+mistuned — it is structurally incapable of seeing this, because nothing it does
+decodes a frame, spawns Plex Transcoder, runs EasyAudioEncoder, or moves one
+byte of transcoded output. Third time for this exact shape: tdarr-healthcheck
+watched transcodes while 100% of health checks failed for 68 days, and
+dash-asset-integrity's `/healthz` answered while the served shell could not
+hydrate. So `plex-playback.sh` now performs the failing action instead. It picks
+the library's worst-case item AT RUN TIME (highest bitrate carrying lossless
+multichannel audio — never a hardcoded ratingKey, because the reaper would turn
+a pinned item into a permanent red the day it ages out, and a canary that reds
+for an unrelated reason gets muted), forces both heavy legs with
+`directPlay=0&directStream=0&directStreamAudio=0`, and asserts nine legs ending
+in the only one with teeth: the first HLS segment must return 200, at least
+`MIN_BYTES`, and begin with the MPEG-TS sync byte `0x47`. Then it stops the
+session and confirms it gone — a canary that leaks a transcode every 30 minutes
+on a shared slot becomes the outage it watches for. `plex-transcoder.sh` is kept
+and its header now says out loud what it cannot see; the two are different
+signals, not redundant ones.
+
+**Both remedies are written; neither has been run.** `58-remux-cap-enforce.py`
+disables every Remux-* quality on Radarr main's profiles — scoped there
+deliberately, not by oversight: sonarr2's "[Anime] Remux-1080p" is recyclarr's
+own TRaSH template and capping it here would be silently reverted on the next
+sync, while radarr2's factory-default profiles are left alone on blast radius.
+`qflix-remux-regrab.py` deletes the 23 existing remux FILES and re-searches at
+the capped tier, because nothing in the stack ever replaces a file with a worse
+one — and its own header tells you not to run it: the reaper ages all 23 out
+between roughly 2026-08-19 and 2026-09-30 anyway, so `--execute` buys days
+instead of six weeks at a cost of ~572 GB of re-download and the quota that
+burns. **Deferred and stated plainly: as of this writing profile 6 still allows
+Remux-1080p on the live box (verified 2026-08-20). The cap has not been
+applied.**
+
+**The board's only red that week was a false one.** Kuma monitor #90
+(hardlink-integrity) went red every 30 minutes from 20:01Z for six hours with
+`STAGE=qbit-no-completed` while nothing was wrong: the completed pool held
+exactly one torrent, a BDMV disc rip whose lone video-bearing file is
+`BDMV/STREAM/00000.m2ts` (19,307,427,840 bytes; the rest of the tree is
+`.bdmv`/`.mpls`/`.clpi` index metadata). `VIDEO_EXTS` did not list `.m2ts`, so
+the walk found no target, `resolved` stayed 0, and `resolved == 0` was wired
+straight to a red. Two separate defects, fixed separately: the extension list
+gained `.m2ts` and `.ts`, and — the real bug — the predicate was split.
+`present` (the content path exists on disk) is the STORAGE fact that stage was
+always documented to be about and still reds; `resolved` (present AND holding a
+recognised video) merely says whether this run had anything classifiable to
+contribute, and `present > 0, resolved == 0` now falls through to the
+accumulated ledger and is counted by the vacuity clock as
+`no-classifiable-torrents`. Converting a tiny denominator into an alarm was this
+canary's founding mistake, for the third time.
+
+**REA noise policy, all three surfaces.** Two classes added —
+`prowlarr-cardigann-retry-5xx` and `plex-orphaned-webhook-delivery` — with the
+matching `prompt_segments` and ps1-side rule text, because a class that lands on
+one of the three policy surfaces and not the others is the default failure mode
+here (2026-07-29, again 2026-08-06). The prowlarr rule was wrong twice before it
+was right, and both corrections came from replaying the regex over the live
+logs rather than reasoning about them: anchoring `\|Warn\|Cardigann\|` missed
+130 Knaben lines because Prowlarr names the logger after the indexer
+implementation, and matching the status token as `5\d\d` was blind to 571 lines
+(17% of the class) because .NET renders `HttpStatusCode` by NAME wherever an
+enum member exists and leaves the bare number only for Cloudflare's 520/522/525.
+The retry line is suppressed and the TERMINAL "Indexer's server is unavailable"
+line is not — verified by replay: 2,016 retry lines matched, 0 of 306 terminal
+lines matched.
+
+**Entitlement.** The audit-manifest directory had grown to 1,259
+`manifest-*.json` (14 MB, 1,275 dirents in one directory) because the run writes
+one per run, 96 a day, and nothing pruned them. Retention is now by COUNT —
+`MANIFEST_RETENTION_RUNS = 672`, i.e. 7 days x 96 runs — the house pattern for a
+per-run artefact, and the prune is ordered so an interrupted run always leaves a
+strictly smaller VALID set. Separately, a payer lookup that returns "no record
+of this address at all" (HTTP 200, `entitled:false`, `reason:"unknown"`) is now
+its own frozen state `unknown-payer` rather than being graded as a NO. It rides
+the run summary, `--json` and the audit manifest as an APPENDIX and never
+triggers a page — the gate's asymmetric law again: a lookup MISS is not a
+verdict, and spelling one NO is how a data-quality gap turns into a revoke.
+
+**The collector could not tell "quiet" from "gone".** listmonk stopped appearing
+in the collected payload and nothing noticed, because `logs.py` emits nothing at
+all for an app whose `lines` list is empty — so a renamed unit, a rotated-away
+path, and a healthy silent Tuesday were byte-identical absences. There is now a
+log-coverage ledger of who has ever produced lines, graded per cycle:
+`roster-drop` and `source-error` are RED, `dark` is reported in the Kuma message
+and journald but deliberately never red (quiet-healthy and gone are genuinely
+indistinguishable, and monitor 79 sits on the PUBLIC status page, so an
+unclearable red would show customer-side and get muted). Tolerance for `dark`
+self-calibrates from each app's own longest observed gap rather than one global
+threshold, so maint-window does not page every non-Monday. Retiring an app is an
+explicit act with a written path — `QFLIX_COLLECT_LOG_ROSTER_IGNORE`, now
+documented in `manifest/jobs.yaml` — because an exemption that expires on its
+own is a hiding place, and the books-stack purge is the shape of change that
+needs one.
+
+**The public stack had no HTTP access log at all.** `~/.apps/nginx/logs/access.log`
+was 0 bytes with an mtime of 2026-05-08, its provisioning day; `error.log`'s last
+line was 2026-06-27. Reproduced live: a probe of a nonexistent path returned 404
+and produced zero log lines anywhere on the box. Root cause established rather
+than guessed — the single server block (`sites-available/default`, `listen
+17040`) carries `access_log off; error_log /dev/null;` at SERVER level, which
+beats the http-level directive in `nginx.conf` and inherits into every location.
+The override therefore lives in the one block QFlix owns and re-templates,
+`location /`, not in the panel-templated file (same rule as never hand-editing
+the panel-templated `qbittorrent.service`), and the log format name is resolved
+against the live `nginx.conf` at render time so a future panel edit cannot make
+`nginx -t` fail and take the public stack down on the next reload. Honest about
+scope: this covers the catch-all only. The panel-owned `^~` prefixes (seerr,
+tautulli, the four *arrs, prowlarr, bazarr, qbittorrent, tdarr, listmonk) stay
+unlogged and only the operator can change them; `/faq` and `/images/` are
+QFlix-owned but belong to their own confs; and logrotate coverage for the two
+new files is phase 250's job and is not done.
+
+**A one-off remediation script, and the review that cut a third of it.**
+`scripts/ops/remediate-2026-08-20.py` is dry-run-default and reads every write
+back, because both the *arr and Bazarr APIs return success for writes that did
+not land. Adversarial review before shipping removed more than it added. Task B
+originally re-monitored three Radarr records that appear in
+`MonitoredMovieSpecification` rejections; two of them — Avatar (tmdb 19995) and
+M3GAN 2.0 (1071585) — are FILELESS TMDB collection siblings that Radarr
+unmonitors by design (57 of 114 movies are unmonitored for exactly that reason),
+so the rejection is the decision engine WORKING and "it appears in the log" is a
+refuted premise. Worse, both sit on profile 6, so re-monitoring them would have
+queued two fresh grabs at the top allowed tier and rebuilt the remux outage by
+hand. Both were deleted and a `hasFile` guard added in CODE, so putting them
+back in the target list is no longer sufficient to act on them. Three more
+review fixes: the exit code accumulated with `max()`, which let a benign
+precondition skip (2) mask a genuinely failed write (1) and made the script
+contradict its own documented contract — 1 outranks 2 now; every POST/PUT is
+routed through a wrapper that grades a mid-request transport death as
+failure-with-unknown-outcome instead of "nothing was written", which is a claim
+the script cannot make; and the Bazarr write's "this never re-enables a
+provider" promise is now an asserted subset invariant, because the thing it must
+never turn back on is tvsubtitles (disabled on both instances 2026-08-14 for a
+domain SERVFAIL) and prose does not stop a later edit. The Bazarr POST was
+already correct on the point that burned us on 2026-08-14 — repeated form keys,
+one `settings-general-enabled_providers=<name>` pair per provider, never a JSON
+array, which stores a nested `[[...]]` and breaks the list. Dry-run executed
+read-only against the live box: drop greeksubtitles + hosszupuska on both
+instances (22 providers -> 20), re-monitor one standalone movie, create one
+indexer-scoped Sonarr release profile on LimeTorrents (id 33) blocking the
+space-form MeGusta fake family, skip sonarr2 (no LimeTorrents among its 7
+indexers). Exit 0, nothing written — confirmed by re-reading Bazarr afterwards:
+still 22 providers. **Not executed.**
+
+**Deferred, so it is written down instead of implied.** REA delivered no
+findings on two runs (2026-08-19T02:09Z and 2026-08-20T01:06Z, 42 findings lost)
+and the liveness canary stayed UP with `discord_post_failed` printed inside a
+GREEN message; the P6 delivery clock that would page on it is designed in
+`docs/incidents.md` and not built. `notify.py` is still a single fire-and-forget
+`requests.post` — the 71 pages lost in the 2026-08-18 brownout are gone, with no
+spool and no replay. There is still no out-of-band dead-man rail: subject, judge
+and courier all live on the one host, and the only reason that outage paged at
+all is that auto-heal posts to Discord directly, a bypass nobody designed as a
+safety feature. unpackerr has now written no log for 87 days, and its
+`stale-log-watchdog.sh` entry is deliberately WITHHELD until the writer is
+proven fixed, because landing a canary against a known-unfixed condition just
+manufactures a red that gets muted. And the Jellyseerr `media.ratingKey` repair
+(row 47, a merged anthology whose null ratingKey collides the nightly Plex scan
+on a UNIQUE constraint, every night since 2026-08-14) stays an operator-by-hand
+sqlite UPDATE against a stopped service — the remediation script reports it and
+refuses to touch it.
+
 ## 2026-08-18 (III) — The council audits the auditors
 
 An adversarial council (v2: blind generation, five verification lenses, Fable

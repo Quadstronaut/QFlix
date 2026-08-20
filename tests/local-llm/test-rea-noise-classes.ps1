@@ -197,6 +197,131 @@ Test-Case 'loader refuses to run with a missing policy file' {
     Assert-True $threw 'throws instead of returning an empty table'
 }
 
+Test-Case 'the prompt half of the policy parses too' {
+    # Added 2026-08-19. The loader used to read only id/rx/field, so the prompt
+    # segments - the half that says what the MODELS are asked to ignore - were
+    # readable by pytest and by nothing on this side. Sync-ReaNoiseMirror needs
+    # them to repair the never-report sentence without a human.
+    $policy = Read-ReaPolicy -Path $yamlPath
+    Assert-True ($policy.classes.Count -ge 27)  "at least 27 classes (got $($policy.classes.Count))"
+    Assert-True ($policy.segments.Count -ge 23) "at least 23 prompt segments (got $($policy.segments.Count))"
+    Assert-True ($policy.start_marker -eq 'NON-ACTIONABLE NOISE you must NEVER report') 'start marker parsed'
+    Assert-True ($policy.stop_marker  -eq 'CONVERSELY') 'stop marker parsed'
+    $ids = @($policy.classes | ForEach-Object { $_.id })
+    foreach ($s in $policy.segments) {
+        Assert-True ([string]::IsNullOrEmpty($s.marker) -eq $false) "segment $($s.index) has a marker"
+        Assert-True (-not $s.marker.Contains(';')) "segment $($s.index) marker carries no ';'"
+        foreach ($cid in $s.classes) {
+            Assert-True ($ids -contains $cid) "segment $($s.index) claims a real class '$cid'"
+        }
+    }
+    foreach ($c in $policy.classes) {
+        Assert-True ([string]::IsNullOrEmpty($c.prompt_clause) -eq $false) "class '$($c.id)' has a prompt_clause"
+    }
+}
+
+Test-Case 'why-prose cannot masquerade as a class key' {
+    # THE 2026-08-19 PARSER BUG, pinned. arr-release-rejected-unknown-title's
+    # `why:` block contains the prose line "field: null this rx runs against
+    # signature+summary+excerpt JOINED, so the". A `^\s+field:` match ate it and
+    # set field='null this rx runs against ...' - Test-IsNoiseFinding would then
+    # look up a property no finding has, and the rule would suppress NOTHING,
+    # silently, forever. Sibling keys sit at a fixed column; folded prose does
+    # not. Found the first time the parser fed C-07's byte-level comparison.
+    $policy = Read-ReaPolicy -Path $yamlPath
+    $rej = $policy.classes | Where-Object { $_.id -eq 'arr-release-rejected-unknown-title' }
+    Assert-Equal $null $rej.field 'arr-release-rejected-unknown-title field stays null'
+    $scoped = $policy.classes | Where-Object { $_.id -eq 'bare-stack-continuation' }
+    Assert-Equal 'excerpt' $scoped.field 'a genuinely scoped class still parses its field'
+    foreach ($c in $policy.classes) {
+        $ok = ($null -eq $c.field) -or ($c.field -in @('excerpt', 'signature', 'summary'))
+        Assert-True $ok "class '$($c.id)' field is a real finding field (got '$($c.field)')"
+    }
+}
+
+Test-Case 'double-quoted YAML scalars round-trip' {
+    # Several markers are double-quoted because they embed a quoted log phrase,
+    # e.g. the plex-metadata-agent one. A wrong un-escape makes the marker
+    # unfindable in the prompt, and Sync-ReaNoiseMirror would then append the
+    # same stub on every single run.
+    Assert-Equal 'a "quoted" phrase' (ConvertFrom-ReaYamlScalar '"a \"quoted\" phrase"') 'escaped double quotes'
+    Assert-Equal "it's fine" (ConvertFrom-ReaYamlScalar "'it''s fine'") 'doubled single quotes'
+    Assert-Equal 'bare value' (ConvertFrom-ReaYamlScalar 'bare value') 'bare scalar'
+    $policy = Read-ReaPolicy -Path $yamlPath
+    $seg9 = $policy.segments | Where-Object { $_.index -eq 9 }
+    Assert-True ($seg9.marker.Contains('"Unable to find metadata agent provider for identifier"')) 'segment 9 marker un-escaped'
+}
+
+Test-Case 'the rendered literal is the shape C-07 parses' {
+    # lib/audit/detectors/c07_rea_prompt_rule_bijection.py::parse_ps1_rules finds
+    # the block by the literal "$Script:NoiseFindingRules = @(" and ends it at the
+    # first "\n)\n". Get either wrong and the audit reads ZERO rules and reports
+    # drift against a table that is in fact correct.
+    $policy  = Read-ReaPolicy -Path $yamlPath
+    $literal = Format-ReaNoiseRulesLiteral -Rules $policy.classes
+    Assert-True ($literal.StartsWith('$Script:NoiseFindingRules = @(' + "`n")) 'opens with the exact variable assignment'
+    Assert-True ($literal.EndsWith("`n)`n")) 'closes with the exact terminator'
+    $entries = ([regex]::Matches($literal, '@\{ id = ')).Count
+    Assert-Equal $policy.classes.Count $entries 'one entry per class'
+    Assert-True ($literal.Contains("''includes''")) 'inner single quotes are re-doubled for PowerShell'
+    Assert-True ($literal.Contains("       field = 'excerpt'")) 'scoped classes carry their field'
+    # The terminator must not appear early, or parse_ps1_rules truncates.
+    Assert-Equal ($literal.Length - 3) $literal.IndexOf("`n)`n") 'no premature block terminator'
+}
+
+Test-Case 'the mirror sync refuses to guess' {
+    # The subject is a 114KB gitignored operator-local script: a write to the
+    # wrong offset is unrecoverable from origin. Both no-op paths must return a
+    # NAMED reason rather than throwing or, worse, writing.
+    $absent = Sync-ReaNoiseMirror -Ps1Path (Join-Path $env:TEMP 'rea-does-not-exist.ps1') -Path $yamlPath
+    Assert-Equal 'ps1-absent' $absent.reason 'a missing subject is named, not fatal'
+    Assert-Equal $false $absent.changed 'a missing subject changes nothing'
+
+    $tmp = Join-Path $env:TEMP ('rea-nomarkers-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        [System.IO.File]::WriteAllText($tmp, "# no mirror markers here`n")
+        $r = Sync-ReaNoiseMirror -Ps1Path $tmp -Path $yamlPath
+        Assert-Equal 'no-mirror-markers' $r.reason 'a subject without the markers is named, not guessed at'
+        Assert-Equal $false $r.changed 'a subject without the markers is left alone'
+        Assert-Equal "# no mirror markers here`n" ([System.IO.File]::ReadAllText($tmp)) 'the file is byte-identical afterwards'
+    } finally { if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force } }
+}
+
+Test-Case 'a yaml-only class reaches both surfaces with no ps1 edit' {
+    # THE ACCEPTANCE TEST for the 2026-08-19 change. Adding a class to
+    # manifest/rea-noise-classes.yaml and to NOTHING ELSE must leave the ps1
+    # agreeing with it - rule table and never-report sentence both - after one
+    # sync. Synthetic subject so this runs in CI where qflix-rea.ps1 is absent.
+    $policy = Read-ReaPolicy -Path $yamlPath
+    $tmp = Join-Path $env:TEMP ('rea-synth-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        $body = "# synthetic subject`n" +
+                '# BEGIN GENERATED NOISE-TABLE MIRROR' + "`n" +
+                '# END GENERATED NOISE-TABLE MIRROR' + "`n" +
+                $policy.start_marker + ' (external, cosmetic, or expected): nothing yet. ' +
+                $policy.stop_marker + " disk-quota failures ARE real.`n"
+        [System.IO.File]::WriteAllText($tmp, $body)
+
+        $first = Sync-ReaNoiseMirror -Ps1Path $tmp -Path $yamlPath
+        Assert-Equal $true $first.changed 'the first sync repairs the subject'
+        Assert-Equal $true $first.table_synced 'the rule table is written'
+        Assert-Equal $policy.segments.Count $first.clauses_added.Count 'every missing clause is appended'
+
+        $after = [System.IO.File]::ReadAllText($tmp)
+        $entries = ([regex]::Matches($after, '@\{ id = ')).Count
+        Assert-Equal $policy.classes.Count $entries 'the mirror carries every class'
+        Assert-True ($after.Contains('$Script:NoiseFindingRules = @(')) 'C-07 can find the table'
+        $missing = @(Get-ReaMissingPromptSegments -Ps1Text $after -Policy $policy)
+        Assert-Equal 0 $missing.Count 'no prompt segment is left unsaid'
+
+        # Idempotence is what makes this safe to call on every REA run: a second
+        # sync must be a pure no-op, or the script would rewrite itself hourly.
+        $second = Sync-ReaNoiseMirror -Ps1Path $tmp -Path $yamlPath
+        Assert-Equal $false $second.changed 'the second sync changes nothing'
+        Assert-Equal $after ([System.IO.File]::ReadAllText($tmp)) 'the file is byte-identical after a second sync'
+    } finally { if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force } }
+}
+
 Write-Host ""
 Write-Host "PASS: $Script:Pass   FAIL: $Script:Fail"
 if ($Script:Fail -gt 0) {

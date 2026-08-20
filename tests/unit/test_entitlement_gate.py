@@ -352,20 +352,51 @@ def test_a_full_member_in_the_same_household_is_unaffected_by_a_tagalong_sibling
     assert p.seerr_target == SU.MEMBER_PERMISSIONS, "non-tagalong sibling still raised"
 
 
-def test_never_seen_address_is_recorded_on_the_plan_but_does_not_page(tmp_path):
-    """`reason: unknown` means the service has no record of the address at all.
-    That used to page, on the theory it was overwhelmingly a billing.holder
-    typo. It is no longer an anomaly — the Patreon behind the service carries
-    non-QFlix members, and QFlix carries rails the service cannot see — so it is
-    now reported on the plan and in --json, and paged nowhere (operator
-    directive 2026-08-17). See tests/unit/test_entitlement_expired_alert.py."""
+def test_a_lookup_miss_is_frozen_as_unknown_payer_and_does_not_page(tmp_path):
+    """`reason: unknown` means the service has no record of the address AT ALL,
+    which is an absence of evidence, not evidence of absence.
+
+    HISTORY. This grade used to page, on the theory it was overwhelmingly a
+    billing.holder typo. 2026-08-17 dropped the page (the Patreon behind the
+    service carries non-QFlix members, and QFlix carries rails the service
+    cannot see, so a miss became an ordinary steady state) but LEFT the miss
+    riding the lapse ladder as S_PENDING with a live countdown -- a permanent,
+    unactionable pending that ends in a reduction taken on no evidence. Live on
+    2026-08-20 that was five of twelve shares at "11.9 day(s) of grace remain".
+
+    2026-08-19 gave it its own state. A miss is UNKNOWN, so it freezes exactly
+    like S_NO_ANSWER: nothing granted, nothing reduced, no countdown -- the
+    operator law against using missing data as an interlock, pointed at an
+    absence that was DRIVING an action instead of blocking one.
+
+    The old behaviour this still pins, unchanged: no page, no Plex write, no
+    Seerr write. What is new is that the miss is VISIBLE (its own state, its
+    own manifest roll-up) instead of hiding inside a `pending=5` count."""
     p = plan(answer=answer(ENT.NO, reason="unknown"), state=state_with(tmp_path),
              share=share(sections=FULL))
-    assert p.state == G.S_PENDING
+    assert p.state == G.S_UNKNOWN_PAYER
     assert p.never_seen is True
     assert "no record" in p.reason
-    assert p.alert is None, "never-seen must not page from PENDING either"
-    assert p.plex_target is None
+    assert p.alert is None, "a lookup miss must not page from any branch"
+    assert p.plex_target is None, "a miss may never plan a Plex reduction"
+    assert p.seerr_target is None, "a miss may never plan a Seerr reduction"
+    assert not p.mutates or p.provision_plex_id is not None, \
+        "the only write a frozen household may carry is stage-1 provisioning"
+
+
+def test_the_freeze_is_narrow_a_real_negative_verdict_still_counts_down(tmp_path):
+    """The control for the test above, and the whole reason it is safe.
+
+    "Freeze on unknown" is one careless widening away from "never revoke
+    anyone", and that widening would be invisible: every unknown-payer test
+    would stay green. So the same fixture with a REAL negative verdict must
+    still land on the lapse ladder, still carry a countdown, and still be
+    reducible when it runs out."""
+    p = plan(answer=answer(ENT.NO, status="former_patron"),
+             state=state_with(tmp_path), share=share(sections=FULL))
+    assert p.state == G.S_PENDING
+    assert p.never_seen is False
+    assert p.days_remaining is not None and p.days_remaining > 0
 
 
 def test_pending_for_a_lapsed_member_uses_the_seven_day_clock(tmp_path):

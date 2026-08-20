@@ -776,6 +776,28 @@ canaries:
     kuma_monitor: "Canary Hardlink Integrity"
     script: "scripts/canaries/hardlink-integrity.sh"
     schedule: "every-30min"
+  plex-playback:
+    # Added 2026-08-19. plex-transcoder below is API liveness and is
+    # STRUCTURALLY blind to a playback failure: it was green on every tick of
+    # the 26-day window in which every movie failed to play for a real member,
+    # because a healthy HTTP handler satisfies all three of its GETs whether or
+    # not the transcoder can produce a frame. No threshold on that canary could
+    # have caught it, so this one performs the failing action instead - the
+    # library's worst-case movie (highest bitrate carrying lossless
+    # multichannel audio, picked at RUN TIME because qflix-reaper ages titles
+    # out on a 60-day rule), forced down the full software path, and then the
+    # two legs with teeth: real MPEG-TS segment bytes measured against a floor
+    # DERIVED from the playlist's own #EXTINF and target bitrate, and the
+    # segment's realtime ratio. The incident was "the transcoder never keeps
+    # up" - bytes were flowing - so a byte count alone still could not see it.
+    # Fails below tier 2 rather than degrading quietly to the cheap-AAC probe
+    # it replaces. every-30min, not every-10min: it burns real CPU on a shared
+    # slot, and it is a separate monitor from plex-transcoder because the two
+    # mean different things and want different cadences (operator design law,
+    # memory qflix-compartmentalize-for-migration).
+    kuma_monitor: "Canary Plex Playback"
+    script: "scripts/canaries/plex-playback.sh"
+    schedule: "every-30min"
   plex-transcoder:
     # Every 10 min, exercise Plex's /transcode/sessions and /:/prefs
     # endpoints. Catches transcoder daemon stalls before customers hit

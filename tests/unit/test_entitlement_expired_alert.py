@@ -30,8 +30,24 @@ the --json plan, `Plan.reason` says it in words, and the rare genuinely
 actionable variant — an EVER-ENTITLED declared payer going never-seen, meaning
 the sync projection died — still pages from `payer_oracle.judge()` row 3.
 
-These tests pin both halves: EXPIRED + never_seen records the fact and emits NO
-alert, and a real not-entitled answer records nothing.
+WHAT CHANGED 2026-08-19 (this file's assertions moved with it)
+-------------------------------------------------------------
+Dropping the page finished half the thought. The miss kept walking the lapse
+ladder: PENDING with a live countdown, then EXPIRED, then a real reduction of a
+real person's libraries -- decided by the entitlement service's failure to have
+heard of them. Live on 2026-08-20 that was five of twelve shares sitting at
+"11.9 day(s) of grace remain", every one of them a miss.
+
+An absence of evidence is not a verdict. A miss is now graded UNKNOWN and
+frozen in its own state, S_UNKNOWN_PAYER -- nothing granted, nothing reduced,
+no countdown -- the same freeze S_NO_ANSWER already got for the same reason.
+So never-seen NEVER REACHES EXPIRED at all, and the question this file used to
+ask ("is the reduction of a never-seen household still recorded?") is answered
+by there being no such reduction.
+
+These tests pin all of it: a miss past its deadline is frozen rather than
+reduced, the fact still reaches the plan and --json, nothing pages, and a REAL
+not-entitled answer still expires and still reduces.
 """
 from __future__ import annotations
 
@@ -120,20 +136,42 @@ def _plan(gate, libs, *, never_seen, days_past_deadline, tmp_path):
         grace_days=7, new_arrival_days=30, member_permissions=0, now=now)
 
 
-def test_expired_and_never_seen_is_recorded_but_never_paged(gate, libs, tmp_path):
-    """Reducing someone the service has never heard of must still be
-    DISTINGUISHABLE from reducing a known non-payer — on the plan, not in
-    Discord. Losing the distinction entirely would leave a wrong-address
-    reduction indistinguishable from a real lapse."""
+def test_a_miss_past_its_deadline_is_frozen_not_reduced_and_never_pages(gate, libs,
+                                                                       tmp_path):
+    """The strongest form of the statement: fourteen days PAST the deadline,
+    with an anchor old enough that every clock has run out, a household the
+    service has no record of is still not reduced.
+
+    The old assertion here was `state == EXPIRED, alert is None` -- the harm it
+    guarded (a silent reduction of a wrong address) is now impossible by
+    construction rather than merely unpaged, so the assertion moves up to the
+    property instead of the state name. The distinction the old test cared
+    about is still legible, and better than before: a miss is its own state
+    rather than a boolean buried in a reason string.
+
+    Losing the reduction is the POINT, not a side effect. Nothing here grants
+    anything either -- the household keeps exactly what it already holds."""
     plan = _plan(gate, libs, never_seen=True, days_past_deadline=14,
                  tmp_path=tmp_path)
-    assert plan.state == gate.S_EXPIRED
+    assert plan.state == gate.S_UNKNOWN_PAYER
     assert plan.never_seen is True, "the fact must survive on the plan"
-    assert "billing.holder" in plan.reason, "and say what to check"
     assert plan.to_json()["never_seen"] is True, "and reach the --json surface"
+    assert plan.plex_target is None, "a miss may never take libraries away"
+    assert plan.seerr_target is None, "nor disable Seerr"
+    assert "billing.rail" in plan.reason, "and must name the operator's lever"
     assert not plan.alert, (
-        "never-seen paged from EXPIRED — that is a permanent daily alert per "
-        "household on a fact that does not change (operator directive 2026-08-17)")
+        "a lookup miss paged -- that is a permanent daily alert per household "
+        "on a fact that does not change (operator directive 2026-08-17)")
+
+
+def test_the_freeze_is_not_a_grant(gate, libs, tmp_path):
+    """Freezing an UNKNOWN must not be mistaken for resolving it upward. The
+    household keeps what it holds; the only write allowed to ride along is the
+    stage-1 Seerr provisioning every accepted share gets."""
+    plan = _plan(gate, libs, never_seen=True, days_past_deadline=14,
+                 tmp_path=tmp_path)
+    assert plan.plex_target is None and plan.seerr_target is None
+    assert not plan.mutates or plan.provision_plex_id is not None
 
 
 def test_expired_with_a_real_answer_records_nothing_extra(gate, libs, tmp_path):
@@ -145,3 +183,8 @@ def test_expired_with_a_real_answer_records_nothing_extra(gate, libs, tmp_path):
     assert plan.never_seen is False
     assert "billing.holder" not in plan.reason
     assert not plan.alert
+    # The revoke rail is UNCHANGED by the freeze above. Same fixture, same
+    # expired clock, only a real verdict instead of a miss -- and the reduction
+    # still happens. Without this, "freeze on unknown" could quietly become
+    # "never reduce anyone" and every other test in this file stays green.
+    assert plan.plex_target == [7], "a real lapse must still drop to the floor"

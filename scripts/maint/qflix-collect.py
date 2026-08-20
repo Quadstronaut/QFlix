@@ -25,6 +25,93 @@ Flow (mirrors the PS script's box-relevant steps):
 
 Data root defaults to ~/.opt/qflix-collect (override QFLIX_COLLECT_DATA).
 Exit 0 on success, 1 on fatal error (a down push to Kuma precedes it).
+
+LOG-COVERAGE LEDGER (added 2026-08-19)
+--------------------------------------
+Step 3 wrote one logs/<date>/<app>.log per app that returned lines, and
+`if not lines: continue` for everyone else. That `continue` is the whole
+defect: an app that stops producing lines simply STOPS EXISTING in the
+snapshot dir, with no log line, no Discord post, no Kuma msg, nothing.
+
+Measured on the box (read-only) 2026-08-19/20:
+  logs/2026-08-17/  listmonk.log ABSENT
+  logs/2026-08-18/  listmonk.log present, 994783 B, last written 10:01 CEST
+  logs/2026-08-19/  listmonk.log ABSENT
+  logs/2026-08-20/  listmonk.log ABSENT
+`systemctl --user is-active listmonk` = active, SubState=running,
+NRestarts=36, ExecMainStartTimestamp = Tue 2026-08-18 09:53:11 CEST, and
+`journalctl --user -u listmonk.service --since "2026-08-18 09:53:12"` is
+"-- No entries --" against 5793 lines lifetime. So the Aug-18 host reboot
+drove a 36-restart storm that filled logs/2026-08-18/listmonk.log, and
+listmonk has said nothing since: it is a journal-QUIET app, an hourly
+`--since 1h` window is legitimately empty, and it fell out of the dailies.
+
+The absence is NOT logs.py forgetting it. `logs.py --app all --emit-json`
+run live on the box returns 21 keys including
+  listmonk      journalctl:listmonk.service   0 lines  error=None
+  maint-window  journalctl:manitoba-maint-window.service  0 lines
+  tdarr-server  journalctl:tdarr-server.service           0 lines
+so the routing table is intact and the app is present in the payload with
+an empty `lines`. It is qflix-collect.py's own `if not lines: continue`
+that turns "present and quiet" into "no file on disk". maint-window
+(Mondays only) and tdarr-server (start/stop only) drop out the same way.
+
+So listmonk was healthy. That is exactly what makes it dangerous: the
+collector rendered "healthy and silent" and "gone" as the same thing --
+byte-identical absence. A renamed systemd unit, a rotated-away log path,
+or an app dropped from logs.py's routing tables all look like a quiet
+Tuesday. Nothing on the box compares yesterday's app set to today's:
+canaries/stale-log-watchdog.sh watches 5 hand-listed SOURCE logs, not the
+19 apps the collector covers.
+
+The fix keeps the empty-file behaviour (writing zero-byte logs would just
+move the noise) and instead keeps a ledger of who has ever produced lines,
+graded three ways per cycle:
+
+  roster-drop   an app in the ledger is ABSENT from logs.py's payload keys.
+                logs.py builds those keys from static tables, so a missing
+                key means the routing table changed -- unambiguous, pages.
+  source-error  the payload entry carries an `error` (logs.py's
+                {"app":..,"error":"unsupported","lines":[]} shape), which
+                the old `if not lines: continue` swallowed whole. Pages.
+  dark          present, but zero lines for longer than the app's own
+                tolerance. Reported in the Kuma msg + journald, NOT a red:
+                we genuinely cannot distinguish quiet-healthy from gone,
+                and a red that cannot be cleared gets muted.
+
+`dark` self-calibrates rather than using one global threshold, because a
+fixed 26h would page on maint-window every non-Monday and get ignored
+inside a week. The ledger records the longest gap each app has ever gone
+between line-producing cycles; tolerance is max(floor, 2x that gap). A
+chatty app (any *arr, plex) is called dark after ~a day; maint-window
+widens its own tolerance to ~2 weeks the first Monday it runs.
+
+EXPECTED ON FIRST DEPLOY: the ledger starts empty, so every bursty app is
+called dark once, from ~26h in until it completes one full cadence and
+calibrates itself (maint-window settles after its first Monday, ~1 week).
+That is the bootstrap cost of measuring cadence instead of declaring it,
+and it is a msg fragment, not a red. listmonk will keep reporting dark
+until it emits again, which is the correct reading of the box's state.
+
+RAIL, AND WHAT IT COSTS. Coverage rides the collector's EXISTING rails --
+the Kuma msg, journald, Discord, last-collect.json -- rather than adding a
+monitor. That means roster-drop / source-error push `down` to Kuma monitor
+79 "QFlix Collect (workstation)", which sits in the "Infrastructure &
+Observability" group of the PUBLIC status page (verified in kuma.db
+2026-08-20: status_page.slug=public, published=1). A roster drop therefore
+shows customer-side until an operator fixes logs.py or names the app in
+QFLIX_COLLECT_LOG_ROSTER_IGNORE. That is deliberate and it is why `dark`
+is excluded from the red: a roster drop is unambiguous, actionable, and
+CLEARABLE, while a dark app cannot be distinguished from a healthy quiet
+one and would pin the public page red forever. Do not promote `dark` to a
+red without first giving it a private monitor of its own.
+
+Retiring an app is an explicit operator act, never an automatic decay: a
+decommissioned app stays a roster-drop forever until it is named in
+QFLIX_COLLECT_LOG_ROSTER_IGNORE (a systemd drop-in), same principle as
+deploy-drift.sh's is_generated list -- an exemption that expires on its own
+is a hiding place. See the books-stack purge (2026-08-16) for the shape of
+change that needs it.
 """
 from __future__ import annotations
 
@@ -100,6 +187,23 @@ SAB_REPAIR_COOLDOWN_H = _env_int("SAB_REPAIR_COOLDOWN_H", 24)
 # restarts mid-response and needs time to come back up). Tests monkeypatch
 # this to 0 rather than block on a real 60s sleep.
 SAB_REPAIR_VERIFY_DELAY_S = _env_int("QFLIX_COLLECT_SAB_VERIFY_DELAY_S", 60)
+
+# --- Log-coverage knobs (see the LOG-COVERAGE LEDGER note in the docstring) -
+# Floor before a never-yet-calibrated app is called dark. 26h, not 24h: the
+# timer is hourly and the dailies roll at midnight UTC, so a 24h floor would
+# flag an app that produced lines in hour 00 yesterday and hour 01 today.
+LOG_DARK_MIN_HOURS = _env_int("QFLIX_COLLECT_LOG_DARK_MIN_H", 26)
+# Multiplier on the app's own longest observed quiet gap. 2x, matching the
+# 1.5x-cadence convention in canaries/stale-log-watchdog.sh but wider, because
+# the gap here is MEASURED (and therefore a lower bound) rather than declared.
+LOG_DARK_GAP_MULT = _env_int("QFLIX_COLLECT_LOG_DARK_GAP_MULT", 2)
+# Consecutive OBSERVED quiet cycles required before wall-clock silence counts.
+# 3, the same evidence bar ZERO_MOVEMENT_HOURS sets for a stalled torrent: it
+# stops a collector outage (timer down, box rebooted) from being reported as
+# every app going dark at once on the first cycle back, when in truth the only
+# thing we sampled was one `--since 1h` window.
+LOG_DARK_MIN_CYCLES = _env_int("QFLIX_COLLECT_LOG_DARK_MIN_CYCLES", 3)
+LOG_COVERAGE_FILE = "log-coverage.json"
 
 
 # --- Logging (systemd routes stdout/stderr to journald) -------------------
@@ -227,30 +331,227 @@ def collect_snapshot() -> Path:
 
 
 # --- Step 3: logs ---------------------------------------------------------
-def collect_logs() -> bool:
+def collect_logs() -> dict | None:
+    """Append this hour's lines to logs/<date>/<app>.log.
+
+    Returns logs.py's raw payload (app -> {source, lines, [error]}) so the
+    caller can grade coverage, or None if the whole call failed. None and {}
+    are deliberately different: None means "no evidence about anyone" and MUST
+    NOT be graded, while {} would mean logs.py knows about no apps at all.
+    """
     try:
         r = _run_mcp("logs.py",
                      ["--app", "all", "--since", "1h", "--tail", "2000", "--emit-json"],
                      timeout=60)
     except subprocess.TimeoutExpired:
-        return False
+        warn("logs.py timed out — no log coverage evidence this cycle")
+        return None
     if r.returncode != 0:
-        return False
+        warn("logs.py exit=" + str(r.returncode) + ": " + r.stderr.strip()[:160])
+        return None
     try:
         payload = json.loads(r.stdout)
     except json.JSONDecodeError:
-        return False
+        warn("logs.py emitted unparseable JSON — no log coverage evidence")
+        return None
+    if not isinstance(payload, dict):
+        warn("logs.py payload was " + type(payload).__name__ + ", expected dict")
+        return None
     today = utc_now().strftime("%Y-%m-%d")
     logs_dir = DATA_ROOT / "logs" / today
     logs_dir.mkdir(parents=True, exist_ok=True)
     for app_name, entry in payload.items():
         lines = (entry or {}).get("lines")
         if not lines:
+            # Still no file for a silent app -- zero-byte logs would only move
+            # the noise. The disappearance is graded by the coverage ledger
+            # below instead of being inferred from the directory listing.
             continue
         with open(logs_dir / (app_name + ".log"), "a", encoding="utf-8") as fh:
             for ln in lines:
                 fh.write(json.dumps(ln) + "\n")
-    return True
+    return payload
+
+
+# --- Step 3b: log-coverage ledger -----------------------------------------
+def _log_roster_ignore() -> frozenset:
+    """Apps the operator has explicitly retired (comma-separated env var).
+    Named apps are dropped from the ledger entirely, so a decommission stops
+    paging the cycle the drop-in lands rather than needing a state edit."""
+    raw = os.environ.get("QFLIX_COLLECT_LOG_ROSTER_IGNORE", "")
+    return frozenset(a.strip() for a in raw.split(",") if a.strip())
+
+
+def _hours_since(stamp: str | None, now: datetime) -> float:
+    """Hours between an ISO stamp and `now`. Returns 0.0 on a missing or
+    unparseable stamp -- 0 hours of silence can never trip a dark call, so a
+    corrupt ledger entry degrades to "not dark yet" instead of paging."""
+    if not stamp:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except Exception:
+        return 0.0
+    return max(0.0, (now - dt).total_seconds() / 3600.0)
+
+
+def classify_log_coverage(ledger: dict, payload: dict | None, now: datetime,
+                          ignore=frozenset()) -> tuple[dict, dict]:
+    """Grade this cycle's log payload against the ledger of who has ever
+    produced lines. Pure + deterministic (no I/O, `now` injected) so the
+    policy is unit-testable the way classify_qbit_stall is.
+
+    Returns (new_ledger, report). report keys:
+      roster_drop  [app]        -- ledger app absent from the payload (pages)
+      source_error ["app:err"]  -- payload entry carries an error (pages)
+      dark         ["app:Nh>Th"] -- silent past its own tolerance (reported)
+      live/quiet   int          -- apps with / without lines this cycle
+      skipped      str          -- set when the payload carried no evidence
+    """
+    # A ledger that survived a bad write / hand-edit must degrade to "empty",
+    # not raise: update_log_coverage's except would then report the SAME
+    # error every hour forever without ever rewriting the file that caused it.
+    if not isinstance(ledger, dict):
+        ledger = {}
+    raw_apps = ledger.get("apps")
+    apps = {k: dict(v) for k, v in (raw_apps or {}).items()
+            if isinstance(v, dict)} if isinstance(raw_apps, dict) else {}
+    report: dict = {"roster_drop": [], "source_error": [], "dark": [],
+                    "live": 0, "quiet": 0}
+
+    if payload is None:
+        # logs.py failed (non-zero exit, timeout, unparseable, wrong type) --
+        # collect_logs() returns None for all four. Grading here would mark
+        # EVERY app a roster-drop off one transient subprocess failure: the
+        # exact mass-false-page shape the SAB ghost-prune guards against. No
+        # evidence means no verdict, and the ledger is left untouched.
+        #
+        # `is None`, NOT `not payload`: an empty dict is a DIFFERENT fact and
+        # must NOT land here. logs.py builds its keys from static routing
+        # tables, so {} means the tables resolved to zero apps -- the maximal
+        # roster drop, the single loudest thing this ledger exists to catch.
+        # Falling into the skip branch on {} would render a total collector
+        # blindness as a msg fragment (`logs-ungraded`) that never reds, i.e.
+        # the exact silent-vanish defect one level up. Let {} fall through:
+        # `seen` stays empty, every ledger app reports roster_drop, the
+        # heartbeat goes red, and the ledger is preserved so it keeps firing.
+        report["skipped"] = "no-payload"
+        return ledger, report
+
+    seen = set()
+    for app in sorted(payload):
+        if app in ignore:
+            continue
+        seen.add(app)
+        entry = payload.get(app)
+        # logs.py emits {"source":..,"lines":[..],"error":..}; anything else
+        # (null, a bare string) is graded as "present but silent" rather than
+        # raising -- the app is demonstrably still in the routing table, which
+        # is the only thing roster_drop claims to know.
+        entry = entry if isinstance(entry, dict) else {}
+        rec = apps.setdefault(app, {
+            "first_seen_at": iso(now),
+            "last_lines_at": None,
+            "last_line_count": 0,
+            "max_quiet_gap_h": 0,
+            "quiet_cycles": 0,
+        })
+        rec["last_seen_at"] = iso(now)
+        if entry.get("error"):
+            report["source_error"].append(app + ":" + str(entry["error"])[:40])
+        count = len(entry.get("lines") or [])
+        if count:
+            # Widen this app's tolerance by the gap it just CLOSED. Only a
+            # closed gap counts: an app still silent has an open-ended gap
+            # that would otherwise ratchet its own alarm out to infinity.
+            #
+            # Anchor on first_seen_at when there is no prior emission, same
+            # anchor the dark check uses below. Anchoring on last_lines_at
+            # alone left a first-ever emission calibrating to 0h, so a weekly
+            # app (maint-window) kept the 26h floor through its whole first
+            # cycle and was called dark six days out of seven.
+            #
+            # Bound the widening by quiet_cycles (cycles we actually observed
+            # this app silent), because the timer is hourly and wall-clock
+            # alone cannot tell a genuinely bursty app from a COLLECTOR
+            # outage. Three days of timer downtime would otherwise hand every
+            # app a 72h gap and permanently desensitise the whole ledger off
+            # one incident -- and the box does lose the timer (2026-08-18 host
+            # reboot). No cycle ran, so no evidence was gathered, so nothing
+            # widens.
+            anchor = rec.get("last_lines_at") or rec.get("first_seen_at")
+            gap_h = min(int(_hours_since(anchor, now)),
+                        int(rec.get("quiet_cycles") or 0))
+            if gap_h > int(rec.get("max_quiet_gap_h") or 0):
+                rec["max_quiet_gap_h"] = gap_h
+            rec["last_lines_at"] = iso(now)
+            rec["last_line_count"] = count
+            rec["quiet_cycles"] = 0
+            report["live"] += 1
+            continue
+        rec["quiet_cycles"] = int(rec.get("quiet_cycles") or 0) + 1
+        report["quiet"] += 1
+        # An app that has NEVER produced lines is measured from first_seen_at,
+        # so a unit that was dead on arrival still surfaces rather than sitting
+        # at "no baseline, no verdict" forever.
+        silent_h = _hours_since(rec.get("last_lines_at") or rec.get("first_seen_at"), now)
+        tolerance = max(LOG_DARK_MIN_HOURS,
+                        LOG_DARK_GAP_MULT * int(rec.get("max_quiet_gap_h") or 0))
+        if silent_h >= tolerance and int(rec["quiet_cycles"]) >= LOG_DARK_MIN_CYCLES:
+            report["dark"].append("{}:{}h>{}h".format(app, int(silent_h), tolerance))
+
+    for app in sorted(apps):
+        if app in ignore:
+            apps.pop(app, None)     # operator-retired: forget, stop grading
+        elif app not in seen:
+            report["roster_drop"].append(app)
+
+    return {"apps": apps, "updated_at": iso(now)}, report
+
+
+def update_log_coverage(payload: dict | None) -> dict:
+    """I/O wrapper around classify_log_coverage. Never raises into main():
+    a coverage-grading bug must not take down the collect cycle that the
+    unstick loop and the dead-man heartbeat depend on."""
+    try:
+        path = DATA_ROOT / LOG_COVERAGE_FILE
+        ledger: dict = {}
+        if path.exists():
+            try:
+                ledger = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                ledger = {}
+        new_ledger, report = classify_log_coverage(
+            ledger, payload, utc_now(), _log_roster_ignore())
+        if not report.get("skipped"):
+            _write_json_atomic(path, new_ledger)
+        return report
+    except Exception as exc:
+        warn("log-coverage grading failed (non-fatal): " + str(exc))
+        return {"roster_drop": [], "source_error": [], "dark": [],
+                "live": 0, "quiet": 0, "skipped": "error:" + str(exc)[:80]}
+
+
+def format_log_coverage(report: dict) -> str:
+    """One-line coverage fragment for the Kuma msg / journal. Empty string
+    when nothing is wrong, so a healthy cycle's message is unchanged."""
+    parts = []
+    if report.get("roster_drop"):
+        parts.append("logs-roster-drop=" + ",".join(report["roster_drop"]))
+    if report.get("source_error"):
+        parts.append("logs-source-error=" + ",".join(report["source_error"]))
+    dark = report.get("dark") or []
+    if dark:
+        # _push_kuma slices msg to 200 chars. The paging classes are emitted
+        # first so they always survive; dark is summarised rather than allowed
+        # to push them out of the window on a day when many apps are quiet.
+        # last-collect.json carries the unabridged list either way.
+        head = ",".join(dark[:3])
+        parts.append("logs-dark=" + head +
+                     ("+{} more".format(len(dark) - 3) if len(dark) > 3 else ""))
+    if report.get("skipped"):
+        parts.append("logs-ungraded=" + str(report["skipped"]))
+    return "; ".join(parts)[:130]
 
 
 # --- Step 4: stale-state --------------------------------------------------
@@ -945,7 +1246,8 @@ def main() -> int:
     started = utc_now()
     try:
         snap_path = collect_snapshot()
-        collect_logs()
+        log_payload = collect_logs()
+        coverage = update_log_coverage(log_payload)
         candidates = update_stale_state()
         acted = act_on_candidates(candidates) if candidates else []
         # Runs every cycle regardless of `candidates` -- strike (b) (a hung
@@ -966,14 +1268,31 @@ def main() -> int:
         dur = round((utc_now() - started).total_seconds(), 2)
         msg = (f"Snapshot {started.strftime('%H')}.json: {tcount} torrents, "
                f"{len(candidates)} stale candidates, {len(acted)} actions")
+
+        # Coverage rides the EXISTING rails rather than a new monitor: the
+        # fragment lands in the Kuma msg, the journal, and last-collect.json.
+        # roster-drop / source-error are unambiguous collector-integrity
+        # breaks (logs.py's app keys come from static tables), so they also
+        # turn the heartbeat red and post to Discord. `dark` never reds --
+        # quiet-healthy and gone are indistinguishable from here, and a red
+        # nobody can clear is a red everybody mutes.
+        cov_msg = format_log_coverage(coverage)
+        if cov_msg:
+            warn("log coverage: " + cov_msg)
+            msg = msg + "; " + cov_msg
+        cov_broken = bool(coverage.get("roster_drop") or coverage.get("source_error"))
+
         log(msg + f" ({dur}s)")
         _notify(msg, "info")
-        _push_kuma("up", msg)
+        if cov_broken:
+            _notify("Collector lost log coverage: " + cov_msg, "error")
+        _push_kuma("down" if cov_broken else "up", msg)
 
         _write_json_atomic(DATA_ROOT / "last-collect.json", {
             "ts": iso(started), "exit_code": 0, "duration_s": dur,
             "snapshot_path": str(snap_path), "torrent_count": tcount,
             "candidates": len(candidates), "actions": len(acted),
+            "log_coverage": coverage,
         })
         return 0
     except Exception as exc:

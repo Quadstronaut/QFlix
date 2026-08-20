@@ -3,8 +3,86 @@
 # default site's `location /`. The existing prefix locations (^~ /seerr, /faq,
 # /tautulli, /status, ...) keep precedence, so only the bare root is taken over.
 # @@PORT@@ = secrets/qflix-dash.port (42020). Reload with `app-nginx restart`.
+#
+# ---------------------------------------------------------------------------
+# WHY the access_log / error_log lines below (added 2026-08-19)
+#
+# Failure they prevent: QFlix served its entire public stack with NO HTTP
+# access logging at all. Audited on the box 2026-08-19:
+#   ~/.apps/nginx/logs/access.log -> 0 bytes, mtime 2026-05-08 (provisioning day)
+#   ~/.apps/nginx/logs/error.log  -> last line 2026-06-27, an [emerg] bind()
+#                                    failure logged by the dash cutover itself
+# Every request since May was invisible. There was no way to answer "who hit
+# this", "when did the 404 storm start", or "was that a scanner or a member".
+# A live probe of https://<host>/qflix-xff-probe-<ts> returned 404 and produced
+# zero log lines anywhere on the box — that is the defect, reproduced.
+#
+# Root cause, established on the box rather than guessed: there is exactly ONE
+# server block — sites-available/default, `listen 17040`, symlinked from
+# sites-enabled/ — and it carries, at SERVER level:
+#     access_log off;
+#     error_log /dev/null;
+# Those beat the http-level `access_log logs/access.log;` in nginx.conf (line
+# 25) and inherit down into every location, including this one. The
+# logs/radarr.access.log / sonarr / tautulli paths that look "missing" from the
+# logs dir are a red herring: those directives are COMMENTED OUT in the panel's
+# proxy.d/*.conf, so those files were never meant to exist.
+#
+# Why the override lives HERE and not at the server level: sites-available/
+# default and proxy.d/*.conf are Ultra.cc PANEL-TEMPLATED. The panel rewrites
+# them, and hand-editing panel-owned config is the same class of mistake as
+# hand-editing the panel-templated qbittorrent.service. This marked block is
+# the one piece of that file QFlix owns and re-templates from this repo, so the
+# override belongs in it. nginx resolves access_log/error_log at the innermost
+# level that defines them, so a location-level directive cleanly beats the
+# server-level `off` without touching the panel's lines.
+#
+# What this actually covers: `location /` is the catch-all. It takes the public
+# root, the dashboard itself, its /api/* endpoints, its /_app/immutable/*
+# assets (the exact 404 class from the dash-build-without-restart incident, now
+# finally visible), and every unmatched path — i.e. all scan and probe traffic.
+# It does NOT cover the prefix locations in proxy.d/*.conf -- those are
+# separate `location ^~ ...` blocks, so they keep inheriting the server-level
+# `off`. Two distinct groups, and the distinction matters for who fixes them:
+#   panel-owned  ^~ /seerr /tautulli /radarr /radarr2 /sonarr /sonarr2
+#                /prowlarr /bazarr /qbittorrent /tdarr /listmonk
+#                -> only the operator can restore these, by editing the
+#                   panel-templated server block. Recorded as an operator
+#                   action, deliberately out of scope here.
+#   QFlix-owned  ^~ /faq (scripts/data/qflix-faq.conf, phase 60-www-images.sh)
+#                ^~ /images/ (scripts/data/qflix-images.conf, same phase)
+#                -> fixable from this repo, but by THOSE files, not this one.
+#                   Same one-liner pair as below. Handed off, not forgotten.
+# Verified on the box 2026-08-19: neither qflix conf declares any log
+# directive today, so both inherit `off`.
+#
+# @@LOGFMT@@ is resolved by 91-nginx-root-to-dash.sh against the live
+# nginx.conf: `main` when that file still declares the format (it does today,
+# line 28 — and `main` carries $http_x_forwarded_for, which is the REAL client
+# IP behind the Ultra.cc front proxy that terminates 443 and forwards to
+# 17040), otherwise the nginx built-in `combined`. Pinning the name blind would
+# mean a future panel edit to nginx.conf fails `nginx -t` and takes down every
+# public service on the next reload.
+#
+# Rotation: logs/qflix-dash.{access,error}.log are NOT yet covered by
+# ~/.config/logrotate.conf — verified 2026-08-19, that file contains zero nginx
+# entries. Phase 250 (scripts/configure/250-logrotate-install.sh) owns it and
+# is not owned by this change; the block it needs is recorded as an operator
+# action. Until then these two files grow unbounded, which is why the format is
+# one line per request and nothing more verbose.
+#
+# Paths are relative to the nginx prefix, matching the panel's own style —
+# nginx runs as: /usr/sbin/nginx -p /home/quadstronaut/.apps/nginx/ -c nginx.conf
+# so `logs/x` resolves to ~/.apps/nginx/logs/x.
+# ---------------------------------------------------------------------------
 location / {
     auth_basic              off;
+
+    # Overrides this server block's `access_log off; error_log /dev/null;`.
+    # Do not "fix" those two panel-owned lines instead -- see the header.
+    access_log              logs/qflix-dash.access.log @@LOGFMT@@;
+    error_log               logs/qflix-dash.error.log warn;
+
     proxy_pass              http://127.0.0.1:@@PORT@@;
     proxy_http_version      1.1;
     proxy_set_header        Host                 $host;
