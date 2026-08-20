@@ -1,0 +1,20 @@
+[Unit]
+Description=Manitoba canary - Library container sanity (daily 04:30 UTC)
+
+[Timer]
+# UTC is EXPLICIT and load-bearing. systemd resolves a bare OnCalendar in the
+# LOCAL zone, and this box runs Europe/Amsterdam - so "04:30:00" alone fires at
+# 02:30 UTC in CEST and 03:30 UTC in CET, while the canary header, the installer
+# comment and scripts/canaries/README.md all say 04:30 UTC. Three documents
+# describing a schedule the unit did not have, and a fire time that silently
+# moves an hour twice a year. The 04:30 UTC slot is off-peak and before the
+# 05:00 reaper. It SHARES the slot with the audio-disposition janitor (also
+# pinned UTC), which remuxes in place - so this walk can legitimately catch a
+# "<name>.mkv.tmp" mid-write, which is exactly why the canary treats a playable
+# stem under a .tmp as transient instead of firing on it.
+OnCalendar=*-*-* 04:30:00 UTC
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target
