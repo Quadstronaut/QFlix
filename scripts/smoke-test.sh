@@ -355,8 +355,17 @@ if [ -n "$TD_PORT" ]; then
     *)   record "tdarr-up" fail "HTTP $TD_HTTP on 127.0.0.1:$TD_PORT/api/v2/status" ;;
   esac
   TD_NODES=$(sshm "curl -sf -m 5 http://127.0.0.1:$TD_PORT/api/v2/get-nodes 2>/dev/null | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))'" 2>/dev/null)
+  # tdarr-node is INTENTIONALLY stopped during the fair-use quiet hours
+  # (manifest pause_window, 18:00-23:00 UTC). Ask the box's own predicate —
+  # the same suppression.in_pause_window the pusher/recovery/status consult —
+  # so a smoke run inside the window reports "paused", not a false FAIL
+  # (it did exactly that every evening until 2026-08-20). Fail-open: any
+  # error in the lookup → "0" → the normal registered/not-registered verdict.
+  TD_PAUSED=$(sshm 'cd ~/scripts/maint && python3 -c "import sys; from lib import manifest, suppression; m = manifest.load(sys.argv[1]); print(int(suppression.in_pause_window(m.app(sys.argv[2]))))" ~/.opt/maint/apps.yaml tdarr-node 2>/dev/null' 2>/dev/null || echo 0)
   if [ "${TD_NODES:-0}" -ge 1 ]; then
     record "tdarr-node-registered" pass "$TD_NODES node(s)"
+  elif [ "${TD_PAUSED:-0}" = "1" ]; then
+    record "tdarr-node-registered" pass "paused (quiet-hours pause_window; node stopped on purpose)"
   else
     record "tdarr-node-registered" fail "no nodes registered"
   fi

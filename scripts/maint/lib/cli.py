@@ -608,6 +608,13 @@ def _cmd_canary_push(args: argparse.Namespace, manifest) -> int:
         # Prefer stderr for failure detail (canaries write FAIL: to stderr)
         msg = (result.stderr or result.stdout or "FAIL").strip()[:200]
         exit_code = 2
+        # Mirror the failure into journald. capture_output swallows the script's
+        # own stdout/stderr, so until 2026-08-20 a red canary left only
+        # "status=2/INVALIDARGUMENT" in the journal and the WHY lived solely in
+        # the Kuma heartbeat msg (deploy-drift was red 9 runs that day and the
+        # journal could not say what drifted).
+        print(f"canary '{args.name}' FAILED (rc={result.returncode}): {msg}",
+              file=sys.stderr)
 
     # Load tokens and push to Kuma
     try:
