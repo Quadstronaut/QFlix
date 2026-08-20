@@ -576,17 +576,64 @@ def test_header_no_longer_claims_the_search_self_heals(rg):
 
 
 # ---------------------------------------------------------------------------
-# MINOR 2 - unlinked, not freed. copyUsingHardlinks=true + empty recycleBin,
-# both re-read live on 2026-08-19.
+# MINOR 2 - unlinked vs freed is a PROPERTY OF THE FILE, not of the config.
+#
+# The first version of this guard pinned an unconditional "unlinked, never
+# freed" claim, because Radarr main runs copyUsingHardlinks=true. That flag
+# describes how files ARRIVE; it says nothing about whether a given file still
+# has its seeding twin. On the 2026-08-20 run every one of the 23 targets was
+# st_nlink == 1 and the quota went 2231G -> 1658G at delete time, so the
+# warning was not merely imprecise -- it pointed the operator's capacity
+# planning at a peak that could not happen. A test that pins the wrong sentence
+# keeps the wrong sentence. These pin the measurement instead.
 # ---------------------------------------------------------------------------
-def test_byte_figures_are_reported_as_unlinked_not_freed(rg):
+def test_byte_verdict_is_measured_from_link_counts(rg):
     src = REGRAB.read_text(encoding="utf-8")
-    assert "unlinked " in src
+    # Targets carry a MEASURED link count, and it comes from stat(), not config.
+    assert '"nlink": _nlink(' in src
+    assert "os.stat(path).st_nlink" in src
+    # The pending-reap clause still exists, but only as one branch of a verdict.
     assert "qflix-torrent-janitor" in src
     assert "ratio>=2.0" in src
-    # The only surviving "freed" is the header sentence forbidding the word.
-    assert src.count('"freed"') == 1
-    assert 'freed " + str' not in src
+    # No unconditional byte claim survives at either report site.
+    assert "0 bytes come back until" not in src
+    # The phrase survives exactly once, in the _bytes_verdict docstring that
+    # records WHY the unconditional version was wrong. Zero occurrences would
+    # mean the reasoning was deleted along with the bug.
+    assert src.count("space reclaims") == 1
+    assert "log(\"note: the delete UNLINKS one hardlink" not in src
+
+
+def test_byte_verdict_buckets_by_measured_nlink(rg):
+    """nlink 1 => freed now; nlink >= 2 => pending reap; None => unknown."""
+    verdict = rg._bytes_verdict([
+        {"size_gb": 10.0, "nlink": 1},
+        {"size_gb": 4.0, "nlink": 2},
+        {"size_gb": 1.0, "nlink": None},
+    ])
+    assert "freed 10.0 GB now" in verdict
+    assert "unlinked 4.0 GB pending" in verdict
+    assert "1.0 GB of unstat-able files" in verdict
+
+
+def test_byte_verdict_omits_buckets_that_are_empty(rg):
+    """The all-nlink-1 case must not print a torrent-janitor clause at all --
+    that is the exact noise the 2026-08-20 run exposed."""
+    verdict = rg._bytes_verdict([{"size_gb": 572.16, "nlink": 1}])
+    assert verdict == "freed 572.16 GB now (no seeding twin)"
+    assert "torrent-janitor" not in verdict
+
+    pending = rg._bytes_verdict([{"size_gb": 30.0, "nlink": 3}])
+    assert "torrent-janitor" in pending
+    assert "freed" not in pending
+
+    assert rg._bytes_verdict([]) == "0 GB"
+
+
+def test_nlink_never_raises_on_a_bad_path(rg):
+    assert rg._nlink(None) is None
+    assert rg._nlink("") is None
+    assert rg._nlink("/nonexistent/definitely/not/here.mkv") is None
 
 
 # ---------------------------------------------------------------------------
