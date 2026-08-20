@@ -455,6 +455,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"qflix-audit-live: {len(result['findings'])} findings; "
               f"coverage={result['coverage']}")
+        # One journald line per finding. The count alone left the 2026-08-20
+        # 16:18Z "2 findings" run undiagnosable after the next run overwrote
+        # last-audit.json with 0 -- the snapshot is a state, the journal is
+        # the history, and a transient finding must survive in the history.
+        for f in result["findings"]:
+            print(f"qflix-audit-live: FINDING {f.get('class_id', '?')} "
+                  f"{f.get('instance_id', '?')} {f.get('detail', '')}",
+                  file=sys.stderr)
 
     partial = any(v == "unavailable" for v in result["coverage"].values())
     if partial:
