@@ -32,6 +32,10 @@
 #                      same `timer` paths): buildarr, kometa, logrotate,
 #                      recyclarr, tdarr-node-pause, tdarr-node-resume,
 #                      upgradinatorr. One vocabulary bug, not seven misses.
+#                      (The two tdarr-node-* timers were RETIRED 2026-08-20 —
+#                      see the retirement note further down. Named here because
+#                      this paragraph is the history of the vocabulary bug, not
+#                      a live inventory.)
 #   cron               ALTERNATIVE to both, for a CRONTAB line, which has no
 #                      unit name AND no file in git. The value is a command
 #                      SUBSTRING that uniquely identifies the line in
@@ -203,9 +207,9 @@ jobs:
   manitoba-maint-canary-bazarr-ingest:
     timer: scripts/maint/systemd/manitoba-maint-canary-bazarr-ingest.timer
     kuma_monitor: "Canary Bazarr Ingest"
-  manitoba-maint-canary-tdarr-pause-integrity:
-    timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-pause-integrity.timer
-    kuma_monitor: "Canary Tdarr Pause Integrity"
+  manitoba-maint-canary-tdarr-throttle-integrity:
+    timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-throttle-integrity.timer
+    kuma_monitor: "Canary Tdarr Throttle Integrity"
   manitoba-maint-canary-stream-cap-liveness:
     timer: scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.timer
     kuma_monitor: "Canary Stream Cap Liveness"
@@ -495,29 +499,34 @@ jobs:
     adjudicated: 2026-08-06
     owner: operator
 
-  tdarr-node-pause:
-    unit: tdarr-node-pause.timer
-    # Dead-manned by EFFECT rather than by liveness, which is the right test
-    # here: what matters is not that this timer fired, but that the node is
-    # actually stopped during quiet hours. canary-tdarr-pause-integrity asserts
-    # exactly that and goes red if the node is ACTIVE inside the window.
-    #
-    # Declared open_gap: true earlier the same day, before that canary existed.
-    # The gap was real: pusher.py pushes "Tdarr Node" UP and SKIPS the probe
-    # inside the window (correctly - otherwise it auto-healed the node 2min into
-    # every pause), and tdarr-healthcheck.sh holds its stall threshold above the
-    # 5h pause. Every surface was blinded during exactly the interval that
-    # mattered, so a disabled or rebuilt-away timer let the node transcode
-    # through the streaming peak with everything green.
-    kuma_monitor: "Canary Tdarr Pause Integrity"
-
-  tdarr-node-resume:
-    unit: tdarr-node-resume.timer
-    # The RESUME half genuinely is dead-manned: if it fails to fire the node
-    # stays paused, and once the window closes the pusher stops suppressing the
-    # probe, so "Tdarr Node" goes red. Asymmetric with the pause half by nature
-    # - a stuck-PAUSED node becomes visible, a stuck-RUNNING one does not.
-    kuma_monitor: "Tdarr Node"
+  # RETIRED 2026-08-20: tdarr-node-pause.timer and tdarr-node-resume.timer are
+  # GONE, not merely undeclared. tdarr-node runs 24/7 and fair-use is enforced
+  # by the worker cap (manifest/apps.yaml tdarr-node.throttle) instead of by a
+  # five-hour nightly stop. 50c-tdarr-247.sh stops, disables and DELETES both
+  # units on the box; cron-liveness/timer-liveness enumerate in BOTH directions,
+  # so leaving the entries here while the units were gone would page, and
+  # leaving the units on the box while the entries were gone would page too.
+  # Removing both halves in the same commit is the only clean transition.
+  #
+  # For the archaeology, the old note read:
+  #
+  # tdarr-node-pause was dead-manned by EFFECT rather than by liveness — what
+  # mattered was not that the timer fired but that the node was actually
+  # stopped during quiet hours, which canary-tdarr-pause-integrity asserted.
+  # The gap that canary closed was real: pusher.py pushed "Tdarr Node" UP and
+  # SKIPPED the probe inside the window (correctly - otherwise it auto-healed
+  # the node 2min into every pause), and tdarr-healthcheck.sh held its stall
+  # threshold above the 5h pause. Every surface was blinded during exactly the
+  # interval that mattered, so a disabled or rebuilt-away timer let the node
+  # transcode through the streaming peak with everything green. The RESUME half
+  # genuinely was dead-manned: if it failed to fire the node stayed paused and
+  # "Tdarr Node" went red once the window closed. Asymmetric by nature — a
+  # stuck-PAUSED node became visible, a stuck-RUNNING one never did.
+  #
+  # Neither asymmetry survives the retirement: with no pause_window the pusher
+  # probes tdarr-node every cycle, so stuck-STOPPED reds within minutes, and
+  # stuck-RUNNING is now the intended state. What replaces the pause canary is
+  # canary-tdarr-throttle-integrity, which audits the worker cap.
 
   # ------------------------------------------------------- crontab (`cron:`)
   # The THIRD scheduling plane, enumerated 2026-08-07 from `crontab -l` (10
@@ -574,10 +583,11 @@ jobs:
     schedule: "*/5 * * * *"
     kuma_monitor: null
     no_monitor_reason: >-
-      Restart helper for tdarr-node. Same reasoning as the other two heartbeats,
-      with one extra: it carries its own quiet-hours guard so it does not fight
-      tdarr-node-pause.timer, and that interaction is now separately watched by
-      canary-tdarr-pause-integrity.
+      Restart helper for tdarr-node. Same reasoning as the other two
+      heartbeats. It used to carry a quiet-hours guard so it did not fight
+      tdarr-node-pause.timer; both the timer and the guard were removed
+      2026-08-20 when the node went 24/7, so this heartbeat now restarts an
+      inactive node at any hour — which is the whole point of a 24/7 unit.
     open_gap: false
     adjudicated: 2026-08-07
     owner: operator

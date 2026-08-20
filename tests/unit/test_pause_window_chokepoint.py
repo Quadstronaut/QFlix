@@ -99,19 +99,132 @@ class TestRecoveryChokepointHonorsPause:
 
 # --- config-drift lock ------------------------------------------------------
 
-class TestQuietHoursSourcesInSync:
-    def test_manifest_matches_timer_and_heartbeat_hours(self):
+class TestTdarrRuns247:
+    """The 2026-08-20 inversion.
+
+    This class used to be TestQuietHoursSourcesInSync and pinned the SAME hours
+    (18,23) across the manifest, 50c's OnCalendar and the heartbeat guard —
+    three surfaces for one number. tdarr-node now runs 24/7 and fair-use is the
+    worker cap, so the lock inverts: assert the window is GONE everywhere,
+    rather than that three copies of it agree.
+
+    Worth keeping as a test rather than deleting. The pause is exactly the kind
+    of thing that comes back via a slot rebuild, an old runbook, or a
+    well-meaning "Tdarr is eating CPU" reflex. Reintroducing it silently would
+    stop the node five hours a night AND re-blind the surfaces the retirement
+    un-blinded, because the canary that used to watch the pause now watches the
+    throttle instead.
+    """
+
+    def test_tdarr_node_declares_no_pause_window(self):
         m = manifest_load(os.path.join(_REPO, "manifest", "apps.yaml"))
-        pw = m.app("tdarr-node").pause_window
-        assert pw is not None
-        assert (pw.start_hour_utc, pw.end_hour_utc) == (18, 23)
+        assert m.app("tdarr-node").pause_window is None
 
-        with open(os.path.join(_REPO, "scripts", "configure",
-                               "50c-tdarr-quiet-hours.sh"), encoding="utf-8") as fh:
-            timer = fh.read()
-        assert "18:00:00 UTC" in timer and "23:00:00 UTC" in timer
+    def test_no_app_declares_a_pause_window(self):
+        # The mechanism stays (see PauseWindow's docstring) but nothing uses it.
+        # If this ever fails, the new holder is fine — just make sure its window
+        # is honoured by every surface, the way tdarr-node's had to be.
+        m = manifest_load(os.path.join(_REPO, "manifest", "apps.yaml"))
+        holders = [a.name for a in m.apps() if a.pause_window is not None]
+        assert holders == [], f"unexpected pause_window holders: {holders}"
 
+    def test_heartbeat_has_no_hardcoded_quiet_hours_guard(self):
         with open(os.path.join(_REPO, "scripts", "ops",
                                "heartbeat-tdarr-node.sh"), encoding="utf-8") as fh:
             hb = fh.read()
-        assert "-ge 18" in hb and "-lt 23" in hb
+        # The literal guard that used to skip every restart path 18:00-23:00.
+        assert "-ge 18" not in hb and "-lt 23" not in hb
+
+    def test_50c_removes_the_timers_instead_of_installing_them(self):
+        with open(os.path.join(_REPO, "scripts", "configure",
+                               "50c-tdarr-247.sh"), encoding="utf-8") as fh:
+            sh = fh.read()
+        # No OnCalendar at all — the file no longer writes timer units.
+        assert "OnCalendar" not in sh
+        # And it actively removes both rather than leaving them disabled: a unit
+        # on the box with no manifest/jobs.yaml entry is its own finding.
+        assert "tdarr-node-pause" in sh and "tdarr-node-resume" in sh
+        assert "rm -f" in sh
+
+    def test_old_quiet_hours_installer_is_gone(self):
+        assert not os.path.exists(os.path.join(
+            _REPO, "scripts", "configure", "50c-tdarr-quiet-hours.sh"))
+
+
+class TestTdarrThrottleIsTheFairUseLever:
+    """The cap that replaced the clock. One number, three consumers."""
+
+    def test_manifest_declares_the_throttle(self):
+        m = manifest_load(os.path.join(_REPO, "manifest", "apps.yaml"))
+        t = m.app("tdarr-node").throttle
+        assert t is not None
+        assert (t.transcode, t.health_check) == (2, 1)
+        # Tdarr runs the two pipelines concurrently, so the load the box feels
+        # is the sum, not the max. 2/2 would be FOUR workers — the 2026-08-07
+        # ~94% CPU episode. Pinned so a "bump transcode to 3" edit has to read
+        # this line and decide deliberately.
+        assert t.total == 3
+
+    def test_50b_writes_the_same_numbers_to_both_tdarr_layers(self):
+        with open(os.path.join(_REPO, "scripts", "configure",
+                               "50b-tdarr-config.py"), encoding="utf-8") as fh:
+            cfg = fh.read()
+        ns: dict = {}
+        # Executing the whole module would need SSH; lift just the two dicts.
+        for name in ("WORKER_LIMITS", "NODE_WORKER_LIMITS"):
+            start = cfg.index(name + " = {")
+            end = cfg.index("}", start) + 1
+            exec(cfg[start:end], ns)  # noqa: S102 - literal dict from our own repo
+        m = manifest_load(os.path.join(_REPO, "manifest", "apps.yaml"))
+        t = m.app("tdarr-node").throttle
+        # Layer 1 (global seed) and layer 2 (per-node override, the one that
+        # actually gates work) must BOTH match the manifest. Editing only one
+        # looks like it worked — that is the whole 2026-08-07 lesson.
+        assert ns["WORKER_LIMITS"]["transcodeWorkerLimit"] == t.transcode
+        assert ns["WORKER_LIMITS"]["healthcheckWorkerLimit"] == t.health_check
+        assert ns["NODE_WORKER_LIMITS"]["transcodecpu"] == t.transcode
+        assert ns["NODE_WORKER_LIMITS"]["healthcheckcpu"] == t.health_check
+        # No GPU on this slot, either layer.
+        assert ns["WORKER_LIMITS"]["transcodeWorkerLimitGpu"] == 0
+        assert ns["NODE_WORKER_LIMITS"]["transcodegpu"] == 0
+
+    def test_canary_reads_the_cap_from_the_manifest(self):
+        with open(os.path.join(_REPO, "scripts", "canaries",
+                               "tdarr-throttle-integrity.sh"), encoding="utf-8") as fh:
+            sh = fh.read()
+        assert "transcode_workers" in sh and "health_check_workers" in sh
+        # Never a restated literal — that is how the pause hours drifted across
+        # four files before they were centralised.
+        assert "WANT_T=" in sh and "WANT_H=" in sh
+        # A node that is down must be "cannot assert" (2), never a clean pass.
+        assert "tdarr-throttle-no-nodes" in sh
+        assert "tdarr-throttle-server-unreachable" in sh
+
+
+class TestThrottleParsing:
+    def test_rejects_non_mapping(self):
+        from lib.manifest import _parse_throttle, ManifestError
+        with pytest.raises(ManifestError):
+            _parse_throttle("2/1", app_name="x")
+
+    def test_rejects_missing_key(self):
+        from lib.manifest import _parse_throttle, ManifestError
+        with pytest.raises(ManifestError):
+            _parse_throttle({"transcode_workers": 2}, app_name="x")
+
+    def test_rejects_out_of_range(self):
+        from lib.manifest import _parse_throttle, ManifestError
+        # An unbounded cap is the failure this field exists to prevent, so it
+        # is rejected at parse time rather than politely honoured.
+        with pytest.raises(ManifestError):
+            _parse_throttle({"transcode_workers": 99,
+                             "health_check_workers": 1}, app_name="x")
+        with pytest.raises(ManifestError):
+            _parse_throttle({"transcode_workers": -1,
+                             "health_check_workers": 1}, app_name="x")
+
+    def test_zero_is_legal(self):
+        from lib.manifest import _parse_throttle
+        t = _parse_throttle({"transcode_workers": 0,
+                             "health_check_workers": 0}, app_name="x")
+        assert t.total == 0

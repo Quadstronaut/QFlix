@@ -1,5 +1,5 @@
 [Unit]
-Description=Manitoba canary - Tdarr fair-use pause integrity (hourly)
+Description=Manitoba canary - Tdarr fair-use throttle integrity (hourly)
 
 [Timer]
 OnCalendar=hourly

@@ -7,18 +7,15 @@
 export XDG_RUNTIME_DIR
 set -uo pipefail
 
-# Fair-use quiet hours: tdarr-node is *intentionally* stopped 18:00-23:00 UTC by
-# tdarr-node-pause.timer (see scripts/configure/50c-tdarr-quiet-hours.sh) so its
-# worker threads don't fight streamers during peak watch hours. Without this guard
-# the watchdog below sees the paused node as a fault ("0 registered nodes" /
-# inactive) and revives it on the very next tick, defeating the 5-hour pause
-# (observed 2026-05-30: stopped 18:00:01 UTC, back up 18:02:27 UTC). Skip all
-# restart paths during the pause window. 10# forces base-10 so "08" isn't read as
-# octal. Keep this window in sync with 50c's OnCalendar values.
-HOUR_UTC=$((10#$(date -u +%H)))
-if [ "$HOUR_UTC" -ge 18 ] && [ "$HOUR_UTC" -lt 23 ]; then
-  exit 0
-fi
+# NO quiet-hours guard. tdarr-node runs 24/7 as of 2026-08-20; the 18:00-23:00
+# UTC pause and the two timers that enforced it are retired (50c-tdarr-247.sh),
+# and fair-use is the worker cap instead. This script used to skip every restart
+# path inside that window so it did not revive a deliberately-paused node ~2min
+# in (observed 2026-05-30: stopped 18:00:01 UTC, back up 18:02:27 UTC). With no
+# window left to respect, reviving an inactive node at ANY hour is the whole job.
+#
+# If a pause is ever reintroduced, do NOT restate the hours here: read
+# manifest/apps.yaml's pause_window, which is what every other surface reads.
 
 # Tdarr Node has no inbound HTTP listener — it's a worker that connects out
 # to Tdarr Server. The "alive but unregistered" failure mode (process up,

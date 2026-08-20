@@ -214,7 +214,8 @@ def _cmd_status(args: argparse.Namespace, manifest, state_data: dict) -> int:
     # Parallel probes
     def _probe_one(app):
         # An app inside its declared pause_window is INTENTIONALLY stopped right
-        # now (e.g. tdarr-node 18:00-23:00 UTC fair-use quiet hours, stopped by
+        # now (historically tdarr-node 18:00-23:00 UTC, retired 2026-08-20;
+        # no app declares a pause_window today), stopped by
         # tdarr-node-pause.timer). Mirror the pusher: report it up and skip the
         # real probe, so status — consumed by the QFlix dashboard AND QuadstroNot
         # — never counts a scheduled pause as a fault. The JSON contract stays

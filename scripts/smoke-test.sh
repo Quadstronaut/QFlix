@@ -355,19 +355,19 @@ if [ -n "$TD_PORT" ]; then
     *)   record "tdarr-up" fail "HTTP $TD_HTTP on 127.0.0.1:$TD_PORT/api/v2/status" ;;
   esac
   TD_NODES=$(sshm "curl -sf -m 5 http://127.0.0.1:$TD_PORT/api/v2/get-nodes 2>/dev/null | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))'" 2>/dev/null)
-  # tdarr-node is INTENTIONALLY stopped during the fair-use quiet hours
-  # (manifest pause_window, 18:00-23:00 UTC). Ask the box's own predicate —
-  # the same suppression.in_pause_window the pusher/recovery/status consult —
-  # so a smoke run inside the window reports "paused", not a false FAIL
-  # (it did exactly that every evening until 2026-08-20). Fail-open: any
+  # tdarr-node runs 24/7 as of 2026-08-20, so an unregistered node is now
+  # unconditionally a FAIL. The pause_window lookup this used to do is kept —
+  # asking the box's own suppression predicate rather than restating hours —
+  # because it is the honest way to stay correct if a window is ever
+  # reintroduced for this or any other app. It answers 0 today. Fail-open: any
   # error in the lookup → "0" → the normal registered/not-registered verdict.
   TD_PAUSED=$(sshm 'cd ~/scripts/maint && python3 -c "import sys; from lib import manifest, suppression; m = manifest.load(sys.argv[1]); print(int(suppression.in_pause_window(m.app(sys.argv[2]))))" ~/.opt/maint/apps.yaml tdarr-node 2>/dev/null' 2>/dev/null || echo 0)
   if [ "${TD_NODES:-0}" -ge 1 ]; then
     record "tdarr-node-registered" pass "$TD_NODES node(s)"
   elif [ "${TD_PAUSED:-0}" = "1" ]; then
-    record "tdarr-node-registered" pass "paused (quiet-hours pause_window; node stopped on purpose)"
+    record "tdarr-node-registered" pass "paused (declared pause_window; node stopped on purpose)"
   else
-    record "tdarr-node-registered" fail "no nodes registered"
+    record "tdarr-node-registered" fail "no nodes registered (node is expected up 24/7)"
   fi
   # Flow engaged: exactly 5 libraries (Movies/TV/Anime/Anime Movies/Welcome — the set
   # in 50b-tdarr-config.py REAL_LIBRARY_NAMES), all with flowId=qflix-direct-play-fix
@@ -392,12 +392,26 @@ if [ -n "$TD_PORT" ]; then
     "")           record "tdarr-no-disc-containers" fail "could not read containerFilter from Tdarr" ;;
     *)            record "tdarr-no-disc-containers" fail "disc containers scannable on: $TD_DISC" ;;
   esac
-  # Quiet-hours timers armed (18:00-23:00 UTC pause to spare streaming users).
-  TD_QH=$(sshm "systemctl --user list-timers tdarr-node-pause.timer tdarr-node-resume.timer --no-pager 2>/dev/null | grep -cE 'tdarr-node-(pause|resume).timer'" 2>/dev/null)
-  if [ "${TD_QH:-0}" -ge 2 ]; then
-    record "tdarr-quiet-hours-armed" pass "pause+resume timers loaded"
+  # 24/7 + throttled. INVERTED 2026-08-20: this used to assert the two
+  # quiet-hours timers were ARMED; it now asserts they are GONE. Fair-use moved
+  # from the clock to the worker cap, and a surviving pause timer would stop the
+  # node for five hours a night with nothing left watching for it — the old
+  # pause-integrity canary that covered exactly that is retired too.
+  TD_QH=$(sshm "systemctl --user list-unit-files 2>/dev/null | grep -cE 'tdarr-node-(pause|resume)'" 2>/dev/null)
+  if [ "${TD_QH:-0}" -eq 0 ]; then
+    record "tdarr-247-no-pause-timers" pass "no quiet-hours timers on the box"
   else
-    record "tdarr-quiet-hours-armed" fail "expected 2 timers, found ${TD_QH:-0}"
+    record "tdarr-247-no-pause-timers" fail "${TD_QH} quiet-hours unit(s) still installed — node will stop nightly"
+  fi
+  # The cap that replaced the pause. Read from the manifest, never restated:
+  # this is the same number 50b writes and tdarr-throttle-integrity.sh audits.
+  # Every key travels as argv so the one-liner needs no nested quoting.
+  TD_CAP=$(sshm 'python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); t=d[sys.argv[6]][sys.argv[2]][sys.argv[3]]; print(int(t[sys.argv[4]]), int(t[sys.argv[5]]))" ~/.opt/maint/apps.yaml tdarr-node throttle transcode_workers health_check_workers apps' 2>/dev/null)
+  TD_LIVE=$(sshm "curl -sf -m 5 http://127.0.0.1:$TD_PORT/api/v2/get-nodes 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); v=list(d.values())[0].get(\"workerLimits\") or {}; print(v.get(\"transcodecpu\",-1), v.get(\"healthcheckcpu\",-1))'" 2>/dev/null)
+  if [ -n "$TD_CAP" ] && [ "$TD_LIVE" = "$TD_CAP" ]; then
+    record "tdarr-throttle-held" pass "worker cap $TD_LIVE matches manifest"
+  else
+    record "tdarr-throttle-held" fail "live worker cap '${TD_LIVE:-?}' != manifest '${TD_CAP:-?}'"
   fi
   # worker1.js cleanup-handler null-guard patch — without this, Tdarr 2.17.01
   # crashes the entire node on every job completion (TypeError: worker2[T(...)]
@@ -413,7 +427,8 @@ else
   record "tdarr-up" skip "no server_port"
   record "tdarr-node-registered" skip "no server_port"
   record "tdarr-flow-engaged" skip "no server_port"
-  record "tdarr-quiet-hours-armed" skip "no server_port"
+  record "tdarr-247-no-pause-timers" skip "no server_port"
+  record "tdarr-throttle-held" skip "no server_port"
   record "tdarr-worker-patch" skip "no server_port"
 fi
 

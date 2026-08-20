@@ -77,7 +77,19 @@ DECISION_MAKER_FLOWS = {
 # Operator picked "tune interactively, start at 2/2 and ramp" on 2026-05-09.
 # Ramped DOWN to 1/1 on 2026-08-07: 2/2 means FOUR concurrent workers (the two
 # pipelines are counted separately, not shared) and that was driving ~94% CPU on
-# a SHARED slot. Bump these together when scaling up. 128-core EPYC.
+# a SHARED slot. 128-core EPYC.
+#
+# 2026-08-20 -- set to 2 transcode + 1 health-check (THREE concurrent, not
+# four) as the node went 24/7. This is now the WHOLE fair-use mechanism: the
+# 18:00-23:00 UTC quiet-hours pause is retired, so nothing else throttles this
+# node at any hour. Read the numbers from manifest/apps.yaml
+# tdarr-node.throttle -- that is the single source of truth, and
+# tdarr-throttle-integrity.sh audits the live node against it hourly.
+#
+# The asymmetry is deliberate. Transcode is the work that has to converge (39
+# hevc/av1 files were forcing Plex to transcode on the fly for every client);
+# health-check is maintenance and gets one worker, not two, so the 2/2 ->
+# four-worker 94% CPU episode cannot recur by arithmetic.
 #
 # LAYER 2 IS THE ONE THAT MATTERS, AND EDITING ONLY LAYER 1 LOOKS LIKE IT WORKED.
 # On 2026-08-07 the global was set to 1/1 and the node kept running 4 workers,
@@ -93,13 +105,13 @@ DECISION_MAKER_FLOWS = {
 # cruddb is avoided elsewhere here; the caller is responsible for stopping
 # tdarr-server first (see 50b's own deploy notes).
 WORKER_LIMITS = {
-    "transcodeWorkerLimit": 1,
+    "transcodeWorkerLimit": 2,
     "healthcheckWorkerLimit": 1,
     "transcodeWorkerLimitGpu": 0,
     "healthcheckWorkerLimitGpu": 0,
 }
 NODE_WORKER_LIMITS = {
-    "transcodecpu": 1,
+    "transcodecpu": 2,
     "transcodegpu": 0,
     "healthcheckcpu": 1,
     "healthcheckgpu": 0,
@@ -161,8 +173,9 @@ LIBRARY_DEFAULTS = {
 # surface an operator would glance at looked healthy.
 #
 # ffmpeg-static is present, already carries every transcode, and full-decodes at
-# ~20x realtime here (~2.5 min for a 50-min episode), bounded by the 2 healthcheck
-# workers + the 18:00-23:00 UTC quiet-hours pause. Guarded by the
+# ~20x realtime here (~2.5 min for a 50-min episode), bounded by the health-check
+# worker cap (1 as of 2026-08-20; the quiet-hours pause that used to bound it too
+# is retired and the node runs 24/7). Guarded by the
 # tdarr-healthcheck canary, which reds if the error ratio ever goes pathological
 # again. Do NOT "fix" this by reintroducing handbrakescan.
 HEALTHCHECK_ENGINE = {
