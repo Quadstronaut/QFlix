@@ -369,14 +369,14 @@ if [ -n "$TD_PORT" ]; then
   else
     record "tdarr-node-registered" fail "no nodes registered"
   fi
-  # Flow engaged: exactly 4 libraries (Movies/TV/Anime/Anime Movies — the set
+  # Flow engaged: exactly 5 libraries (Movies/TV/Anime/Anime Movies/Welcome — the set
   # in 50b-tdarr-config.py REAL_LIBRARY_NAMES), all with flowId=qflix-direct-play-fix
   # and decisionMaker.settingsFlows=true (so the Flow engine — not the classic
   # plugin stack — drives transcode decisions on every new arrival).
   TD_FLOW=$(sshm "curl -sf -m 5 -X POST http://127.0.0.1:$TD_PORT/api/v2/cruddb -H 'Content-Type: application/json' -d '{\"data\":{\"collection\":\"LibrarySettingsJSONDB\",\"mode\":\"getAll\"}}' 2>/dev/null | python3 -c 'import sys,json; libs=json.load(sys.stdin); ok=[l for l in libs if l.get(\"flowId\")==\"qflix-direct-play-fix\" and (l.get(\"decisionMaker\") or {}).get(\"settingsFlows\") is True]; print(str(len(ok))+\"/\"+str(len(libs)))'" 2>/dev/null)
   case "$TD_FLOW" in
-    4/4) record "tdarr-flow-engaged" pass "$TD_FLOW libs attached to qflix-direct-play-fix" ;;
-    *)   record "tdarr-flow-engaged" fail "$TD_FLOW libs attached (expected 4/4)" ;;
+    5/5) record "tdarr-flow-engaged" pass "$TD_FLOW libs attached to qflix-direct-play-fix" ;;
+    *)   record "tdarr-flow-engaged" fail "$TD_FLOW libs attached (expected 5/5)" ;;
   esac
   # Disc containers must NOT be scannable. Tdarr's stock containerFilter carries
   # vob/evo/iso, and on 2026-08-20 the folder watcher picked up a 47.6 GB .iso

@@ -728,7 +728,7 @@ else
   fi
 fi
 # quota: track per-user Ultra.cc quota at 80%/90%/98% (warn/crit/fail).
-# At 90% fires Maintainerr execute + collections/handle autonomously to
+# At 90% fires qflix-reaper --execute autonomously to
 # reclaim space before the 100% wall causes SQLite I/O errors stack-wide.
 systemctl --user enable --now manitoba-maint-canary-quota.timer
 # tautulli-plex-link: every 15 min, assert Tautulli's CONFIGURED pms target is
