@@ -599,6 +599,144 @@ classes:
       keeps a rate-limit against one of OUR OWN services reportable.
     added: 2026-08-18
 
+  - id: prowlarr-cardigann-retry-5xx
+    title: Prowlarr Cardigann per-request RETRY after a transient indexer 5xx
+    rx: '(?is)\A(?!.*(?:\|\s*(?:Error|Fatal|Critical)\s*\||\[ERROR\]|ERROR\s*[-:]|Traceback \(most recent call last\))).*\|Warn\|[^|\n]{0,40}\|Request for [^\n]{0,120}? failed with status (?:5\d\d|InternalServerError|BadGateway|ServiceUnavailable|GatewayTimeout)\. Retrying in'
+    field: excerpt
+    prompt_clause: 'Prowlarr Cardigann "Request for <indexer> failed with status 5xx. Retrying in Ns" retry warnings'
+    why: >-
+      The RETRY half of a transient third-party 5xx, deliberately NOT the
+      terminal one. Prowlarr's Cardigann client logs one Warn per attempt -
+      "Request for Tokyo Toshokan failed with status 522. Retrying in
+      1.8521098s." - and then succeeds. Measured read-only on the box
+      2026-08-20: Tokyo Toshokan (prowlarr indexerId 38, enable=1) logged 24-38
+      of these PER DAY while serving ~92 SUCCESSFUL queries per day through
+      2026-08-20 01:33Z, and the TERMINAL line ("Unable to connect ...
+      Indexer's server is unavailable. Try again later.") ran 0-3/day and was
+      ZERO on both 2026-08-19 and 2026-08-20. So the retry line carries no
+      information about indexer health on its own; only a SUSTAINED terminal
+      unavailable rate is actionable, and that is a different string already
+      owned by arr-indexer-unavailable-backoff (segment 20). This table has no
+      rate dimension, the same accepted limit plex-client-profile-extra
+      records.
+      ANCHORED TO THE RETRY STRING SO THE TERMINAL ONE CANNOT MATCH. Both
+      lines are |Warn| from the same logger and both name the same indexer, so
+      a level+logger anchor alone would have eaten the actionable half.
+      "Request for <indexer> failed with status <code>. Retrying in" occurs on
+      the retry line and nowhere else - verified 2026-08-20 by replaying this
+      rx over every |Warn| line in every non-debug prowlarr log (5,829 lines):
+      2,016 retry lines matched, and of the 306 terminal "Indexer's server is
+      unavailable" lines ZERO matched, because the terminal line instead reads
+      "Unable to connect to <indexer> at [<url>]. ... HTTP request failed:
+      [522:522] [GET] at [<url>]" and never carries "Retrying in".
+      THE STATUS TOKEN IS NOT ALWAYS NUMERIC, which the first version of this
+      rx got wrong. Prowlarr renders HttpStatusCode by NAME for the codes .NET
+      has an enum member for and only leaves the bare number for the ones it
+      does not (Cloudflare's 520/522/523/525 have no enum member). Measured
+      read-only 2026-08-20 across all prowlarr logs: 522=2640,
+      InternalServerError=194, ServiceUnavailable=172, BadGateway=144,
+      525=75, GatewayTimeout=61, 520=9, 523=3 - so `5\d\d` alone was blind to
+      571 lines, i.e. 17% of the class walked straight past the rule and could
+      page. The four named codes are enumerated explicitly rather than matched
+      as a loose \w+ so that a NON-5xx name (Unauthorized, Forbidden,
+      NotFound - an indexer whose credentials or definition broke, which IS
+      actionable) still pages.
+      THE LOGGER NAME IS DROPPED, DELIBERATELY. The first version anchored
+      \|Warn\|Cardigann\| and that was live-wrong: prowlarr names the logger
+      after the indexer implementation, so definition-driven indexers log
+      under Cardigann but natively-implemented ones log under their own class.
+      Measured 2026-08-20: 3,168 retry lines under Cardigann and 130 under
+      Knaben ("...|Warn|Knaben|Request for Knaben failed with status 522.
+      Retrying in ..."), and the Knaben half was 100% unsuppressed. Enumerating
+      logger names would just re-open the same hole the next time an indexer
+      moves to a native implementation, and recording Knaben as an "accepted
+      residual" would be recording a KNOWN page as acceptable. So the rx keeps
+      the NLog field SHAPE - \|Warn\|<one pipe-free field>\| - which still pins
+      level=Warn and still forbids the message from being prose a model wrote,
+      but takes the logger token as a wildcard. The message template carries
+      all the specificity: "Request for ... failed with status ... Retrying in"
+      appears on no other line in 5,829 |Warn| lines.
+      WRITTEN AGAINST WHAT THE MODEL SEES, NOT THE RAW LOG. This class reaches
+      REA only through the arr_logs Warn block, which collapses the timestamp
+      to a bare date, pipes through norm() and cuts at 200 chars, so the
+      delivered text is "<date>|Warn|Cardigann|Request for <indexer> failed
+      with status 522. Retrying in 1.85...s." (the collector also prefixes
+      "[<path>] " and a uniq -c count, which the leading .* absorbs) - every
+      token this rx needs
+      survives (measured by replaying that exact pipeline against the live
+      file, 2026-08-20). It needs NO url: the message names the indexer, not a
+      url, so the norm() url-rewrite that left the first bazarr rule
+      structurally dead cannot reach it. The vlogs path never carries this
+      line at all - its LogsQL filter wants ERROR/error/fatal/exception and
+      the retry line has none of those words.
+      Excerpt-scoped with a leading negative lookahead for any error-level
+      token, so a model that bundles these Warn lines with a genuine |Error|
+      line pages instead of being silenced. Widening that lookahead can only
+      ever suppress LESS, so the direction is fail-open by construction.
+    added: 2026-08-20
+
+  - id: plex-orphaned-webhook-delivery
+    title: Plex notification delivery to an ORPHANED Discord webhook (never 2xx)
+    rx: '(?is)\A(?!.*(?:\|\s*(?:Error|Fatal|Critical)\s*\||\[ERROR\]|ERROR\s*[-:]|Traceback \(most recent call last\)))(?!.*webhook: error delivering payload to (?!\S*/1177487639654441000/)\S).*webhook: error delivering payload to \S*/1177487639654441000/'
+    field: excerpt
+    prompt_clause: 'Plex "Webhook: Error delivering payload" failures against the orphaned Discord webhook'
+    why: >-
+      A Plex webhook target that no longer belongs to anything. PMS posts every
+      library/playback notification to a Discord webhook created in Nov 2023
+      and Discord rejects all of them: 214 hits in the audit window, HTTP 400
+      on every one, daily and unbroken, and across every rotated PMS log back
+      to 2026-07-27 the tally is 746x 400, 42x 429 and ZERO 2xx. It has never
+      succeeded once in the recorded history of this box.
+      CAUSE IS UPSTREAM AND UNFIXABLE FROM HERE: Plex posts the notification as
+      a multipart form field named `payload` and Discord's webhook API accepts
+      only `payload_json`, so no setting on this box changes the outcome. The
+      target is referenced NOWHERE in the QFlix tree or on the box - QFlix's
+      own alerts go through a DIFFERENT hook and notify.log confirms live
+      delivery on that one - so nothing depends on this. The fix is to delete
+      the webhook at plex.tv, which is an owner action off-box; until then the
+      line is pure noise.
+      ANCHORED TO THE ORPHANED WEBHOOK ID, not to "webhook" and not to Discord
+      generally, so a delivery failure against any OTHER webhook target is a
+      real integration break and still pages. Only the routing ID is written
+      here - the url also carries a secret token, which is deliberately absent
+      from this file and from the rx. When the hook is deleted this class goes
+      to zero and the rule goes dead, which is the correct end state.
+      WRITTEN AGAINST WHAT THE MODEL SEES, NOT THE RAW LOG. PMS logs this at
+      WARN ("<ts> [<thread>] WARN - Webhook: Error delivering payload to
+      <url>: 400"), and the plex_errors collector greps " ERROR - " only, so
+      that source can never deliver it. The ONLY path is vlogs, whose LogsQL
+      term filter catches the bare word "Error" inside "Error delivering
+      payload" and returns the raw _msg with the url INTACT - no norm(), no
+      cut - at ~140 chars, comfortably inside a model's 300-char excerpt
+      budget. Verified read-only against the live vlogs query 2026-08-20.
+      Excerpt-scoped with a SIBLING negative lookahead, the same shape as
+      tdarr-handbrake-binary-test and seerr-plex-scan-tvdbid-collision: if the
+      excerpt also carries a delivery failure for a DIFFERENT webhook target,
+      this rule declines and the whole finding pages. A model that paraphrases
+      the url away loses the anchor and pages too - fail open, deliberately.
+      IT ALSO CARRIES THE ERROR-LEVEL GUARD, added on review 2026-08-20 after
+      the first version shipped with the sibling lookahead ONLY. That was a
+      hole, not a nitpick: the sibling lookahead asks "is any OTHER webhook
+      mentioned", so an excerpt holding this benign WARN line PLUS an
+      unrelated real fault - e.g. plex_errors' "<ts> [<tid>] ERROR - Unknown
+      system error -122: Disk quota exceeded" - satisfied the rule and the
+      WHOLE finding was suppressed. Reproduced in both engines and re-run
+      after the fix: bundled excerpt now declines under Python re AND .NET,
+      while all 997 orphan-webhook lines on the box still suppress when they
+      arrive alone. The guard is verbatim the one prowlarr-cardigann-retry-5xx
+      carries; keeping the two byte-identical is deliberate, so a future
+      widening is one edit applied to both rather than a drift.
+      KNOWN RESIDUAL, measured not assumed: that guard recognises the
+      *plex_errors* raw shape (" ERROR - "), the *arr NLog shape (|Error|) and
+      a python traceback, but NOT the vlogs row shape, where scripts/mcp/logs.py
+      strips the level token out of _msg and ships it as a separate field, so a
+      co-quoted vlogs error reads "level":"ERROR" and trips nothing. Left alone
+      on purpose: this guard string is shared verbatim with the cardigann rule
+      AND mirrored into the ps1 rule table, and the 2026-07-29 / 2026-08-06
+      failures were both "one policy surface changed, the others not". Widening
+      it belongs in one commit that touches every copy - filed, not smuggled.
+    added: 2026-08-20
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -668,6 +806,12 @@ prompt_segments:
   - index: 20
     marker: 'external indexer unavailability relayed by Prowlarr'
     classes: [arr-indexer-unavailable-backoff]
+  - index: 21
+    marker: 'Prowlarr Cardigann "Request for <indexer> failed with status 5xx. Retrying in Ns" retry warnings'
+    classes: [prowlarr-cardigann-retry-5xx]
+  - index: 22
+    marker: 'Plex "Webhook: Error delivering payload" failures against the orphaned Discord webhook'
+    classes: [plex-orphaned-webhook-delivery]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths

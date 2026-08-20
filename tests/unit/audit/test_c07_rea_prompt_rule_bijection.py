@@ -38,6 +38,12 @@ EXPECTED_IDS = {
     # suppression, uncounted and invisible to CI.
     "plex-credits-detection-chatter",
     "plex-unknown-metadata-type-folder",
+    # Enrolled 2026-08-20. These two are the reason the ps1's rule table stopped
+    # being hand-kept: they were added to the yaml alone, so for a day the yaml
+    # held 27 classes and qflix-rea.ps1 held 25 — C-07 red, report_digest
+    # host-dependent, and both classes INERT while REA kept paging on them.
+    "prowlarr-cardigann-retry-5xx",
+    "plex-orphaned-webhook-delivery",
 }
 
 
@@ -165,6 +171,24 @@ def test_rules_match_their_canonical_log_lines(ledgers):
          "[/home/quadstronaut/.apps/bazarr/log/bazarr.log]       1 "
          "2026-08-14 00:50:17|ERROR   |root  |Error trying to get releases "
          "from Github. Http error.|<Traceback (most recent call last):"),
+        # 2026-08-20. Both haystacks are the shape the MODEL sees, not the raw
+        # log: the Prowlarr line comes through the arr_logs Warn block, which
+        # collapses the timestamp to a bare date and cuts at 200 chars; the Plex
+        # line comes through vlogs, which returns the raw _msg with the url
+        # intact (PMS logs it at WARN, so the plex_errors " ERROR - " grep can
+        # never deliver it).
+        ("prowlarr-cardigann-retry-5xx",
+         "2026-08-20|Warn|Cardigann|Request for Tokyo Toshokan failed with "
+         "status 522. Retrying in 1.8521098s."),
+        # The named-status widening: Prowlarr renders some 5xx as an enum name
+        # rather than a number, and a digits-only rule missed every one.
+        ("prowlarr-cardigann-retry-5xx",
+         "2026-08-20|Warn|Cardigann|Request for Nyaa failed with status "
+         "ServiceUnavailable. Retrying in 2.4s."),
+        ("plex-orphaned-webhook-delivery",
+         "Aug 20, 2026 01:33:02.126 [140218933841720] WARN - Webhook: Error "
+         "delivering payload to https://discord.com/api/webhooks/"
+         "1177487639654441000/REDACTED: 400"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -326,6 +350,72 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
     assert not re.search(
         by["plex-unknown-metadata-type-folder"],
         "ERROR - [Req#5d3] Unknown metadata type: collection")
+
+
+def test_the_2026_08_20_classes_do_not_eat_real_faults(ledgers):
+    """The two classes added 2026-08-20 are both anchored to a string that a
+    REAL fault in the same subsystem also carries: Prowlarr's terminal
+    "Indexer's server is unavailable" line is the same level and logger as the
+    retry warning it must not eat, and a webhook delivery failure against any
+    OTHER target is a live integration break. Each is kept apart by an anchor
+    plus an error-level negative lookahead, and both are excerpt-scoped — so
+    `test_a_real_fault_is_not_suppressed` skips them and this is the only place
+    that direction is checked."""
+    by = {c["id"]: c["rx"] for c in ledgers.rea["classes"]}
+    retry, hook = by["prowlarr-cardigann-retry-5xx"], by["plex-orphaned-webhook-delivery"]
+
+    # --- prowlarr-cardigann-retry-5xx -------------------------------------
+    # The TERMINAL line is the actionable half and shares level+logger with the
+    # retry line, so only the "Request for ... failed with status" anchor
+    # separates them. If that anchor ever loosens, the sustained-unavailable
+    # signal disappears silently.
+    assert not re.search(retry,
+        "2026-08-20|Warn|Cardigann|Unable to connect to Tokyo Toshokan at "
+        "[https://example.invalid]. Indexer's server is unavailable. "
+        "Try again later."), "the TERMINAL indexer-unavailable line must still page"
+    # An |Error| line anywhere in the excerpt un-suppresses the whole finding:
+    # a model that bundles the benign Warn lines with a genuine Prowlarr error
+    # must page, not go quiet.
+    assert not re.search(retry,
+        "2026-08-20|Warn|Cardigann|Request for Tokyo Toshokan failed with "
+        "status 522. Retrying in 1.85s.\n"
+        "2026-08-20|Error|Prowlarr.Http|Unable to connect to indexer, "
+        "database is locked"), "a bundled |Error| line must un-suppress"
+    # 4xx is a credential/agreement problem on OUR side of the request, not a
+    # transient upstream 5xx.
+    assert not re.search(retry,
+        "2026-08-20|Warn|Cardigann|Request for Tokyo Toshokan failed with "
+        "status 403. Retrying in 1.85s."), "a 4xx retry must still page"
+
+    # --- plex-orphaned-webhook-delivery ------------------------------------
+    other = ("Aug 20, 2026 01:33:02.126 [140218933841720] WARN - Webhook: Error "
+             "delivering payload to https://discord.com/api/webhooks/"
+             "9990000000000000001/OTHER: 400")
+    assert not re.search(hook, other), (
+        "a delivery failure against a DIFFERENT webhook target is a real "
+        "integration break and must still page")
+    # Sibling lookahead: orphaned hook AND another target in one excerpt pages.
+    assert not re.search(hook,
+        "WARN - Webhook: Error delivering payload to https://discord.com/api/"
+        "webhooks/1177487639654441000/REDACTED: 400\n" + other), (
+        "a bundled foreign-target failure must un-suppress")
+    # The error-level guard added with the class: a genuine Plex ERROR sharing
+    # the excerpt must survive. This is the FU-2 direction — the live line REA
+    # exists to surface must not become invisible because of a new rule.
+    plex_error = ("Aug 20, 2026 01:33:05.001 [140218933841720] ERROR - "
+                  "Unknown system error -122: Disk quota exceeded writing /data/Movies")
+    assert not re.search(hook,
+        "WARN - Webhook: Error delivering payload to https://discord.com/api/"
+        "webhooks/1177487639654441000/REDACTED: 400\n" + plex_error), (
+        "a real Plex ERROR bundled with the orphaned-webhook chatter must page")
+
+    # --- and neither eats the prompt's explicit MUST-report class ----------
+    for cid in ("prowlarr-cardigann-retry-5xx", "plex-orphaned-webhook-delivery"):
+        assert not re.search(by[cid], plex_error), cid + " suppresses a disk-quota fault"
+        assert not re.search(
+            by[cid],
+            "2026-08-03 01:42:29.6|Error|QBittorrent|API Grab Limit reached"), (
+            cid + " swallows a live *arr Error")
 
 
 def test_missing_ps1_is_a_counted_skip_not_a_silent_pass(ctx, repo, report):
