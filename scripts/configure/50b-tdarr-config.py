@@ -29,12 +29,16 @@ HOME = os.path.expanduser("~")
 # Real, expected library names — anything else in LibrarySettingsJSONDB is
 # an orphan from earlier UI-create attempts and gets purged. The 21→3 cleanup
 # closes the Phase 29.2 "18 orphan library rows" item.
-REAL_LIBRARY_NAMES = {"Movies", "TV", "Anime"}
+# "Anime Movies" added 2026-08-20: the 59-brdisk-block / containerFilter door
+# was closed on Movies/TV/Anime only, leaving radarr2's second root unscanned
+# by Tdarr. Welcome (one hand-placed 2.4 MB clip, no *arr feeds it) stays out.
+REAL_LIBRARY_NAMES = {"Movies", "TV", "Anime", "Anime Movies"}
 
 LIBRARIES = [
     {"name": "Movies", "folder": f"{HOME}/media/Movies"},
     {"name": "TV",     "folder": f"{HOME}/media/TV Shows"},
     {"name": "Anime",  "folder": f"{HOME}/media/Anime"},
+    {"name": "Anime Movies", "folder": f"{HOME}/media/Anime Movies"},
 ]
 
 # Path to the Flow JSON (resolved relative to this script in repo, or
