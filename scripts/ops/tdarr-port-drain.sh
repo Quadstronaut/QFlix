@@ -34,9 +34,22 @@
 # Exit 1 — port still held after DRAIN_TIMEOUT by a process we do not own.
 set -uo pipefail
 
+# PORT resolution order is deliberate and the override MUST come first.
+#
+# This was `PORT=$(grep ... "$CONF"); : "${PORT:=${TDARR_PORT:-42018}}"`, where
+# `:=` only fires on an unset-or-empty PORT — so a successful config read made
+# TDARR_PORT dead, silently. The first attempt to exercise this script against a
+# scratch port therefore drained the REAL one and SIGKILLed the live
+# Tdarr_Server (2026-08-20; it came back 10s later on Restart=on-failure, which
+# at least proved that path). A script that cannot be pointed somewhere safe is
+# a script that only ever gets tested in production — the same reasoning behind
+# the canary's QFLIX_CANARY_TDARR_HOUR injection.
 CONF="$HOME/.apps/tdarr/configs/Tdarr_Server_Config.json"
-PORT=$(grep -oP '"serverPort":\s*"?\K[0-9]+' "$CONF" 2>/dev/null | head -1)
-: "${PORT:=${TDARR_PORT:-42018}}"
+PORT="${TDARR_PORT:-}"
+if [ -z "$PORT" ]; then
+  PORT=$(grep -oP '"serverPort":\s*"?\K[0-9]+' "$CONF" 2>/dev/null | head -1)
+fi
+: "${PORT:=42018}"
 TIMEOUT=${TDARR_DRAIN_TIMEOUT:-30}
 
 log() { logger -t tdarr-port-drain "$*" 2>/dev/null || true; echo "tdarr-port-drain: $*"; }
