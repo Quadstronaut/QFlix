@@ -6,6 +6,7 @@
 #   ~/www/images/Q.png        (mode 0644, copied from repo root)
 #   ~/www/images/_blank.png   (mode 0644, error_page mask)
 #   ~/.apps/nginx/proxy.d/qflix-images.conf
+#   ~/.apps/nginx/proxy.d/qflix-faq.conf
 #
 # Also patches ~/.apps/nginx/nginx.conf to add `server_tokens off;` inside the
 # existing http {} block, suppressing the nginx version in headers + default
@@ -27,9 +28,17 @@ scpm_to "$REPO_ROOT/Q.png"               "~/www/images/Q.png"
 scpm_to "$REPO_ROOT/scripts/data/_blank.png" "~/www/images/_blank.png"
 sshm 'chmod 644 ~/www/images/*.png'
 
-# ── Step 2: deploy nginx fragment ───────────────────────────────────────────
-log_info "deploying nginx fragment"
+# ── Step 2: deploy nginx fragments ──────────────────────────────────────────
+# Both fragments, not just the images one. qflix-faq.conf had NO deploy phase
+# anywhere in the repo -- it was scp'd by hand once in 2026-05 and never again,
+# so the 2026-08-20 change that restored access/error logging on ^~ /faq would
+# have sat in git forever while the live location stayed dark. That is the same
+# class the deploy-drift canary exists to catch, except a file that is deployed
+# by nobody never registers as drift at all. Deploying it here makes /faq and
+# /images share one owner and one phase.
+log_info "deploying nginx fragments"
 scpm_to "$REPO_ROOT/scripts/data/qflix-images.conf" "~/.apps/nginx/proxy.d/qflix-images.conf"
+scpm_to "$REPO_ROOT/scripts/data/qflix-faq.conf"    "~/.apps/nginx/proxy.d/qflix-faq.conf"
 
 # ── Step 3: ensure server_tokens off in nginx.conf (idempotent) ─────────────
 log_info "patching nginx.conf for server_tokens off"

@@ -198,6 +198,7 @@ shares=14 exempt=4 pending=10
 | `exempt` | never gated, never provisioned | none |
 | `entitled` | full access | none |
 | `pending` | not entitled, clock running | fix a `never_seen` address, or wait |
+| `unknown-payer` | the service has **no record of the address at all** — a lookup MISS, not a verdict. Frozen in place: never revoked, never paged, listed under `unknown_payers` in the audit manifest and `--json`. Five of twelve shares sat here on 2026-08-20, all at 11.9 days | **reconcile the address** — either it is misspelled in the roster, or the payer is on a rail the service cannot see. Missing data is never an interlock, so the gate will hold them here indefinitely rather than guess |
 | `expired` | reduced to Welcome | none — working as designed |
 | `no-answer` | the API did not answer; **nothing moved** | check `entitlements.starhold.app` |
 | `unnamed-share` | accepted share with no household | **add them to the roster** |
