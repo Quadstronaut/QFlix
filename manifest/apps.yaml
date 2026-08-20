@@ -776,6 +776,49 @@ canaries:
     kuma_monitor: "Canary Hardlink Integrity"
     script: "scripts/canaries/hardlink-integrity.sh"
     schedule: "every-30min"
+  library-container-sanity:
+    # Added 2026-08-20, the day a 47.6 GB Blu-ray disc image landed in the
+    # Movies library and NOTHING in the fleet noticed. Radarr grabbed the
+    # release on its NAME (it parses as Bluray-1080p, which every profile here
+    # allows), the payload was a full-disc .iso, and at import time Radarr
+    # re-graded it to BR-DISK and imported it anyway - the import step does not
+    # re-check the profile against the re-graded quality. BR-DISK is allowed on
+    # NO profile on this box, so a profile alone CANNOT stop this class; the
+    # grab passed on the name and the file was something else.
+    #
+    # hardlink-integrity above saw the same family of object the day before and
+    # correctly treated it as a torrent-side question (it asks whether the
+    # import hardlinked, never whether the imported thing is playable).
+    # plex-playback transcodes the worst-case SELECTABLE item, and an ISO is not
+    # selectable because Plex never builds a media part for it. The reaper and
+    # the quota canary count bytes, and 47.6 GB of unplayable bytes weigh the
+    # same as 47.6 GB of playable ones. So 33 monitors and not one asserted that
+    # the files in a media library are media files.
+    #
+    # Two independent legs, neither subsuming the other: a filesystem walk of
+    # the member-visible roots (disc-image extensions, BDMV/VIDEO_TS/AUDIO_TS
+    # directories, and any payload-sized file whose extension is on none of the
+    # three enumerated lists - the anti-enumeration-gap rule that lets it catch
+    # the NEXT unplayable shape), and an *arr grading check across radarr /
+    # radarr2 / sonarr / sonarr2 for BR-DISK or Raw-HD. The second leg exists
+    # because Radarr imports a BDMV FOLDER by renaming its largest .m2ts into
+    # the movie directory: playable extension, no disc directory left behind,
+    # and only the *arr knows it came off a disc.
+    #
+    # Vacuity is timed, not silently green: an empty library or an unreadable
+    # root exits 0 as INCONCLUSIVE and starts a blind streak, and past
+    # MAX_VACUOUS_DAYS (7) the blindness itself reds. Findings are evaluated
+    # BEFORE the vacuity check - a real ISO in two readable roots is a red even
+    # if the other three roots could not be walked.
+    #
+    # daily-0430, not hourly: the fault is per-title, permanent until an
+    # operator acts, and does not cascade. A whole-library walk plus ~45 *arr
+    # calls every hour buys nothing, because a file does not become more
+    # unplayable while you watch it. The token is reused rather than invented so
+    # lib/cli.py _CANARY_INTERVAL_MIN already knows the cadence.
+    kuma_monitor: "Canary Library Container Sanity"
+    script: "scripts/canaries/library-container-sanity.sh"
+    schedule: "daily-0430"
   plex-playback:
     # Added 2026-08-19. plex-transcoder below is API liveness and is
     # STRUCTURALLY blind to a playback failure: it was green on every tick of

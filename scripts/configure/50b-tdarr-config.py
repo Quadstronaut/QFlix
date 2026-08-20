@@ -101,10 +101,41 @@ NODE_WORKER_LIMITS = {
 
 # Per-library defaults: scan on every server start + watch folder for new
 # files. Persistence: direct file write (cruddb mode=set crashes server).
+# Container scan filter. Tdarr ships a stock containerFilter of
+#   mkv,mp4,mov,m4v,mpg,mpeg,avi,flv,webm,wmv,vob,evo,iso,m2ts,ts
+# and add_library() copies it wholesale, so every library was scanning DISC
+# IMAGE and DISC STRUCTURE containers: .iso (a whole Blu-ray/DVD filesystem),
+# .vob (DVD VIDEO_TS payload) and .evo (HD-DVD payload).
+#
+# That fired for real on 2026-08-20. Capping Remux on the Radarr profiles made
+# Radarr re-search 23 movies; one release parsed as Bluray-1080p from its NAME
+# while the payload was a full disc, so a 47.6 GB .iso landed in the Movies
+# library. Tdarr's folder watcher then picked the .iso up at 09:14:39, spent
+# roughly two hours of node time on it, and wrote a 39.4 GiB .mkv at 11:03:14
+# that Radarr does not know exists -- so the *arr side could not evict it and
+# the file survived the disc cleanup by changing its own extension.
+#
+# A disc image is never a transcode SOURCE worth having here: it carries menus,
+# multiple angles and playlist structure that ffmpeg cannot sensibly flatten,
+# and the useful video inside it is exactly what the *arr should have grabbed
+# instead. Dropping the three disc containers means an .iso that slips past the
+# grab-time levers (scripts/configure/59-brdisk-block.py) sits inert until a
+# human or the library-container-sanity canary deals with it, rather than being
+# laundered into a library-shaped file.
+#
+# m2ts and ts are DELIBERATELY KEPT: both are legitimate standalone containers
+# here (the 2026-08-19 hardlink-integrity false positive was a BDMV rip whose
+# only video was 00000.m2ts, and that file is a real payload). The BDMV
+# DIRECTORY structure is caught by the library-container-sanity canary instead.
+CONTAINER_FILTER = "mkv,mp4,mov,m4v,mpg,mpeg,avi,flv,webm,wmv,m2ts,ts"
+
+# Per-library defaults: scan on every server start + watch folder for new
+# files. Persistence: direct file write (cruddb mode=set crashes server).
 LIBRARY_DEFAULTS = {
     "scanOnStart": True,
     "folderWatcherEnabled": True,
     "scanFoundJobs": True,
+    "containerFilter": CONTAINER_FILTER,
 }
 
 # Health-check engine. Tdarr picks the health-check CLI from a mutually
@@ -251,7 +282,8 @@ def ensure_library_defaults() -> int:
             json.dump(doc, f)
         os.replace(path + ".tmp", path)
         print(f"[update] library '{doc.get('name')}' "
-              f"scanOnStart=True folderWatcher=True")
+              f"scanOnStart=True folderWatcher=True "
+              f"containerFilter={CONTAINER_FILTER}")
         changed += 1
     return changed
 

@@ -36,10 +36,33 @@ NESTED tree - a group entry ("WEB 1080p", id 1002) carries its own allowed flag
 AND an items[] list of real qualities. Walk it recursively or you will read the
 wrong profile's allowed set. Every walker below is recursive for that reason.
 
-SCOPE: RADARR MAIN ONLY. A deliberate decision, not an oversight.
-----------------------------------------------------------------
-sonarr / sonarr2 / radarr2 are NOT touched. Every one of them was ENUMERATED
-2026-08-19, not assumed - here is what each actually holds and why it stays.
+SCOPE: RADARR MAIN, RADARR2 AND SONARR MAIN. sonarr2 stays out.
+---------------------------------------------------------------
+WIDENED 2026-08-20. The original scope was radarr main only, on the reasoning
+recorded below: radarr2 held "exactly 1" remux and "one file is not a wave",
+and sonarr main was ARMED but left for a separately-revertable change. Both
+exclusions were argued honestly and both were wrong within a day.
+
+  * That single radarr2 remux is "Cowboy Bebop: The Movie" at 35.9 GB. The
+    library-container-sanity canary named it on its very first run with a size
+    leg. It is the same unplayable-on-a-capped-client shape as the movies this
+    script exists to remove, sitting in a library served to the same members.
+    Blast radius is a reason to stage a change, not a reason to leave a known
+    bad file in place indefinitely.
+
+  * Leaving sonarr main documented-as-armed is the pattern that produced this
+    incident in the first place. A hazard that is written down and left loaded
+    still fires. Capping it costs one line and is revertable the same way.
+
+sonarr2 profile 7 "[Anime] Remux-1080p" REMAINS EXCLUDED, and that exclusion is
+structural rather than cautious: it IS recyclarr TRaSH template
+20e0fc959f1f1704bed501f23bdae76f (bound in 56-recyclarr-install.sh under
+sonarr:anime), so capping it here would be silently reverted on the next
+recyclarr sync - this script would keep passing its own re-run check while prod
+drifted back. Two policy surfaces describing one intent, and the templated one
+wins. Cap the anime remux tier in the recyclarr config or not at all.
+
+The original per-instance enumeration, kept because it is still the evidence:
 
   * sonarr2 profile 7 "[Anime] Remux-1080p" allows Bluray-1080p Remux, and it
     IS recyclarr's TRaSH template 20e0fc959f1f1704bed501f23bdae76f (bound in
@@ -114,6 +137,18 @@ AFTER RUNNING THIS: existing remux files are NOT downgraded. Radarr never
 downgrades on its own. Either wait for qflix-reaper to age them out, or run
 scripts/maint/qflix-remux-regrab.py --execute to force the re-grab.
 
+AND RUN 59-brdisk-block.py FIRST IF YOU ARE ABOUT TO RE-GRAB. Capping remux
+narrows what Radarr may take, so every re-grab reaches further down the release
+list - and on 2026-08-20 that is exactly how the re-grab of "In the Mouth of
+Madness" landed a 44.38 GiB BD-50 .iso. The release NAME said "1080p Blu-ray"
+and parsed as Bluray-1080p (allowed), so neither this profile edit nor Radarr's
+own RawDiskSpecification could reject it; Radarr re-graded the payload BR-DISK
+on import and imported it anyway. A tighter profile is a bigger search, and a
+bigger search meets more mislabelled releases. 59 arms the grab-time gates that
+catch that class (an absolute config/indexer.maximumSize ceiling, plus the
+BR-DISK custom format score this profile left at 0). Its gate is smoke-test
+13o, the twin of 13n below.
+
 EXIT: 0 clean, 1 if any GET/PUT failed. (57 always returned 0; a silent write
 failure on a policy enforcer is worth an exit code.)
 """
@@ -127,9 +162,14 @@ import urllib.error
 import urllib.request
 
 
-# Radarr MAIN only. Read the SCOPE block above before adding an entry here.
+# Read the SCOPE block above before adding or removing an entry here, and
+# widen the 13n smoke gate in scripts/smoke-test.sh in the same change.
+# sonarr2 is deliberately absent: recyclarr owns its remux profile and would
+# revert us.
 ARRS = {
     "radarr": "v3",
+    "radarr2": "v3",
+    "sonarr": "v3",
 }
 
 TIMEOUT = 15
@@ -386,7 +426,7 @@ def main() -> int:
                 failures += 1
 
     print()
-    print("Scope: " + ", ".join(sorted(ARRS)) + " (anime instances excluded - see header)")
+    print("Scope: " + ", ".join(sorted(ARRS)) + " (sonarr2 excluded, recyclarr-owned - see header)")
     print("Profiles modified: " + str(profiles_changed))
     print("Total Remux entries disabled: " + str(grand_total))
     if refusals:

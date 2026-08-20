@@ -12,6 +12,303 @@ Severity scale: **P1** = user-visible outage or data-loss risk · **P2** = degra
 
 ---
 
+## 2026-08-20 — Two Radarr import races, one SQLite lock, and an 11-day-old cron failure the mail spool re-reports forever
+
+- **Severity:** P3 (all three conditions self-cleared; no user impact, no operator action outstanding on the box)
+- **Status:** Investigated — the Radarr and Radarr2 conditions are **closed**; the cron failure has been **closed since 2026-08-09**; the *reporting* defect that keeps resurfacing it is **open**, and it lives in REA, not on the box.
+- **Components:** Radarr · Radarr2 · `/var/spool/mail/quadstronaut` · `scripts/local-llm/qflix-rea.ps1:516` (the `cron_mail` collector) · `scripts/ops/heartbeat-*.sh`
+- **User impact:** None. Every affected movie holds its file; every affected cron job is running.
+- **Kuma status-page incident:** none — nothing user-visible.
+
+All three arrived in one REA alert alongside the BR-DISK ISO. Only the ISO is an open
+defect. These three are, in order, a race that resolved itself twice, a lock that lasted
+seconds, and a failure that ended eleven days ago.
+
+### 1. `(removed)` is Radarr's own log scrubber, and both imports succeeded 67 seconds later
+
+The logged path — `/home/(removed)/downloads/qbittorrent/radarr/...` — is neither a
+mangled line nor a real directory. Radarr's `CleanseLogMessage` redacts the username
+segment of `/home/<user>/` before the line is written. Both halves check out on the box:
+
+```
+$ ls -la "/home/(removed)"
+ls: cannot access '/home/(removed)': No such file or directory
+
+$ ls -la $R/downloads/qbittorrent/radarr/
+-rw-rw-r-- 2 ... 11326905709 Aug 20 07:11  1080p.Mortal.Kombat.1995.DKom.[BDRip...].mkv
+-rw-rw-r-- 1 ... 15089819922 Aug 20 07:24  The.Unbearable.Weight.Of.Massive.Talent.2022.BDRip.1080p.pk.mkv
+```
+
+The path was fine. The **timing** was not. Radarr's entire retained log set holds exactly
+two of these errors, and each is followed by a successful import of the same movie:
+
+| Movie | `Import failed` (log, CEST) | = UTC | `downloadFolderImported` (history, UTC) | Delta |
+|---|---|---|---|---|
+| Mortal Kombat (1995) | 07:12:14 | 05:12:14Z | **05:13:21Z** | **67 s** |
+| The Unbearable Weight of Massive Talent (2022) | 07:25:10 | 05:25:10Z | **05:26:17Z** | **67 s** |
+
+**The identical 67-second delta is the diagnosis.** Radarr's completed-download handler
+polled qBittorrent, saw the torrent at 100%, and reached for the final path while qBit
+still held the payload as `<name>.mkv.!qB`. One poll later the rename had landed and the
+import succeeded. Two `.!qB` files were still on disk mid-audit
+(`Joker...mkv.!qB`, `The.Kid.Who.Would.Be.King...mkv.!qB`) — the same state caught in the act.
+
+Both movies hold a file right now:
+
+| Radarr id | Title | `hasFile` | Quality | Size |
+|---|---|---|---|---|
+| 416 | Mortal Kombat (1995) | **true** | Bluray-1080p | 11,326,905,709 |
+| 430 | The Unbearable Weight of Massive Talent (2022) | **true** | Bluray-1080p | 15,200,758,254 |
+
+**Nothing is wedged.** The queue holds 5 records, every one `trackedDownloadStatus=ok`,
+`trackedDownloadState=downloading`, with zero `statusMessages`. The blocklist's three
+newest rows are all `Joker.Folie.a.Deux...REPACK` rejections — unrelated, and the
+blocklist doing its job.
+
+**A timezone trap sits on this finding.** Radarr writes its **logs in box-local CEST**
+and serves its **history API in UTC**. Compared raw, a 67-second race reads as a
+two-hour gap, and the successful import looks like it belongs to some other event.
+
+Both movies are collateral from yesterday's remux cap: `movieFileDeleted` (Remux-1080p)
+at 04:48Z, `grabbed` at 04:50Z, imported at 05:13Z / 05:26Z. Grabbing 23 movies at once
+widens the window in which a poll can beat a rename. That is load, not a defect.
+
+### 2. Radarr2's two error strings are one exception, and it lasted seconds
+
+Both carry the same payload:
+
+```
+[v6.3.0.10514] code = Busy (5), message = System.Data.SQLite.SQLiteException (0x87AF00AA): database is locked
+```
+
+Every `Error` line in Radarr2's entire retained log set — all from today, none older —
+reduces to **two moments**:
+
+| When (CEST) | = UTC | Logger | Message |
+|---|---|---|---|
+| 07:19:20 | 05:19:20Z | `DownloadDecisionMaker` | `Couldn't process release.` |
+| 07:51:58 | 05:51:58Z | `DownloadDecisionMaker` **and** `RadarrErrorPipeline` | `Couldn't process release.` / `[GET /api/v3/system/status]` |
+
+`[GET /api/v3/system/status]` is **not a second fault.** It is the same lock surfacing
+through the API pipeline — the stack bottoms out at
+`NzbDrone.Core/Datastore/Database.cs:line 52` in `get_Version()`, meaning a health probe
+hit Radarr2 at 05:51:58Z and took a 500 out of `SQLiteConnection.Open()`. Radarr2 answers
+`200` on `/system/status` now, and its only standing health warning is the long-known
+`RemotePathMappingCheck` docker-path advisory, which is pre-existing and unrelated.
+
+Both moments fall inside the regrab cascade's disk-saturation window. `Busy (5)` is
+SQLite contention, not corruption.
+
+**Suppress this one carefully, not bluntly.** A noise class keyed on
+`Couldn't process release.` or on `[GET /api/v3/system/status]` would blind REA to the
+one shape that matters — a *sustained* `database is locked` at the API layer is exactly
+how a probe-visible Radarr2 outage begins. The shape to key on is the
+`code = Busy (5)` + `database is locked` pair; the part that separates a two-second blip
+from a lock storm is a **rate floor**, and `manifest/rea-noise-classes.yaml` **cannot
+express that** — it is a flat per-line regex table, one `rx` per class, with no notion of
+how many times a line fired. Its own `plex-client-profile-extra` entry says so
+(`manifest/rea-noise-classes.yaml`, `why:` block, ~line 210): *"this table has no rate
+dimension, so the rate signal is carried OUTSIDE this rule - by the collector's
+`# collector-suppressed:` census line and by follow-up FU-1 (an on-box class-rate
+canary)"* — and `prowlarr-indexer-retry-transient` (~line 620) records the same accepted
+limit. So split it the way that precedent already splits it: the **regex class in the
+yaml** carries the shape, and the **rate condition lives on the box** as a class-rate
+canary. Do not attempt a yaml-only fix; there is no field for it.
+
+### 3. The cron `Permission denied` ended on 2026-08-09 — and the crontab line does exist
+
+Two premises carried into this audit were wrong, and each one inverts the conclusion.
+
+**First: `heartbeat-maint-webhook.sh` *is* invoked.** It is the last line of `crontab -l`,
+sitting without the comment header that would make it easy to spot — the
+"restart manitoba-maint-webhook" comment several lines above it has drifted onto the
+`arr-housekeeping.py --unstick` entry, which is why the line reads as absent:
+
+```
+*/5 * * * * /home/quadstronaut/scripts/ops/heartbeat-maint-webhook.sh
+```
+
+`manitoba-maint-webhook` is `active`. The job runs.
+
+**Second: it was never a single-file permission slip.** All four `*/5` heartbeat scripts
+failed together, in the same minute, and stopped together:
+
+| Script | Mails | Dates seen |
+|---|---|---|
+| `heartbeat-maint-webhook.sh` | 107 | Aug 08 (9) + Aug 09 (98) |
+| `heartbeat-listmonk.sh` | 107 | Aug 08 (9) + Aug 09 (98) |
+| `heartbeat-tdarr-server.sh` | 107 | Aug 08 (9) + Aug 09 (98) |
+| `heartbeat-tdarr-node.sh` | 107 | Aug 08 (9) + Aug 09 (98) |
+
+**Zero occurrences after Aug 09.** The repair is dateable straight off the inode:
+
+```
+mtime=2026-08-09 08:38:36 +0200   ctime=2026-08-09 11:03:24 +0200   mode=-rwxr-xr-x
+```
+
+A `ctime` bump 2h25m *after* the last `mtime` bump, with the mode now carrying `+x`, is
+the `chmod`: content rewritten at 08:38, exec bit restored at 11:03. Outage window
+**2026-08-08 23:15 → 2026-08-09 11:03 CEST, ~11h45m**, ~107 missed firings per job.
+
+Those four scripts are installed by **three different installers**
+(`43-listmonk-install.sh`, `50-tdarr-install.sh`, `240-maintenance-install.sh`), each
+doing its own `chmod +x`. Four files across three installers losing `+x` in one minute
+points at the Aug-08 deploy transport rather than any single installer. It is already
+repaired, so this is recorded for the pattern, not for action.
+
+### The real defect: the spool is append-only, so any failure in it pages forever
+
+`/var/spool/mail/quadstronaut` has never been rotated.
+
+| Property | Value |
+|---|---|
+| Size | 439,713 bytes |
+| Lines | 9,944 |
+| Messages | 432 |
+| Oldest entry | **2026-08-08 23:15:01 CEST** |
+| Newest entry | **2026-08-18 09:25:01 CEST** |
+| `Permission denied` bodies | **428** (4 scripts x 107, all Aug 08–09) |
+| Everything else | **4** — `setlocale: LC_ALL ... cannot change locale`, Aug 18, harmless |
+
+REA reads it at `scripts/local-llm/qflix-rea.ps1:516`:
+
+```bash
+collect cron_mail bash -c 'tailfresh 500 /var/spool/mail/quadstronaut'
+```
+
+**Two staleness filters miss this file, for different reasons; a third gate — the byte
+cap — is what actually bounds the damage:**
+
+1. `tailfresh` gates on **file mtime**, never on line date —
+   `find "$f" -mtime -"$FRESH_DAYS"`, with `$Script:FreshDays = 3`. The spool's mtime is
+   **Aug 18** and today is Aug 20, so it passes as "fresh" while its newest *relevant*
+   content is eleven days old.
+2. The `FRESH_CUTOFF` **line** filter is not applied to `cron_mail` at all — and could
+   not work here if it were. It reads a date out of `substr($0,1,10)`, and the
+   `Permission denied` body line carries no date; the `Date:` header sits roughly ten
+   lines above it, in a different part of the message.
+3. `collect()` then truncates every section with `head -c "$SECTION_CAP"`
+   (`scripts/local-llm/qflix-rea.ps1:277-280`; `$Script:SectionByteCap = 3000` at line 43).
+   `cron_mail` uses plain `collect`, so it gets the global 3000 — it declares no
+   `collect_cap` override. **`head -c` keeps the OLDEST bytes**, i.e. the *front* of what
+   `tail -500` emitted, not the newest lines.
+
+The stale lines are squarely inside the read window, but the byte cap decides how many
+survive. `tail -500` covers lines **9445–9944** and contains **18** `Permission denied`
+lines; the last one is line **9843**. The 3000-byte cap then delivers only the first
+**~67** lines of that tail, which today carry **3** `Permission denied` lines. Measured
+read-only on the box 2026-08-20: `PD_total=428`, `PD_in_tail500=18`,
+`head3000_lines=67`, `PD_in_head3000=3`.
+
+That is the trap, and it renews itself: the moment the spool ages past `FRESH_DAYS`,
+`tailfresh` would skip it — but **any** new cron mail, however harmless (the Aug 18
+locale warnings did exactly this), resets mtime and re-arms whatever still falls inside
+`tail -500`'s first 3000 bytes — **currently 3 of 428** — for another three days. Note
+the asymmetry: this byte-cap exposure **decays** on its own as the spool grows, because
+every appended message pushes older lines out of the tail window. The mtime gate does
+not decay — it re-arms in full on every new mail, indefinitely. An append-only spool
+behind an mtime-based freshness gate means a long-resolved incident can keep being
+re-read for as long as the file keeps receiving unrelated mail.
+
+### Verdict on the 11-issue alert
+
+REA's 11 issues are **five distinct conditions across seven reported rows**, inflated by
+two models reporting the
+same lines. The raw alert text was not available to this investigation, so the *pairing*
+below is inferred from the summary; the per-condition verdicts are not.
+
+| # | Condition | Real? | Verdict |
+|---|---|---|---|
+| 1 | BR-DISK ISO imported at 47.6 GB | **Yes — open** | Genuine defect. The grab passed on the release *name* (`Bluray-1080p`); Radarr re-graded the payload to `BR-DISK` at import and imported it anyway. No profile allows BR-DISK, so **a profile cannot stop this** — the import step does not re-check the quality profile. The `.iso` is gone; a 42.3 GB BR-DISK **`.mkv`** stands in its place as of 11:03 CEST. Full chain, root cause and fix in the appendix below. |
+| 2 | Radarr `Import failed, path does not exist` | Real event, **closed** | Two 67-second qBittorrent rename races; both movies imported. Not stuck. Suppressible **only** when a later `downloadFolderImported` exists for the same download — which, like the rate floor in #3, is a **state** condition the flat regex table cannot express. Same split: regex class in `rea-noise-classes.yaml` for the line shape, the "was it imported afterwards?" check on the box. |
+| 3 | Radarr2 `Couldn't process release.` | Real event, **closed** | Two moments, SQLite `Busy (5)`. |
+| 4 | Radarr2 `[GET /api/v3/system/status]` | **Duplicate of #3** | Same exception, API surface. Not an independent fault. |
+| 5 | bazarr2 `RuntimeError: can't start new thread` | **Yes — real** | The `ulimit -u 2000` process ceiling. Owned by the thread-ceiling canary; out of scope here. |
+| 6 | bazarr2 signalr max-retry | Likely **downstream of #5** | Same 8.4 MB `bazarr2.err`, same window. |
+| 7 | cron `Permission denied` | **Stale-log artifact** | Fixed 2026-08-09 11:03 CEST. Re-read out of a never-rotated spool on every run since. |
+
+That is **one open defect** (the ISO), **one real but owned elsewhere** (the thread
+ceiling), **two closed and self-resolved** (the import races, the SQLite lock), **two
+duplicates** (#4 of #3, #6 of #5), and **one pure reporting artifact** (#7).
+
+The one that should worry an operator is **#7**, because its *gate* is the only one here
+that does not decay. #2 and #3 stop being reported once the logs rotate; #7 sits in an
+append-only file whose mtime is re-armed in full every time an unrelated mail lands. What
+limits it today is not the freshness logic but the 3000-byte section cap, which does
+decay — 3 lines of 428 currently reach a model, and that number shrinks as the spool
+grows. The cap is a budget knob, not a correctness one: raise it for any reason and #7
+gets louder again.
+
+### Appendix — #1 in full: how a remux cap ended in a 42 GB BR-DISK
+
+The chain, each link verified against Radarr's history API and its own logs (history is
+**UTC**, logs are **box-local CEST**; both are given where it matters):
+
+1. **Cap Remux.** `scripts/configure/58-remux-cap-enforce.py` landed on the box
+   `Aug 20 06:22 CEST` and removed Remux-1080p from the Radarr main profiles.
+2. **Re-search 23.** Every movie holding a now-disallowed remux was re-searched. For
+   this title: `movieFileDeleted` (Remux-1080p, 27,697,936,671 bytes) at **04:49:00Z**,
+   `Searching indexers ... 5 active indexers` at 06:51:26 CEST.
+3. **Grab on the name.** At **04:52:08Z** Radarr grabbed
+   `In.the.Mouth.of.Madness.1994.1080p.Blu-ray.CE.4K.REMASTERED.DTS-HD.MA.5.1-NOGRP-Obfuscated`
+   from NZBgeek, **parsed `Bluray-1080p`**, reported size **51,311,448,000 bytes**
+   (48,935 MiB). The title carries no disc indicator — nothing in the name says
+   "full disc".
+4. **The payload was a full Blu-ray disc.**
+5. **Radarr re-graded it at import and imported it anyway.** At **07:14:03Z**:
+   `downloadFolderImported`, quality **BR-DISK**, 47,649,253,376 bytes
+   (`Assigning file [In the Mouth of Madness (1995) BR-DISK.iso]`, 09:14:03 CEST).
+   No profile on this box allows BR-DISK. **The import step does not re-check the
+   quality profile** — re-grading is a labelling act, not a gate.
+6. **After cleanup, a 42.3 GB BR-DISK `.mkv`.** As of 12:0x CEST the directory holds
+   `In the Mouth of Madness (1995) BR-DISK.mkv`, **42,341,133,540 bytes** (39.4 GiB),
+   mtime **11:03 CEST**, and the `.iso` is gone. Radarr did not do this: its `movieFile`
+   row still names the **`.iso`** at 47,649,253,376, its history holds no second
+   `downloadFolderImported`, and its 11:09:55 CEST re-search of this title reported
+   `0 reports downloaded`. Disk and Radarr's DB disagree, and the surviving file is still
+   graded BR-DISK at ~40 Mbps — precisely the bitrate the low-bandwidth client that
+   started this whole effort cannot play. **A `.mkv` also defeats an extension check**;
+   only the *arr-quality leg catches it.
+
+**Root cause: there was no grab-time size signal at all.** `/api/v3/config/indexer` had
+`maximumSize = 0` (unlimited) on **both** Radarr instances, which is why the debug log
+carried, for every release, for years:
+
+```
+2026-08-20 09:32:11.5|Debug|MaximumSizeSpecification|Maximum size is not set.
+```
+
+`MaximumSizeSpecification` runs on every release *before* the download starts, against
+the size the indexer reports — the only signal at grab time that separated a mislabelled
+disc from a real 1080p rip. Set to 0, it abstained.
+
+**Was the grab before the ceiling, or is the ceiling not applied? Before.** The debug log
+pins the transition: the **last** `Maximum size is not set.` is **09:32:11 CEST**, and
+the **first** `Checking if release meets maximum size requirements.` is **11:10:21 CEST**
+(69 enforced checks since). The grab was **06:52 CEST**, ~2h20m ahead of the ceiling
+landing. The ceiling **is** live and **is** applied — confirmed twice:
+`config/indexer.maximumSize` now reads **25000** on radarr and **42000** on radarr2, and
+the 11:09:55 CEST re-search of this exact title, run with the ceiling active, grabbed
+nothing.
+
+**Fix:** `scripts/configure/59-brdisk-block.py` — two levers, both re-read after writing.
+Lever 1 sets `config/indexer.maximumSize` (25000 MiB radarr / 42000 MiB radarr2, sized
+off the largest *still-policy-legal* grab per instance, not off raw grab history — the
+raw history contains 7 larger releases, every one a Remux-1080p that 58 had just banned).
+Lever 2 scores the existing `BR-DISK` custom format at **-10000** on the profiles that
+lacked it (radarr p6, radarr2 p1-6, sonarr p6); with `minFormatScore 0` that is a hard
+grab rejection, and -10000 is the value recyclarr itself writes, so it is safe on
+recyclarr-managed profiles.
+
+**Residual risk, stated plainly: neither lever is an import gate.** Import still does not
+re-check the quality profile, so the only things between a mislabelled disc and the
+library are a **size ceiling** and a **custom-format score** — both acting at **grab**
+time, against **indexer-reported** metadata. A disc that under-reports its size, or one
+arriving by a path that skips the grab decision (manual import, an already-downloaded
+payload), still reaches the library with nothing left to stop it. The
+library-container-sanity canary is the detection half; there is no prevention half at
+import.
+
 ## 2026-08-19 → ongoing — REA audits complete, fail to deliver, and the canary stays green
 
 - **Severity:** P2 (observability loss; no user impact)

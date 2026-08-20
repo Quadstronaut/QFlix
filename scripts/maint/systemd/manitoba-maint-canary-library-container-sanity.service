@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - Library container sanity (unplayable payload in a member library)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push library-container-sanity
+StandardOutput=journal
+StandardError=journal
