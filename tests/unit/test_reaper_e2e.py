@@ -76,11 +76,32 @@ class CaptureArr:
             return 200, self.movies
         if path == "/series":
             return 200, self.series
+        # Single-record read. do_delete_* re-reads here after a non-2xx delete
+        # and treats 404 as proof the delete landed anyway, so this fake must
+        # answer from its own state rather than blanket-404. A blanket 404 made
+        # FlakyDeleteArr's 500-without-removal look like a slow success, which
+        # would have turned the partial-failure guard below into a no-op.
+        for prefix, rows in (("/movie/", self.movies), ("/series/", self.series)):
+            if path.startswith(prefix):
+                ident = path[len(prefix):]
+                if ident.isdigit() and any(r.get("id") == int(ident) for r in rows):
+                    return 200, None
+                return 404, None
         return 404, None
 
     def delete(self, path, query="", timeout=None):
         self.calls.append(("DELETE", path, query))
+        self._forget(path)
         return 200, ""
+
+    def _forget(self, path):
+        """Drop the record a successful DELETE removed, so a later re-read of
+        the same id honestly 404s."""
+        for prefix, rows in (("/movie/", self.movies), ("/series/", self.series)):
+            if path.startswith(prefix):
+                ident = path[len(prefix):]
+                if ident.isdigit():
+                    rows[:] = [r for r in rows if r.get("id") != int(ident)]
 
 
 class FlakyDeleteArr(CaptureArr):

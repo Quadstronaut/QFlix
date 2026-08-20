@@ -775,24 +775,68 @@ def resolve_sonarr_id(client, tvdb_id):
     return None
 
 
+def _delete_landed(client, path: str) -> bool:
+    """Re-READ after a non-2xx delete: did the record actually go away?
+
+    WHY THIS EXISTS. `status, _ = client.delete(...)` used to be the whole
+    verdict, and an *arr DELETE that is slow is not the same as an *arr DELETE
+    that failed. Radarr removes the record and unlinks the files first and
+    answers afterwards, so a delete of a 7 GB movie on a busy instance can do
+    all of the work and still hand back a timeout or a 500.
+
+    Observed 2026-08-20: a 23-movie remux re-grab put 17 concurrent downloads
+    and 23 queued MoviesSearch commands on Radarr main. The reaper's delete of
+    'Greyhound' (arrId=407) took 30 seconds, came back non-2xx, and was logged
+    DELETE FAILED -- yet GET /movie/407 returned Not Found and the directory was
+    gone from disk. The whole run was then graded "completed WITH partial
+    failures", exited 1, put the unit in systemd failed state and turned Kuma
+    monitor #97 red, all for an operation that had succeeded. Six consecutive
+    prior runs were clean, so the signal read as a real new fault.
+
+    This is the house rule the *arr and SAB work keeps re-learning: these APIs
+    lie, so verify by re-poll rather than by status code. A 404 on the re-read
+    is proof the delete landed. Anything else -- a 200 (record still there), a
+    transport error, an unreadable answer -- stays a failure, because the only
+    safe default for "I could not confirm" is to report it.
+    """
+    try:
+        status, _ = client.get(path)
+    except Exception:
+        return False
+    return status == 404
+
+
 def do_delete_movie(client, movie_id) -> bool:
     """DELETE a Radarr movie WITH files; addImportExclusion=false (stays
-    re-requestable). Returns True iff 2xx. Non-2xx is a per-item failure."""
+    re-requestable). 2xx is success; a non-2xx is re-read before being called a
+    failure (see _delete_landed)."""
+    path = "/movie/" + str(movie_id)
     status, _ = client.delete(
-        "/movie/" + str(movie_id),
-        query="deleteFiles=true&addImportExclusion=false",
-    )
-    return 200 <= status < 300
+        path, query="deleteFiles=true&addImportExclusion=false")
+    if 200 <= status < 300:
+        return True
+    if _delete_landed(client, path):
+        warn("delete of movie " + str(movie_id) + " answered HTTP "
+             + str(status) + " but the record is GONE on re-read - counting it "
+             "as deleted (slow delete, not a failed one)")
+        return True
+    return False
 
 
 def do_delete_series(client, series_id) -> bool:
-    """DELETE a Sonarr series WITH files; addImportListExclusion=false. Returns
-    True iff 2xx."""
+    """DELETE a Sonarr series WITH files; addImportListExclusion=false. Same
+    re-read-before-failing contract as do_delete_movie."""
+    path = "/series/" + str(series_id)
     status, _ = client.delete(
-        "/series/" + str(series_id),
-        query="deleteFiles=true&addImportListExclusion=false",
-    )
-    return 200 <= status < 300
+        path, query="deleteFiles=true&addImportListExclusion=false")
+    if 200 <= status < 300:
+        return True
+    if _delete_landed(client, path):
+        warn("delete of series " + str(series_id) + " answered HTTP "
+             + str(status) + " but the record is GONE on re-read - counting it "
+             "as deleted (slow delete, not a failed one)")
+        return True
+    return False
 
 
 # ===========================================================================
