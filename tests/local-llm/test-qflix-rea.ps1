@@ -798,6 +798,41 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     Assert-True ($h -match 'grep -a "\\\[ERROR\\\]" "\$f"[\s\S]*?awk -v c="\$FRESH_CUTOFF"[\s\S]*?tail -n 400') 'tdarr filter before the 400-line window'
 }
 
+# --- 2026-08-20: cron_mail was the last collector with NO line-date filter ---
+# The 13-issue page that morning led with "cron:permission-denied", flagged 2/3 -
+# its highest-confidence finding. The underlying mail was dated 2026-08-09 08:05
+# and fcb756b restored the exec bit at 08:10 the same morning; the class had been
+# dead for twelve days. /var/spool/mail/quadstronaut is append-only and nothing
+# rotates it (439 KB, 432 messages, 428 of them stale), so the only thing gating
+# it was tailfresh's file-mtime check - and four benign 2026-08-18 setlocale
+# warnings kept the mtime fresh enough to re-ship the entire window. Measured:
+# `tail -n 500` spanned 2026-08-09 to 2026-08-18 and carried 18 Permission-denied
+# lines; mboxfresh drops 428/432 messages and carries 0.
+Test-Case 'cron_mail filters the mbox spool per MESSAGE date, not just file mtime' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('mboxfresh() {'))       'mboxfresh helper defined'
+    Assert-True ($h.Contains('export -f mboxfresh')) 'mboxfresh exported to bash -c children'
+    # The raw tailfresh call is the exact shape that shipped the false page.
+    Assert-False ($h.Contains("collect cron_mail bash -c 'tailfresh 500")) 'cron_mail no longer ships a raw tailfresh window'
+    Assert-True ($h.Contains('mboxfresh < "$f" | tail -n 500'))            'filter runs BEFORE the tail window'
+    # Order matters and is not cosmetic: collect() caps with `head -c`, which
+    # keeps the FIRST bytes of the window - its oldest end. Tailing first would
+    # park the surviving stale lines exactly where the cap lands.
+    Assert-False ($h.Contains('tail -n 500 "$f" | mboxfresh'))             'not tail-then-filter (head -c cap keeps the oldest bytes)'
+    # Envelope line is both boundary and date, so a stale body cannot outlive
+    # its stale header - same inheritance law freshlines uses for tracebacks.
+    Assert-True ($h.Contains('/^From [^ ]+ / {'))                          'keys on the mbox envelope line'
+    Assert-True ($h -match 'BEGIN \{\s*\r?\n\s*keep = 1')                  'inherits across the message body'
+    # awk interval expressions are not portable across mawk/gawk; the year test
+    # must stay spelled out rather than {4}.
+    Assert-False ($h.Contains('$7 ~ /^[0-9]{4}$/'))                        'no {n} interval expression in the year test'
+    # Fail-open law, identical to every other FRESH_CUTOFF site.
+    Assert-True ($h -match 'else\s*\r?\n\s*keep = 1')                      'unparseable envelope fails OPEN'
+    # Suppression is counted, never silent (journal_errors / plex_errors law).
+    Assert-True ($h.Contains('# collector-suppressed: section=cron_mail'))  'suppression is counted and announced'
+    Assert-True ($h.Contains('$((ALL-KEPT))'))                              'announces how many messages were dropped'
+}
+
 Test-Case 'system prompt protects the real faults it sits beside' {
     $sp = Get-SystemPrompt
     Assert-True ($sp -match 'EDQUOT')                     'quota failures still mentioned'
