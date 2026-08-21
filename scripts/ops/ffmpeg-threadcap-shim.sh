@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
+# QFLIX-FFMPEG-THREADCAP
 # ffmpeg thread-cap shim — installed AS Tdarr's ffmpeg binary.
+#
+# The marker on line 2 is the INSTALLED-ness token, and it is deliberately a
+# single unbroken word. smoke-test.sh and 50-tdarr-install.sh both grep it to
+# tell "shim present" from "Tdarr upgrade overwrote it with the real binary".
+# The first version of that check grepped `threadcap` against prose that reads
+# "thread-cap", so it reported MISSING against a perfectly healthy shim — a
+# check that cannot tell present from absent is worse than no check, because it
+# trains you to ignore it. Same law as the worker1.js QFLIX-WORKER2-EXIT-
+# NULLGUARD marker. Do not reword this line; a test pins it.
 #
 # WHY THIS EXISTS
 # ---------------

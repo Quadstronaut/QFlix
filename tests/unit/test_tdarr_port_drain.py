@@ -128,6 +128,38 @@ class TestUnitWiring:
         # installer re-run cannot silently un-pin the listener.
         assert 'Environment="HOST=127.0.0.1" "serverIP=127.0.0.1"' in src
 
+    def test_ffmpeg_threadcap_marker_agrees_across_every_surface(self):
+        """A check that cannot tell present from absent is worse than none.
+
+        The first smoke-test assertion grepped `ffmpeg-threadcap` against the
+        shim's prose, which reads "ffmpeg thread-cap shim". It reported MISSING
+        against a healthy, working shim on 2026-08-20 — a false alarm that, left
+        alone, trains you to ignore the one check standing between a Tdarr
+        upgrade and the box's task ceiling.
+
+        So the marker is an unbroken token on its own line, and all three
+        surfaces must grep the SAME token. Same law as the worker1.js
+        QFLIX-WORKER2-EXIT-NULLGUARD marker.
+        """
+        MARKER = "QFLIX-FFMPEG-THREADCAP"
+        shim = os.path.join(_REPO, "scripts", "ops", "ffmpeg-threadcap-shim.sh")
+        with open(shim, encoding="utf-8") as fh:
+            head = fh.read().splitlines()[:3]
+        # Must live in the first 3 lines, because that is what `head -3` reads.
+        assert any(MARKER in ln for ln in head), (
+            f"{MARKER} must appear within the first 3 lines of the shim"
+        )
+        for rel in (("scripts", "smoke-test.sh"),
+                    ("scripts", "configure", "50-tdarr-install.sh")):
+            p = os.path.join(_REPO, *rel)
+            with open(p, encoding="utf-8") as fh:
+                src = fh.read()
+            assert MARKER in src, f"{p} must grep {MARKER}"
+            # The hyphenated prose form must never be used as the check token.
+            assert "grep -q ffmpeg-threadcap" not in src, (
+                f"{p} greps the prose form, which does not match the file"
+            )
+
     def test_heartbeat_does_not_stack_a_restart_on_one_in_flight(self):
         p = os.path.join(_REPO, "scripts", "ops", "heartbeat-tdarr-server.sh")
         with open(p, encoding="utf-8") as fh:
