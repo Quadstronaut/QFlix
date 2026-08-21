@@ -208,6 +208,7 @@ for D in "$R/.apps/tdarr/Tdarr_Node/node_modules/ffmpeg-static" \
   fi
   cp "$R/scripts/ops/ffmpeg-threadcap-shim.sh" "$D/ffmpeg"
   chmod +x "$D/ffmpeg" "$D/ffmpeg.real"
+  head -3 "$D/ffmpeg" | grep -q QFLIX-FFMPEG-THREADCAP     || { echo "shim copied to $D but marker absent" >&2; exit 1; }
 done
 # Prove the shim did not brick the binary BEFORE the node ever calls it — a
 # broken ffmpeg here means every transcode fails, silently, at job time.

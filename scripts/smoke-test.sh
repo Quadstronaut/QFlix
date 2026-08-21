@@ -420,7 +420,10 @@ if [ -n "$TD_PORT" ]; then
   # it. A Tdarr upgrade unzips over node_modules and removes the shim, which is
   # why this is asserted and not assumed. If it goes red, drop
   # tdarr-node.throttle back to 1 transcode worker before anything else.
-  TD_SHIM=$(sshm 'R=$(cd ~ && pwd -P); D=$R/.apps/tdarr/Tdarr_Node/node_modules/ffmpeg-static; if [ -x "$D/ffmpeg.real" ] && head -3 "$D/ffmpeg" 2>/dev/null | grep -q ffmpeg-threadcap; then echo present; else echo MISSING; fi' 2>/dev/null)
+  # Greps the shim's QFLIX-FFMPEG-THREADCAP marker, not its prose. The first
+  # version of this matched `ffmpeg-threadcap` against a comment that reads
+  # "ffmpeg thread-cap shim" and reported MISSING on a healthy box.
+  TD_SHIM=$(sshm 'R=$(cd ~ && pwd -P); D=$R/.apps/tdarr/Tdarr_Node/node_modules/ffmpeg-static; if [ -x "$D/ffmpeg.real" ] && head -3 "$D/ffmpeg" 2>/dev/null | grep -q QFLIX-FFMPEG-THREADCAP; then echo present; else echo MISSING; fi' 2>/dev/null)
   if [ "$TD_SHIM" = "present" ]; then
     record "tdarr-ffmpeg-threadcap" pass "shim installed over ffmpeg-static"
   else
