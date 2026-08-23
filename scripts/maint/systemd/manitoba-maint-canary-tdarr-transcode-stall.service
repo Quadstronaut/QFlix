@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - Tdarr transcode progress (backlog with idle workers is a dead pipeline every other surface reads as green)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push tdarr-transcode-stall
+StandardOutput=journal
+StandardError=journal
