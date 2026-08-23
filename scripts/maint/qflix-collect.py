@@ -56,6 +56,24 @@ an empty `lines`. It is qflix-collect.py's own `if not lines: continue`
 that turns "present and quiet" into "no file on disk". maint-window
 (Mondays only) and tdarr-server (start/stop only) drop out the same way.
 
+CORRECTION 2026-08-23: "the routing table is intact" above was WRONG, and the
+ledger this module added is what proved it. listmonk, tdarr-server and
+tdarr-node set StandardOutput=append:<file>, so journalctl never held their
+stdout at all -- only systemd's own Started/Stopped lines. They were not
+"journal-quiet apps"; they were misrouted, and their real logs (~2.5 MB/day for
+tdarr) were never collected. Fixed in scripts/mcp/logs.py by moving all three to
+_FILE_LOGS. maint-window below is the genuine article: it really is
+StandardOutput=journal and really does only run on Mondays.
+
+That re-route alone would have been a downgrade, not a fix. This module grades
+an app on `len(lines)`, and logs.collect_for's file branch used to ignore
+`--since` entirely -- so a file-routed app read LIVE for as long as its log
+file existed and was non-empty, which for an append-only file systemd never
+truncates is forever. Moving three apps onto that branch would have swapped a
+permanent false DARK for a permanent false LIVE. collect_for now applies the
+window to file routes too (logs._file_is_dormant), so `dark` still means what
+it says: nothing written inside the window.
+
 So listmonk was healthy. That is exactly what makes it dangerous: the
 collector rendered "healthy and silent" and "gone" as the same thing --
 byte-identical absence. A renamed systemd unit, a rotated-away log path,
