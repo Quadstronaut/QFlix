@@ -16,6 +16,14 @@ sshm "mkdir -p ~/scripts/mcp"
 ( cd "$REPO/scripts/mcp" && tar --exclude='__pycache__' --exclude='*.pyc' -cf - . ) \
   | sshm "tar -C scripts/mcp -xf -"
 
+# RESTORE THE EXEC BIT. tar copies the mode it finds on disk, and the mode on
+# disk here is a lie: this repo is checked out on Windows, where git sets
+# core.filemode=false and writes every file 644 no matter what the index says.
+# git has all 15 .py under scripts/mcp at 100755; the box got them at 644, and
+# deploy-drift caught it as `deploy-mode-drift` on 2026-08-23. The systemd units
+# are the only 644 files in the tree, and this leaves them alone.
+sshm "find ~/scripts/mcp -name '*.py' -exec chmod 755 {} +"
+
 echo "-> ensure ~/scripts/mcp/events/ exists on seedbox"
 sshm "mkdir -p ~/scripts/mcp/events"
 
