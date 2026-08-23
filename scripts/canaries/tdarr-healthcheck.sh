@@ -62,6 +62,20 @@
 #     for one cause is correlated noise.
 #   - health checks disabled on every library: a legitimate operator decision.
 #   - no completed checks yet (fresh install / everything still Queued).
+#   - GHOST RECORDS (added 2026-08-23): a FileJSONDB record at HealthCheck=
+#     Queued whose file no longer exists on disk. Nothing can ever open it, so
+#     it can never complete, so it holds `queued > 0` true and `completed`
+#     still FOREVER — predicate 3 then reports a wedged pipeline for as long as
+#     the record survives. One such record in 465 (a janitor temp Tdarr indexed
+#     mid-write, then moved out from under by an atomic replace) held this
+#     canary red with a perfectly healthy pipeline behind it. Ghosts are
+#     therefore excluded from the counts and NAMED on every exit line
+#     (`-ghosts=N-first=<basename>`) — suppressed from the verdict, never
+#     hidden from the operator. Cost is one stat() per Queued record.
+#     A record only earns that suppression when its DIRECTORY was readable and
+#     the file was not in it; "I could not look" is counted normally and
+#     reported as `-unreachable=N`, so an unmounted or unreadable media tree
+#     can never mass-ghost the queue into a permanent false GREEN.
 #
 # Exit:
 #   0 — healthy, or WARN, or indeterminate
@@ -176,6 +190,42 @@ if not active:
 
 # ---- predicate 2: error ratio (lagging, statistical) ------------------------
 counts = {}
+# GHOSTS: records at Queued whose file is GONE. A health check with nothing to
+# open can never complete, so such a record holds completed still AND keeps
+# queued above zero -- which makes predicate 3 below report a WEDGED pipeline
+# forever while the pipeline is in fact healthy. That is a permanent false red,
+# and it is a class rather than an incident: any janitor that writes a temp a
+# scanner can index and then renames it away with an atomic replace leaves one
+# behind. Verified 2026-08-23: exactly one such record in 465 was pinning this
+# canary red. Excluded from the judgement, NAMED in the message on every exit
+# path, so the suppression is visible rather than silent. Cost is one stat per
+# Queued record.
+#
+# THE SUPPRESSION HAS TO PROVE THE FILE IS GONE, NOT MERELY UNREACHABLE.
+# "file absent" and "I cannot look" are the same os.path.exists() answer, and
+# they demand opposite verdicts. Unmount the media tree, lose +x on a parent,
+# or move the slot so the stored absolute paths no longer resolve, and EVERY
+# Queued record answers "absent" -- queued collapses to 0, predicate 3 can
+# never fire, and this canary goes permanently GREEN on a genuinely wedged
+# pipeline. That is strictly worse than the false red it was written to remove:
+# safety equipment that fails open is not safety equipment.
+#
+# So a record is only ghosted when its DIRECTORY is present and traversable and
+# the file inside it is not. Anything we could not look at is counted normally
+# -- the wedge predicate keeps its input -- and reported as `unreachable=N` so
+# the resulting red says what it actually saw instead of blaming the pipeline.
+ghosts = []
+unreachable = 0
+
+
+def _is_ghost(src):
+    """True only when we could READ the directory and the file was not in it."""
+    parent = os.path.dirname(src) or "/"
+    if not os.path.isdir(parent) or not os.access(parent, os.R_OK | os.X_OK):
+        return False        # cannot look -> not a ghost, and not suppressed
+    return not os.path.exists(src)
+
+
 for path in glob.glob(os.path.join(db, "FileJSONDB", "*.json")):
     try:
         with open(path) as fh:
@@ -183,13 +233,28 @@ for path in glob.glob(os.path.join(db, "FileJSONDB", "*.json")):
     except (ValueError, OSError):
         continue
     state = doc.get("HealthCheck")
-    if state:
-        counts[state] = counts.get(state, 0) + 1
+    if not state:
+        continue
+    src = doc.get("_id") or doc.get("file") or ""
+    if state == "Queued" and src and not os.path.exists(src):
+        if _is_ghost(src):
+            ghosts.append(src.rsplit("/", 1)[-1][:70])
+            continue
+        unreachable += 1
+    counts[state] = counts.get(state, 0) + 1
 
 queued = counts.get("Queued", 0)
 errored = counts.get("Error", 0)
 completed = sum(v for k, v in counts.items() if k != "Queued")
 libstr = "libs=" + ",".join(sorted(active))
+# libstr is already interpolated into the stalled FAIL, the ratio FAIL, the
+# PASS-WARN and the PASS lines, so one append surfaces ghosts on all four.
+if ghosts:
+    libstr += "-ghosts=%d-first=%s" % (len(ghosts), ghosts[0])
+# Not suppressed, so it cannot hide a wedge — but it does change what the red
+# MEANS, and a canary that mislabels its own cause costs the triage it saved.
+if unreachable:
+    libstr += "-unreachable=%d-MEDIA-TREE-NOT-READABLE" % unreachable
 
 # ---- predicate 3: progress (catches a WEDGE the ratio can never see) --------
 # Without this, a pipeline that stops dead sits on the "not enough completed to
