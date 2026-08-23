@@ -205,6 +205,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-tdarr-throttle-integrity.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-error.service \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-error.timer \
+    scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-stall.service \
+    scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-stall.timer \
     scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.service \
     scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.timer \
     scripts/maint/systemd/manitoba-maint-canary-cron-liveness.service \
@@ -255,6 +257,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/bazarr-ingest.sh \
     scripts/canaries/tdarr-throttle-integrity.sh \
     scripts/canaries/tdarr-transcode-error.sh \
+    scripts/canaries/tdarr-transcode-stall.sh \
     scripts/canaries/stream-cap-liveness.sh \
     scripts/canaries/cron-liveness.sh \
     scripts/canaries/entitlement-service.sh \
@@ -576,6 +579,8 @@ for unit in \
     manitoba-maint-canary-tdarr-throttle-integrity.timer \
     manitoba-maint-canary-tdarr-transcode-error.service \
     manitoba-maint-canary-tdarr-transcode-error.timer \
+    manitoba-maint-canary-tdarr-transcode-stall.service \
+    manitoba-maint-canary-tdarr-transcode-stall.timer \
     manitoba-maint-canary-stream-cap-liveness.service \
     manitoba-maint-canary-stream-cap-liveness.timer \
     manitoba-maint-canary-cron-liveness.service \
@@ -856,6 +861,7 @@ systemctl --user enable --now manitoba-maint-canary-bazarr-ingest.timer
 # the window; first hour is grace. Detect-only.
 systemctl --user enable --now manitoba-maint-canary-tdarr-throttle-integrity.timer
 systemctl --user enable --now manitoba-maint-canary-tdarr-transcode-error.timer
+systemctl --user enable --now manitoba-maint-canary-tdarr-transcode-stall.timer
 # Stream-cap cron liveness — every 15 min. The per-member concurrent-stream cap
 # is enforced by two CRONTAB entries (kill_stream.sh --max 4, stream_stats.sh),
 # a third scheduling plane neither the C-01 timer ledger nor timer-liveness
@@ -1029,7 +1035,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
