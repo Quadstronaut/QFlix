@@ -614,6 +614,36 @@ canaries:
     kuma_monitor: "Canary Tdarr Transcode Error"
     script: "scripts/canaries/tdarr-transcode-error.sh"
     schedule: "hourly"
+  tdarr-transcode-stall:
+    # Added 2026-08-23. Sibling of tdarr-transcode-error, and deliberately a
+    # SEPARATE monitor: that one watches the terminal ERROR population, this
+    # one watches whether transcoding is HAPPENING.
+    #
+    # The gap was found the hard way. After a tdarr-server + tdarr-node
+    # restart, every transcode worker died the instant it received a job --
+    # `EACCES: permission denied, mkdir '/tdarr-workDir-node-...'`, because
+    # three libraries carried cache:"" and Tdarr concatenated that into an
+    # absolute path at the FILESYSTEM ROOT, which a rootless slot cannot
+    # create. The node pruned the worker and never retried.
+    #
+    # Nothing saw it. A file whose worker dies never reaches Error -- it stays
+    # Queued -- so tdarr-transcode-error correctly reported 0 parked. Health
+    # checks run a different code path and kept passing, so tdarr-healthcheck
+    # stayed green. The worker CAP was intact, so throttle-integrity stayed
+    # green. The unit and the node registration were both fine, so "Tdarr" and
+    # "Tdarr Node" stayed green. 76/76 green, pipeline stone dead.
+    #
+    # Predicate: backlog non-empty + node registered, unpaused, transcode
+    # capacity > 0 + ZERO busy transcode workers + no terminal transcode
+    # verdict in 3h. The busy-worker condition is what makes it safe against
+    # long jobs -- a feature holding a worker for hours keeps it green, because
+    # in-flight work is proof of life. Ghost records are excluded from the
+    # backlog, and only when their directory was readable (see
+    # tdarr-healthcheck: absence and unreadability are the same
+    # os.path.exists() answer and want opposite verdicts).
+    kuma_monitor: "Canary Tdarr Transcode Stall"
+    script: "scripts/canaries/tdarr-transcode-stall.sh"
+    schedule: "hourly"
   entitlement-service:
     # Added 2026-08-07. manitoba-maint-entitlement already has a dead-man
     # ("QFlix Entitlement Gate", 15-min timer, 1h heartbeat override) but that

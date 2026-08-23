@@ -219,6 +219,16 @@ jobs:
   manitoba-maint-canary-tdarr-transcode-error:
     timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-error.timer
     kuma_monitor: "Canary Tdarr Transcode Error"
+  # Sibling of the one above, and deliberately NOT folded into it. That one
+  # watches the terminal ERROR population; this one watches whether transcodes
+  # are HAPPENING at all. On 2026-08-23 every transcode worker died on startup
+  # (EACCES mkdir on a root-level workDir) and a file whose worker dies never
+  # reaches Error -- it stays Queued -- so the error canary was correctly
+  # reporting 0 parked while the pipeline was 100% dead, alongside four other
+  # green Tdarr surfaces.
+  manitoba-maint-canary-tdarr-transcode-stall:
+    timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-stall.timer
+    kuma_monitor: "Canary Tdarr Transcode Stall"
   manitoba-maint-canary-entitlement-service:
     timer: scripts/maint/systemd/manitoba-maint-canary-entitlement-service.timer
     # Watches the entitlement API the gate reads. Note this is the dead-man for

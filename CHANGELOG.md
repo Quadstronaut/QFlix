@@ -92,6 +92,59 @@ a permanent false DARK for a permanent false LIVE on the exact signal used as
 evidence for the move. The file branch now honours the window
 (`logs._file_is_dormant`), so `dark` means what it says.
 
+### And then the restart killed transcoding outright, and nothing said so
+
+Verifying the two fixes above meant restarting `tdarr-server` and `tdarr-node`.
+Every transcode worker then died the instant it was handed a job:
+
+```
+[FATAL] Tdarr_Node - Error: EACCES: permission denied, mkdir
+'/tdarr-workDir-node-YjouEnw6d-worker-lame-loris-ts-1787514583085'
+Worker lame-loris exited with code 1 and signal null
+Worker lame-loris disconnected. Pruning.
+```
+
+Three of the five libraries carried `cache: ""`. Tdarr concatenates that with
+`/tdarr-workDir-node-…`, producing an **absolute path at the filesystem root**,
+which a rootless Ultra.cc slot can never create. The node pruned the worker and
+never retried. Two libraries carried `"."` instead and were fine, which is
+exactly why this had looked intermittent and library-dependent rather than
+broken.
+
+`LIBRARY_DEFAULTS` in `50b-tdarr-config.py` now pins an explicit absolute
+`cache` (`~/.apps/tdarr/cache`, created by the installer) on every library, so
+the string can never degrade into a root path whatever Tdarr does with it.
+`output` is deliberately left alone — empty there means "write back to the
+source folder", which is the in-place replacement this library wants.
+
+**The part that matters more than the bug: nothing reported it.** Not one of the
+five Tdarr surfaces could see it.
+
+| Surface | Why it stayed green |
+|---|---|
+| `Tdarr`, `Tdarr Node` | server up, node registered — it is the *worker child* that dies |
+| `tdarr-healthcheck` | health checks use a different code path and kept completing |
+| `tdarr-transcode-error` | a file whose worker dies never reaches `Error` — it stays `Queued`, so 0 parked was **correct** |
+| `tdarr-throttle-integrity` | the cap was intact; two allowed-and-unused slots look like two slots at rest |
+
+76/76 green, transcoding stone dead, backlog in front of it. Same
+green-while-dead shape as the HandBrake health-check bug that ran 68 days.
+
+So there is a new canary, `tdarr-transcode-stall` (hourly, Kuma **Canary Tdarr
+Transcode Stall**), kept separate from the error canary per the one-concern-per-
+module law. It reds when the backlog is non-empty **and** a node is registered,
+unpaused and has transcode capacity **and** zero transcode workers are busy
+**and** nothing has reached a terminal transcode verdict in 3h. That third
+condition is what makes it armable: a 5 GB feature can hold a worker for hours
+without moving the completion count, and a canary that reds on long jobs gets
+muted inside a week. In-flight work is proof of life; idle workers with a queue
+and no completions is not slow, it is stopped. Both controls are pinned in
+tests — the incident must red, the busy-worker case must not.
+
+Verified end to end: after the fix both previously-terminal films picked up
+immediately and ran to ~30% within minutes, with their work directories under
+the new cache path and no further EACCES.
+
 ### Also
 
 - `The Furious` (2026) had been stranded UNRESOLVED in the reaper for 48 hours.
