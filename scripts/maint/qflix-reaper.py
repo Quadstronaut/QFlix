@@ -18,8 +18,26 @@ whose Plex addedAt is STRICTLY older than --threshold-days (default
 DEFAULT_THRESHOLD_DAYS, currently 45 — see the note on that constant), that are
 not excluded, and that POSITIVELY resolve to exactly one *arr id. Resolution is
 mandatory: an item that does not map to a single Radarr movie / Sonarr series is
-NEVER deleted — it is skipped and logged UNRESOLVED. Such an item is an "orphan"
-(no backing *arr record, or missing external guids). The *arr delete is the
+NEVER deleted — it is skipped and logged UNRESOLVED. Such an item is an "orphan".
+
+THREE CAUSES, and the triage differs, so identify the cause before acting:
+  1. GHOST ITEM — the files are gone and no *arr record exists. Fix: delete the
+     Plex metadata. (Frieren, 2026-07-14.)
+  2. NO EXTERNAL GUIDS — Plex never matched the item at all, so there is no id
+     to resolve against. Fix: match it.
+  3. WRONG MATCH — file and *arr record are both healthy, and Plex HAS a tmdb
+     guid; it is simply the wrong film. Fix: re-match, never delete.
+     ('The Furious' 2026, resolved 2026-08-23: Plex held tmdb://1510055 while
+     Radarr held tmdb://1280738 for the same file.)
+Cause 3 is the one that reads like the others and is not: "the guid lacks a tmdb
+id" does NOT discriminate it, because the guid has one. The test that does is
+whether the tmdb Plex holds resolves to a *arr record for THAT file — which is
+exactly what resolution already does, and exactly why it came back UNRESOLVED.
+Re-match with:
+    GET  /library/metadata/<rk>/matches?manual=1&title=tmdb-<correct-id>
+    PUT  /library/metadata/<rk>/match?guid=<guid from the search result>
+
+The *arr delete is the
 authority; Plex is then refreshed and its trash emptied; finally Seerr is
 reconciled so deleted media becomes re-requestable.
 
@@ -368,7 +386,9 @@ def is_excluded(item: dict, rules) -> bool:
 
 # ===========================================================================
 # Orphan grace tracking — an item that ages past the threshold but resolves to
-# NO unique *arr id is an "orphan" (no backing *arr record, or missing guids).
+# NO unique *arr id is an "orphan" (three causes — ghost item, no guids, or a
+# WRONG match that still carries a tmdb id; see the module docstring, and do not
+# reach for delete before you know which).
 # The safety rail (never delete an orphan) is absolute. The ALERTING, however,
 # is graced: a fresh orphan reds the run like today so the operator learns of
 # newly-stranded media; an orphan that has persisted past the grace window is

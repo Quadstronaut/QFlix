@@ -343,6 +343,38 @@ Counted over the whole workstation audit log:
 | `dryrun_heartbeat` | 9 |
 | `discord_post_failed` | **2** |
 
+**RE-COUNTED 2026-08-23** (same log, `%APPDATA%\qflix-rea\audit.log`). The table
+above is the count as of 2026-08-19 and is left as written, because the *point*
+it makes — `error_post` is the success token and dominates the log — held then
+and holds now. The `discord_post_failed` row did not hold:
+
+| Outcome | 2026-08-19 | 2026-08-23 |
+|---|---|---|
+| `error_post` | 73 | **96** |
+| `silent` | 40 | 40 |
+| `heartbeat` | 26 | 26 |
+| `deadman_post` | 10 | 10 |
+| `dryrun_heartbeat` | 9 | 9 |
+| `discord_post_failed` | 2 | **7** |
+
+Five more egress failures landed after this entry was written, all inside a
+57-hour band, four of them on one day:
+
+| Audit-log stamp (workstation, -07:00) | Findings |
+|---|---|
+| 2026-08-20T05:05:13 | 20 |
+| 2026-08-20T11:08:22 | 21 |
+| 2026-08-20T12:07:23 | 18 |
+| 2026-08-20T18:07:31 | 22 |
+| 2026-08-20T20:07:55 | 21 |
+
+So the "transient and self-clearing" reading below was right about the mechanism
+and wrong about the scale: 7 runs and **145 findings** never reached Discord, not
+2 runs and 42. Nothing has failed since 2026-08-20T20:07:55-07:00, which is what
+"self-clearing" is doing all the work of describing — a fault that clears between
+runs and returns is not the same as a fault that is over. Do not re-quote either
+table as an all-time count without re-running the count.
+
 ### What actually failed
 
 Two runs, both real, both undelivered (`%APPDATA%\qflix-rea\audit.log`):
@@ -356,7 +388,8 @@ Both sit **outside** the box's own Discord brownout (see the 2026-08-18 entry be
 which ended 07:20:29Z). REA posts from the **workstation**, not the box, so this is a
 second, independent egress failure on a second rail. 42 findings lost.
 
-They are also the only two, ever — see the outcome table above — and they did not
+They were the only two as of this entry — see the RE-COUNT above, which found five
+more the day after — and they did not
 persist: the very next run (`2026-08-19T19:09:39-07:00` = **2026-08-20T02:09:39Z**,
 `findings=16 models=2/3 duration=797s outcome=error_post`) posted normally. So the
 delivery fault is **transient and self-clearing**, which makes the canary defect below
