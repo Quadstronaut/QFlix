@@ -1,5 +1,119 @@
 # Changelog
 
+## 2026-08-23 - Two red canaries, one ghost record, and a poster nobody could encode
+
+Both Tdarr canaries had been red. `Canary Tdarr Healthcheck` since **2026-08-12**
+(59 down beats in the last 7 days alone); `Canary Tdarr Transcode Error` since
+**2026-08-21**. The pipeline behind them was healthy the whole time, which is the
+part worth remembering: both reds were reporting on records, not on work.
+
+### The transcode red: `-profile:v` is not "the video stream", it is "every video stream"
+
+`Pressure (2026)` and `A Minecraft Movie (2025)` both aborted three seconds into
+their re-encode with `Error initializing output stream 0:9`. Neither file is
+unusual - both carry an **mjpeg cover-art stream** (a poster, `2000x3000` and
+`640x360`), and every Bluray-sourced release from some groups does.
+
+The Force 8-bit node emitted `-profile:v high`. `:v` is a stream specifier that
+matches **all** output video streams, and the poster is one of them: it is
+stream-copied, has no libx264 constant table, and `profile=high` therefore fails
+to bind. ffmpeg does not skip that stream and carry on - it exits 1 and writes
+nothing, so Tdarr stamps the file `Transcode error`, which is terminal and never
+retried. Two 1080p HEVC films sat unconvertible for 67 hours while every other
+file in the same flow encoded normally.
+
+Fix is one token: `-profile:v:0` (and `-level:v:0`, `-pix_fmt:v:0`) pins the
+arguments to the first video stream. Verified live on the real file, untruncated:
+exit 0, `0,h264,High,yuv420p,41`, and the poster survives as `9,mjpeg,Baseline`
+with all seven subtitle tracks intact. `tests/unit/test_tdarr_flow_cover_art_stream_specifiers.py`
+pins the mechanism - a codec-private symbolic value on an unpinned stream
+specifier - across every flow JSON, not just this one line.
+
+### The healthcheck red: a file that existed for ninety seconds, remembered for eleven days
+
+One `FileJSONDB` record, `HealthCheck: Queued`, for
+`.Interstellar (2014) Bluray-1080p Proper.dispfix.tmp.mkv`. That path had not
+existed since 2026-08-21.
+
+`audio-disposition-janitor.py` writes its remux to a temp beside the original and
+`os.replace()`s it into place. The temp kept the media extension, and Tdarr's
+scanner admits files by `path.extname()` against the library container filter - so
+the 30-second watcher indexed a file that was mid-write and about to be renamed
+away. The record it created can never complete, because there is nothing to open.
+`queued` therefore stays above zero forever and `completed` never moves, which is
+precisely the input the stall predicate reads as **PIPELINE-WEDGED**. The canary
+was not wrong about its inputs; the inputs described a file, not a pipeline.
+
+Three fixes, deliberately separate:
+
+- **Both janitors stop minting them.** Temps are now `.<stem>.dispfix.tmp` /
+  `.<stem>.unkcodecfix.tmp` - no media extension, so the scanner never admits
+  them. Dropping the extension means ffmpeg can no longer infer the muxer, so an
+  explicit `-f <muxer>` went in on the same edit; the unknown-codec temp gained
+  the leading dot it had been missing, which had also been showing it to Plex and
+  the *arrs.
+- **Both canaries stop believing them.** A record whose file is gone is a stale
+  record, not a wedge and not a parked file. It is excluded from the verdict and
+  **named** on every exit line (`-ghosts=N-first=...`) - suppressed, never hidden.
+- **The suppression has to be earned.** "The file is absent" and "I could not
+  look" are the same `os.path.exists()` answer and want opposite verdicts. Unmount
+  the media tree, lose `+x` on a parent, or migrate the slot, and an
+  absence-only rule would reclassify *every* queued record as a ghost, collapse
+  `queued` to zero, and hold the canary permanently **green** on a genuinely dead
+  pipeline - strictly worse than the false red it replaced. A ghost now requires
+  a readable directory that does not contain the file; anything unreadable stays
+  counted and is reported as `-unreachable=N`. Both negative controls are pinned:
+  30 unreachable records must still red.
+
+That third point exists because an adversarial refuter found it in the first
+implementation and reproduced it, red-to-green, against both canary bodies.
+
+### The deploy path had forgotten a script that rewrites media
+
+`unknown-codec-stream-janitor.py` runs nightly from its own timer and was never
+staged by `240-maintenance-install.sh` - so the box ran whatever copy had landed
+in `~/scripts` by hand. Second time this exact hole has been found. Now staged
+and copied like every other maint script.
+
+### `dark` did not mean dark
+
+`listmonk`, `tdarr-server` and `tdarr-node` sat in the journal routing table
+while their units all set `StandardOutput=append:<file>`, so `journalctl` only
+ever returned systemd's own Started/Stopped lines. The log-coverage ledger had
+been calling all three dark for 85 hours and was right for the wrong reason:
+their real logs - about 2.5 MB/day for Tdarr - were never collected at all.
+
+Re-routing them to the file reader would have been a downgrade on its own.
+`collect_for`'s file branch ignored `--since` entirely, and the ledger grades an
+app on `len(lines)`, so any file-routed app read **live** for as long as its log
+file existed and was non-empty - which, for an append-only file systemd never
+truncates and logrotate only touches at 50 MB, is forever. That would have traded
+a permanent false DARK for a permanent false LIVE on the exact signal used as
+evidence for the move. The file branch now honours the window
+(`logs._file_is_dormant`), so `dark` means what it says.
+
+### Also
+
+- `The Furious` (2026) had been stranded UNRESOLVED in the reaper for 48 hours.
+  Not a ghost item: the file and the Radarr record were both healthy, and Plex
+  *had* a tmdb guid - `tmdb://1510055`, the wrong film. Re-matched to
+  `tmdb://1280738`; the reaper now resolves it as an ordinary candidate. The
+  documented discriminator ("the guid lacks a tmdb id") does not catch this shape
+  and has been corrected in place, with all three orphan causes named.
+- `docs/incidents.md` recorded 2 `discord_post_failed` REA runs all-time. A
+  re-count found **7**, five of them landing the day after that entry was
+  written - 145 findings that never reached Discord, not 42. The mechanism
+  reading was right; the scale was not.
+- Jade added to the Plex share on 2026-08-22 and exempted. Welcome removed - an
+  exempt household is not being asked to subscribe - and her Seerr account, which
+  the newPlexLogin path had created at `permissions=0`, was granted the standard
+  member set.
+
+Verified live after deploy: both canaries exit 0 from their deployed copies,
+0 ghost records in 465, 0 parked, and an armed one-file janitor run remuxed
+`Soul (2020)` through the new temp name and explicit muxer with 0 failures and
+0 leftovers. 2471 unit tests green.
+
 ## 2026-08-20 (II) — The arbiter audit, and the flow that would have made things worse
 
 A Fable-arbitrated end-to-end audit followed the 15-hour session above:
@@ -44,8 +158,9 @@ What was actually wrong, and what changed (`e560693`, `6406b2f`, `5054751`,
   re-encoded only vc1/mpeg2 and let 27 HEVC + 12 AV1 files (107 GB, all
   1080p 10-bit SDR) through — AV1 is undecodable on most TVs before ~2021 and
   on every Apple device. The flow now sends hevc and av1 down the h264 branch
-  too, through a **Force 8-bit node** (`-pix_fmt:v yuv420p -profile:v high
-  -level:v 4.1`). That node is the whole point: the box's libx264 accepts
+  too, through a **Force 8-bit node** (`-pix_fmt:v yuv420p -profile:v:0 high
+  -level:v:0 4.1` — the `:0` was added 2026-08-23, see below). That node is the
+  whole point: the box's libx264 accepts
   `yuv420p10le` and, unpinned, would have emitted **High 10** H.264 — less
   compatible than the HEVC it replaced. Verified on a 10 s sample:
   `h264 / High / yuv420p / 41`. Tdarr never revisits a file after a flow
