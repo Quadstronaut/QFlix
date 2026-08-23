@@ -183,6 +183,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/qflix-reaper.py \
     scripts/maint/qflix-reaper.exclude \
     scripts/maint/audio-disposition-janitor.py \
+    scripts/maint/unknown-codec-stream-janitor.py \
     scripts/maint/functional-audit.py \
     scripts/maint/bootstrap-kuma-monitors.py \
     scripts/maint/qflix-torrent-janitor.py \
@@ -320,6 +321,13 @@ chmod +x ~/scripts/maint/qflix-reaper.py
 cp -f "$STG"/scripts/maint/qflix-reaper.exclude ~/scripts/maint/qflix-reaper.exclude 2>/dev/null || true
 cp -f "$STG"/scripts/maint/audio-disposition-janitor.py ~/scripts/maint/audio-disposition-janitor.py
 chmod +x ~/scripts/maint/audio-disposition-janitor.py
+# Second time this exact hole was found (2026-08-23). The unknown-codec janitor
+# runs nightly from its own timer and was never staged here, so the box kept
+# executing whatever copy happened to land in ~/scripts by hand -- and it
+# REWRITES media files. A janitor that edits the library must not be the one
+# script the single deploy path forgets.
+cp -f "$STG"/scripts/maint/unknown-codec-stream-janitor.py ~/scripts/maint/unknown-codec-stream-janitor.py
+chmod +x ~/scripts/maint/unknown-codec-stream-janitor.py
 cp -f "$STG"/scripts/maint/functional-audit.py ~/scripts/maint/functional-audit.py
 chmod +x ~/scripts/maint/functional-audit.py
 # Kept in sync rather than left stale: it CREATES Kuma monitors, and a
