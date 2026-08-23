@@ -80,6 +80,15 @@ DEFAULT_ROOTS = [
     str(Path.home() / "media" / "Anime"),
 ]
 VIDEO_EXTS = {".mkv", ".mp4"}
+# Output muxer per source container. REQUIRED, not optional: the temp in
+# fix_file no longer ends in a media extension, and ffmpeg picks its muxer from
+# the output FILENAME — without an explicit -f it dies "Unable to choose an
+# output format for '...tmp'" and every single file fails. Verified on the box
+# 2026-08-23 against ffmpeg 7.1.5 for BOTH legs (-f matroska and -f mp4 mux
+# cleanly to a .tmp; ffprobe and os.replace are extension-agnostic).
+# Total over VIDEO_EXTS by construction — widening one without the other is a
+# KeyError on every candidate, so keep these two constants in the same commit.
+MUXER = {".mkv": "matroska", ".mp4": "mp4"}
 DEFAULT_MAX_ITEMS = 25
 FREE_SPACE_FACTOR = 1.15       # temp remux needs ~file-size free on the fs
 
@@ -221,12 +230,15 @@ def classify_streams(streams: list):
 def build_ffmpeg_cmd(src: str, dst: str, bad_indices: list) -> list:
     """Map everything, stream-copy, then explicitly exclude the unmappable
     indices. Negative maps must follow the wildcard `-map 0` per ffmpeg's own
-    stream-map ordering rules."""
+    stream-map ordering rules.
+
+    `-f` is derived from the SOURCE extension, never from `dst`: dst ends in
+    ".tmp" so ffmpeg cannot infer the muxer at all (see MUXER)."""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
            "-i", src, "-map", "0", "-c", "copy"]
     for idx in bad_indices:
         cmd += ["-map", "-0:" + str(idx)]
-    cmd += [dst]
+    cmd += ["-f", MUXER[Path(src).suffix.lower()], dst]
     return cmd
 
 
@@ -304,7 +316,24 @@ def fix_file(path: Path, bad_indices: list) -> None:
     if free < st.st_size * FREE_SPACE_FACTOR:
         raise RuntimeError("insufficient free space ({} GB free)".format(
             round(free / 1024**3, 1)))
-    tmp = path.with_name(path.stem + ".unkcodecfix.tmp" + path.suffix)
+    # Temp name has TWO independent guards, because two different scanners use
+    # two different rules:
+    #   leading "."  -> Plex, Sonarr and Radarr skip dotfiles.
+    #   ends ".tmp"  -> Tdarr admits a file to FileJSONDB purely by
+    #                   path.extname() against the library containerFilter
+    #                   (mkv,mp4,mov,m4v,mpg,mpeg,avi,flv,webm,wmv,m2ts,ts).
+    #                   ".tmp" is in no containerFilter, so it is never indexed.
+    # Both were missing here (2026-08-23): the old name kept the media suffix
+    # AND had no leading dot, so it was visible to every scanner on the box.
+    # Tdarr's folder watcher (30s poll) can index such a temp mid-write, and the
+    # os.replace below then moves the file out from under the record — leaving a
+    # GHOST stuck at HealthCheck=Queued forever with a terminal
+    # TranscodeDecisionMaker=Transcode error, which pins both tdarr canaries
+    # permanently red. The sibling audio-disposition janitor minted exactly that
+    # ghost; this one had the same defect and a wider blast radius.
+    # Requires the explicit -f in build_ffmpeg_cmd — ffmpeg cannot guess a muxer
+    # from ".tmp".
+    tmp = path.with_name("." + path.stem + ".unkcodecfix.tmp")
     try:
         src_count = len(ffprobe_streams(str(path)))
         proc = subprocess.run(build_ffmpeg_cmd(str(path), str(tmp), bad_indices),
