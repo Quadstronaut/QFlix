@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HOME = Path.home()
@@ -50,16 +51,27 @@ _FILE_LOGS = {
     # host path below. The log file has a non-ISO "Mon DD, YYYY HH:MM:SS.fff"
     # timestamp that the parser normalizes via _MONTH below.
     "plex":            str(HOME / ".config/plex/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log"),
+    # listmonk / tdarr-server / tdarr-node were routed to journalctl until
+    # 2026-08-23. Their units set StandardOutput=append:<file> (written that way
+    # by 43-listmonk-install.sh and 50-tdarr-install.sh), so the journal NEVER
+    # held their stdout -- only systemd's own Started/Stopped lines. That read as
+    # "journal-quiet app" for months and went fully dark the moment the tdarr
+    # restart flap was fixed (2026-08-21), because restart churn was the only
+    # thing journalctl had ever returned for them. Route to the files the units
+    # actually write.
+    "listmonk":        str(HOME / ".apps/listmonk/logs/listmonk.log"),
+    "tdarr-server":    str(HOME / ".apps/tdarr/logs/server.log"),
+    "tdarr-node":      str(HOME / ".apps/tdarr/logs/node.log"),
 }
 
 # Apps with date-rotated logs (no stable filename): resolve at scan time to the
 # newest matching file. Glob is relative to HOME.
 _GLOB_LOGS = {}
 
+# Only units that actually set StandardOutput=journal belong here. Check
+# `systemctl --user show <unit> -p StandardOutput` before adding one: a unit
+# with StandardOutput=append routes to a file and must go in _FILE_LOGS.
 _SYSTEMD_LOGS = {
-    "listmonk":      "listmonk.service",
-    "tdarr-server":  "tdarr-server.service",
-    "tdarr-node":    "tdarr-node.service",
     "maint-pusher":  "manitoba-maint-pusher.service",
     "maint-webhook": "manitoba-maint-webhook.service",
     "maint-window":  "manitoba-maint-window.service",
@@ -109,6 +121,15 @@ _TS_PATTERNS = [
     re.compile(
         r"^(?P<ts>[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\s+\d{2}:\d{2}:\d{2}\.\d{3})"
         r"\s+\[\d+\]\s+(?P<lvl>[A-Z]+)\s+-\s+(?P<msg>.*)$"
+    ),
+    # Go stdlib log form (listmonk): "2026/08/23 02:00:04.753761 file.go:95: msg"
+    # No level token — Go's logger does not emit one, so these land as `unknown`
+    # with a REAL timestamp, which is what matters: an unstamped line inherits
+    # the ingest clock and resurfaces as a phantom "recent" error (see the
+    # carry-forward note in collect_for).
+    re.compile(
+        r"^(?P<ts>\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)"
+        r"\s+(?P<msg>.*)$"
     ),
     # Fallback ts-only forms (kept for journalctl short-iso lines that the
     # bracket variants above already handle):
@@ -181,6 +202,11 @@ def _normalize_ts(raw: str | None) -> str | None:
         mon_name, dd, yyyy, hms = m.groups()
         mm = _MONTH_ABBR.get(mon_name, "01")
         return f"{yyyy}-{mm}-{int(dd):02d}T{hms}"
+    # Go stdlib (listmonk): "2026/08/23 02:00:04.753761" → "2026-08-23T02:00:04.753761"
+    m = re.match(r"^(\d{4})/(\d{2})/(\d{2})[T ](\d{2}:\d{2}:\d{2}.*)$", s)
+    if m:
+        yyyy, mm, dd, rest = m.groups()
+        return f"{yyyy}-{mm}-{dd}T{rest}"
     m = re.match(r"^(\d{2})/(\d{2})/(\d{4})[T ](\d{2}:\d{2}:\d{2})(.*)$", s)
     if m:
         dd, mm, yyyy, hms, rest = m.groups()
@@ -192,8 +218,18 @@ def _normalize_ts(raw: str | None) -> str | None:
     return s
 
 
+# Tdarr colourises its log FILE, not just its tty: every line begins with a raw
+# SGR escape, e.g. "\x1b[33m[2026-08-23T20:36:48.935] [WARN] Tdarr_Server - ...".
+# Every _TS_PATTERNS entry is ^-anchored, so the escape alone defeated all of
+# them and the whole file would have landed ts=None/level=unknown -- which the
+# carry-forward in collect_for then stamps with the INGEST clock, resurfacing
+# old lines as phantom-recent errors. Strip SGR first; the existing Kometa
+# bracket-ts pattern then matches Tdarr exactly, with no new regex.
+_ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def parse_line(line: str, *, source: str) -> dict:
-    line = line.rstrip("\n")
+    line = _ANSI_SGR.sub("", line.rstrip("\n"))
     for pat in _TS_PATTERNS:
         m = pat.match(line)
         if m:
@@ -207,12 +243,50 @@ def parse_line(line: str, *, source: str) -> dict:
     return {"ts": None, "level": "unknown", "message": line, "source_file": source}
 
 
+_DURATION_RE = re.compile(r"^(\d+)([smhd])$")
+_DEFAULT_SINCE_S = 24 * 3600
+
+
+def _since_seconds(since: str) -> int:
+    """`--since` as seconds. Garbage falls back to 24h rather than to zero, so
+    a malformed arg can never widen the window to "everything, forever"."""
+    m = _DURATION_RE.match((since or "").strip())
+    if not m:
+        return _DEFAULT_SINCE_S
+    return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
 def _tail_file(path: str, n: int) -> list[str]:
     if not os.path.exists(path):
         return []
     from collections import deque
     with open(path, encoding="utf-8", errors="ignore") as f:
         return list(deque(f, maxlen=n))
+
+
+def _file_is_dormant(path: str, *, max_age_s: int) -> bool:
+    """True iff the file exists but nothing has been appended within the window.
+
+    WHY THIS IS LOAD-BEARING AND NOT AN OPTIMISATION. `--since` reached only the
+    journalctl branch; the file branch tailed the last N lines regardless of
+    age. Callers that grade an app on `len(lines)` -- qflix-collect.py's
+    log-coverage ledger is one -- therefore read every file-routed app as LIVE
+    for as long as its log file merely exists and is non-empty. These are
+    append-only files systemd never truncates and logrotate only touches at
+    50 MB, so "non-empty" is permanent: a file-routed app could die and the
+    coverage ledger would never once report it dark.
+
+    That mattered the moment three apps moved journalctl -> file on 2026-08-23:
+    without this, the fix would have traded a permanent false DARK for a
+    permanent false LIVE, on the exact signal used as evidence for the move.
+    mtime, not per-line timestamps, on purpose -- lines carry no reliable ts
+    (continuation lines carry none at all) and the file branch's whole job is to
+    hand those to a parser that stamps them.
+    """
+    try:
+        return (time.time() - os.path.getmtime(path)) > max_age_s
+    except OSError:
+        return False
 
 
 def _journalctl(unit: str, since: str, n: int) -> list[str]:
@@ -234,7 +308,13 @@ def _journalctl(unit: str, since: str, n: int) -> list[str]:
 def collect_for(app: str, *, since: str, tail: int) -> dict:
     plan = route(app)
     if plan["kind"] == "file":
-        lines = _tail_file(plan["path"], tail)
+        # Honour --since here so the file branch answers the same question the
+        # journalctl branch does. Without it a dormant append-only log reads as
+        # live forever. See _file_is_dormant.
+        if _file_is_dormant(plan["path"], max_age_s=_since_seconds(since)):
+            lines = []
+        else:
+            lines = _tail_file(plan["path"], tail)
         source = plan["path"]
     elif plan["kind"] == "journalctl":
         lines = _journalctl(plan["unit"], since, tail)
