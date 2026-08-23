@@ -75,14 +75,16 @@ def test_missing_disposition_key_tolerated():
 # -- build_ffmpeg_cmd -------------------------------------------------------
 
 def test_ffmpeg_cmd_shape():
-    cmd = adj.build_ffmpeg_cmd("/in.mkv", "/tmp.mkv",
+    cmd = adj.build_ffmpeg_cmd("/in.mkv", "/.in.dispfix.tmp",
                                 {"target": 1, "clear": [0], "audio_count": 2})
     assert cmd[:2] == ["ffmpeg", "-y"]
     assert ["-i", "/in.mkv"] == cmd[cmd.index("-i"):cmd.index("-i") + 2]
     assert ["-map", "0", "-c", "copy"] == cmd[cmd.index("-map"):cmd.index("-map") + 4]
     assert ["-disposition:a:0", "0"] == cmd[cmd.index("-disposition:a:0"):cmd.index("-disposition:a:0") + 2]
     assert ["-disposition:a:1", "default"] == cmd[cmd.index("-disposition:a:1"):cmd.index("-disposition:a:1") + 2]
-    assert cmd[-1] == "/tmp.mkv"
+    # -f is mandatory now that dst ends in ".tmp" (see MUXER); it must sit
+    # immediately before the output, which stays last.
+    assert cmd[-3:] == ["-f", "matroska", "/.in.dispfix.tmp"]
 
 
 # -- verify_fixed -----------------------------------------------------------
@@ -156,7 +158,7 @@ def test_fix_file_happy_path_atomic_replace(tmp_path, monkeypatch):
     adj.fix_file(src, _PLAN)
     assert src.read_bytes() == b"fixed"                 # replaced
     assert int(src.stat().st_mtime) == orig_mtime       # mtime preserved
-    assert not (tmp_path / ".ep.dispfix.tmp.mkv").exists()  # tmp gone
+    assert not (tmp_path / ".ep.dispfix.tmp").exists()      # tmp gone
 
 
 def test_fix_file_insufficient_space_raises_and_no_tmp(tmp_path, monkeypatch):
@@ -185,7 +187,7 @@ def test_fix_file_verify_failure_keeps_original(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         adj.fix_file(src, _PLAN)
     assert src.read_bytes() == b"x" * 1000
-    assert not (tmp_path / ".ep.dispfix.tmp.mkv").exists()  # finally-unlink ran
+    assert not (tmp_path / ".ep.dispfix.tmp").exists()      # finally-unlink ran
 
 
 def test_fix_file_ffmpeg_nonzero_raises(tmp_path, monkeypatch):
@@ -213,8 +215,13 @@ def test_fix_file_ffmpeg_nonzero_raises(tmp_path, monkeypatch):
 
 def test_fix_file_tmp_is_dot_prefixed_hidden(tmp_path, monkeypatch):
     """The ffmpeg destination must be a hidden dotfile so Plex/Sonarr
-    scanners never see the in-flight temp (Tdarr's watcher may still —
-    the vanish-retry tests below cover that case)."""
+    scanners never see the in-flight temp.
+
+    UPDATED 2026-08-23: the leading dot is only HALF the guard. Tdarr has no
+    hidden-file rule at all — it admits by extension — so the name must also
+    stop ending in a media extension. The Tdarr half is pinned in
+    tests/unit/test_janitor_temp_names_tdarr_ghost.py; this test keeps the
+    Plex/Sonarr half."""
     src = _mk(tmp_path / "ep.mkv")
     monkeypatch.setattr(adj.shutil, "disk_usage",
                         lambda p: types.SimpleNamespace(free=10**9))
@@ -229,7 +236,7 @@ def test_fix_file_tmp_is_dot_prefixed_hidden(tmp_path, monkeypatch):
                         lambda p: _BEFORE if p == str(src) else _AFTER)
     adj.fix_file(src, _PLAN)
     tmp_name = Path(seen[0]).name
-    assert tmp_name == ".ep.dispfix.tmp.mkv"
+    assert tmp_name == ".ep.dispfix.tmp"
     assert tmp_name.startswith(".")                     # hidden from scanners
 
 

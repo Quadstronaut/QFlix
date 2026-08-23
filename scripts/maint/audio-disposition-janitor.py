@@ -19,14 +19,15 @@ don't positively recognize).
 
 Fix mechanics per file: ffmpeg full stream-copy remux (`-map 0 -c copy`)
 adjusting only `-disposition:a:N` flags — no re-encode, IO-bound only —
-written to a HIDDEN dot-prefixed temp in the same directory (Plex and
-Sonarr skip dotfiles; Tdarr's watcher does NOT — it queues '.plexmatch' —
-so the vanish-retry in fix_file is the hard backstop after a visible temp
-got renamed away by Tdarr mid-run on 2026-08-08), post-verified with ffprobe
-(same stream count, exactly one default audio and it is the AAC target),
-original mtime preserved, then atomically renamed over the original.
-rename(2) over an open file is safe for an in-flight reader, but files in
-active Plex sessions (via Tautulli) are skipped as politeness anyway.
+written to a temp in the same directory whose name ENDS IN ".tmp" and is
+also dot-prefixed (see fix_file: the ".tmp" ending is what hides it from
+Tdarr, the leading dot is what hides it from Plex and Sonarr — two different
+scanners, two different rules, and the earlier claim that the leading dot
+covered both was wrong), post-verified with ffprobe (same stream count,
+exactly one default audio and it is the AAC target), original mtime
+preserved, then atomically renamed over the original. rename(2) over an open
+file is safe for an in-flight reader, but files in active Plex sessions (via
+Tautulli) are skipped as politeness anyway.
 
 Deliberately STANDALONE (own module, own timer, own Kuma check, own durable
 log dir) per the compartmentalization design law — independently swappable /
@@ -66,6 +67,15 @@ DEFAULT_ROOTS = [
     str(Path.home() / "media" / "TV Shows"),
 ]
 VIDEO_EXTS = {".mkv", ".mp4"}
+# Output muxer per source container. REQUIRED, not optional: the temp in
+# fix_file no longer ends in a media extension, and ffmpeg picks its muxer from
+# the output FILENAME — without an explicit -f it dies "Unable to choose an
+# output format for '...tmp'" and every single file fails. Verified on the box
+# 2026-08-23 against ffmpeg 7.1.5 for BOTH legs (-f matroska and -f mp4 mux
+# cleanly to a .tmp; ffprobe and os.replace are extension-agnostic).
+# Total over VIDEO_EXTS by construction — widening one without the other is a
+# KeyError on every candidate, so keep these two constants in the same commit.
+MUXER = {".mkv": "matroska", ".mp4": "mp4"}
 DEFAULT_MAX_ITEMS = 25
 FREE_SPACE_FACTOR = 1.15       # temp remux needs ~file-size free on the fs
 
@@ -217,12 +227,16 @@ def classify_streams(streams: list):
 
 def build_ffmpeg_cmd(src: str, dst: str, plan: dict) -> list:
     """Disposition-only stream-copy remux command. Touches ONLY the audio
-    default flags named in the plan; every stream is mapped and copied."""
+    default flags named in the plan; every stream is mapped and copied.
+
+    `-f` is derived from the SOURCE extension, never from `dst`: dst ends in
+    ".tmp" so ffmpeg cannot infer the muxer at all (see MUXER)."""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
            "-i", src, "-map", "0", "-c", "copy"]
     for i in plan["clear"]:
         cmd += ["-disposition:a:" + str(i), "0"]
-    cmd += ["-disposition:a:" + str(plan["target"]), "default", dst]
+    cmd += ["-disposition:a:" + str(plan["target"]), "default",
+            "-f", MUXER[Path(src).suffix.lower()], dst]
     return cmd
 
 
@@ -281,7 +295,12 @@ class TmpVanishedError(RuntimeError):
     Seen 2026-08-08: Tdarr's library watcher queued a still-visible
     "<stem>.dispfix.tmp.mkv" mid-write and its replaceOriginalFile staging
     renamed it to "*.tmp" out from under the verify step. The source file is
-    untouched in this scenario, so one fresh remux attempt is safe."""
+    untouched in this scenario, so one fresh remux attempt is safe.
+
+    KEPT ON PURPOSE but expected to be DEAD for Tdarr since 2026-08-23: the
+    temp no longer carries a media extension, so Tdarr cannot admit it at all.
+    It stays as a cheap backstop against any OTHER scanner, which also means a
+    clean run is no longer evidence that this retry still works."""
 
 
 def fix_file(path: Path, plan: dict) -> None:
@@ -294,11 +313,24 @@ def fix_file(path: Path, plan: dict) -> None:
     if free < st.st_size * FREE_SPACE_FACTOR:
         raise RuntimeError("insufficient free space ({} GB free)".format(
             round(free / 1024**3, 1)))
-    # DOT-PREFIXED so Plex/Sonarr library scanners ignore the temp. Tdarr's
-    # watcher does NOT skip dotfiles (it queues '.plexmatch'), so the vanish
-    # retry below is the real backstop. A visible "<stem>.dispfix.tmp.mkv"
-    # got renamed away by Tdarr mid-run on 2026-08-08 (1 FAILED of 56).
-    tmp = path.with_name("." + path.stem + ".dispfix.tmp" + path.suffix)
+    # Temp name has TWO independent guards, because two different scanners use
+    # two different rules:
+    #   leading "."  -> Plex and Sonarr skip dotfiles.
+    #   ends ".tmp"  -> Tdarr admits a file to FileJSONDB purely by
+    #                   path.extname() against the library containerFilter
+    #                   (mkv,mp4,mov,m4v,mpg,mpeg,avi,flv,webm,wmv,m2ts,ts).
+    #                   ".tmp" is in no containerFilter, so it is never indexed.
+    # CORRECTION (2026-08-23): the old comment here claimed the leading dot was
+    # the guard and Tdarr merely ignored it. Tdarr has NO hidden-file rule at
+    # all — it was the trailing ".mkv" that got the temp admitted. The old name
+    # ".<stem>.dispfix.tmp.mkv" kept the media suffix, Tdarr's folder watcher
+    # (30s poll) indexed it mid-write, and os.replace then moved the file out
+    # from under the record: a GHOST stuck at HealthCheck=Queued forever with a
+    # terminal TranscodeDecisionMaker=Transcode error, which pinned both tdarr
+    # canaries permanently red. Exactly one such ghost existed in 465 records.
+    # Dropping path.suffix is what actually closes it. Requires the explicit
+    # -f in build_ffmpeg_cmd — ffmpeg cannot guess a muxer from ".tmp".
+    tmp = path.with_name("." + path.stem + ".dispfix.tmp")
     for attempt in (1, 2):
         try:
             _remux_once(path, tmp, plan, st)
