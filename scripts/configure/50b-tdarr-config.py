@@ -160,13 +160,47 @@ NODE_WORKER_LIMITS = {
 # DIRECTORY structure is caught by the library-container-sanity canary instead.
 CONTAINER_FILTER = "mkv,mp4,mov,m4v,mpg,mpeg,avi,flv,webm,wmv,m2ts,ts"
 
+# Where a transcode worker builds its scratch directory. MUST be an explicit
+# absolute path, and MUST NOT be left empty.
+#
+# Tdarr builds the worker scratch dir by string-concatenating the library's
+# `cache` with "/tdarr-workDir-node-<id>-worker-<name>-ts-<ms>". Three of the
+# five libraries carried cache="", so that concatenation produced
+# "/tdarr-workDir-..." -- an absolute path at the FILESYSTEM ROOT. This slot is
+# rootless, so every transcode worker died the instant it started:
+#     [FATAL] Tdarr_Node - Error: EACCES: permission denied, mkdir
+#     '/tdarr-workDir-node-YjouEnw6d-worker-lame-loris-ts-1787514583085'
+#     Worker lame-loris exited with code 1 and signal null
+# and the node then pruned the worker and never retried. Found 2026-08-23 after
+# a tdarr-server + tdarr-node restart, with two files sitting at Queued and both
+# transcode slots free.
+#
+# WHAT MAKES THIS THE DANGEROUS KIND OF BUG: nothing reported it. The node unit
+# stays active, the node stays registered, health checks keep passing (they use
+# a different code path), and a file whose worker died never reaches
+# TranscodeDecisionMaker=Error -- it stays Queued. So the Tdarr monitor, the
+# Tdarr Node monitor, tdarr-healthcheck, tdarr-transcode-error and
+# tdarr-throttle-integrity were ALL green through a total transcode outage.
+# The tdarr-transcode-stall canary exists because of this.
+#
+# An explicit absolute path cannot degrade this way whatever Tdarr does with the
+# string. "." also happens to work (it resolves against the node's
+# WorkingDirectory) and two libraries carried it, which is exactly why the
+# breakage looked intermittent and library-dependent.
+TRANSCODE_CACHE = f"{HOME}/.apps/tdarr/cache"
+
 # Per-library defaults: scan on every server start + watch folder for new
 # files. Persistence: direct file write (cruddb mode=set crashes server).
+#
+# `output` is deliberately NOT in here: empty means "write back to the source
+# folder", which is the in-place replacement this library wants. `cache` is the
+# staging dir and is a different thing entirely.
 LIBRARY_DEFAULTS = {
     "scanOnStart": True,
     "folderWatcherEnabled": True,
     "scanFoundJobs": True,
     "containerFilter": CONTAINER_FILTER,
+    "cache": TRANSCODE_CACHE,
 }
 
 # Health-check engine. Tdarr picks the health-check CLI from a mutually
@@ -300,6 +334,9 @@ def ensure_library_defaults() -> int:
     LIBRARY_DEFAULTS settings on. Direct file write — Tdarr's cruddb
     mode=set is unreliable for nested doc updates."""
     import glob
+    # The cache dir has to exist before a worker tries to mkdir inside it;
+    # Tdarr creates the leaf workDir, not its parent.
+    os.makedirs(TRANSCODE_CACHE, exist_ok=True)
     db_dir = f"{HOME}/.apps/tdarr/server/Tdarr/DB2/LibrarySettingsJSONDB"
     files = glob.glob(f"{db_dir}/*.json")
     changed = 0
@@ -315,7 +352,7 @@ def ensure_library_defaults() -> int:
         os.replace(path + ".tmp", path)
         print(f"[update] library '{doc.get('name')}' "
               f"scanOnStart=True folderWatcher=True "
-              f"containerFilter={CONTAINER_FILTER}")
+              f"containerFilter={CONTAINER_FILTER} cache={TRANSCODE_CACHE}")
         changed += 1
     return changed
 
