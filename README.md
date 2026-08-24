@@ -294,6 +294,14 @@ timeline
             : red canaries now write WHY to journald (was Kuma-msg only) · reaper logs delete-failure reason
             : Tdarr = universal H.264 8-bit High@4.1 on all 5 libraries (hevc/av1 re-encoded, 39 queued)
             : Maintainerr remnants + Tuesday.md/WARN.md trashed · radarr2 remote-path health cleared
+  2026-08-23 : cover-art mjpeg made `-profile:v` abort whole transcodes — pinned to `:v:0`
+            : ghost FileJSONDB record (a janitor temp Tdarr indexed) held 2 canaries red 11 days
+            : canary ghost-suppression must be EARNED — an unreadable media tree can't fake green
+            : empty library `cache` built the worker dir at `/` → every transcode worker died EACCES
+            : new canary "Tdarr Transcode Stall" — the outage above was green on all 5 Tdarr surfaces
+  2026-08-24 : the flow gated on CODEC, not on playability — 28 already-h264 files were out of policy
+            : 12 × High 10 (undecodable on Tizen) + 16 × level >4.1 now gated and converging
+            : 3rd unstaged-script hole → invariant test: every scheduled script must ship
 ```
 
 ---
