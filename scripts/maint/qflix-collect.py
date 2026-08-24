@@ -74,6 +74,17 @@ permanent false DARK for a permanent false LIVE. collect_for now applies the
 window to file routes too (logs._file_is_dormant), so `dark` still means what
 it says: nothing written inside the window.
 
+NGINX IS PERMANENTLY DARK, AND THAT IS THE CORRECT ANSWER. After that routing
+fix `logs-dark` fell from five sources to one: nginx. Measured 2026-08-24 --
+`~/.apps/nginx/logs/error.log` is 0 bytes, and `access.log` has been 0 bytes
+since 2026-05-08. The route is not broken: `error.log.1` holds 593 bytes from the
+2026-08-20 rotation, so this IS the file nginx writes and rotation works. It is
+empty because there have been no nginx errors since, and access logging is off on
+this panel-managed slot. An empty error log is the healthy state for a reverse
+proxy, so this source reads dark by design and will keep doing so. Do not "fix"
+it by re-pointing the route, and do not exempt it either -- `dark` never reds,
+and a truthful footnote is worth more than a silent exemption.
+
 So listmonk was healthy. That is exactly what makes it dangerous: the
 collector rendered "healthy and silent" and "gone" as the same thing --
 byte-identical absence. A renamed systemd unit, a rotated-away log path,
