@@ -184,6 +184,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/qflix-reaper.exclude \
     scripts/maint/audio-disposition-janitor.py \
     scripts/maint/unknown-codec-stream-janitor.py \
+    scripts/maint/arr-housekeeping.py \
+    scripts/maint/flaresolverr-unsuppress-watch.sh \
     scripts/maint/functional-audit.py \
     scripts/maint/bootstrap-kuma-monitors.py \
     scripts/maint/qflix-torrent-janitor.py \
@@ -331,6 +333,18 @@ chmod +x ~/scripts/maint/audio-disposition-janitor.py
 # script the single deploy path forgets.
 cp -f "$STG"/scripts/maint/unknown-codec-stream-janitor.py ~/scripts/maint/unknown-codec-stream-janitor.py
 chmod +x ~/scripts/maint/unknown-codec-stream-janitor.py
+# Swept 2026-08-24 after the unknown-codec hole: cross-referenced every SCHEDULED
+# script (25 systemd ExecStart targets + crontab entries) against every installer
+# in the repo. These two were the only other unstaged ones, and both are
+# load-bearing -- arr-housekeeping.py --unstick runs HOURLY from cron and is the
+# autonomous stuck-download repair; flaresolverr-unsuppress-watch.sh is a systemd
+# unit. Both happened to be at parity, so nothing was broken -- but a fix pushed
+# to git would never have reached the box, and deploy-drift would only have told
+# us AFTER the fix was already failing to apply.
+cp -f "$STG"/scripts/maint/arr-housekeeping.py ~/scripts/maint/arr-housekeeping.py
+chmod +x ~/scripts/maint/arr-housekeeping.py
+cp -f "$STG"/scripts/maint/flaresolverr-unsuppress-watch.sh ~/scripts/maint/flaresolverr-unsuppress-watch.sh
+chmod +x ~/scripts/maint/flaresolverr-unsuppress-watch.sh
 cp -f "$STG"/scripts/maint/functional-audit.py ~/scripts/maint/functional-audit.py
 chmod +x ~/scripts/maint/functional-audit.py
 # Kept in sync rather than left stale: it CREATES Kuma monitors, and a

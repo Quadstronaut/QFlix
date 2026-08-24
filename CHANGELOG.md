@@ -1,5 +1,88 @@
 # Changelog
 
+## 2026-08-24 - The codec was never the policy
+
+Verification of yesterday's Tdarr work turned up the gap underneath it. The
+operator directive is that **every file must direct-play on every TV, phone and
+tablet**. The implementation answered a narrower question: *is this file the
+wrong codec?*
+
+`qflix-direct-play-fix` gated on the video codec alone - vc1, mpeg2video, hevc,
+av1. The **Force 8-bit node**, which is the part that actually pins
+`high` / `yuv420p` / level 4.1, only ever runs on files that entered that codec
+branch. So a file that **arrived** as h264 was stamped `Not required` no matter
+what its profile, bit depth or level was.
+
+An audit of all 465 library records found **28 files already h264 and already
+out of policy**:
+
+| Count | Violation | Series |
+|---|---|---|
+| 12 | `High 10` / `yuv420p10le` | Mob Psycho 100 S01 |
+| 15 | level 4.2 | The Graham Norton Show S33 |
+| 1 | level 5.0 | Colony (2026) |
+
+**The twelve are the ones that matter.** Samsung Tizen and most smart-TV
+decoders cannot decode 10-bit H.264 *at all* - it is precisely the failure the
+2026-08-20 directive was written about, arriving through a door the directive's
+own implementation left open. Tdarr had been reporting the library 100 %
+compliant the whole time, because it was measuring the thing it knew how to
+measure.
+
+### The fix, in both places it had to go
+
+Two `checkStreamProperty` gates now sit between *Check av1* and *Check primary
+audio aac*, routing into the same re-encode branch:
+
+- **`qfxCheckHighBitDepth`** - `pix_fmt` includes `10le,10be,12le,12be`
+- **`qfxCheckLevelAbove41`** - `level` equals `42,50,51,52,60,61,62`, the
+  complete set of H.264 levels above 4.1. The spec defines none beyond 6.2, so
+  the enumeration cannot go stale.
+
+Both are wired so **handle 1 means re-encode and handle 2 means compliant**,
+because `checkStreamProperty` hard-returns output 2 when a file has no stream of
+the requested type. The degenerate case - missing or unreadable `ffProbeData` -
+therefore falls through to the compliant path and is never re-encoded on an
+absence of evidence. The same law as yesterday's ghost-record guard: a decision
+made from "I could not look" must fail toward doing nothing.
+
+`50b-tdarr-config.py::requeue_noncompliant_video()` had the identical codec-only
+blind spot and was widened to the same three predicates. It had to be: Tdarr
+caches a per-file verdict and never revisits it on a flow change, so a widened
+flow alone leaves the 28 existing files untouched forever, and a widened requeue
+against an un-widened flow just returns each file to `Not required`. A test pins
+the two surfaces to the same values so the next person to widen one is told
+about the other.
+
+Dry-run against the live DB first: **exactly 28**, matching the audit, so there
+was no chance of a mass re-encode from a mistaken predicate. Verified live -
+Mob Psycho S01E04 went `High 10 / yuv420p10le` to `h264 (High) / yuv420p` with
+both subtitle tracks, all font attachments and the original Opus audio intact,
+plus the added AAC stereo track.
+
+**Not in scope, deliberately:** bitrate. 62 files sit above 20 Mbps, and a
+35 Mbps h264 file is perfectly *compatible* - it is merely too large for a slow
+link, which is Plex's transcoder's job. No codec policy can make 1080p
+direct-play at 1.9 Mbps, and conflating "incompatible" with "large" would
+re-encode 62 healthy files for nothing.
+
+### Third time for the same deploy hole, so it gets a test this time
+
+Yesterday's sweep found `unknown-codec-stream-janitor.py` running nightly with no
+installer shipping it. Cross-referencing **every** scheduled script (25 systemd
+`ExecStart` targets plus crontab) against **every** installer in the repo found
+two more: `arr-housekeeping.py`, which runs `--unstick` hourly from cron and is
+the autonomous stuck-download repair, and `flaresolverr-unsuppress-watch.sh`.
+
+Both happened to be byte-identical to git, so nothing was broken - and that is
+the point. `deploy-drift` compares deployed bytes against `origin/master`, so an
+unstaged script reads perfectly green until someone pushes a fix to it, at which
+point the canary reports drift no installer can resolve and the fix silently does
+not apply. Drift detection is the wrong half of the problem.
+`tests/unit/test_scheduled_scripts_are_staged.py` is the other half: every
+unattended script must be named by an installer, and an exemption must carry a
+reason.
+
 ## 2026-08-23 - Two red canaries, one ghost record, and a poster nobody could encode
 
 Both Tdarr canaries had been red. `Canary Tdarr Healthcheck` since **2026-08-12**
