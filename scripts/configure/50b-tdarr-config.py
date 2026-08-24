@@ -390,10 +390,78 @@ def requeue_errored_healthchecks() -> int:
 # directive 2026-08-20: every file must play on every TV/phone/tablet).
 DIRECT_PLAY_VIDEO_CODECS = {"h264"}
 
+# The rest of "universally playable", which the codec set alone cannot express.
+#
+# The flow used to gate on CODEC only, so a file that ARRIVED as h264 was
+# stamped "Not required" whatever its bit depth or level -- and the Force 8-bit
+# node, the thing that actually enforces the policy, only runs on files that
+# entered the codec branch. An audit of all 465 records on 2026-08-24 found 28
+# files already h264 and already out of policy: 12 at High 10 / yuv420p10le and
+# 16 above level 4.1.
+#
+# The 10-bit dozen is the one that matters. Samsung Tizen and most smart-TV
+# decoders cannot decode 10-bit H.264 AT ALL -- it is exactly the failure the
+# 2026-08-20 directive was written about, arriving through a door the directive's
+# own implementation did not cover.
+#
+# Level: the complete set of H.264 levels above 4.1. The spec defines no level
+# beyond 6.2, so this enumeration cannot go stale.
+DISALLOWED_PIX_FMT_MARKERS = ("10le", "10be", "12le", "12be")
+DISALLOWED_H264_LEVELS = {42, 50, 51, 52, 60, 61, 62}
+
+
+def _video_stream(doc: dict) -> dict:
+    """The primary video stream of a Tdarr FileJSONDB record, or {}.
+
+    Attached cover art is a video stream too (mjpeg/png poster) and must never
+    be mistaken for the primary one -- its pix_fmt is yuvj420p and its level is
+    -99, so reading it would answer the policy question about the wrong stream.
+    """
+    for s in ((doc.get("ffProbeData") or {}).get("streams") or []):
+        if s.get("codec_type") != "video":
+            continue
+        if (s.get("disposition") or {}).get("attached_pic") == 1:
+            continue
+        return s
+    return {}
+
+
+def video_policy_violation(doc: dict) -> str:
+    """Why this file is not universally playable, or "" if it is.
+
+    Returns a short reason string so the requeue log says WHICH rule fired --
+    "h264 but High 10" and "not h264 at all" are different operator stories and
+    a bare "requeued" hides both.
+    """
+    codec = doc.get("video_codec_name")
+    if not codec:
+        return ""                       # unknown is not evidence of a problem
+    if codec not in DIRECT_PLAY_VIDEO_CODECS:
+        return "codec=%s" % codec
+    s = _video_stream(doc)
+    if not s:
+        return ""                       # cannot see the stream -> do not act
+    pix = str(s.get("pix_fmt") or "")
+    if any(m in pix for m in DISALLOWED_PIX_FMT_MARKERS):
+        return "pix_fmt=%s(>8-bit)" % pix
+    level = s.get("level")
+    if isinstance(level, int) and level in DISALLOWED_H264_LEVELS:
+        return "level=%s(>4.1)" % level
+    return ""
+
 
 def requeue_noncompliant_video() -> int:
     """Re-queue files Tdarr already stamped 'Not required' / 'Transcode
-    success' whose video codec is outside DIRECT_PLAY_VIDEO_CODECS.
+    success' that violate the universal-playability policy -- wrong codec, more
+    than 8 bits per component, or an H.264 level above 4.1.
+
+    Widened from codec-only on 2026-08-24. Gating on the codec set alone meant a
+    file that ARRIVED as h264 was never revisited whatever its profile, bit depth
+    or level, and 28 files sat out of policy -- 12 of them High 10, which Samsung
+    Tizen and most smart-TV decoders cannot decode at all. See
+    video_policy_violation() and the matching gates in the flow JSON; the flow
+    must agree, because a requeue whose flow still answers "Not required" simply
+    returns the file to where it started.
 
     Tdarr caches the flow's verdict per file and never revisits it when the
     flow changes, so widening the flow (hevc/av1 -> h264, 2026-08-20) would
@@ -414,15 +482,16 @@ def requeue_noncompliant_video() -> int:
         # 'Transcode error' is deliberately NOT here (no retry loop on a flow bug).
         if doc.get("TranscodeDecisionMaker") not in ("Not required", "Transcode success"):
             continue
-        codec = doc.get("video_codec_name")
-        if not codec or codec in DIRECT_PLAY_VIDEO_CODECS:
+        reason = video_policy_violation(doc)
+        if not reason:
             continue
         doc["TranscodeDecisionMaker"] = "Queued"
         doc["lastTranscodeDate"] = 0
         with open(path + ".tmp", "w", encoding="utf-8") as f:
             json.dump(doc, f)
         os.replace(path + ".tmp", path)
-        print(f"[requeue] {codec} -> h264: {os.path.basename(doc.get('file', path))[:80]}")
+        print(f"[requeue] {reason} -> h264 8-bit High@4.1: "
+              f"{os.path.basename(doc.get('file', path))[:80]}")
         requeued += 1
     return requeued
 
