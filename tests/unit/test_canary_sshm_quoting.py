@@ -74,7 +74,18 @@ CANARY_DIR = REPO_ROOT / "scripts" / "canaries"
 #          single-quoted and are not what this gate is about.
 _SSHM_OPENERS = (
     re.compile(r"sshm '\n"),
-    re.compile(r"sshm \"[^\"]*\"'\n"),
+    # (?:\\.|[^"\\])* rather than [^"]*: a prelude may contain ESCAPED quotes
+    # (export HC_SERVER=\"...\" and friends), and stopping at the first one left
+    # SIX single-quoted bodies unextracted and therefore ungated -- including all
+    # four Tdarr canaries, which is how a backtick in an unquoted heredoc reached
+    # the box on 2026-08-24. Coverage measured before/after: 22 -> 28 bodies.
+    # This still cannot run away over a FULLY double-quoted sshm block
+    # (quota.sh, thread-ceiling.sh): those have no closing "' and so never match,
+    # which is correct -- an apostrophe is safe inside a double-quoted body.
+    # `\s*'` rather than `'\n`: the body may start on the SAME line as the
+    # prelude (`sshm "GRACE_H=$GRACE_H"' python3 - <<PY`) or after a newline.
+    # Requiring the newline missed tdarr-transcode-error.sh entirely.
+    re.compile(r"sshm \"(?:\\.|[^\"\\])*\"\s*'"),
 )
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None,
@@ -93,8 +104,14 @@ def _sshm_bodies(directory=CANARY_DIR):
         text = path.read_text(encoding="utf-8")
         for pattern in _SSHM_OPENERS:
             for m in pattern.finditer(text):
-                # m.end() sits just past the newline that opens the body.
-                end = text.find("\n')", m.end() - 1)
+                # Anchored on the two-char `')`, not on a bare apostrophe: the
+                # whole point of this gate is that a body may WRONGLY contain an
+                # apostrophe, and stopping at the first one would truncate the
+                # extraction and hide the very defect being hunted (the mutation
+                # proof below pins that). `\n')` was too narrow -- a body whose
+                # last line is a heredoc delimiter closes as `PY')`, which is how
+                # tdarr-transcode-error.sh went ungated.
+                end = text.find("')", m.end())
                 assert end != -1, "%s: unterminated sshm block" % path.name
                 out.append((path, text[m.end():end]))
     return out
@@ -102,8 +119,23 @@ def _sshm_bodies(directory=CANARY_DIR):
 
 def test_there_is_at_least_one_sshm_body_to_check():
     """Guards the guard. If the idiom is ever renamed, this file would silently
-    assert nothing at all -- the vacuity failure it exists to prevent."""
-    assert _sshm_bodies(), "no sshm blocks found; the extractor is stale"
+    assert nothing at all -- the vacuity failure it exists to prevent.
+
+    A FLOOR, not just non-empty. "At least one" was satisfied by 22 bodies while
+    six single-quoted ones went unextracted, and an unextracted body is an
+    ungated body: that is how a backtick in tdarr-healthcheck.sh reached the box
+    on 2026-08-24. Coverage is 25 as of that date. If a legitimate canary is
+    removed, lower this deliberately -- do not delete it.
+
+    The canaries NOT covered are all fully double-quoted sshm bodies
+    (quota, thread-ceiling, tdarr-scanner, timer-liveness) or bodies passed as a
+    shell variable (plex-unmatched). Neither is single-quoted, so neither is what
+    this gate is about."""
+    bodies = _sshm_bodies()
+    assert bodies, "no sshm blocks found; the extractor is stale"
+    assert len(bodies) >= 25, (
+        "extractor coverage dropped to %d single-quoted sshm bodies (was 25); a "
+        "body it stops extracting is a body nothing checks" % len(bodies))
 
 
 def test_the_prelude_shape_is_actually_matched():
@@ -130,6 +162,48 @@ def test_remote_body_contains_no_single_quote(path, body):
     assert not offenders, (
         "%s: single quote(s) inside the sshm body -- the shipped string is not "
         "what is written here:\n  %s" % (path.name, "\n  ".join(offenders[:5])))
+
+
+@pytest.mark.parametrize("path,body", _sshm_bodies(),
+                         ids=lambda v: v.name if isinstance(v, Path) else "")
+def test_unquoted_heredoc_content_contains_no_backtick(path, body):
+    """A backtick inside an UNQUOTED heredoc is command substitution.
+
+    Scoped deliberately. A backtick in a plain shell comment is inert -- bash
+    ignores everything after # without expanding it -- so flagging those would
+    fail six canaries that are perfectly safe and teach the next person to
+    delete the guard. The hazard is heredoc CONTENT, which the shell does expand
+    unless the delimiter is quoted (<<'PY' rather than <<PY).
+
+    Not hypothetical. On 2026-08-24 a Python comment in tdarr-healthcheck.sh
+    written as `completed` -- inside an unquoted <<PYEOF, because that heredoc
+    has to be unquoted to sit within the single-quoted outer string -- made the
+    remote bash try to run it:
+
+        bash: line 11: completed: command not found
+
+    The canary still exited 0, so nothing downstream would have reported it, and
+    an earlier `unreachable=N` had been shipping silently for a day: a bare
+    assignment succeeds and prints nothing. Markdown habits do not survive a
+    shell. Use double quotes inside these bodies.
+    """
+    offenders = []
+    delim = None
+    for line in body.split(chr(10)):
+        if delim is None:
+            m = re.search(r"<<-?([A-Za-z_][A-Za-z0-9_]*)\s*$", line)
+            if m:                      # unquoted delimiter -> shell expands body
+                delim = m.group(1)
+            continue
+        if line.strip() == delim:
+            delim = None
+            continue
+        if chr(96) in line:
+            offenders.append(line)
+    assert not offenders, (
+        "%s: backtick(s) inside an UNQUOTED heredoc -- the remote shell will "
+        "execute what is between them: %s"
+        % (path.name, " | ".join(offenders[:5])))
 
 
 @pytest.mark.parametrize("path,body", _sshm_bodies(),
