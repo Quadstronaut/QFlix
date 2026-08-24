@@ -162,8 +162,12 @@ def _db(tmp_path: Path, home: Path) -> Path:
 
 
 def _record(db: Path, rid: str, src: str, *, health=None, transcode=None,
-            age_h: float = 0.0) -> Path:
+            age_h: float = 0.0, hc_age_h=None) -> Path:
     doc = {"_id": src, "file": src}
+    if hc_age_h is not None:
+        # lastHealthCheckDate is ms-epoch and is the healthcheck canary's
+        # progress clock -- see the PROGRESS block in tdarr-healthcheck.sh.
+        doc["lastHealthCheckDate"] = int((NOW - hc_age_h * HOUR) * 1000)
     if health:
         doc["HealthCheck"] = health
     if transcode:
@@ -269,6 +273,80 @@ def test_hc_present_file_still_reports_a_wedge(hc_code, tmp_path):
     assert "PIPELINE-WEDGED" in stage
     assert "queued=1" in stage
     assert "-ghosts=" not in stage          # nothing was suppressed
+
+
+def test_hc_recent_completion_clears_the_stall_even_when_the_count_FELL(hc_code, tmp_path):
+    """THE 2026-08-24 FALSE RED, pinned.
+
+    `completed` counts records not in Queued, which is a POPULATION number, not
+    a progress one. Re-encoding a file sends its HealthCheck back to Queued, so
+    during a re-encode wave the count goes DOWN -- and the old predicate only
+    refreshed its clock on an INCREASE. Requeueing 28 files for the
+    universal-playability widening drove it 464 -> 461 -> 459 and this canary
+    reported PIPELINE-WEDGED at 24.9h while the newest health check on disk was
+    thirty-six seconds old.
+
+    Here the state file claims 500 completed 12h ago (so the count has FALLEN
+    and the old clock is long stale) but a record carries a fresh
+    lastHealthCheckDate. Checks are finishing; there is no wedge."""
+    home, env = _hc_fixture(tmp_path, queued_file_exists=True)
+    db = Path(env["HC_DB"])
+    for f in (db / "FileJSONDB").glob("ok*.json"):
+        doc = json.loads(f.read_text(encoding="utf-8"))
+        doc["lastHealthCheckDate"] = int((NOW - 0.1 * HOUR) * 1000)
+        f.write_text(json.dumps(doc), encoding="utf-8")
+    state = Path(env["HC_STATE"])
+    state.write_text(json.dumps({"completed": 500,
+                                 "last_progress_ts": NOW - 12 * HOUR}),
+                     encoding="utf-8")
+    r = _run(hc_code, home, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "idle=0.1h" in r.stdout, r.stdout
+
+
+def test_hc_stale_completion_stamps_still_red(hc_code, tmp_path):
+    """NEGATIVE CONTROL. Same fixture, but every completion stamp is old. A real
+    wedge must still be caught -- the new clock must not be a way of never
+    reding."""
+    home, env = _hc_fixture(tmp_path, queued_file_exists=True)
+    db = Path(env["HC_DB"])
+    for f in (db / "FileJSONDB").glob("ok*.json"):
+        doc = json.loads(f.read_text(encoding="utf-8"))
+        doc["lastHealthCheckDate"] = int((NOW - 30 * HOUR) * 1000)
+        f.write_text(json.dumps(doc), encoding="utf-8")
+    r = _run(hc_code, home, env)
+    assert r.returncode == 1, r.stdout + r.stderr
+    stage = _stage(r)
+    assert "STAGE=tdarr-hc-stalled" in stage, stage
+    assert "COMPLETED-in-30.0h" in stage, stage
+
+
+def test_hc_falls_back_to_the_count_clock_when_no_stamp_exists(hc_code, tmp_path):
+    """A fresh install, or a Tdarr that stops writing lastHealthCheckDate, must
+    degrade to the old predicate rather than lose the wedge detector -- and must
+    SAY it is doing so, because a clock that silently changes meaning is worse
+    than either clock."""
+    home, env = _hc_fixture(tmp_path, queued_file_exists=True)
+    r = _run(hc_code, home, env)          # fixture writes no stamps at all
+    assert r.returncode == 1, r.stdout + r.stderr
+    stage = _stage(r)
+    assert "clock=count-fallback-no-lastHealthCheckDate" in stage, stage
+
+
+def test_hc_future_stamp_cannot_manufacture_negative_idle(hc_code, tmp_path):
+    """Clock skew between the box and whatever wrote the record must not produce
+    a negative age (which would format absurdly and could underflow a
+    comparison). Clamped to now."""
+    home, env = _hc_fixture(tmp_path, queued_file_exists=True)
+    db = Path(env["HC_DB"])
+    f = next((db / "FileJSONDB").glob("ok*.json"))
+    doc = json.loads(f.read_text(encoding="utf-8"))
+    doc["lastHealthCheckDate"] = int((NOW + 5 * HOUR) * 1000)
+    f.write_text(json.dumps(doc), encoding="utf-8")
+    r = _run(hc_code, home, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "idle=0.0h" in r.stdout, r.stdout
+    assert "idle=-" not in r.stdout, r.stdout
 
 
 def test_hc_unreachable_media_tree_is_not_a_ghost(hc_code, tmp_path):
