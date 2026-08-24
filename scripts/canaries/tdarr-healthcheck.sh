@@ -37,9 +37,16 @@
 #      STOPPED running. Without this, a pipeline that dies while under
 #      MIN_SAMPLE completed parks on the "not enough data to judge" branch and
 #      reports PASS-WARN forever — i.e. this canary would reproduce the exact
-#      green-while-dead failure it was built to prevent. Progress is persisted
-#      to a state file; any increase in completed refreshes the clock. FAILs
-#      after STALL_HOURS with a non-empty queue and a RUNNING node.
+#      green-while-dead failure it was built to prevent. The clock is the NEWEST
+#      `lastHealthCheckDate` across all records: "when did a check last finish",
+#      read straight from the data. FAILs after STALL_HOURS with a non-empty
+#      queue and a RUNNING node.
+#      It used to be "did the completed count go up since last run", and that is
+#      a POPULATION signal, not a progress one. Re-encoding a file sends its
+#      HealthCheck back to Queued, so `completed` goes DOWN during a re-encode
+#      wave and the increase never happens. On 2026-08-24 that reported
+#      PIPELINE-WEDGED at 24.9h while the newest check on disk was 36 seconds
+#      old. A canary that reds during normal operation gets muted.
 #
 # Thresholds (override via env QFLIX_CANARY_TDARR_HC_*):
 #   20% WARN → annotate Kuma msg, stay UP. Worth a look; could be real corruption.
@@ -52,8 +59,9 @@
 #   STAGE=tdarr-hc-engine-missing  — library points at an engine with no binary
 #   STAGE=tdarr-hc-engine-unset    — neither scan flag set: health checks no-op
 #   STAGE=tdarr-hc-error-ratio     — completed checks are >=FAIL% errors
-#   STAGE=tdarr-hc-stalled         — queue non-empty, node up, no new completed
-#                                    check in STALL_HOURS: pipeline wedged
+#   STAGE=tdarr-hc-stalled         — queue non-empty, node up, and no health
+#                                    check has COMPLETED in STALL_HOURS
+#                                    (newest lastHealthCheckDate): pipeline wedged
 #
 # Deliberately NOT a failure (stays UP, says so) — these are indeterminate or
 # operator choices, and a red here would be exactly the noise the 2026-07-28
@@ -212,10 +220,13 @@ counts = {}
 #
 # So a record is only ghosted when its DIRECTORY is present and traversable and
 # the file inside it is not. Anything we could not look at is counted normally
-# -- the wedge predicate keeps its input -- and reported as `unreachable=N` so
+# -- the wedge predicate keeps its input -- and reported as "unreachable=N" so
 # the resulting red says what it actually saw instead of blaming the pipeline.
 ghosts = []
 unreachable = 0
+# Newest per-record completion stamp, in ms. This is the progress clock -- see
+# predicate 3. Collected here so the scan is still a single pass.
+newest_hc = 0
 
 
 def _is_ghost(src):
@@ -232,6 +243,9 @@ for path in glob.glob(os.path.join(db, "FileJSONDB", "*.json")):
             doc = json.load(fh)
     except (ValueError, OSError):
         continue
+    stamp = doc.get("lastHealthCheckDate")
+    if isinstance(stamp, (int, float)) and stamp > newest_hc:
+        newest_hc = stamp
     state = doc.get("HealthCheck")
     if not state:
         continue
@@ -260,9 +274,30 @@ if unreachable:
 # Without this, a pipeline that stops dead sits on the "not enough completed to
 # judge" branch below and reports PASS-WARN forever — the exact
 # green-while-dead shape that cost 68 days. A ratio only speaks about checks
-# that RAN; nothing else here notices checks that stopped running. Progress is
-# tracked in a tiny state file: any increase in the completed count refreshes
-# the timestamp, so a stall is measured from the last real work, not from boot.
+# that RAN; nothing else here notices checks that stopped running.
+#
+# PROGRESS IS MEASURED FROM lastHealthCheckDate, NOT FROM THE COMPLETED COUNT.
+# It used to be "did "completed" go up since last run", persisted to a state
+# file. That is not a progress signal, it is a POPULATION signal, and the two
+# only agree while the library is static. "completed" counts records not in
+# Queued -- so when a file is re-encoded, Tdarr re-scans it and its HealthCheck
+# goes Success -> Queued and the count goes DOWN. A re-encode wave therefore
+# drives "completed" downward for hours while health checks are running
+# normally, the "increase" never happens, the clock never refreshes, and this
+# canary reports PIPELINE-WEDGED on a pipeline doing exactly what it is meant
+# to do. That fired for real on 2026-08-24: 28 files requeued by the
+# universal-playability widening, count 464 -> 461 -> 459, canary red at
+# "no-new-completed-checks-in-24.9h" while the newest health check on disk was
+# THIRTY-SIX SECONDS old. A canary that reds during normal operation gets muted,
+# and a muted canary protects nothing.
+#
+# Tdarr already records the right number: every file record carries
+# lastHealthCheckDate, the ms-epoch stamp of when its check finished. The newest
+# of those across the library IS "when did a health check last complete" --
+# monotonic, immune to population churn, and needing no bookkeeping to be
+# correct. The state file is still written (queue depth and the count are useful
+# to an operator reading it, and the fallback below needs it) but it is no
+# longer what the verdict rests on.
 # NOTE: this heredoc is unquoted (it must be, to sit inside the single-quoted
 # outer string), so the remote shell still expands $ and backticks in here.
 # Keep both out of this Python body or the shell executes them.
@@ -279,16 +314,30 @@ try:
 except (ValueError, OSError):
     prev = {}
 
-last_completed = prev.get("completed")
-last_progress = prev.get("last_progress_ts") or now
-if last_completed is None or completed > last_completed:
-    last_progress = now
+if newest_hc > 0:
+    # The real thing: when a check last finished, straight from the records.
+    last_progress = int(newest_hc / 1000)
+    # A stamp in the future (clock skew between the box and the DB writer) must
+    # not manufacture negative idle time; clamp it to now.
+    if last_progress > now:
+        last_progress = now
+else:
+    # Fallback ONLY when no record carries a usable stamp -- a fresh install, or
+    # a Tdarr version that stops writing the field. Keep the old count-based
+    # clock so the predicate degrades instead of disappearing, and say so in the
+    # message rather than silently changing meaning.
+    last_completed = prev.get("completed")
+    last_progress = prev.get("last_progress_ts") or now
+    if last_completed is None or completed > last_completed:
+        last_progress = now
+    libstr += "-clock=count-fallback-no-lastHealthCheckDate"
 try:
     os.makedirs(os.path.dirname(state_path), exist_ok=True)
     tmp = state_path + ".tmp"
     with open(tmp, "w") as fh:
         json.dump({"completed": completed, "last_progress_ts": last_progress,
-                   "queued": queued, "updated_ts": now}, fh)
+                   "queued": queued, "updated_ts": now,
+                   "newest_healthcheck_ms": newest_hc}, fh)
     os.replace(tmp, state_path)
 except OSError:
     pass  # never let bookkeeping break the probe
@@ -301,8 +350,8 @@ stalled_s = now - last_progress
 # right one to consult -- it just answers "not paused" at every hour now.
 if queued > 0 and node == "active" and stalled_s > stall_s:
     fail("tdarr-hc-stalled",
-         "no-new-completed-checks-in-%.1fh-queued=%d-completed=%d-node=active-"
-         "PIPELINE-WEDGED-not-merely-slow-%s"
+         "no-health-check-has-COMPLETED-in-%.1fh-queued=%d-completed=%d-"
+         "node=active-PIPELINE-WEDGED-not-merely-slow-%s"
          % (stalled_s / 3600.0, queued, completed, libstr))
 
 progress = "completed=%d-queued=%d-idle=%.1fh-node=%s" % (
