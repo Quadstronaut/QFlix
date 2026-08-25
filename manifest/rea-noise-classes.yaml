@@ -737,6 +737,69 @@ classes:
       it belongs in one commit that touches every copy - filed, not smuggled.
     added: 2026-08-20
 
+  - id: arr-cloud-news-fetch-timeout
+    title: '*arr ServerSideNotificationService cloud-news poll timeout'
+    rx: '(?i)serversidenotificationservice\|?\s*failed to retrieve notifications'
+    field: null
+    prompt_clause: '*arr ServerSideNotificationService "Failed to retrieve notifications" cloud-news poll timeouts'
+    why: >-
+      ServerSideNotificationService is the *arr polling ITS VENDOR''S cloud
+      (services.sonarr.tv / services.radarr.video / services.prowlarr.com) for
+      in-app announcement banners - nothing on this box, nothing a member sees,
+      nothing the operator can fix. Verified in the prowlarr debug log
+      2026-08-25: the Error is "System.Net.WebException: Http request timed
+      out" against that fetch, and prowlarr + radarr both logged it in the
+      SAME minute (2026-08-22 03:38) - one upstream network blip, two pages.
+      The *arr retries on its own schedule and the banner content is cosmetic
+      even when the fetch never succeeds. ANCHORED TO THE LOGGER NAME, not to
+      "failed to retrieve" generally, so a real notification-delivery failure
+      (a different logger) still pages; a model that paraphrases the logger
+      away loses the anchor and pages too - fail open, deliberately.
+    added: 2026-08-25
+
+  - id: arr-discord-notify-post-failure
+    title: '*arr Discord notifier "Unable to post payload" delivery failure'
+    rx: '(?i)(discordproxy\|\s*unable to post payload|unable to post payload\s+nzbdrone\.core\.notifications\.discord|unable to send on[a-z]+ notification to:\s*discord)'
+    field: null
+    prompt_clause: '*arr Discord notifier "Unable to post payload" delivery failures'
+    why: >-
+      The *arr in-app Discord notifier (sonarr connection "Discord Webhook",
+      radarr "Discord") failing one OnImportComplete/OnGrab post. The target
+      webhook is ALIVE - verified 2026-08-25 by GET on the configured url
+      (HTTP 200, webhook object returned) minutes after the logged failure -
+      so the failure mode is a transient Discord-side 429/400 during an
+      import burst, not a broken integration. The import itself SUCCEEDED
+      (the notifier fires after the fact); nothing in the pipeline depends on
+      this post landing, and QFlix operator alerting rides a DIFFERENT
+      webhook via Kuma with its own liveness coverage. DELIBERATE TRADE,
+      recorded here: this class also suppresses a webhook that dies
+      permanently later. Accepted because a dead notifier manifests to the
+      operator directly - the import notices stop appearing in the channel -
+      and a cosmetic convenience going quiet is not an audit-page. One
+      underlying event produced FOUR of the seven fields in the 2026-08-25
+      12:08 alert (four model-invented signature variants of the same line);
+      the excerpt-level consensus merge fixes the multiplication, this class
+      fixes the paging.
+    added: 2026-08-25
+
+  - id: bazarr-subsync-single-file
+    title: Bazarr subsync single-file "unable to sync subtitles" failure
+    rx: '(?i)bazarr unable to sync subtitles'
+    field: null
+    prompt_clause: 'Bazarr "unable to sync subtitles" single-file subsync failures'
+    why: >-
+      Bazarr''s post-download subsync step (audio-track alignment) failing on
+      ONE file - "BAZARR unable to sync subtitles: <path>.srt". The srt it
+      could not re-time is left in place and stays usable; sync is a quality
+      polish, not delivery, and Bazarr''s own UI surfaces the per-file result.
+      One occurrence in the entire live bazarr.log on 2026-08-25 (Lucky
+      Strike 2026). No rate dimension in this table - a box-wide ffmpeg
+      breakage would suppress here too - but that is the same accepted limit
+      plex-client-profile-extra and prowlarr-cardigann-retry-5xx record, and
+      a real ffmpeg breakage pages through the tdarr canaries long before a
+      subtitle polish step notices.
+    added: 2026-08-25
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -812,6 +875,15 @@ prompt_segments:
   - index: 22
     marker: 'Plex "Webhook: Error delivering payload" failures against the orphaned Discord webhook'
     classes: [plex-orphaned-webhook-delivery]
+  - index: 23
+    marker: '*arr ServerSideNotificationService "Failed to retrieve notifications" cloud-news poll timeouts'
+    classes: [arr-cloud-news-fetch-timeout]
+  - index: 24
+    marker: '*arr Discord notifier "Unable to post payload" delivery failures'
+    classes: [arr-discord-notify-post-failure]
+  - index: 25
+    marker: 'Bazarr "unable to sync subtitles" single-file subsync failures'
+    classes: [bazarr-subsync-single-file]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths

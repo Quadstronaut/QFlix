@@ -357,6 +357,38 @@ Test-Case 'Get-Consensus sorts severity desc then time asc' {
     Assert-Equal 'w1' $groups[2].signature 'warning last'
 }
 
+Test-Case 'Get-Consensus merges invented-signature variants of ONE excerpt (2026-08-25 4-for-1)' {
+    # The 2026-08-25 12:08 alert: ONE sonarr log line paged as FOUR fields
+    # because each model minted its own signature for it. Two of the four also
+    # trimmed the timestamp off the excerpt, so the merge must survive both
+    # exact-duplicate keys and contained keys.
+    $line  = '2026-08-25 15:18:06.6|Error|DiscordProxy|Unable to post payload NzbDrone.Core.Notifications.Discord.Payloads.DiscordPayload'
+    $short = 'Unable to post payload NzbDrone.Core.Notifications.Discord.Payloads.DiscordPayload'
+    $findings = @(
+        @{ time='t1'; app='sonarr'; file='f'; severity='error'; summary='DiscordProxy unable to post payload'; excerpt=$line;  signature='sonarr:discord-proxy-post-failure';   _model='qwen2.5-coder:7b' },
+        @{ time='t1'; app='sonarr'; file='f'; severity='error'; summary='Discord notification failure';        excerpt=$short; signature='sonarr:discord-notification-failure'; _model='qwen3:8b' },
+        @{ time='t1'; app='sonarr'; file='f'; severity='error'; summary='Discord payload posting failed';      excerpt=$line;  signature='sonarr:discord-proxy-failure';       _model='qwen3-coder:30b' },
+        @{ time='t1'; app='sonarr'; file='f'; severity='error'; summary='Discord notification failure';        excerpt=$short; signature='sonarr:discord-notification-failure-2'; _model='qwen3:8b' }
+    )
+    $groups = @(Get-Consensus -Findings $findings)
+    Assert-Equal 1 $groups.Count 'four signatures, one line, ONE group'
+    Assert-Equal 3 @($groups[0].models_flagged).Count 'all three models credited'
+    Assert-Equal $line $groups[0].excerpt 'longest excerpt kept'
+}
+
+Test-Case 'Get-Consensus excerpt merge does NOT collapse short or distinct excerpts' {
+    # <40-char normalized keys never merge (two real findings can share a short
+    # phrase), and two long-but-different lines stay separate.
+    $findings = @(
+        @{ time='t'; app='a'; file='f'; severity='error'; summary='s'; excerpt='connection refused'; signature='a:one'; _model='m1' },
+        @{ time='t'; app='b'; file='f'; severity='error'; summary='s'; excerpt='connection refused'; signature='b:two'; _model='m1' },
+        @{ time='t'; app='c'; file='f'; severity='error'; summary='s'; excerpt='2026-08-22 03:38:11.9|Error|ServerSideNotificationService|Failed to retrieve notifications'; signature='c:three'; _model='m1' },
+        @{ time='t'; app='d'; file='f'; severity='error'; summary='s'; excerpt='2026-08-25 14:49:03 ERROR root BAZARR unable to sync subtitles: /path/x.en.srt'; signature='d:four'; _model='m1' }
+    )
+    $groups = @(Get-Consensus -Findings $findings)
+    Assert-Equal 4 $groups.Count 'no false merges'
+}
+
 # --- Task 9: Discord payload builders ---
 Test-Case 'New-DiscordErrorPayload mentions operator + builds embed fields' {
     $groups = @(
@@ -884,9 +916,12 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # the only undated lines are interleave-corrupted REAL errors that must
     # pass (fail open), not inherit a stale verdict (fail closed).
     $bazarrSite = 'tail -n 360 "$f" | awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr(\$0,1,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }"'
-    $tdarrSite  = 'awk -v c="$FRESH_CUTOFF" "{ d=substr(\$0,2,10); if (d ~ /^[0-9]{4}-/ && d < c) next; print }"'
+    # 2026-08-25: tdarr site moved off the fixed col-2 substr to match() so a
+    # date NOT at column 2 (interleave-spliced lines) still gets a verdict;
+    # undated lines still pass through (plain fail-open, no inheritance).
+    $tdarrSite  = 'awk -v c="$FRESH_CUTOFF" "{ if (match(\$0, /\[[0-9]{4}-[0-9]{2}-[0-9]{2}T/)) { d=substr(\$0, RSTART+1, 10); if (d < c) next } print }"'
     Assert-True ($h.Contains($bazarrSite)) 'bazarr filter verbatim (360 pre-window, col-1 offset, inheritance)'
-    Assert-True ($h.Contains($tdarrSite))  'tdarr filter verbatim (col-2 offset, plain fail-open)'
+    Assert-True ($h.Contains($tdarrSite))  'tdarr filter verbatim (match-anchored date, plain fail-open)'
     # arr Error/Fatal grep (2026-08-15: expired July indexer-backoff line paged
     # from a sparse-error file - whole-file grep needs the same date floor).
     $arrSite = 'grep -aE "\|(Error|Fatal)\|" "$f" | awk -v c="$FRESH_CUTOFF" "{ d=substr(\$0,1,10); if (d ~ /^[0-9]{4}-/ && d < c) next; print }" | tail -n 8'
@@ -1479,6 +1514,75 @@ Test-Case 'system prompt carries the 2026-08-16 classes with their still-report 
     Assert-True ($sp.Contains('ffmpegPath not working')) 'ffmpeg carve-out present'
     Assert-True ($sp.Contains('UNIQUE constraint failed: media.tvdbId')) 'seerr clause present'
     Assert-True ($sp -match '(?i)other seerr sqlite_constraint') 'other-column carve-out present'
+}
+
+# --- 2026-08-25: the 12:08 seven-field false page ---
+# All seven fields were noise: 2x *arr cloud-news poll timeout (prowlarr+radarr,
+# same upstream blip, same minute), 4x ONE sonarr Discord post failure (webhook
+# verified alive by GET minutes later), 1x bazarr single-file subsync failure.
+# Fixtures are the EXACT excerpts from that alert, post-norm.
+Test-Case 'Test-IsNoiseFinding suppresses the 2026-08-25 seven-field page' {
+    $cloudNews = @{
+        signature = 'prowlarr:notification-failure'
+        summary   = 'Failed to retrieve notifications'
+        excerpt   = '[2026-08-22 03:38:11.9|Error|ServerSideNotificationService|Failed to retrieve notifications'
+    }
+    Assert-Equal 'arr-cloud-news-fetch-timeout' (Test-IsNoiseFinding $cloudNews) 'cloud-news poll timeout suppressed'
+
+    $discordFull = @{
+        signature = 'sonarr:discord-proxy-post-failure'
+        summary   = 'DiscordProxy unable to post payload'
+        excerpt   = '2026-08-25 15:18:06.6|Error|DiscordProxy|Unable to post payload NzbDrone.Core.Notifications.Discord.Payloads.DiscordPayload'
+    }
+    Assert-Equal 'arr-discord-notify-post-failure' (Test-IsNoiseFinding $discordFull) 'DiscordProxy line suppressed'
+
+    $discordTrimmed = @{
+        signature = 'sonarr:discord-notification-failure'
+        summary   = 'Discord notification failure'
+        excerpt   = 'Unable to post payload NzbDrone.Core.Notifications.Discord.Payloads.DiscordPayload'
+    }
+    Assert-Equal 'arr-discord-notify-post-failure' (Test-IsNoiseFinding $discordTrimmed) 'timestamp-trimmed variant suppressed'
+
+    $discordWarn = @{
+        signature = 'sonarr:discord-webhook'
+        summary   = 'Unable to send notification'
+        excerpt   = '2026-08-25 15:18:07.8|Warn|NotificationService|Unable to send OnImportComplete notification to: Discord Webhook'
+    }
+    Assert-Equal 'arr-discord-notify-post-failure' (Test-IsNoiseFinding $discordWarn) 'paired Warn line suppressed'
+
+    $subsync = @{
+        signature = 'bazarr:subtitle-sync-failure'
+        summary   = 'BAZARR unable to sync subtitles'
+        excerpt   = '[2026-08-25 14:49:03]ERROR    |root    |BAZARR unable to sync subtitles: /home/quadstronaut/media/Movies/Lucky Strike (2026) {tmdb-1594914}/Lucky Strike (2026) WEBRip-1080p.en.srt'
+    }
+    Assert-Equal 'bazarr-subsync-single-file' (Test-IsNoiseFinding $subsync) 'single-file subsync failure suppressed'
+}
+
+Test-Case '2026-08-25 rules do NOT eat the real faults next door' {
+    # A DIFFERENT logger failing to retrieve something is not the cloud-news poll.
+    $realNotif = @{
+        signature = 'sonarr:db-notification-read'
+        summary   = 'notification read failure'
+        excerpt   = '2026-08-25 10:00:00.0|Error|NotificationRepository|Failed to retrieve notification definitions from database'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $realNotif) 'non-cloud retrieve failure survives'
+
+    # A Kuma/operator-webhook delivery failure is a REAL alerting break -
+    # the rule anchors on the *arr notifier strings, not "discord" generally.
+    $realWebhook = @{
+        signature = 'kuma:discord-notify-fail'
+        summary   = 'Kuma failed to notify Discord'
+        excerpt   = 'ERROR - Discord notification returned 401 Unauthorized for monitor QFlix Reaper'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $realWebhook) 'operator alert-path failure survives'
+
+    # Bazarr failing to DOWNLOAD subtitles is delivery, not polish.
+    $realBazarr = @{
+        signature = 'bazarr:download-fail'
+        summary   = 'subtitle download failed'
+        excerpt   = '[2026-08-25 14:49:03]ERROR    |root    |BAZARR unable to download subtitles for episode: provider error'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $realBazarr) 'download failure survives'
 }
 
 # Summary
