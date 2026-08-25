@@ -133,7 +133,7 @@ repo_areas:
 
   - id: A-root-docs
     surface: S1
-    paths: ["README.md", "inventory.md", "CHANGELOG.md", "todo-after-claude.md"]
+    paths: ["README.md", "inventory.md", "CHANGELOG.md", "todo-after-claude.md", "CLAUDE.md"]
     covered_by: [C-06, C-08]
 
   - id: A-root-config
