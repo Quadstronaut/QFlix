@@ -183,6 +183,14 @@ STANDALONE_SELF_PUSH_MONITORS = {
     # stream aborts the matroska muxer). Daily 04:00 UTC; destructive
     # automation (remux + atomic replace) must never run silent.
     "QFlix Unknown Codec Stream": "qflix-unknown-codec-stream",
+    # Repoints Plex off release-group artwork (local/embedded posters that a
+    # release ships beside or inside the video file). Daily 06:00 UTC. The
+    # remedy for this existed as scripts/plex/fix-release-posters.py from
+    # 2026-08-09 and ran ZERO times, because nothing scheduled it and nothing
+    # noticed -- this line and the jobs.yaml entry are the half that was
+    # missing. It also carries the only report of items with bad art and NO
+    # agent alternative, which nothing automated can ever clear.
+    "QFlix Poster Janitor": "qflix-poster-janitor",
     # The LIVE half of the audit regime (L-01..L-07). The offline detectors
     # above audit SOURCE; this audits what is actually RUNNING -- staged units
     # vs what systemd loaded, the live Kuma monitor set, persisted push tokens,

@@ -603,6 +603,11 @@ _AUDIT_METRICS = (
     # silent stop strands new members unprovisioned AND lapsed ones unreduced.
     # Present here or the drift audit correctly reports it manifest_only.
     'monitor_status{monitor_id="13",monitor_name="QFlix Entitlement Gate",monitor_type="push"} 1\n'
+    # "QFlix Poster Janitor" joined STANDALONE_SELF_PUSH_MONITORS 2026-08-24:
+    # repoints Plex off release-group artwork and is the only report of items
+    # with bad art and NO agent alternative. Present here or the drift audit
+    # correctly reports it manifest_only.
+    'monitor_status{monitor_id="14",monitor_name="QFlix Poster Janitor",monitor_type="push"} 1\n'
 )
 
 
@@ -619,11 +624,11 @@ class TestAuditMonitors:
         # "QFlix Collect (workstation)" joined STANDALONE_SELF_PUSH_MONITORS
         # 2026-07-29 (it self-pushes from the box now, see lib/kuma.py) so it
         # must appear here too, matched rather than manifest_only.
-        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Live", "QFlix Audit Regime", "QFlix Collect (workstation)", "QFlix Entitlement Gate", "QFlix Fleet", "QFlix Reaper", "QFlix Torrent Janitor", "QFlix Unknown Codec Stream", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
+        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Live", "QFlix Audit Regime", "QFlix Collect (workstation)", "QFlix Entitlement Gate", "QFlix Fleet", "QFlix Poster Janitor", "QFlix Reaper", "QFlix Torrent Janitor", "QFlix Unknown Codec Stream", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
         assert report["manifest_only"] == []
         assert report["kuma_only"] == []
-        assert report["live_count"] == 14
-        assert report["manifest_count"] == 14
+        assert report["live_count"] == 15
+        assert report["manifest_count"] == 15
 
     def test_audit_manifest_only(self, monkeypatch):
         from lib.kuma import audit_monitors
