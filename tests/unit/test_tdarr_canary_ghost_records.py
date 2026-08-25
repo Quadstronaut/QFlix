@@ -440,7 +440,11 @@ def _te_fixture(tmp_path, *, real_parked: int, ghosts: int, fresh: int = 0):
         _record(db, "ghost%d" % i, _ghost(media, ".Ghost %d.dispfix.tmp" % i),
                 transcode="Transcode error", age_h=61.5)
 
-    return home, {"GRACE_H": "48"}
+    # TE_NOW freezes the canary clock to the fixture epoch, the same injection
+    # HC_NOW/TS_NOW give the sibling canaries. Without it the age_h fixtures
+    # age against the REAL clock and rot: the fresh-within-grace test went red
+    # on 2026-08-25, exactly 48h+2h after the NOW constant was chosen.
+    return home, {"GRACE_H": "48", "TE_NOW": str(NOW)}
 
 
 def test_te_ghost_is_excluded_from_the_parked_count(te_code, tmp_path):
