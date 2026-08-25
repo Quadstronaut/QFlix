@@ -1,0 +1,34 @@
+[Unit]
+Description=Manitoba maint - QFlix poster janitor (daily 06:00 UTC)
+
+[Timer]
+# DAILY, and daily is the justified cadence rather than a default.
+#
+# Runtime does not force the choice: detection is one read-only SQL query
+# (~0ms, zero network calls) and the poster probes only touch the handful of
+# items that query flags - 8 on 2026-08-24. Hourly would be affordable. It is
+# still wrong, for two reasons:
+#   1. The arrival rate is import-shaped, not hour-shaped. Bad art enters only
+#      when a release with a same-named jpg or embedded cover art is imported -
+#      a few times a day at most, and the upstream door (radarr's
+#      importExtraFiles / extraFileExtensions jpg) is being shut separately.
+#      This is a BACKSTOP, not the mechanism.
+#   2. It writes member-visible artwork. A daily cadence bounds how fast a
+#      predicate bug can propagate across the library and leaves a full day of
+#      durable log to read before the next run compounds it.
+# The measured 37s COLD posters() sweep is not what sizes this timer - that
+# approach was rejected for the SQL detector - and the 1.86s warm figure is a
+# Plex server-side cache, not a durable property. Neither number is a reason to
+# go hourly.
+#
+# 06:00 UTC: clear of anime-janitor (03:00), unknown-codec (04:00),
+# audio-disposition (04:30), reaper (05:00) and torrent-janitor (05:30), so
+# nothing hammers Plex at the same minute, and clear of the Monday window.
+OnCalendar=*-*-* 06:00:00 UTC
+RandomizedDelaySec=10min
+# Catch up if the box was asleep/off at the scheduled time.
+Persistent=true
+Unit=manitoba-maint-poster-janitor.service
+
+[Install]
+WantedBy=timers.target

@@ -867,6 +867,87 @@ def do_delete_series(client, series_id) -> bool:
 # ===========================================================================
 # Plex post-delete housekeeping (non-fatal warnings).
 # ===========================================================================
+def prune_empty_collections(port: str, token: str, section_key: str) -> int:
+    """Delete collections in this section that now contain NOTHING. Returns the
+    count deleted. Non-fatal throughout — this is hygiene, not the job.
+
+    WHY THE REAPER OWNS THIS. Plex auto-creates a franchise collection once a
+    section holds enough of its members (autoCollectionThreshold). This script
+    then deletes the members, and Plex leaves the collection object behind as an
+    empty husk. Nothing else on the box has any reason to look at it, so it
+    accumulates: on 2026-08-25 the Movies library carried 14 empty collections —
+    Deadpool, Dune, Gladiator, Godzilla, Guardians of the Galaxy, Mad Max,
+    Moana, Sonic, Venom and more — and a member browsing on someone else's TV
+    saw a shelf of franchise names with NOTHING behind any of them. That is not
+    a cosmetic defect: it advertises content this server does not have.
+
+    The reaper makes this mess, so the reaper cleans it. Doing it here rather
+    than in a separate sweep is deliberate — it runs only for libraries this run
+    actually deleted from, needs no discovery pass, and cannot drift out of sync
+    with the deletions that cause it. (Husks from OTHER causes — a decommissioned
+    app's collections outliving it, which is how four Maintainerr collections
+    survived two months past its 2026-06-26 removal — are not visible from here
+    and are swept by the poster janitor instead.)
+
+    NEVER deletes a collection with members. The child count is re-read live at
+    delete time rather than trusted from the section listing, because the
+    listing's childCount is a cached column and this function's whole safety
+    argument rests on that number being right.
+    """
+    status, raw = _plex_get(port, token,
+                            "/library/sections/" + str(section_key) + "/collections")
+    if status != 200:
+        warn("collection prune: list failed for section " + str(section_key)
+             + " (HTTP " + str(status) + ") -- skipped, non-fatal")
+        return 0
+    try:
+        rows = _mc(json.loads(raw)).get("Metadata") or []
+    except (ValueError, TypeError) as exc:
+        warn("collection prune: unparseable collection list (" + str(exc)[:80] + ")")
+        return 0
+
+    pruned = 0
+    for row in rows:
+        rk = str(row.get("ratingKey") or "")
+        if not rk:
+            continue
+        st, kraw = _plex_get(port, token, "/library/metadata/" + rk + "/children")
+        if st != 200:
+            continue                       # cannot prove empty -> do not touch
+        try:
+            kids = _mc(json.loads(kraw)).get("Metadata") or []
+        except (ValueError, TypeError):
+            continue
+        if kids:
+            continue                       # has members -> a real collection
+        st, _ = _plex_delete(port, token, "/library/metadata/" + rk)
+        if st in (200, 204):
+            pruned += 1
+            log("  pruned empty collection " + repr(row.get("title")))
+        else:
+            warn("collection prune: DELETE " + rk + " -> HTTP " + str(st)
+                 + " (non-fatal)")
+    return pruned
+
+
+def _plex_delete(port: str, token: str, path: str, timeout: int = 30):
+    """DELETE against PMS. Same never-raise contract as _plex_get/_plex_put."""
+    url = "http://127.0.0.1:" + str(port) + path
+    req = urllib.request.Request(url, method="DELETE", headers={
+        "X-Plex-Token": token,
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="ignore")[:600]
+    except (urllib.error.URLError, socket.timeout) as exc:
+        return 0, str(exc)
+    except Exception as exc:
+        return 0, str(exc)
+
+
 def plex_refresh(port: str, token: str, section_key: str) -> bool:
     """GET /library/sections/{key}/refresh. True iff 2xx. Failure is non-fatal."""
     status, _ = _plex_get(port, token, "/library/sections/" + str(section_key) + "/refresh")
@@ -1381,6 +1462,7 @@ def run(args) -> int:
 
     deleted = 0
     libraries_touched = set()
+    collections_pruned = 0    # empty husks this run removed (see prune_empty_collections)
     for entry in LIBRARIES:
         title = entry["plex"]
         cands = per_lib_candidates.get(title) or []
@@ -1418,6 +1500,11 @@ def run(args) -> int:
                 if not plex_empty_trash(port, token, sk):
                     partial = True
                     warn("Plex emptyTrash failed for '" + title + "' (non-fatal)")
+                pruned = prune_empty_collections(port, token, sk)
+                if pruned:
+                    collections_pruned += pruned
+                    log("pruned " + str(pruned) + " empty collection(s) from '"
+                        + title + "'")
 
     # ---- Seerr reconciliation (after all libraries) ----
     s_deleted, s_failed = reconcile_seerr(execute=True)
@@ -1431,6 +1518,10 @@ def run(args) -> int:
     # known one goes green with a throttled weekly WARN reminder.
     summary = (str(deleted) + " deleted, " + str(total_gb) + " GB reclaimed across " +
                str(len(libraries_touched)) + " libraries")
+    # Reported, not silent: an empty collection advertises content the server
+    # does not have, and 14 of them accumulated unseen before 2026-08-25.
+    if collections_pruned:
+        summary += ", " + str(collections_pruned) + " empty collection(s) pruned"
     # Re-reconcile at the guaranteed emit point (emit_reminders=True) so the weekly
     # WARN slot is consumed ONLY when we're about to actually send it — not on an
     # early cap/lock abort. first_seen/last_seen are idempotent under the same now.

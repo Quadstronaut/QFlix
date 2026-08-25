@@ -1,0 +1,25 @@
+[Unit]
+Description=Manitoba maint - QFlix poster janitor (repoint Plex off release-group artwork)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# DEFAULT = DRY-RUN. Ships SAFE: reads the Plex library DB, probes the poster
+# list of each flagged item, writes the plan to the durable log and the Kuma
+# message, and CHANGES NOTHING. Arm real flips with an on-box drop-in appending
+# --execute (the reaper / torrent-janitor ritual) AFTER reviewing a dry-run
+# plan. Poster art is the most member-visible thing this maint system touches -
+# a mis-classified predicate replaces the artwork on every item in the library,
+# so it does not ship armed on the strength of a code review alone.
+#
+# Rails that stay in force when armed: the narrow classify_item predicate
+# (never touches an item whose SELECTED poster is already agent-supplied), the
+# --max-items cap, and a re-read gate after every PUT - a flip that does not
+# verify is a failure, not a success.
+ExecStart=/usr/bin/python3 %h/scripts/maint/qflix-poster-janitor.py
+# One SQL query plus a handful of Plex HTTP calls: seconds today, and bounded
+# by --max-items even on a large backlog. 600s is headroom for a busy box, not
+# a working estimate.
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal

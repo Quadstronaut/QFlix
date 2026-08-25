@@ -197,6 +197,9 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-audit-live.timer \
     scripts/maint/systemd/manitoba-maint-torrent-janitor.service \
     scripts/maint/systemd/manitoba-maint-torrent-janitor.timer \
+    scripts/maint/qflix-poster-janitor.py \
+    scripts/maint/systemd/manitoba-maint-poster-janitor.service \
+    scripts/maint/systemd/manitoba-maint-poster-janitor.timer \
     scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.service \
     scripts/maint/systemd/manitoba-maint-canary-thread-ceiling.timer \
     scripts/maint/systemd/manitoba-maint-canary-sab-stall.service \
@@ -305,6 +308,13 @@ chmod +x ~/scripts/maint/qflix-collect.py
 # (added 2026-07-27). Ships DRY-RUN; armed via an on-box drop-in like the reaper.
 cp -f "$STG"/scripts/maint/qflix-torrent-janitor.py ~/scripts/maint/qflix-torrent-janitor.py
 chmod +x ~/scripts/maint/qflix-torrent-janitor.py
+# QFlix poster janitor — repoints Plex off release-group artwork (added
+# 2026-08-24). Staged AND copied AND unit-loaded AND enabled below: the whole
+# reason this exists is that its predecessor (scripts/plex/fix-release-posters.py,
+# now deleted) had none of those four and therefore never ran. Ships DRY-RUN;
+# armed via an on-box drop-in like the reaper.
+cp -f "$STG"/scripts/maint/qflix-poster-janitor.py ~/scripts/maint/qflix-poster-janitor.py
+chmod +x ~/scripts/maint/qflix-poster-janitor.py
 # Entitlement gate. Ships REPORT-ONLY: the unit passes no --execute, and arming
 # additionally requires `armed: true` in secrets/members.yaml. Two switches,
 # because either one alone is something a deploy or a hand-edit could flip
@@ -579,6 +589,8 @@ for unit in \
     manitoba-maint-anime-janitor.timer \
     manitoba-maint-torrent-janitor.service \
     manitoba-maint-torrent-janitor.timer \
+    manitoba-maint-poster-janitor.service \
+    manitoba-maint-poster-janitor.timer \
     manitoba-maint-audit.service \
     manitoba-maint-audit.timer \
     manitoba-maint-audit-live.service \
@@ -801,6 +813,12 @@ systemctl --user enable --now manitoba-maint-anime-janitor.timer
 # --execute); arm via an on-box drop-in like the reaper. --now activates the
 # schedule (no immediate run).
 systemctl --user enable --now manitoba-maint-torrent-janitor.timer
+# Poster janitor — daily 06:00 UTC. Repoints Plex off release-group artwork
+# (local/embedded posters a release ships beside or inside the video file) and
+# reports the items with bad art and NO agent alternative, which nothing
+# automated can clear. Ships DRY-RUN (ExecStart has no --execute); arm via an
+# on-box drop-in like the reaper. --now activates the schedule (no immediate run).
+systemctl --user enable --now manitoba-maint-poster-janitor.timer
 # Convergent audit: daily enumeration of the declared defect classes, self-
 # pushing "QFlix Audit Regime". Exits 1 on any ENFORCED finding.
 systemctl --user enable --now manitoba-maint-audit.timer
