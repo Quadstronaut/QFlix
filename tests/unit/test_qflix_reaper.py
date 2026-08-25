@@ -1130,3 +1130,75 @@ def test_delete_still_asks_for_files_and_no_import_exclusion(reaper):
     reaper.do_delete_series(s, 12)
     assert s.deleted == [("/series/12",
                           "deleteFiles=true&addImportListExclusion=false")]
+
+
+# ===========================================================================
+# Empty-collection prune (2026-08-25). The reaper makes this mess, so it cleans
+# it: Plex auto-creates a franchise collection, the reaper deletes the members,
+# and Plex leaves an empty husk that advertises content the server does not
+# have. 14 had accumulated in Movies unseen — a member browsing on someone
+# else's TV saw a shelf of franchise names with nothing behind any of them.
+# ===========================================================================
+
+def _prune_stubs(reaper, monkeypatch, listing, children, deletes):
+    """Wire the three Plex calls prune_empty_collections makes."""
+    def fake_get(port, token, path, query="", timeout=30):
+        if path.endswith("/collections"):
+            return listing
+        for rk, resp in children.items():
+            if path == "/library/metadata/" + rk + "/children":
+                return resp
+        raise AssertionError("unexpected GET " + path)
+
+    def fake_delete(port, token, path, timeout=30):
+        deletes.append(path.rsplit("/", 1)[-1])
+        return (200, "")
+
+    monkeypatch.setattr(reaper, "_plex_get", fake_get)
+    monkeypatch.setattr(reaper, "_plex_delete", fake_delete)
+
+
+def _mc_json(rows):
+    import json as _j
+    return (200, _j.dumps({"MediaContainer": {"Metadata": rows}}))
+
+
+def test_prune_deletes_only_the_empty_collections(reaper, monkeypatch):
+    deletes = []
+    _prune_stubs(
+        reaper, monkeypatch,
+        listing=_mc_json([{"ratingKey": "1", "title": "Deadpool Collection"},
+                          {"ratingKey": "2", "title": "Minions Collection"}]),
+        children={"1": _mc_json([]),
+                  "2": _mc_json([{"ratingKey": "9"}, {"ratingKey": "10"}])},
+        deletes=deletes)
+    assert reaper.prune_empty_collections("1", "t", "4") == 1
+    assert deletes == ["1"], "a collection with members must never be deleted"
+
+
+def test_prune_never_deletes_when_it_cannot_prove_empty(reaper, monkeypatch):
+    """THE SAFETY ARGUMENT. If the children read fails, emptiness is unproven —
+    and unproven must mean untouched. 'I could not look' and 'it is empty' are
+    the same absence of rows and want opposite verdicts; this repo has been
+    bitten by exactly that confusion twice this week."""
+    deletes = []
+    _prune_stubs(
+        reaper, monkeypatch,
+        listing=_mc_json([{"ratingKey": "1", "title": "Unknown"}]),
+        children={"1": (500, "boom")},
+        deletes=deletes)
+    assert reaper.prune_empty_collections("1", "t", "4") == 0
+    assert deletes == []
+
+
+def test_prune_is_non_fatal_when_the_listing_fails(reaper, monkeypatch):
+    """Hygiene must never break the job. A failed list returns 0, not an
+    exception into the delete loop."""
+    monkeypatch.setattr(reaper, "_plex_get",
+                        lambda *a, **k: (503, "unavailable"))
+    assert reaper.prune_empty_collections("1", "t", "4") == 0
+
+
+def test_prune_tolerates_unparseable_json(reaper, monkeypatch):
+    monkeypatch.setattr(reaper, "_plex_get", lambda *a, **k: (200, "not json"))
+    assert reaper.prune_empty_collections("1", "t", "4") == 0
