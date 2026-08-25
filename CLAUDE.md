@@ -3,7 +3,7 @@
 Self-healing Plex stack on one Ultra.cc shared seedbox: `manifest/apps.yaml` (single source of truth), `manitoba-maint` Python daemon, 35 canaries, Kuma push monitors, weekly newsletter. README + `inventory.md` describe the system; this file is what must not go wrong.
 
 ## Access & safety
-- SSH is **`quadstronaut@seedbox.example.com` only** (wrapper `scripts/lib/ssh.sh`). Wrong-user guesses trip Ultra.cc fail2ban and kill the tunnel; ban bypass = `ssh -J starhold quadstronaut@seedbox.example.com`.
+- SSH is **`quadstronaut@seedbox.example.com` only** (real host in gitignored `secrets/seedbox.ssh-host`; wrapper `scripts/lib/ssh.sh`). Wrong-user guesses trip Ultra.cc fail2ban and kill the tunnel; ban bypass = `ssh -J starhold quadstronaut@seedbox.example.com`.
 - **Monday maintenance window (11:00–15:00 UTC): no box operations.** Deploy before or after, never during. Local repo work is fine.
 - **Repo is PUBLIC.** Never commit member data, activity, hostnames beyond the sanitized `seedbox.example.com`, or secrets (`secrets/` is untracked). Member privacy is absolute — no per-member activity in any surface.
 - Never `git reset --hard` or destroy uncommitted WIP without explicit authorization; "clean up" is not authorization.
