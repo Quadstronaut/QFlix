@@ -77,12 +77,16 @@ source "$ROOT/scripts/lib/ssh.sh"
 
 GRACE_H="${QFLIX_CANARY_TDARR_TERR_GRACE_H:-48}"
 
-RES=$(sshm "GRACE_H=$GRACE_H"' python3 - <<PY
+RES=$(sshm "GRACE_H=$GRACE_H TE_NOW=${TE_NOW:-0}"' python3 - <<PY
 import glob, json, os, sys, time
 
 db = os.path.expanduser("~/.apps/tdarr/server/Tdarr/DB2/FileJSONDB")
 grace_s = int(os.environ.get("GRACE_H", "48")) * 3600
-now = time.time()
+# TE_NOW is the injectable clock the sibling canaries already carry (HC_NOW,
+# TS_NOW): tests freeze it so age fixtures cannot rot with wall-clock (the
+# 48h-grace test went red 2 days after its frozen fixture epoch). Unset or 0
+# in production, so the box clock is what grades real records.
+now = float(os.environ.get("TE_NOW") or 0) or time.time()
 
 paths = glob.glob(db + "/*.json")
 if not paths:
