@@ -784,7 +784,7 @@ classes:
 
   - id: bazarr-subsync-single-file
     title: Bazarr subsync single-file "unable to sync subtitles" failure
-    rx: '(?i)bazarr unable to sync subtitles'
+    rx: '(?i)unable to sync subtitles'
     field: null
     prompt_clause: 'Bazarr "unable to sync subtitles" single-file subsync failures'
     why: >-
@@ -798,6 +798,90 @@ classes:
       plex-client-profile-extra and prowlarr-cardigann-retry-5xx record, and
       a real ffmpeg breakage pages through the tdarr canaries long before a
       subtitle polish step notices.
+      RX WIDENED THE SAME DAY it shipped: the first version anchored on
+      "BAZARR unable to sync subtitles" - the raw-log form - and the very
+      first live dry-run paged anyway because the model trimmed the leading
+      "BAZARR" off the excerpt. The rule is the rule: write the rx against
+      what the MODEL emits, not the log line, and prove it with a live run.
+    added: 2026-08-25
+
+  - id: prowlarr-flaresolverr-validation-transient
+    title: Prowlarr FlareSolverr "Proxy validation failed" one-off
+    rx: '(?i)flaresolverr\|?\s*proxy validation failed'
+    field: null
+    prompt_clause: 'Prowlarr FlareSolverr "Proxy validation failed" one-off validation errors'
+    why: >-
+      Prowlarr health-checking its FlareSolverr proxy and failing ONCE during
+      a network blip. Verified 2026-08-25: the proxy is configured (id 1, tag
+      2), the FlareSolverr PROCESS is alive on the box, and the only Error
+      hit in the current log is 2026-08-22 03:39:17 - the SAME minute as the
+      cloud-news poll timeouts on prowlarr and radarr and the radarr2 update
+      check failure, i.e. one upstream blip wearing four log lines. TRADE
+      RECORDED: a permanently dead FlareSolverr also matches this rx, and is
+      accepted because the indexers behind it then fail with their OWN
+      Cloudflare-challenge errors, which are a different string and still
+      page. This table has no rate dimension - the same accepted limit the
+      other transient classes record.
+    added: 2026-08-25
+
+  - id: arr-update-check-failure
+    title: '*arr CommandExecutor failure on an external-facing scheduled task'
+    rx: '(?i)error occurred while executing task (applicationcheckupdate|applicationupdatecheck|checkhealth)\b'
+    field: null
+    prompt_clause: '*arr "Error occurred while executing task ApplicationCheckUpdate/ApplicationUpdateCheck/CheckHealth" scheduled-task failures'
+    why: >-
+      One network blip (2026-08-22 03:38-03:40) made EVERY scheduled *arr
+      task that touches the network log exactly one "CommandExecutor|Error
+      occurred while executing task <X>" line, and each REA run resampled a
+      DIFFERENT task name: radarr2 ApplicationCheckUpdate (run 1), prowlarr
+      ApplicationUpdateCheck + radarr CheckHealth (run 2) - the *arrs do not
+      even agree on the word order. Classing them one name at a time is
+      whack-a-mole, so the class owns the CommandExecutor shape with an
+      EXPLICIT allowlist of tasks whose only job is talking to external
+      services: the two self-update spellings (structurally unactionable
+      here - Ultra.cc installs and updates apps via the provider panel,
+      never *arr self-update) and CheckHealth (probes indexers and download
+      clients; the task failing to RUN once is not a health finding, and
+      real *arr liveness is Kuma-canaried from outside). DELIBERATELY NOT a
+      bare "executing task \w+": a failing Backup or RssSync task is local
+      and actionable and must still page - extend the allowlist, never
+      loosen it to a wildcard.
+    added: 2026-08-25
+
+  - id: seerr-plextv-watchlist-5xx
+    title: Seerr plex.tv watchlist fetch 5xx
+    rx: '(?is)failed to retrieve watchlist items.{0,160}status code 5\d\d'
+    field: null
+    prompt_clause: 'Seerr "Failed to retrieve watchlist items" plex.tv 5xx responses'
+    why: >-
+      Seerr syncing member watchlists from the plex.tv METADATA CLOUD and
+      getting a 5xx back - Plex.TV having a moment, nothing on this box in
+      the path. The sync is scheduled and self-retries; the next pass
+      succeeds. ANCHORED TO 5xx ONLY, deliberately: a 401/403 on the same
+      fetch is a token/auth break on OUR side and still pages, and so does
+      any other watchlist error string. The 160-char window spans the JSON
+      errorMessage wrapper the model quotes verbatim.
+    added: 2026-08-25
+
+  - id: reaper-success-line-misread
+    title: qflix-reaper SUCCESS summary line misread as a failure
+    rx: '(?is)\A(?!.*(?:\|\s*(?:Error|Fatal|Critical)\s*\||\[ERROR\]|ERROR\s*[-:]|Traceback \(most recent call last\))).*success\s*[-—]\s*\d+ deleted, [\d.]+ gb reclaimed'
+    field: excerpt
+    prompt_clause: 'qflix-reaper "SUCCESS - N deleted, N GB reclaimed" summary lines, including N=0'
+    why: >-
+      The reaper''s own SUCCESS summary line - "SUCCESS - 0 deleted, 0 GB
+      reclaimed across 0 libraries" - reported as "qflix-reaper failed to
+      delete any items" at severity=error by qwen2.5-coder:7b on 2026-08-25.
+      The model inverted a success line: zero deletions means nothing aged
+      past retention that day, which is the reaper WORKING. The raw log
+      carries an em dash and the model excerpt an ASCII hyphen, so the rx
+      accepts both. EXCERPT-SCOPED WITH THE SHARED ERROR-LEVEL GUARD
+      (byte-identical to prowlarr-cardigann-retry-5xx and
+      plex-orphaned-webhook-delivery, deliberately - widening happens in one
+      commit across all copies): an excerpt that carries a real error token
+      alongside the SUCCESS line declines the rule and still pages, and the
+      reaper''s real failures (Kuma #-monitored, dead-man covered) never
+      speak in this string at all.
     added: 2026-08-25
 
 # Every ';'-delimited segment of the prompt's never-report sentence must be
@@ -884,6 +968,18 @@ prompt_segments:
   - index: 25
     marker: 'Bazarr "unable to sync subtitles" single-file subsync failures'
     classes: [bazarr-subsync-single-file]
+  - index: 26
+    marker: 'Prowlarr FlareSolverr "Proxy validation failed" one-off validation errors'
+    classes: [prowlarr-flaresolverr-validation-transient]
+  - index: 27
+    marker: '*arr "Error occurred while executing task ApplicationCheckUpdate/ApplicationUpdateCheck/CheckHealth" scheduled-task failures'
+    classes: [arr-update-check-failure]
+  - index: 28
+    marker: 'Seerr "Failed to retrieve watchlist items" plex.tv 5xx responses'
+    classes: [seerr-plextv-watchlist-5xx]
+  - index: 29
+    marker: 'qflix-reaper "SUCCESS - N deleted, N GB reclaimed" summary lines, including N=0'
+    classes: [reaper-success-line-misread]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
