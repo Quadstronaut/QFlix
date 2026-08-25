@@ -705,10 +705,158 @@ Test-Case 'plex_errors source drops the benign high-volume classes' {
 
 Test-Case 'tdarr source strips stack-trace continuations and reads the timestamped logs' {
     $h = Get-RemoteHeredoc
-    Assert-True ($h -match 'grep -vE "\^\[\[:space:\]\]\+at "') 'express stack continuations stripped'
+    # The continuation strip now runs AFTER tailnew's per-line [path] prefix,
+    # so it anchors on "] " plus the line's own original indentation. Two
+    # whitespace chars minimum (tailnew's own separator + at least one of the
+    # line's) so a real line beginning "at " cannot be eaten.
+    Assert-True ($h.Contains('grep -vE "^\[[^]]+\][[:space:]][[:space:]]+at "')) 'express stack continuations stripped'
     Assert-True ($h -match 'Tdarr_Server_Log\.txt')            'timestamped server log included'
     Assert-True ($h -match 'Tdarr_Node_Log\.txt')              'timestamped node log included'
     Assert-True ($h -match 'uniq -c')                          'repeated faults collapsed, not truncated away'
+}
+
+# --- 2026-08-25: the undated-source structural fix ---------------------------
+# The page that forced this: "tdarr:permission-denied", EACCES mkdir on
+# '/tdarr-workDir-node-baY4PcyP1-worker-gloomy-goa-ts-1779348004454'. That epoch
+# is 2026-05-21T07:20:04Z - THREE MONTHS old - and it shipped because node.err
+# carries ZERO dated lines (0/694 measured), so every line filter is a provable
+# no-op on it and the only surviving gate was file mtime, which was 1.4 days
+# old over a tail window spanning 94 days. No noise class can fix that; the
+# collector has to stop shipping the bytes.
+Test-Case 'undated .err streams ship on the WATERMARK basis, not the mtime gate' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('tailnew() {'))      'tailnew helper defined'
+    Assert-True ($h.Contains('export -f tailnew')) 'tailnew exported to bash -c children'
+    Assert-True ($h.Contains('export REA_OFFSETS')) 'offsets path exported to bash -c children'
+    # The three ship-nothing paths, each pinned: first sight, no growth, and
+    # the mtime floor. Dropping any one of them re-opens the defect.
+    Assert-True ($h.Contains('[ -n "$prev" ] || continue'))          'first sight ships nothing'
+    Assert-True ($h.Contains('[ "$size" -gt "$prev" ] || continue')) 'no appended bytes ships nothing'
+    Assert-True ($h -match 'find "\$f" -mtime -"\$FRESH_DAYS" -print -quit 2>/dev/null\)" \] \|\| continue')  'mtime floor kept as the fallback basis'
+    Assert-True ($h.Contains('[ "$size" -lt "$prev" ] && prev=0'))   'rotation resets the watermark'
+    # Both undated sources are actually WIRED to it - a helper defined and
+    # used nowhere is the half-fix this pin exists to catch.
+    Assert-True ($h.Contains('tailnew 900 ~/.apps/tdarr/logs/server.err ~/.apps/tdarr/logs/node.err')) 'tdarr .err half on the watermark'
+    Assert-True ($h.Contains("collect kometa bash -c 'tailnew 1200 ~/.apps/kometa/logs/kometa.err'"))  'kometa.err on the watermark'
+    Assert-False ($h.Contains('tailfresh 80 ~/.apps/tdarr/logs/server.err'))  'tdarr .err no longer rides the mtime gate'
+    Assert-False ($h.Contains('tailfresh 120 ~/.apps/kometa/logs/kometa.err')) 'kometa no longer rides the mtime gate'
+    # Per-line [path] prefix, not a header: byte truncation can orphan a line
+    # from a header, never from its own prefix.
+    Assert-True ($h.Contains('printf ''%s\n'' "$new" | sed -e "s#^#[$f] #"')) 'watermark output is per-line [path] prefixed'
+}
+
+Test-Case 'the tdarr DATED half runs first so the byte cap cannot starve it' {
+    # Measured 2026-08-25: the .err half was 2934 bytes against a 3000-byte cap,
+    # so the FRESH_CUTOFF-filtered Tdarr_*_Log.txt half got 66 bytes and shipped
+    # a truncated header with ZERO log lines - deterministically, every run.
+    # collect_cap caps with head -c (oldest bytes win), so list order IS the
+    # budget priority.
+    $h = Get-RemoteHeredoc
+    $iDated = $h.IndexOf('Tdarr_Server_Log.txt')
+    $iErr   = $h.IndexOf('tailnew 900 ~/.apps/tdarr/logs/server.err')
+    Assert-True ($iDated -gt 0 -and $iErr -gt 0) 'both tdarr legs present'
+    Assert-True ($iDated -lt $iErr)              'dated leg precedes the undated leg'
+}
+
+Test-Case 'the two dated-but-unfiltered sources now carry the line filter' {
+    # nginx ("2026/08/20 04:31:00 [error]") and sabnzbd ("2026-08-22
+    # 04:00:31,123::INFO::") both date every line and both were still gated by
+    # file mtime alone - sabnzbd's tail-150 window spanned 2.7 days.
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('tailfresh 200 ~/.apps/nginx/logs/error.log | freshlines'))    'nginx line-filtered'
+    Assert-True ($h.Contains('tailfresh 150 ~/.apps/sabnzbd/logs/sabnzbd.log | freshlines')) 'sabnzbd line-filtered'
+}
+
+Test-Case 'every section declares a freshness basis, and an undeclared one withholds content' {
+    # The law: freshness is established at COLLECTION time or the section ships
+    # nothing. A 15th source added without a declaration must not silently
+    # inherit "unbounded" - it must be a NAMED configuration error.
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('src_basis() {')) 'declaration table exists'
+    Assert-True ($h.Contains('# collector-error: section=%s declares no freshness basis')) 'undeclared section is a named error'
+    Assert-True ($h.Contains('case "$(src_basis "$k")" in')) 'the assembly loop CONSULTS the table'
+    # mtime alone must never be a legal declaration - it is the exact gate that
+    # failed, and admitting it would re-legalise the defect.
+    Assert-True ($h -match 'line\|watermark\|query\|line\+watermark\)') 'legal bases are line/watermark/query only'
+    foreach ($k in @('arr_logs','journal_errors','cron_mail','maint_state','nginx_errors','plex_errors',
+                     'kuma_red','sabnzbd','tdarr','kometa','config_sync','app_extra','reaper_log','vlogs')) {
+        Assert-True ($h -match ("(?m)^\s*(?:[a-z_0-9|]*\|)?" + [regex]::Escape($k) + "(?:\|[a-z_0-9|]*)?\)\s+echo ")) "section $k declares a basis"
+    }
+}
+
+Test-Case 'the section cap truncates on a LINE boundary, never mid-header' {
+    # The 2026-08-25 page's `file` field was the fragment
+    # "===== /home/.../Tdarr_Server_Log.txt (ERROR" - a header with zero lines
+    # under it, produced by a byte cut landing inside a header.
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('head -c "$((cap + 1))"')) 'reads cap+1 so truncation is DETECTABLE'
+    $lineSafeCut = 'head -c "$cap" "$raw" | sed -e ''$d'''
+    Assert-True ($h.Contains($lineSafeCut)) 'drops the trailing partial line when truncated'
+    Assert-True ($h.Contains('collect_cap "$name" "$SECTION_CAP" "$@"')) 'collect delegates to the one capped path'
+    Assert-False ($h.Contains('( "$@" 2>&1 || true ) | head -c "$SECTION_CAP" | base64')) 'no un-line-safe cap path remains'
+}
+
+# --- 2026-08-25: `file` comes from the COLLECTOR, never the model ------------
+Test-Case 'Resolve-FindingFile anchors on the excerpt, not on the model file field' {
+    # The exact 2026-08-25 shape: the excerpt is a REAL node.err line, and the
+    # model named Tdarr_Server_Log.txt (the last header-shaped token in the
+    # window). Provenance must beat the model's guess.
+    $blob = [pscustomobject]@{
+        fetched_at = '2026-08-25T05:00:09Z'
+        host       = 'manitoba'
+        sources    = [pscustomobject]@{
+            tdarr = @(
+                '===== /home/quadstronaut/.apps/tdarr/logs/server.err ====='
+                "TypeError: Cannot read properties of undefined (reading 'includes')"
+                '===== /home/quadstronaut/.apps/tdarr/logs/node.err ====='
+                "  path: '/tdarr-workDir-node-baY4PcyP1-worker-gloomy-goa-ts-1779348004454'"
+                '===== /home/quadstronaut/.apps/tdarr/logs/Tdarr_Server_Log.txt (ERROR'
+            ) -join "`n"
+        }
+    }
+    $idx = Get-CollectorPathIndex -DecodedBlob $blob
+    $got = Resolve-FindingFile -Index $idx `
+        -ModelFile '/home/quadstronaut/.apps/tdarr/logs/Tdarr_Server_Log.txt' `
+        -Excerpt   "path: '/tdarr-workDir-node-baY4PcyP1-worker-gloomy-goa-ts-1779348004454'"
+    Assert-Equal '/home/quadstronaut/.apps/tdarr/logs/node.err' $got 'excerpt provenance beats the model-named path'
+}
+
+Test-Case 'Resolve-FindingFile refuses a path the collector never emitted' {
+    $blob = [pscustomobject]@{
+        sources = [pscustomobject]@{ plex_errors = '[Plex Media Server.log] Aug 25, 2026 01:02:03 ERROR - widget exploded in an unmistakable way' }
+    }
+    $idx = Get-CollectorPathIndex -DecodedBlob $blob
+    # Invented path + paraphrased excerpt: nothing to anchor on, nothing on the
+    # allowlist. 'unattributed' is the honest answer; a made-up path is not.
+    Assert-Equal 'unattributed' (Resolve-FindingFile -Index $idx -ModelFile '/var/log/plex/plex.log' -Excerpt 'plex threw an error about a widget') 'invented path rejected'
+    # A real shipped line resolves to the collector's own [logfile] tag.
+    Assert-Equal 'Plex Media Server.log' (Resolve-FindingFile -Index $idx -ModelFile '' -Excerpt 'ERROR - widget exploded in an unmistakable way') 'per-line tag is the provenance'
+    # A model naming the right file by basename gets ratified, not rejected.
+    Assert-Equal 'Plex Media Server.log' (Resolve-FindingFile -Index $idx -ModelFile '/somewhere/Plex Media Server.log' -Excerpt 'too short') 'basename ratified against the allowlist'
+}
+
+Test-Case 'Get-CollectorPathIndex ignores bracket tokens that are not paths' {
+    $blob = [pscustomobject]@{
+        sources = [pscustomobject]@{ tdarr = "[2026-08-23] [ERROR] worker died unexpectedly during transcode`n[Req#77] whatever" }
+    }
+    $idx = Get-CollectorPathIndex -DecodedBlob $blob
+    Assert-False ($idx.tokens.ContainsKey('2026-08-23')) 'a date is not provenance'
+    Assert-False ($idx.tokens.ContainsKey('ERROR'))      'a level is not provenance'
+    Assert-True  ($idx.tokens.ContainsKey('source:tdarr')) 'the section itself is always a legal token'
+    Assert-Equal 'source:tdarr' (Resolve-FindingFile -Index $idx -ModelFile '' -Excerpt '[2026-08-23] [ERROR] worker died unexpectedly during transcode') 'a shipped line with no path token belongs to its SECTION, not to a bracket token'
+    # An excerpt too short to anchor is unattributed rather than guessed at -
+    # 24 chars is the collision floor and it fails toward honesty.
+    Assert-Equal 'unattributed' (Resolve-FindingFile -Index $idx -ModelFile '' -Excerpt 'worker died') 'sub-floor excerpt is not guessed'
+}
+
+Test-Case 'the prompt no longer instructs a fetched_at timestamp fallback' {
+    # Get-SystemPrompt used to say "fall back to fetched_at", which for an
+    # UNDATED line is an instruction to stamp it NOW - and Test-IsStaleFinding
+    # then grades ($ref - $t).TotalDays == 0 as FRESH. The prompt was laundering
+    # every undated source past the only remaining freshness check.
+    $sp = Get-SystemPrompt
+    Assert-False ($sp.Contains('fall back to fetched_at')) 'fetched_at fallback removed'
+    Assert-True  ($sp -match '(?i)never substitute fetched_at') 'and explicitly forbidden'
 }
 
 Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {

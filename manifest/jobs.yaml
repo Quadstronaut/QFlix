@@ -88,6 +88,18 @@ jobs:
     timer: scripts/maint/systemd/manitoba-maint-audio-disposition.timer
     kuma_monitor: "QFlix Audio Disposition"
 
+  # Repoints Plex off release-group artwork. This entry is the point of the
+  # whole change: the flip logic shipped as scripts/plex/fix-release-posters.py
+  # on 2026-08-09, was referenced by no timer, no ledger entry and no monitor,
+  # and ran zero times in fifteen days while four movies sat on release-group
+  # branding. A remedy nothing schedules is not a remedy, and a scheduled job
+  # with no dead-man is the same thing one deploy later. It also carries the
+  # only report of items with bad art and no agent alternative -- work no
+  # automation will ever clear, which must therefore reach a human.
+  manitoba-maint-poster-janitor:
+    timer: scripts/maint/systemd/manitoba-maint-poster-janitor.timer
+    kuma_monitor: "QFlix Poster Janitor"
+
   manitoba-maint-reaper:
     timer: scripts/maint/systemd/manitoba-maint-reaper.timer
     kuma_monitor: "QFlix Reaper"
