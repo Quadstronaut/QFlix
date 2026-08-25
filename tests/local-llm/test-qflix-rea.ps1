@@ -1556,6 +1556,94 @@ Test-Case 'Test-IsNoiseFinding suppresses the 2026-08-25 seven-field page' {
         excerpt   = '[2026-08-25 14:49:03]ERROR    |root    |BAZARR unable to sync subtitles: /home/quadstronaut/media/Movies/Lucky Strike (2026) {tmdb-1594914}/Lucky Strike (2026) WEBRip-1080p.en.srt'
     }
     Assert-Equal 'bazarr-subsync-single-file' (Test-IsNoiseFinding $subsync) 'single-file subsync failure suppressed'
+
+    # The live dry-run variant that BEAT the first rx: the model trimmed the
+    # leading "BAZARR" off the excerpt. Rx must match the model form.
+    $subsyncTrimmed = @{
+        signature = 'bazarr:subtitle-sync-failure'
+        summary   = 'Subtitle sync failure'
+        excerpt   = 'unable to sync subtitles: /home/quadstronaut/media/Movies/Lucky Strike (2026) {tmdb-1594914}/Lucky Strike (2026) WEBRip-1080p.en.srt'
+    }
+    Assert-Equal 'bazarr-subsync-single-file' (Test-IsNoiseFinding $subsyncTrimmed) 'BAZARR-trimmed variant suppressed'
+}
+
+Test-Case 'Test-IsNoiseFinding suppresses the 2026-08-25 dry-run residue (one blip, four lines)' {
+    # The first live dry-run after the seven-field fix still paged 4 fields;
+    # three were NEW one-offs from the SAME 2026-08-22 03:38-03:39 network blip.
+    # Fixtures are the exact model-emitted excerpts from that run.
+    $flare = @{
+        signature = 'prowlarr:proxy-validation-failure'
+        summary   = 'FlareSolverr proxy validation failed'
+        excerpt   = '[2026-08-22 03:39:17.0|Error|FlareSolverr|Proxy validation failed'
+    }
+    Assert-Equal 'prowlarr-flaresolverr-validation-transient' (Test-IsNoiseFinding $flare) 'FlareSolverr one-off suppressed'
+
+    $update = @{
+        signature = 'radarr2:app-check-update-error'
+        summary   = 'CommandExecutor error occurred while executing task ApplicationCheckUpdate'
+        excerpt   = '[2026-08-22 03:38:18.1|Error|CommandExecutor|Error occurred while executing task ApplicationCheckUpdate'
+    }
+    Assert-Equal 'arr-update-check-failure' (Test-IsNoiseFinding $update) 'self-update check failure suppressed'
+
+    # Run 3 residue, same blip: the OTHER *arrs spell the task differently, and
+    # CheckHealth joined in. The class owns the shape, allowlisted by task.
+    $updateAlt = @{
+        signature = 'prowlarr:update-check-failure'
+        summary   = 'CommandExecutor error occurred while executing task ApplicationUpdateCheck'
+        excerpt   = '[2026-08-22 03:38:12.4|Error|CommandExecutor|Error occurred while executing task ApplicationUpdateCheck'
+    }
+    Assert-Equal 'arr-update-check-failure' (Test-IsNoiseFinding $updateAlt) 'ApplicationUpdateCheck spelling suppressed'
+    $checkHealth = @{
+        signature = 'radarr:health-check-failure'
+        summary   = 'CommandExecutor error occurred while executing task CheckHealth'
+        excerpt   = '[2026-08-22 03:40:23.1|Error|CommandExecutor|Error occurred while executing task CheckHealth'
+    }
+    Assert-Equal 'arr-update-check-failure' (Test-IsNoiseFinding $checkHealth) 'CheckHealth task failure suppressed'
+    # A LOCAL task failing must still page - the allowlist is the guard.
+    $backup = @{
+        signature = 'radarr:backup-failure'
+        summary   = 'CommandExecutor error occurred while executing task Backup'
+        excerpt   = '[2026-08-25 03:00:00.0|Error|CommandExecutor|Error occurred while executing task Backup'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $backup) 'Backup task failure survives'
+
+    $watchlist = @{
+        signature = 'seerr:plex-tv-503-error'
+        summary   = 'Plex.TV Metadata API 503'
+        excerpt   = 'Failed to retrieve watchlist items {"errorMessage":"Request failed with status code 503"}'
+    }
+    Assert-Equal 'seerr-plextv-watchlist-5xx' (Test-IsNoiseFinding $watchlist) 'plex.tv watchlist 5xx suppressed'
+
+    # The auth failure on the same fetch is OURS and must still page.
+    $watchlist401 = @{
+        signature = 'seerr:plex-tv-401'
+        summary   = 'watchlist auth failure'
+        excerpt   = 'Failed to retrieve watchlist items {"errorMessage":"Request failed with status code 401"}'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $watchlist401) 'watchlist 401 survives'
+
+    # Run 2 residue: qwen2.5-coder:7b read the reaper SUCCESS summary as
+    # "failed to delete any items". Model form is ASCII hyphen, raw log em dash.
+    $reaperOk = @{
+        signature = 'reaper:no-deletions'
+        summary   = 'qflix-reaper failed to delete any items'
+        excerpt   = 'SUCCESS - 0 deleted, 0 GB reclaimed across 0 libraries'
+    }
+    Assert-Equal 'reaper-success-line-misread' (Test-IsNoiseFinding $reaperOk) 'SUCCESS line misread suppressed (hyphen)'
+    $reaperOkRaw = @{
+        signature = 'reaper:no-deletions'
+        summary   = 'reaper deleted nothing'
+        excerpt   = ('2026-08-25T05:14:32Z [qflix-reaper] SUCCESS ' + [char]0x2014 + ' 0 deleted, 0 GB reclaimed across 0 libraries')
+    }
+    Assert-Equal 'reaper-success-line-misread' (Test-IsNoiseFinding $reaperOkRaw) 'SUCCESS line misread suppressed (em dash)'
+
+    # A real reaper error sharing the excerpt declines the rule and pages.
+    $reaperReal = @{
+        signature = 'reaper:plex-delete-fail'
+        summary   = 'reaper cannot delete'
+        excerpt   = "ERROR - Plex delete returned 500 for item 123`nSUCCESS - 0 deleted, 0 GB reclaimed across 0 libraries"
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $reaperReal) 'SUCCESS line next to a real error still pages'
 }
 
 Test-Case '2026-08-25 rules do NOT eat the real faults next door' {
