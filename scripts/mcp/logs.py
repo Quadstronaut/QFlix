@@ -43,6 +43,15 @@ _FILE_LOGS = {
     "buildarr":        str(HOME / ".apps/buildarr/logs/buildarr.log"),
     "recyclarr":       str(HOME / ".apps/recyclarr/logs/recyclarr.log"),
     "nginx":           str(HOME / ".apps/nginx/logs/error.log"),
+    # unpackerr is an s6-supervised Docker container whose stdout is
+    # unreachable (no docker.sock for this user); the bind-mounted file log is
+    # the ONLY audit surface. It was dark 2026-05-22..2026-08-26 because the
+    # app-unpackerr conf template wraps the general settings in a bogus
+    # [[general]] TOML header, which silently voids log_file — the header was
+    # removed on-box 2026-08-26 (a reinstall regenerates it; the conf carries
+    # a comment saying what to re-delete). Rostered here so the collector's
+    # `dark` calibration pages the next time it goes quiet.
+    "unpackerr":       str(HOME / ".apps/unpackerr/unpackerr.log"),
     # qbittorrent's user systemd unit pipes stdout to a file (not the journal),
     # so journalctl --user -u qbittorrent.service is empty. The real engine log
     # lives at the path below and is rotated by qbit itself.

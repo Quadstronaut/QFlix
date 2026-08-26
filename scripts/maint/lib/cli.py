@@ -100,6 +100,7 @@ _CANARY_INTERVAL_MIN = {
     "every-30min": 30,
     "hourly": 60,
     "daily-0430": 1440,
+    "daily": 1440,
     # weekly-mon-send (newsletter-digest canary): 1.5x this = 15120min =
     # 10.5 days, so `status --json` doesn't mislabel the ~6.5-day gap
     # between successive Monday firings as stale.

@@ -1,0 +1,13 @@
+[Unit]
+Description=Manitoba canary - arr/Plex parity (daily)
+
+[Timer]
+# 06:40 UTC: outside the Monday 11:00-15:00 window, after the overnight
+# import/scan churn has settled. Daily is deliberate — parity drifts slowly
+# and the 2-consecutive-run persistence gate needs stable spacing.
+OnCalendar=*-*-* 06:40:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

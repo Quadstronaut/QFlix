@@ -644,6 +644,28 @@ canaries:
     kuma_monitor: "Canary Tdarr Transcode Stall"
     script: "scripts/canaries/tdarr-transcode-stall.sh"
     schedule: "hourly"
+  arr-plex-parity:
+    # Added 2026-08-26 (operator: "number four make one"). The Mob Psycho 100
+    # class: sonarr2 had renameEpisodes=false, Plex could not match the
+    # un-renamed files, and TWO WHOLE SEASONS were invisible to members while
+    # every surface stayed green. The rename fix shipped 2026-08-16; this is
+    # the detection side, so the next cause of arr/Plex divergence (whatever
+    # it is) cannot sit invisible for weeks.
+    #
+    # Predicate: file-PATH parity. Every file the four arrs call imported
+    # must appear in Plex media_parts (read-only). Paths, not guids: this PMS
+    # returns no Guid children on section listings and the DB has no
+    # external-guids table, while both sides speak the identical
+    # /home/.../media namespace (all verified live 2026-08-26).
+    #
+    # Noise gates, per the same-day operator directive that false positives
+    # render the channel unusable: 26h dateAdded grace + the file must still
+    # exist on disk (a Tdarr-replaced path is arr lag, not a Plex gap) + the
+    # deficit must persist across TWO consecutive daily runs. Detection
+    # latency ~2 days against a class that previously sat for weeks.
+    kuma_monitor: "Canary Arr Plex Parity"
+    script: "scripts/canaries/arr-plex-parity.sh"
+    schedule: "daily"
   entitlement-service:
     # Added 2026-08-07. manitoba-maint-entitlement already has a dead-man
     # ("QFlix Entitlement Gate", 15-min timer, 1h heartbeat override) but that
