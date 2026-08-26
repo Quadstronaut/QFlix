@@ -4,7 +4,7 @@
   scripts/maint/qflix-collect.py (systemd-user `qflix-collect.timer`, hourly).
   The Windows Task `\QFlix\Hourly Collect` that ran this is DISABLED. Reason:
   workstation-resident collection false-redded the customer-facing Kuma monitor
-  "QFlix Collect (workstation)" whenever the PC was off, and silently stopped
+  "QFlix Collect (seedbox)" whenever the PC was off, and silently stopped
   the autonomous unstick loop — the same autonomy-mandate violation that moved
   VLogs ingest to the box on 2026-05-14. Kept in-tree for history / reference;
   do not re-enable the task without also stopping the box timer (double-push +
@@ -457,7 +457,7 @@ try {
     $tcount = ($snap.qbit.torrents | Measure-Object).Count
     $msg = "Snapshot {0:HH}.json: $tcount torrents, $($candidates.Count) stale candidates, $($acted.Count) actions" -f $started
     Post-Discord $msg
-    Push-Kuma "QFlix Collect (workstation)" $msg | Out-Null
+    Push-Kuma "QFlix Collect (seedbox)" $msg | Out-Null
 
     @{
         ts = ($started.ToString("o"))

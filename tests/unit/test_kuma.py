@@ -587,7 +587,7 @@ _AUDIT_METRICS = (
     # park files in Tdarr's terminal Transcode-error state). Same no-drift
     # rule: the fixture models a Kuma that HAS every expected monitor.
     'monitor_status{monitor_id="13",monitor_name="QFlix Unknown Codec Stream",monitor_type="push"} 1\n'
-    'monitor_status{monitor_id="10",monitor_name="QFlix Collect (workstation)",monitor_type="push"} 1\n'
+    'monitor_status{monitor_id="10",monitor_name="QFlix Collect (seedbox)",monitor_type="push"} 1\n'
     # "QFlix Audit Regime" joined STANDALONE_SELF_PUSH_MONITORS 2026-07-29 with
     # the Convergent Audit Regime (manitoba-maint-audit.timer -> qflix-audit.py,
     # self-pushing like the janitors). This fixture models a Kuma that HAS every
@@ -621,10 +621,10 @@ class TestAuditMonitors:
         report = audit_monitors(m, kuma_url="http://x")
         # "Manitoba Pusher" and "QFlix Fleet" are always part of the expected
         # set (daemon monitors injected by audit_monitors). Never drift.
-        # "QFlix Collect (workstation)" joined STANDALONE_SELF_PUSH_MONITORS
+        # "QFlix Collect (seedbox)" joined STANDALONE_SELF_PUSH_MONITORS
         # 2026-07-29 (it self-pushes from the box now, see lib/kuma.py) so it
         # must appear here too, matched rather than manifest_only.
-        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Live", "QFlix Audit Regime", "QFlix Collect (workstation)", "QFlix Entitlement Gate", "QFlix Fleet", "QFlix Poster Janitor", "QFlix Reaper", "QFlix Torrent Janitor", "QFlix Unknown Codec Stream", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
+        assert report["matched"] == ["Manitoba Pusher", "QFlix Audio Disposition", "QFlix Audit Live", "QFlix Audit Regime", "QFlix Collect (seedbox)", "QFlix Entitlement Gate", "QFlix Fleet", "QFlix Poster Janitor", "QFlix Reaper", "QFlix Torrent Janitor", "QFlix Unknown Codec Stream", "Radarr", "Sonarr", "Stranger", "qflix-anime-janitor"]
         assert report["manifest_only"] == []
         assert report["kuma_only"] == []
         assert report["live_count"] == 15

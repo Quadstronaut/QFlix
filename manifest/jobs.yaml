@@ -137,7 +137,7 @@ jobs:
   # otherwise page from the first cycle after the uninstall.
   qflix-collect:
     timer: scripts/maint/systemd/qflix-collect.timer
-    kuma_monitor: "QFlix Collect (workstation)"
+    kuma_monitor: "QFlix Collect (seedbox)"
 
   qflix-newsletter:
     timer: scripts/maint/systemd/qflix-newsletter.timer

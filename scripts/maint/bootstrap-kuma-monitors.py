@@ -680,7 +680,7 @@ def main() -> int:
             missing.append((_token_key, _mon_name))
 
     # External PUSH monitors — entries in manifest.kuma_external_monitors
-    # whose Kuma type is PUSH (e.g., "QFlix Collect (workstation)"). The
+    # whose Kuma type is PUSH (e.g., "QFlix Collect (seedbox)"). The
     # bootstrap doesn't create these (they're operator-owned, out of
     # manitoba scope), but it CAN sync their tokens so consumers like
     # qflix-collect.ps1 stay healthy after a manual monitor regen. HTTP-type

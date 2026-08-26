@@ -38,7 +38,7 @@ FAQ = os.path.join(REPO_ROOT, "scripts", "data", "qflix-faq.html")
 #                                   lib/kuma.py's STANDALONE_SELF_PUSH_MONITORS
 #                                   so `kuma audit` stops flagging anime-janitor
 #                                   + audio-disposition as orphan drift.
-#   - "QFlix Collect (workstation)" — the box-side hourly collector's own
+#   - "QFlix Collect (seedbox)" — the box-side hourly collector's own
 #                                   self-pushed monitor. Moved INTO
 #                                   STANDALONE_SELF_PUSH_MONITORS 2026-07-29
 #                                   (previously counted via
