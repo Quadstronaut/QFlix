@@ -104,6 +104,17 @@ from lib.secrets import read_secret  # noqa: E402
 SECTION_NAMES = ["QFlix - Movies", "QFlix - Anime Movies",
                  "QFlix - TV", "QFlix - Anime"]
 
+# Libraries that are deliberately OUT of scope, with the reason written down —
+# the exact escape hatch resolve_sections() demands before it stops naming a
+# section in every Kuma message. Operator, 2026-08-26: "the welcome library is
+# a utility. it is not part of the content — that's a video telling them to go
+# to Patreon, assigned to people without active subscriptions. There is no need
+# for it to be monitored or janitored or doctored up in any way." It is the
+# entitlement gate's not-entitled surface (disjoint from full access, see
+# tests/unit/test_welcome_section_is_exclusive.py), not a media library. Any
+# OTHER unknown section still gets named every run.
+UTILITY_SECTIONS = ["QFlix - Welcome"]
+
 # ORDERED. This tuple is BOTH the "is this an agent poster" membership test and
 # the preference order, on purpose: two constants would be two policy surfaces
 # for one rule, and this repo keeps getting bitten by exactly that.
@@ -384,7 +395,7 @@ def resolve_sections(port: str, token: str):
         title = el.get("title") or ""
         if title in SECTION_NAMES:
             found[title] = el.get("key") or ""
-        elif title:
+        elif title and title not in UTILITY_SECTIONS:
             unmanaged.append(title)
     missing = [n for n in SECTION_NAMES if n not in found]
     if missing:

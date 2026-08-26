@@ -4,7 +4,7 @@
 Always-on Python port of the workstation orchestrator scripts/local/
 qflix-collect.ps1. Migrated off the operator PC ("devil") to the qflix box
 on 2026-07-09 because the workstation-resident job left the Kuma monitor
-"QFlix Collect (workstation)" red — a CUSTOMER-VISIBLE false failure on the
+"QFlix Collect (seedbox)" red — a CUSTOMER-VISIBLE false failure on the
 public status page — whenever the PC was off, and silently stopped the
 autonomous unstick loop. Same reasoning that moved VLogs ingest to the box
 on 2026-05-14 (the autonomy mandate: no autonomy-critical job may depend on
@@ -125,7 +125,7 @@ until it emits again, which is the correct reading of the box's state.
 RAIL, AND WHAT IT COSTS. Coverage rides the collector's EXISTING rails --
 the Kuma msg, journald, Discord, last-collect.json -- rather than adding a
 monitor. That means roster-drop / source-error push `down` to Kuma monitor
-79 "QFlix Collect (workstation)", which sits in the "Infrastructure &
+79 "QFlix Collect (seedbox)", which sits in the "Infrastructure &
 Observability" group of the PUBLIC status page (verified in kuma.db
 2026-08-20: status_page.slug=public, published=1). A roster drop therefore
 shows customer-side until an operator fixes logs.py or names the app in
@@ -165,7 +165,7 @@ KUMA_BASE = os.environ.get("KUMA_BASE", "http://127.0.0.1:42005")
 # The monitor was created workstation-side under this exact name; the box's
 # ~/secrets/kuma-push-tokens.json already carries the token under this key,
 # so the box feeds the SAME monitor — no Kuma re-creation needed.
-KUMA_PUSH_KEY = os.environ.get("QFLIX_COLLECT_KUMA_KEY", "QFlix Collect (workstation)")
+KUMA_PUSH_KEY = os.environ.get("QFLIX_COLLECT_KUMA_KEY", "QFlix Collect (seedbox)")
 MAX_ACTIONS_PER_DAY = int(os.environ.get("QFLIX_COLLECT_MAX_ACTIONS", "10"))
 
 DEAD_SLOW_BYTES = 10000        # dl_speed below this on a downloading torrent = dead-slow
