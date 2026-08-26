@@ -323,6 +323,25 @@ def _plex_req(port: str, token: str, path: str, query: str = "",
         return 0, str(exc)
 
 
+def select_poster(port: str, token: str, item_id: int, poster: dict) -> None:
+    """PUT the chosen poster's ratingKey at the SINGULAR /poster endpoint.
+
+    GET lists at the PLURAL /posters, but the select PUT goes to /poster —
+    plexapi's Poster.select() literally strips the trailing 's' off _initpath
+    before PUTting. The first armed run (2026-08-26) PUT the plural and got
+    nginx 404 on all six flips; proven live the same night on item 8685:
+    plural=404, singular=200 and the re-read showed selected="1" on the
+    chosen provider. Module-level (not a main() closure) so the path is
+    test-pinnable — the flipper was mocked wholesale in every test, which is
+    exactly how the wrong path survived a council and 38 unit tests."""
+    status, body = _plex_req(
+        port, token, "/library/metadata/" + str(item_id) + "/poster",
+        query="url=" + urllib.parse.quote_plus(poster.get("ratingKey") or ""),
+        method="PUT")
+    if status not in (200, 201, 204):
+        raise RuntimeError("PUT HTTP " + str(status) + " " + body[:120])
+
+
 def parse_posters_xml(body: str) -> list:
     """<MediaContainer><Photo provider= selected= ratingKey= .../></MediaContainer>
     -> [{"provider","ratingKey","selected"}]. An EMPTY container is a real,
@@ -650,14 +669,7 @@ def main() -> int:
         return parse_posters_xml(body)
 
     def flipper(item_id, poster):
-        # plexapi's Poster.select() shape: PUT the chosen poster's ratingKey
-        # back at the PLURAL /posters endpoint.
-        status, body = _plex_req(
-            port, token, "/library/metadata/" + str(item_id) + "/posters",
-            query="url=" + urllib.parse.quote_plus(poster.get("ratingKey") or ""),
-            method="PUT")
-        if status not in (200, 201, 204):
-            raise RuntimeError("PUT HTTP " + str(status) + " " + body[:120])
+        select_poster(port, token, item_id, poster)
         # Re-read gate. Whether a flip STICKS is not decidable from Plex's
         # stored state (it writes the same user_thumb_url column the scanner
         # writes), so assert the outcome instead of assuming it — an unverified
