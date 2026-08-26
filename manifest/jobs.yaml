@@ -241,6 +241,9 @@ jobs:
   manitoba-maint-canary-tdarr-transcode-stall:
     timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-stall.timer
     kuma_monitor: "Canary Tdarr Transcode Stall"
+  manitoba-maint-canary-arr-plex-parity:
+    timer: scripts/maint/systemd/manitoba-maint-canary-arr-plex-parity.timer
+    kuma_monitor: "Canary Arr Plex Parity"
   manitoba-maint-canary-entitlement-service:
     timer: scripts/maint/systemd/manitoba-maint-canary-entitlement-service.timer
     # Watches the entitlement API the gate reads. Note this is the dead-man for

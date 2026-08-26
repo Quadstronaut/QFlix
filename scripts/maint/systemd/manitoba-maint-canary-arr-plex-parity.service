@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - arr/Plex parity (files the arrs imported must be visible in Plex; the Mob Psycho two-invisible-seasons class)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push arr-plex-parity
+StandardOutput=journal
+StandardError=journal
