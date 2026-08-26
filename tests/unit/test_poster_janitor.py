@@ -490,3 +490,34 @@ def test_tags_has_no_section_column_so_scope_comes_from_the_member(tmp_path):
     assert "t.library_section_id" not in sql, "tags has no library_section_id"
     assert "m.library_section_id = c.library_section_id" in sql
     assert "m.id = tg.metadata_item_id" in sql
+
+
+# --- 2026-08-26: the flip PUT path (the bug every mocked flipper hid) ---
+
+def test_select_poster_puts_the_singular_poster_path(monkeypatch):
+    """GET lists at /posters (plural); the select PUT goes to /poster
+    (singular) -- plexapi strips the trailing 's'. The first armed run PUT
+    the plural and nginx 404'd all six flips while 38 tests stayed green,
+    because every test mocked the flipper wholesale. This pins the real
+    request path and method."""
+    calls = []
+
+    def fake_req(port, token, path, query="", method="GET", timeout=30):
+        calls.append((path, query, method))
+        return 200, ""
+
+    monkeypatch.setattr(pj, "_plex_req", fake_req)
+    pj.select_poster("17025", "tok", 8685,
+                     {"ratingKey": "https://image.tmdb.org/t/p/original/x.jpg"})
+    assert calls == [("/library/metadata/8685/poster",
+                      "url=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Foriginal%2Fx.jpg",
+                      "PUT")]
+
+
+def test_select_poster_raises_on_non_2xx(monkeypatch):
+    """A failed PUT must raise so the run counts it FAILED and exits red --
+    the armed-run behaviour that surfaced the 404 in the first place."""
+    monkeypatch.setattr(pj, "_plex_req",
+                        lambda *a, **k: (404, "<html>404 Not Found</html>"))
+    with pytest.raises(RuntimeError, match="PUT HTTP 404"):
+        pj.select_poster("17025", "tok", 1, {"ratingKey": "metadata://x"})
