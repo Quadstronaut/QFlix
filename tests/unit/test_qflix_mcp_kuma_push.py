@@ -15,13 +15,13 @@ from lib.kuma_push import push_up  # noqa: E402
 def test_push_up_uses_correct_url(mock_open, tmp_path):
     secrets = tmp_path / "secrets"; secrets.mkdir()
     (secrets / "kuma-push-tokens.json").write_text(json.dumps({
-        "QFlix Collect (workstation)": "TOKEN123"
+        "QFlix Collect (seedbox)": "TOKEN123"
     }))
     (secrets / "uptimekuma.host").write_text("kuma.example.com")
     m = MagicMock(); m.status = 200; m.read.return_value = b'{"ok": true}'
     m.__enter__.return_value = m
     mock_open.return_value = m
-    ok = push_up("QFlix Collect (workstation)", msg="all good",
+    ok = push_up("QFlix Collect (seedbox)", msg="all good",
                  secrets_dir=secrets)
     assert ok is True
     url = mock_open.call_args[0][0]
