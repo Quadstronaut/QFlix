@@ -14,7 +14,7 @@ import yaml
 VALID_CLASSES = {"ucc", "systemd", "cron", "library"}
 
 VALID_CANARY_SCHEDULES = {
-    "hourly", "daily-0430", "every-15min", "every-30min", "every-10min",
+    "hourly", "daily-0430", "daily", "every-15min", "every-30min", "every-10min",
     # weekly-mon-send: fires 3x around the Monday 15:00 UTC newsletter send
     # (14:20/14:50/15:20 UTC — see manitoba-maint-canary-newsletter-digest.timer).
     # The schedule NAME is weekly for staleness-map purposes (cli.py
