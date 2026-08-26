@@ -15,7 +15,7 @@ kuma_external_monitors:
   # to match live reality (the 2026-07-16 doc sync updated inventory.md's prose
   # but missed this manifest list, leaving test_doc_counts red since then).
   #
-  # "QFlix Collect (workstation)" MOVED OUT 2026-07-29: it migrated off the
+  # "QFlix Collect (seedbox)" MOVED OUT 2026-07-29: it migrated off the
   # Windows scheduled task onto the box itself 2026-07-09 (qflix-collect.py +
   # qflix-collect.timer, self-pushing via KUMA_PUSH_KEY — see memory
   # collect-migrated-to-box). It is no longer an unauditable external app; it

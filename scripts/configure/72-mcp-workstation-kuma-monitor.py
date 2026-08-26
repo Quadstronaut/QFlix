@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """scripts/configure/72-mcp-workstation-kuma-monitor.py
 
-Adds ONE Kuma push monitor — "QFlix Collect (workstation)" — that doesn't
+Adds ONE Kuma push monitor — "QFlix Collect (seedbox)" — that doesn't
 belong in manifest/apps.yaml (because it's a workstation-side dead-man, not
 a seedbox-managed app).
 
@@ -30,7 +30,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "maint"))
 
 KUMA_URL = os.environ.get("KUMA_URL", "http://127.0.0.1:42005")
 USER = "quadstronaut"
-MONITOR_NAME = "QFlix Collect (workstation)"
+MONITOR_NAME = "QFlix Collect (seedbox)"
 INTERVAL_S = 5400  # 90 min: tolerate one missed hourly run, red on two
 
 
