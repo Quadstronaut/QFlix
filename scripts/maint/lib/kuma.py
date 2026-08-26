@@ -205,13 +205,13 @@ STANDALONE_SELF_PUSH_MONITORS = {
     # invisible to drift. Its token KEY equals its monitor NAME (unlike the
     # other entries here, where the value is a short slug) because
     # qflix-collect.py's KUMA_PUSH_KEY constant reads
-    # secrets/kuma-push-tokens.json["QFlix Collect (workstation)"] verbatim —
+    # secrets/kuma-push-tokens.json["QFlix Collect (seedbox)"] verbatim —
     # that literal string is baked into the already-deployed box script and
     # the box is read-only from here, so the name stays as-is even though
     # "(workstation)" is now cosmetically stale. Renaming it live (in Kuma
     # AND in qflix-collect.py's default) is a coordinated change for the
     # operator, not something this dict can paper over.
-    "QFlix Collect (workstation)": "QFlix Collect (workstation)",
+    "QFlix Collect (seedbox)": "QFlix Collect (seedbox)",
     # The Convergent Audit Regime's own dead-man (2026-07-29). qflix-audit.py
     # runs daily from manitoba-maint-audit.timer and self-pushes here; the
     # monitor goes RED on an ENFORCED finding (exit 1) or on a REGIME INTEGRITY

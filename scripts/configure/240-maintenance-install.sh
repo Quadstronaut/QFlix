@@ -917,7 +917,7 @@ systemctl --user enable --now manitoba-maint-canary-entitlement-service.timer
 systemctl --user enable --now manitoba-maint-canary-unstick-rate.timer
 # QFlix hourly collector — snapshot + stale-detect + autonomous unstick + Kuma
 # heartbeat. Migrated off the workstation 2026-07-09 (was Windows Task
-# \QFlix\Hourly Collect, now disabled). Feeds the "QFlix Collect (workstation)"
+# \QFlix\Hourly Collect, now disabled). Feeds the "QFlix Collect (seedbox)"
 # push monitor from the always-on box so a PC-off no longer false-reds the
 # public status page. --now activates the hourly schedule.
 systemctl --user enable --now qflix-collect.timer

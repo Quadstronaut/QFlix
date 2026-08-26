@@ -419,6 +419,18 @@ Test-Case 'New-DiscordHeartbeatPayload has no content mention' {
     Assert-Equal '' $p.content 'no mention'
     Assert-Equal 3066993 $p.embeds[0].color 'green'
     Assert-True ($p.embeds[0].title -match 'clean') 'title says clean'
+    Assert-False ($p.embeds[0].description -match 'held') 'no held line when SoloCount=0'
+}
+
+Test-Case 'heartbeat surfaces the consensus-floor remainder without paging (2026-08-26)' {
+    # Operator directive: single-model findings never ping. They are counted
+    # on the heartbeat instead — visible in daily review, zero pages. Every
+    # hallucinated page in the 2026-08 storm was flagged by exactly one model,
+    # so this floor alone would have silenced all of them.
+    $p = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 2
+    Assert-Equal '' $p.content 'still no mention — a held finding must not ping'
+    Assert-True ($p.embeds[0].description -match '2 single-model finding') 'held count on the heartbeat'
+    Assert-True ($p.embeds[0].description -match 'audit log') 'points at the audit log'
 }
 
 Test-Case 'New-DiscordDeadmanPayload pings operator and uses orange' {

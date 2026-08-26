@@ -521,3 +521,30 @@ def test_select_poster_raises_on_non_2xx(monkeypatch):
                         lambda *a, **k: (404, "<html>404 Not Found</html>"))
     with pytest.raises(RuntimeError, match="PUT HTTP 404"):
         pj.select_poster("17025", "tok", 1, {"ratingKey": "metadata://x"})
+
+
+# --- 2026-08-26: Welcome is a utility, not content (operator directive) ---
+
+def _sections_xml(titles_keys):
+    rows = "".join('<Directory title="%s" key="%s"/>' % (t, k)
+                   for t, k in titles_keys)
+    return "<MediaContainer>" + rows + "</MediaContainer>"
+
+
+def test_welcome_is_excluded_but_unknown_libraries_still_get_named(monkeypatch):
+    """Operator, 2026-08-26: Welcome is the entitlement gate's utility surface
+    (a go-to-Patreon video), not content — never monitored, never janitored.
+    The written-down-why lives in UTILITY_SECTIONS; the unmanaged report keeps
+    naming any OTHER library so a sixth one cannot rot silently."""
+    xml = _sections_xml(
+        [(n, str(i)) for i, n in enumerate(pj.SECTION_NAMES, 1)]
+        + [("QFlix - Welcome", "7"), ("Home Videos", "9")])
+    monkeypatch.setattr(pj, "_plex_req", lambda *a, **k: (200, xml))
+    found, unmanaged = pj.resolve_sections("17025", "tok")
+    assert sorted(found) == sorted(pj.SECTION_NAMES)
+    assert unmanaged == ["Home Videos"], \
+        "Welcome must not be reported; a genuinely unknown library must be"
+
+
+def test_utility_sections_and_managed_sections_are_disjoint():
+    assert not set(pj.UTILITY_SECTIONS) & set(pj.SECTION_NAMES)
