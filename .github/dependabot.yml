@@ -1,0 +1,11 @@
+# Keeps the SHA-pinned Actions above from fossilizing: Dependabot PRs bump the
+# pin when upstream tags move, and the PR runs the same three required checks
+# every other change does (council re-entry finding L-57, 2026-08-27 — mutable
+# tags were the only unpinned supply-chain edge; the audit job pip-installs
+# and executes repo Python, so the checkout action's integrity is load-bearing).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
