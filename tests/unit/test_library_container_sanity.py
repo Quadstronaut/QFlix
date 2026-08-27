@@ -382,3 +382,34 @@ def test_the_installer_gates_the_first_enable():
     assert "is-enabled" in block, "the gate can disarm a live monitor"
     assert "bash ~/scripts/canaries/library-container-sanity.sh" in block
     assert "timer left DISABLED" in block
+
+
+# --- 2026-08-27: the ACTUAL janitor temp shape (council re-entry L-55) -------
+
+def test_the_dispfix_janitor_temp_does_not_fire(code, tmp_path):
+    """audio-disposition-janitor.py stages as '.<stem>.dispfix.tmp' — leading
+    dot, NO media extension, deliberately (the 2026-08-24 tdarr ghost fix).
+    The playable-stem *.tmp exemption above never matched it, so a
+    payload-sized in-flight remux redded this canary — and both units share
+    the 04:30 UTC slot, so the collision is nightly-shaped. Triple-reproduced
+    by the 2026-08-27 council re-entry."""
+    media = tmp_path / "media"
+    d = media / "Movies" / "T (1999)"
+    _write(d / "T (1999).mkv", 4 * KIB)
+    _write(d / ".T (1999).dispfix.tmp", 128 * 1024 * KIB)
+    r = _run(code, tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert GREEN in r.stdout
+    assert "staging=.dispfix.tmp:1" in r.stdout, r.stdout
+
+
+def test_a_non_hidden_dispfix_tmp_still_fires(code, tmp_path):
+    """The exemption is the PRODUCER SIGNATURE, not the suffix: the janitor
+    always writes a leading dot. A visible payload-sized dispfix.tmp is not
+    its work and stays a finding."""
+    media = tmp_path / "media"
+    _write(media / "Movies" / "T (1999)" / "T (1999).mkv", 4 * KIB)
+    _write(media / "Movies" / "T (1999)" / "payload.dispfix.tmp", 128 * 1024 * KIB)
+    r = _run(code, tmp_path)
+    assert r.returncode == 2
+    assert _stage_line(r).startswith("STAGE=container-unknown-payload")
