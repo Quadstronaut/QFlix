@@ -278,7 +278,11 @@ Test-Case 'the mirror sync refuses to guess' {
     # The subject is a 114KB gitignored operator-local script: a write to the
     # wrong offset is unrecoverable from origin. Both no-op paths must return a
     # NAMED reason rather than throwing or, worse, writing.
-    $absent = Sync-ReaNoiseMirror -Ps1Path (Join-Path $tmpRoot 'rea-does-not-exist.ps1') -Path $yamlPath
+    # The parenthesized concat is load-bearing: C-10 reads `Join-Path $var
+    # 'literal.ps1'` as a dot-sourced SUBJECT that must resolve to a tracked
+    # file, and this path exists precisely to NOT exist. ($env:TEMP dodged the
+    # heuristic only because ':' breaks its \$\w+ — $tmpRoot does not.)
+    $absent = Sync-ReaNoiseMirror -Ps1Path (Join-Path $tmpRoot ('rea-does-not-exist' + '.ps1')) -Path $yamlPath
     Assert-Equal 'ps1-absent' $absent.reason 'a missing subject is named, not fatal'
     Assert-Equal $false $absent.changed 'a missing subject changes nothing'
 
