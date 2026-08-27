@@ -456,6 +456,16 @@ PY
         skip "dry-run-not-a-production-audit:$O"
         vac_check "outcome=$O"
         WARN="-WARN" ;;
+      quorum_degraded)
+        # Only ONE model answered, so the >=2 consensus floor holds every
+        # finding and the run graded NOTHING (council finding 2026-08-26: this
+        # state used to exit as outcome=silent and read as a clean audit).
+        # Vacuous family, deliberately: a transient model timeout is a WARN
+        # here and pages nobody, while a PERSISTENT one-model state accrues
+        # the same no-verdict streak as SKIPPED/dryrun and reds at the P5 cap.
+        skip "quorum-degraded-one-model-graded-nothing"
+        vac_check "outcome=$O"
+        WARN="-WARN" ;;
       *)
         die rea-heartbeat-malformed "unrecognised-outcome-token:outcome=$O" 2 ;;
     esac

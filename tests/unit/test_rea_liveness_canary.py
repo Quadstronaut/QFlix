@@ -145,6 +145,10 @@ OUTCOME_TABLE = [
     # -- degraded but genuinely audited: WARN, still exit 0 --------------
     ("ok findings=0 models=3/3 duration=44s outcome=discord_post_failed", 0, None, "post_failed"),
     ("ok findings=0 models=3/3 duration=44s outcome=dryrun_heartbeat", 0, None, "dryrun"),
+    # quorum_degraded (2026-08-26 council): one model answered, the >=2
+    # consensus floor graded nothing. Vacuous family — WARN + streak, exit 0
+    # on a fresh streak; a persistent run of these reds at the P5 cap.
+    ("ok findings=0 models=1/3 duration=500s outcome=quorum_degraded", 0, None, "quorum_degraded"),
     ("SKIPPED locked", 0, None, "lock-skip"),
     ("suppressed n=2 rules=plex-post-reap-scan,tdarr-express-undefined-includes",
      0, None, "suppression-line"),

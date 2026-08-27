@@ -331,6 +331,23 @@ else:
     if last_completed is None or completed > last_completed:
         last_progress = now
     libstr += "-clock=count-fallback-no-lastHealthCheckDate"
+
+# IDLE DEBT (council finding, arbiter-verified 2026-08-26): while the queue is
+# EMPTY no checks run, so newest_hc ages with nothing wrong. Without this
+# floor, a quiet library accrues that idle time and charges it IN FULL to the
+# first arrival -- one new file after a quiet weekend reads as an 8h-stalled
+# pipeline on the very first run that sees it. The stall window must start
+# when WORK APPEARS, not when the last check happened to finish. When the
+# previous run saw an empty queue and this one sees work, floor the clock at
+# the previous run stamp (the newest instant the queue was provably empty).
+# Consecutive runs with work pending accrue normally -- a real stall still
+# pages at stall_s as before.
+prev_queued = prev.get("queued")
+if queued > 0 and prev_queued == 0:
+    arrival_floor = int(prev.get("updated_ts") or now)
+    if arrival_floor > last_progress:
+        last_progress = arrival_floor
+        libstr += "-clock=arrival-floored"
 try:
     os.makedirs(os.path.dirname(state_path), exist_ok=True)
     tmp = state_path + ".tmp"
