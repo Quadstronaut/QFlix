@@ -188,18 +188,30 @@ for p, (arr, added) in sorted(arr_files.items()):
     missing.append((p, arr))
 
 # ---- persistence: two consecutive sightings page ---------------------------
+# The read-prev / compute / replace below is a lost-update race without a
+# lock: a manual invocation racing the systemd timer can overwrite a pending
+# first sighting and silently discard a page-worthy confirmation - proven
+# deterministically by the 2026-08-26 council (concurrency lens), which ALSO
+# demonstrated it live by clobbering this very state mid-audit. flock spans
+# the whole read-modify-write; a second invocation blocks briefly (the
+# critical section is milliseconds) rather than interleaving.
+import fcntl
+os.makedirs(os.path.dirname(state_path), exist_ok=True)
+lock_fh = open(state_path + ".lock", "w")
+fcntl.flock(lock_fh, fcntl.LOCK_EX)
 prev = set()
 try:
     with open(state_path, encoding="utf-8") as fh:
         prev = set(json.load(fh).get("missing", []))
 except (OSError, ValueError):
     prev = set()
-os.makedirs(os.path.dirname(state_path), exist_ok=True)
 tmp = state_path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as fh:
     json.dump({"missing": [p for p, _ in missing], "checked": now,
                "arr_files": len(arr_files), "plex_paths": len(plex_paths)}, fh)
 os.replace(tmp, state_path)
+fcntl.flock(lock_fh, fcntl.LOCK_UN)
+lock_fh.close()
 
 confirmed = [(p, arr) for p, arr in missing if p in prev]
 if confirmed:
