@@ -4,8 +4,13 @@ The gate reconciles Plex library shares and Seerr permissions against
 `entitlements.starhold.app` every 15 minutes. It provisions new members and
 protects against lapsed ones. It never sends an invite — you do that by hand.
 
-> **Current state: LIVE but INERT.** The timer runs and reports; it mutates
-> nothing. Two switches are still off. See *Arming* below.
+> **Current state: ARMED and enforcing** (operator decision 2026-08-08, after a
+> live end-to-end test with a real subscription). Both switches are ON:
+> `armed: true` in the members roster AND the `execute.conf` systemd drop-in.
+> Disarm = flip either one back (see *Arming* below — the section reads in both
+> directions). This banner said "LIVE but INERT" until 2026-08-27, nineteen days
+> stale — surfaced by a wiki reconciliation, the exact drift this doc-vs-live
+> class always takes.
 
 ---
 
