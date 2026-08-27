@@ -44,6 +44,11 @@ function Test-Case {
     }
 }
 
+# $env:TEMP is a WINDOWS variable; under pwsh on ubuntu-latest it is undefined,
+# so Join-Path bound null and THREW in the two acceptance tests for the
+# single-source noise policy - which therefore never actually executed in CI
+# (council finding, arbiter-verified 2026-08-26). GetTempPath() works on both.
+$tmpRoot    = if ($env:TEMP) { $env:TEMP } else { [IO.Path]::GetTempPath() }
 $repoRoot   = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $loaderPath = Join-Path $repoRoot 'scripts/local-llm/rea-noise-classes.ps1'
 $yamlPath   = Join-Path $repoRoot 'manifest/rea-noise-classes.yaml'
@@ -273,11 +278,11 @@ Test-Case 'the mirror sync refuses to guess' {
     # The subject is a 114KB gitignored operator-local script: a write to the
     # wrong offset is unrecoverable from origin. Both no-op paths must return a
     # NAMED reason rather than throwing or, worse, writing.
-    $absent = Sync-ReaNoiseMirror -Ps1Path (Join-Path $env:TEMP 'rea-does-not-exist.ps1') -Path $yamlPath
+    $absent = Sync-ReaNoiseMirror -Ps1Path (Join-Path $tmpRoot 'rea-does-not-exist.ps1') -Path $yamlPath
     Assert-Equal 'ps1-absent' $absent.reason 'a missing subject is named, not fatal'
     Assert-Equal $false $absent.changed 'a missing subject changes nothing'
 
-    $tmp = Join-Path $env:TEMP ('rea-nomarkers-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    $tmp = Join-Path $tmpRoot ('rea-nomarkers-' + [guid]::NewGuid().ToString('N') + '.ps1')
     try {
         [System.IO.File]::WriteAllText($tmp, "# no mirror markers here`n")
         $r = Sync-ReaNoiseMirror -Ps1Path $tmp -Path $yamlPath
@@ -293,7 +298,7 @@ Test-Case 'a yaml-only class reaches both surfaces with no ps1 edit' {
     # agreeing with it - rule table and never-report sentence both - after one
     # sync. Synthetic subject so this runs in CI where qflix-rea.ps1 is absent.
     $policy = Read-ReaPolicy -Path $yamlPath
-    $tmp = Join-Path $env:TEMP ('rea-synth-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    $tmp = Join-Path $tmpRoot ('rea-synth-' + [guid]::NewGuid().ToString('N') + '.ps1')
     try {
         $body = "# synthetic subject`n" +
                 '# BEGIN GENERATED NOISE-TABLE MIRROR' + "`n" +

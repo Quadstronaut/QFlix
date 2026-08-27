@@ -73,7 +73,7 @@ esac
 
 if [ "${1:-}" = "--check" ]; then
   echo "existing qflix-admin-phone entries on the box:"
-  ssh "$BOX" "grep -c 'qflix-admin-phone' ~/.ssh/authorized_keys || true"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$BOX" "grep -c 'qflix-admin-phone' ~/.ssh/authorized_keys || true"
   exit 0
 fi
 
@@ -81,10 +81,10 @@ fi
 echo "==> copying dispatcher + stARR scripts"
 scp -q scripts/mcp/dispatch.py scripts/mcp/arr_library_peek.py \
        scripts/mcp/arr_disk_usage.py "$BOX:~/scripts/mcp/" || exit 1
-ssh "$BOX" 'chmod +x ~/scripts/mcp/dispatch.py'
+ssh -o BatchMode=yes -o ConnectTimeout=10 "$BOX" 'chmod +x ~/scripts/mcp/dispatch.py'
 
 echo "==> smoke-testing dispatch.py over the EXISTING key"
-if ! ssh "$BOX" 'python3 ~/scripts/mcp/dispatch.py help' | grep -q '"ok": true'; then
+if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$BOX" 'python3 ~/scripts/mcp/dispatch.py help' | grep -q '"ok": true'; then
   echo "dispatcher does not run on the box - ABORTING before touching any key" >&2
   exit 1
 fi
@@ -99,7 +99,7 @@ PUB=$(cat "$KEY.pub")
 
 # --- 3. backup, append ONE line, verify additively (and self-heal on failure)
 echo "==> appending (backup first, one line, no rewrite)"
-ssh "$BOX" "PUB='$PUB' OPTS='$REMOTE_CMD' bash -s" <<'REMOTE'
+ssh -o BatchMode=yes -o ConnectTimeout=10 "$BOX" "PUB='$PUB' OPTS='$REMOTE_CMD' bash -s" <<'REMOTE'
 set -u
 AK=~/.ssh/authorized_keys
 BAK="$AK.bak-preadmin-$(date -u +%Y%m%dT%H%M%SZ)"
