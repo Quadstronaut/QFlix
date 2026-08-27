@@ -7,7 +7,8 @@ Self-healing Plex stack on one Ultra.cc shared seedbox: `manifest/apps.yaml` (si
 - **Monday maintenance window (11:00–15:00 UTC): no box operations.** Deploy before or after, never during. Local repo work is fine.
 - **Repo is PUBLIC.** Never commit member data, activity, hostnames beyond the sanitized `seedbox.example.com`, or secrets (`secrets/` is untracked). Member privacy is absolute — no per-member activity in any surface.
 - Never `git reset --hard` or destroy uncommitted WIP without explicit authorization; "clean up" is not authorization.
-- Always push. Session-end invariant: repo, GitHub, and the running box are on the **same commit** (`deploy-drift` canary checks it).
+- **Never commit to master directly** (operator directive 2026-08-27; branch protection enforces it — PR + green `pytest`/`audit`/`pwsh` required, admins included). Branch as `feature/<name>` or `bugfix/<problem>`, push the branch, open a PR. Master holds only what is tested and proven, because master is what gets promoted to the live box.
+- Always push the branch. Session-end invariant: merged master, GitHub, and the running box are on the **same commit** (`deploy-drift` canary checks it) — nothing lives only in an unmerged branch at session end.
 
 ## What's live vs. gone (check before asserting)
 | Live | Retired — do not restore |
