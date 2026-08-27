@@ -332,28 +332,45 @@ else:
         last_progress = now
     libstr += "-clock=count-fallback-no-lastHealthCheckDate"
 
-# IDLE DEBT (council finding, arbiter-verified 2026-08-26): while the queue is
-# EMPTY no checks run, so newest_hc ages with nothing wrong. Without this
-# floor, a quiet library accrues that idle time and charges it IN FULL to the
-# first arrival -- one new file after a quiet weekend reads as an 8h-stalled
-# pipeline on the very first run that sees it. The stall window must start
-# when WORK APPEARS, not when the last check happened to finish. When the
-# previous run saw an empty queue and this one sees work, floor the clock at
-# the previous run stamp (the newest instant the queue was provably empty).
-# Consecutive runs with work pending accrue normally -- a real stall still
-# pages at stall_s as before.
+# IDLE DEBT (council finding 2026-08-26; REPAIRED 2026-08-27 after the
+# re-entry council triple-reproduced that v1 survived exactly ONE run): while
+# the queue is EMPTY no checks run, so newest_hc ages with nothing wrong.
+# Without a floor, a quiet library accrues that idle time and charges it IN
+# FULL to the first arrival -- one new file after a quiet weekend reads as an
+# 8h-stalled pipeline. v1 floored last_progress only on the empty->non-empty
+# TRANSITION run; the NEXT run re-derived last_progress from the still-stale
+# newest_hc and re-charged the whole debt (5h floored -> 41h unfloored,
+# reproduced independently by three lenses). The durable form: persist
+# arrival_ts -- the newest instant the queue was provably empty-or-just-armed
+# -- and floor the clock at it on EVERY run while the queue stays non-empty.
+#   queue empty            -> arrival_ts = now   (nothing owed, keep current)
+#   empty -> non-empty     -> arrival_ts = prev run stamp (work appeared since)
+#   non-empty -> non-empty -> carry prev arrival_ts (real stalls accrue)
 prev_queued = prev.get("queued")
-if queued > 0 and prev_queued == 0:
-    arrival_floor = int(prev.get("updated_ts") or now)
-    if arrival_floor > last_progress:
-        last_progress = arrival_floor
-        libstr += "-clock=arrival-floored"
+if queued == 0:
+    arrival_ts = now
+elif prev_queued == 0:
+    arrival_ts = int(prev.get("updated_ts") or now)
+elif prev.get("arrival_ts"):
+    arrival_ts = int(prev["arrival_ts"])
+else:
+    # Legacy or absent state: prev_queued unknown. NO floor - flooring at
+    # now here would mute a REAL in-progress stall for one full window on
+    # every state-schema upgrade. Zero never wins the max() below, so the
+    # old newest_hc clock stands until one post-upgrade cycle seeds state.
+    arrival_ts = 0
+if arrival_ts > now:
+    arrival_ts = now
+if queued > 0 and arrival_ts > last_progress:
+    last_progress = arrival_ts
+    libstr += "-clock=arrival-floored"
 try:
     os.makedirs(os.path.dirname(state_path), exist_ok=True)
     tmp = state_path + ".tmp"
     with open(tmp, "w") as fh:
         json.dump({"completed": completed, "last_progress_ts": last_progress,
                    "queued": queued, "updated_ts": now,
+                   "arrival_ts": arrival_ts,
                    "newest_healthcheck_ms": newest_hc}, fh)
     os.replace(tmp, state_path)
 except OSError:
