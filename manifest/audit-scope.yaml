@@ -407,7 +407,15 @@ residuals:
   - id: R2
     owner: operator
     review_cadence_days: 30
-    last_reviewed: 2026-07-29
+    # Reviewed 2026-08-27 (council re-entry, ledger L-53): still true and still
+    # bounded only by cadence — the 2026-08-26 council demonstrated it live
+    # when its own finders mutated ~/.opt/maint gate state between audit runs.
+    # NOTE the failure mode of NOT reviewing on time: check_residual_discipline
+    # raises at age > cadence, qflix-audit exits 2 before any detector runs,
+    # Kuma #111 reds AND the required `audit` CI context blocks every merge to
+    # master (protection is enforce_admins). A missed 30-day review is a
+    # self-inflicted full-stop, found 2 days before it would have fired.
+    last_reviewed: 2026-08-27
     residual: Live box drift between audit runs (L-01..L-07). Bounded only by cadence.
   - id: R3
     owner: operator
@@ -432,7 +440,14 @@ residuals:
   - id: R5
     owner: operator
     review_cadence_days: 30
-    last_reviewed: 2026-07-29
+    # Reviewed 2026-08-27 (council re-entry, ledger L-53/L-57): the risk this
+    # row names CAME TRUE in the interval — CI was red on EVERY push from
+    # ~2026-08-05 to 2026-08-27 (e3ce98c greened it) and nothing paged, because
+    # the assertion below is still unbuilt. Now that the `audit`/`pytest`/`pwsh`
+    # contexts gate merges (branch protection 2026-08-27), a red CI is at least
+    # LOUD at merge time, but a watcher for pushes nobody tries to merge is
+    # still missing. Residual stays open.
+    last_reviewed: 2026-08-27
     residual: >-
       CI itself. The last-successful-run-age assertion is NOT implemented (it
       needs network + a token; this regime is offline by construction).
