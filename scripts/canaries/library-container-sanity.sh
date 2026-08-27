@@ -528,6 +528,17 @@ def transient_stage_ext(fname):
     of their container are the anti-enumeration-gap case, not staging."""
     if os.path.splitext(fname)[1].lower() != ".tmp":
         return None
+    # audio-disposition-janitor.py stages as ".<stem>.dispfix.tmp" - leading
+    # dot AND no media extension DELIBERATELY, so the Tdarr folder watcher
+    # never indexes the temp (the 2026-08-24 ghost-record fix). That collides with
+    # the playable-stem rule below: a payload-sized in-flight remux fell
+    # through to unknown-payload and redded this canary, and both units share
+    # OnCalendar 04:30 UTC so the collision is nightly-shaped, not rare
+    # (council re-entry 2026-08-27, reproduced by three lenses independently).
+    # Exempt exactly that producer signature - hidden dotfile ending
+    # .dispfix.tmp - and nothing broader; a bare ".tmp" is still a finding.
+    if fname.startswith(".") and fname.lower().endswith(".dispfix.tmp"):
+        return ".dispfix"
     inner = os.path.splitext(os.path.splitext(fname)[0])[1].lower()
     return inner if inner in PLAYABLE_EXTS else None
 

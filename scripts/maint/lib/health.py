@@ -106,13 +106,22 @@ def _port_from_source(port_source: str) -> int:
 # ---------------------------------------------------------------------------
 
 def _resolve_urlbase(app: App) -> str:
+    """Resolve the app's urlbase prefix, FAILING CLOSED on a missing secret.
+
+    The old `except FileNotFoundError: return ""` collapsed
+    /{urlbase}/api/... to a bare /api/..., and because requests follows
+    redirects with expect_status=200, an app whose bare root 302s to a web
+    page (both bazarrs do) graded ok=True having never reached an API — a
+    green probe on a missing input. The auth_secret branch below was
+    deliberately written to fail loudly for exactly this class; the asymmetry
+    was the defect (council re-entry 2026-08-27, confirmed statically and
+    dynamically by two independent lenses). A manifest that names a
+    urlbase_secret is asserting the prefix is REQUIRED; its absence is a
+    config break the probe must surface, not paper over."""
     urlbase_secret = app.health.raw.get("urlbase_secret")
     if not urlbase_secret:
         return ""
-    try:
-        return _secret_read(urlbase_secret)
-    except FileNotFoundError:
-        return ""
+    return _secret_read(urlbase_secret)  # FileNotFoundError -> caller reds
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +135,13 @@ def _probe_http_api(app: App, timeout_s: float) -> HealthResult:
     except Exception as exc:
         return HealthResult(ok=False, latency_ms=None, reason=f"config error: {exc}")
 
-    urlbase = _resolve_urlbase(app)
+    try:
+        urlbase = _resolve_urlbase(app)
+    except FileNotFoundError as exc:
+        return HealthResult(
+            ok=False, latency_ms=None,
+            reason=f"urlbase secret missing: {exc.filename or exc}",
+        )
     path_template = raw.get("path_template", "/api/v3/system/status")
     path = path_template.replace("{urlbase}", urlbase)
     path = path.replace("//", "/")
