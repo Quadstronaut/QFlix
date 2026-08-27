@@ -362,7 +362,39 @@ classes:
       detected" (6) - are NOT covered and still reach a model, because a failed
       scanner job is a plausible real fault and nothing proved otherwise. Any
       future ERROR naming this subsystem also still pages. Fail open.
+      2026-08-27 AMENDMENT: one Job-failed VARIANT has since cleared the proof
+      bar and moved to its own class (plex-credits-job-video-missing, below);
+      Scanner job failed and Mis-matching media items still page, exactly as
+      written here.
     added: 2026-08-03
+
+  - id: plex-credits-job-video-missing
+    title: 'Plex CreditsDetectionManager "Job failed: Video does not exist"'
+    rx: '(?i)\[creditsdetectionmanager\]\s*job failed:\s*video does not exist'
+    field: null
+    prompt_clause: 'Plex CreditsDetectionManager "Job failed: Video does not exist" lines'
+    why: >-
+      A credits-marker job whose video was deleted or replaced out from under
+      a scan already in flight. Paged the operator 2026-08-27 04:07; a
+      dedicated investigation proved the class benign at the sibling-class
+      proof bar: ALL 51 occurrences across 3+ weeks of rotated PMS logs and 6
+      independent shows co-occur within seconds with a "No such file or
+      directory" / "Failed to create parent iterator" scan line for the SAME
+      title. ~29% are qflix-reaper retention deletes (the alerted instance:
+      reaper deleted the two shows 9-20 SECONDS before the line, and the Plex
+      DB read-only shows both items cleanly gone, no orphan); the rest are an
+      *arr import/upgrade replacing an episode file mid-scan. No item ever
+      repeats across days, nothing wedges, every affected show is either
+      fully purged or healthy with valid files today. A marker job on a file
+      that no longer exists cannot matter to a member. DELIBERATELY NOT
+      anchored to the reaper hour - that would suppress only the 29% and keep
+      paging the equally benign replace-race majority - and DELIBERATELY NOT
+      a bare "Job failed": "Job failed: Scanner job failed" and "Mis-matching
+      media items detected" remain unproven and still page per the sibling
+      class above. NOTE FOR FUTURE RULES: PMS log timestamps are UTC, not
+      box-local CEST - a rule keyed to a CEST offset misfires by two hours
+      (measured against date -u during the investigation).
+    added: 2026-08-27
 
   - id: plex-unknown-metadata-type-folder
     title: 'Plex "Unknown metadata type: folder" browse reply'
@@ -980,6 +1012,9 @@ prompt_segments:
   - index: 29
     marker: 'qflix-reaper "SUCCESS - N deleted, N GB reclaimed" summary lines, including N=0'
     classes: [reaper-success-line-misread]
+  - index: 30
+    marker: 'Plex CreditsDetectionManager "Job failed: Video does not exist" lines'
+    classes: [plex-credits-job-video-missing]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
