@@ -212,7 +212,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-error.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-stall.service \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-stall.timer \
-    scripts/maint/systemd/manitoba-maint-canary-arr-plex-parity.service \n    scripts/maint/systemd/manitoba-maint-canary-arr-plex-parity.timer \
+    scripts/maint/systemd/manitoba-maint-canary-arr-plex-parity.service \
+    scripts/maint/systemd/manitoba-maint-canary-arr-plex-parity.timer \
     scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.service \
     scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.timer \
     scripts/maint/systemd/manitoba-maint-canary-cron-liveness.service \
