@@ -514,3 +514,58 @@ def test_te_empty_db_is_still_could_not_assert(te_code, tmp_path):
     r = _run(te_code, home, {"GRACE_H": "48"})
     assert r.returncode == 2, r.stdout + r.stderr
     assert "STAGE=tdarr-filedb-empty" in _stage(r)
+
+
+# --- 2026-08-27: idle-debt arrival floor must survive MORE than one run ------
+# Council re-entry L-54, triple-reproduced: v1 floored only on the
+# empty->non-empty transition run; the NEXT run re-derived the clock from the
+# still-stale newest_hc and re-charged the whole idle debt (5h floored -> 41h
+# unfloored, straight through the stall threshold).
+
+def _hc_aged_fixture(hc_code, tmp_path, state: dict):
+    home, env = _hc_fixture(tmp_path, queued_file_exists=True)
+    db = Path(env["HC_DB"])
+    for f in (db / "FileJSONDB").glob("ok*.json"):
+        doc = json.loads(f.read_text(encoding="utf-8"))
+        doc["lastHealthCheckDate"] = int((NOW - 41 * HOUR) * 1000)  # stale
+        f.write_text(json.dumps(doc), encoding="utf-8")
+    Path(env["HC_STATE"]).write_text(json.dumps(state), encoding="utf-8")
+    return home, env
+
+
+def test_hc_arrival_floor_holds_on_the_run_after_the_transition(hc_code, tmp_path):
+    """Run N+1: queue was already non-empty last run and state carries
+    arrival_ts. The floor must CARRY, not evaporate into a false stall."""
+    home, env = _hc_aged_fixture(hc_code, tmp_path, {
+        "completed": 5, "last_progress_ts": NOW - 41 * HOUR,
+        "queued": 1, "updated_ts": NOW - 1 * HOUR,
+        "arrival_ts": NOW - 1 * HOUR})
+    r = _run(hc_code, home, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "arrival-floored" in r.stdout, r.stdout
+    # and the floor persists again for run N+2
+    saved = json.loads(Path(env["HC_STATE"]).read_text(encoding="utf-8"))
+    assert saved["arrival_ts"] == NOW - 1 * HOUR
+
+
+def test_hc_arrival_floor_still_lets_a_real_stall_red(hc_code, tmp_path):
+    """The floor is not a mute: work arrived LONG ago and nothing completed
+    since -- the carried arrival_ts is itself older than the stall window."""
+    home, env = _hc_aged_fixture(hc_code, tmp_path, {
+        "completed": 5, "last_progress_ts": NOW - 41 * HOUR,
+        "queued": 1, "updated_ts": NOW - 1 * HOUR,
+        "arrival_ts": NOW - 30 * HOUR})
+    r = _run(hc_code, home, env)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "STAGE=tdarr-hc-stalled" in _stage(r)
+
+
+def test_hc_legacy_state_without_queue_field_does_not_floor(hc_code, tmp_path):
+    """Migration guard: pre-upgrade state has no queued/arrival_ts. Flooring
+    at `now` there would mute a REAL in-progress stall for one full window on
+    every schema upgrade -- unknown history must mean NO floor."""
+    home, env = _hc_aged_fixture(hc_code, tmp_path, {
+        "completed": 5, "last_progress_ts": NOW - 41 * HOUR})
+    r = _run(hc_code, home, env)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "STAGE=tdarr-hc-stalled" in _stage(r)
