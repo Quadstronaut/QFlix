@@ -1520,6 +1520,18 @@ Test-Case 'app_extra covers the file-only apps, originals first, per-line capped
     Assert-True ($h.Contains('printf "%s\n" "$T" | cut -c1-200 | tail -n 20')) 'new loop per-line capped'
 }
 
+Test-Case 'unpackerr is level-anchored, not word-matched (2026-08-26 queue-chatter flood)' {
+    # unpackerr logs a stats line EVERY MINUTE containing "0 failed" — the
+    # generic word grep read every one as an error hit the day the log came
+    # back alive (dead since 2026-05-22, resurrected 2026-08-26). Its own
+    # levels are bracketed, so the collector must anchor on [ERROR]/[WARN].
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('grep -aE "\[(ERROR|WARN)\]"')) 'unpackerr grep anchors on the level token'
+    Assert-False ($h.Contains('unpackerr/unpackerr.log ~/.apps')) 'unpackerr is out of the word-match loop'
+    $blk = $h.Substring($h.IndexOf('unpackerr SEPARATELY'))
+    Assert-True ($blk.IndexOf('grep -aiE') -lt 0 -or $blk.IndexOf('grep -aiE') -gt $blk.IndexOf('=====')) 'no case-insensitive word grep on the unpackerr block'
+}
+
 Test-Case 'system prompt carries the 2026-08-16 classes with their still-report carve-outs' {
     $sp = Get-SystemPrompt
     Assert-True ($sp.Contains('Binary test N: handbrakePath not working')) 'handbrake clause present'
