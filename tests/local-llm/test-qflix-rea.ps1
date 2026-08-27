@@ -1697,6 +1697,34 @@ Test-Case '2026-08-25 rules do NOT eat the real faults next door' {
     Assert-Equal $null (Test-IsNoiseFinding $realBazarr) 'download failure survives'
 }
 
+# --- 2026-08-27: the 04:07 credits-detection page (investigated, proven benign) ---
+Test-Case 'Test-IsNoiseFinding suppresses "Job failed: Video does not exist" and ONLY that Job-failed variant' {
+    # 51/51 occurrences over 3+ weeks co-occur within seconds with a
+    # missing-file scan line for the same title (reaper delete or arr
+    # replace mid-scan). The exact excerpt from the 2026-08-27 04:07 alert:
+    $gone = @{
+        signature = 'plex:credits-detection-failed'
+        summary   = 'CreditsDetectionManager job failed due to video not existing'
+        excerpt   = '[2026-08-27 05:08:21.965] ERROR - [CreditsDetectionManager] Job failed: Video does not exist'
+    }
+    Assert-Equal 'plex-credits-job-video-missing' (Test-IsNoiseFinding $gone) 'video-does-not-exist variant suppressed'
+
+    # The UNPROVEN Job-failed variants must still page - the 2026-08-03
+    # carve-out stands for them.
+    $scanner = @{
+        signature = 'plex:credits-scanner-failed'
+        summary   = 'credits scanner job failed'
+        excerpt   = '[2026-08-27 05:08:21.965] ERROR - [CreditsDetectionManager] Job failed: Scanner job failed'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $scanner) 'Scanner job failed still pages'
+    $mism = @{
+        signature = 'plex:credits-mismatch'
+        summary   = 'mis-matching media items'
+        excerpt   = '[2026-08-27 05:08:21.965] ERROR - [CreditsDetectionManager] Mis-matching media items detected'
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $mism) 'Mis-matching media items still pages'
+}
+
 # Summary
 Write-Host "`n========================================" -F White
 Write-Host "  $Script:Pass passed, $Script:Fail failed" -F $(if($Script:Fail){'Red'}else{'Green'})
