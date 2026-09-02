@@ -932,12 +932,12 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # inheritance - it runs post-grep where adjacent lines are weeks apart and
     # the only undated lines are interleave-corrupted REAL errors that must
     # pass (fail open), not inherit a stale verdict (fail closed).
-    $bazarrSite = 'freshlines < "$f"'
+    $bazarrSite = 'freshtail "$f" 120'
     # 2026-08-25: tdarr site moved off the fixed col-2 substr to match() so a
     # date NOT at column 2 (interleave-spliced lines) still gets a verdict;
     # undated lines still pass through (plain fail-open, no inheritance).
     $tdarrSite  = 'awk -v c="$FRESH_CUTOFF" "{ if (match(\$0, /\[[0-9]{4}-[0-9]{2}-[0-9]{2}T/)) { d=substr(\$0, RSTART+1, 10); if (d < c) next } print }"'
-    Assert-True ($h.Contains($bazarrSite)) 'bazarr filter reads the WHOLE file, not an EOF-relative window'
+    Assert-True ($h.Contains($bazarrSite)) 'bazarr scans the WHOLE file, emits the last 120'
     Assert-False ($h.Contains('tail -n 360 "$f"')) 'the 360-line pre-window that leaked a 15-day-old traceback is gone'
     Assert-True ($h.Contains($tdarrSite))  'tdarr filter verbatim (match-anchored date, plain fail-open)'
     # arr Error/Fatal grep (2026-08-15: expired July indexer-backoff line paged
@@ -990,15 +990,17 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # and Aug-02 buildarr warnings paged. Bazarr-style inheritance awk over a
     # 3x pre-window, trimmed to the 60-line budget AFTER, so a stale header
     # just above the cut still sheds its undated traceback body.)
-    $cfgSite = 'freshlines < "$f" | tail -n 60'
-    Assert-True ($h.Contains($cfgSite)) 'config_sync filter reads the WHOLE file, trimmed to 60 after'
+    $cfgSite = 'freshtail "$f" 60'
+    Assert-True ($h.Contains($cfgSite)) 'config_sync scans the WHOLE file, emits the last 60'
     Assert-False ($h.Contains('tail -n 180 "$f"')) 'the 180-line pre-window is gone too'
     # Both legs go through the ONE helper now rather than carrying verbatim
     # copies of its awk - a copy is what let the two sites drift to different
     # (and differently-wrong) window sizes in the first place.
     Assert-False ($h -match 'tail -n [0-9]+ "\$f" \| awk -v c="\$FRESH_CUTOFF" "BEGIN\{keep=1\}') 'no inline copy of the inheritance awk survives'
     Assert-False ($h.Contains("collect config_sync bash -c 'tailfresh")) 'config_sync no longer ships a raw tailfresh window'
-    Assert-True ($h -match 'freshlines < "\$f" \\\n\s*\| tail -n 120 \\\n') 'bazarr trims to 120 AFTER the filter'
+    Assert-True ($h.Contains('freshtail() {'))     'freshtail helper defined'
+    Assert-True ($h.Contains('export -f freshtail')) 'freshtail exported to bash -c children'
+    Assert-False ($h -match 'freshlines < "\$f"') 'neither leg emits the whole file any more'
     # Tdarr ordering: the filter must sit BETWEEN the [ERROR] grep and
     # tail -n 400, so stale lines cannot eat the 400-line window.
     Assert-True ($h -match 'grep -a "\\\[ERROR\\\]" "\$f"[\s\S]*?awk -v c="\$FRESH_CUTOFF"[\s\S]*?tail -n 400') 'tdarr filter before the 400-line window'
@@ -1872,6 +1874,27 @@ Test-Case 'the ledger prunes entries it can no longer mute with' {
     }
 }
 
+Test-Case 'a DryRun reads the ledger but never stamps it' {
+    # A dry run posts nothing. If it stamped, it would mute the next REAL page
+    # for 24h and the operator would lose an alert to a diagnostic command they
+    # ran themselves. Muting is only ever paid for by a ping that went out.
+    Use-TempReaState {
+        $k = 'a line seen only by an operator dry run today'
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 's' $k) -Stamp:$false
+        Assert-Equal 1 @($r.Due).Count 'dry run still classifies it as due'
+        Assert-False ((Read-PageLedger).ContainsKey($k)) 'but wrote no stamp'
+        $r2 = Select-DuePageGroups -Groups @(New-TestGroup 's' $k)
+        Assert-Equal 1 @($r2.Due).Count 'so the next REAL run still pages'
+    }
+}
+
+Test-Case 'Invoke-Main passes -Stamp:(-not $DryRun) through to the ledger' {
+    # Shape pin: the wiring is the whole point of the switch, and a switch
+    # defined but never passed is exactly the half-fix this catches.
+    $src = Get-Content -Raw -LiteralPath (Join-Path (Get-RepoRoot) 'scripts/local-llm/qflix-rea.ps1')
+    Assert-True ($src.Contains('Select-DuePageGroups -Groups $errorGroups -Stamp:(-not $DryRun)')) 'DryRun threaded into the ledger call'
+}
+
 Test-Case 'the heartbeat does not call a run with muted repeats clean' {
     $p = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 0 -MutedCount 2
     Assert-True ($p.embeds[0].title -notlike '*clean*') 'still-broken is not clean'
@@ -1933,6 +1956,112 @@ function Invoke-FreshlinesProbe {
         Remove-Item -Force $tmp, $sf -ErrorAction SilentlyContinue
     }
 }
+
+function Invoke-FreshtailProbe {
+    <#
+      Runs the SHIPPED freshtail (extracted from the generated heredoc) over a
+      synthetic file with the measured buildarr.err shape:
+
+        300  ANCIENTHEAD  undated, above ANY dated line, far outside the window
+          1  STALEDATED   header older than the cutoff
+        200  STALEBODY    undated, inherits the stale verdict
+          1  FRESHDATED   current
+
+      Window 60, so the ancient head is well outside it - which is the real
+      file's geometry (1,383 lines, ~40 of them dated).
+    #>
+    $bashExe = Get-GitBashExe
+    if (-not $bashExe) { return $null }
+
+    $tmp = Join-Path $env:TEMP "rea-freshtail-$(Get-Random).log"
+    $sf  = Join-Path $env:TEMP "rea-freshtail-$(Get-Random).sh"
+    $sb  = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt 300; $i++) { [void]$sb.Append("  ANCIENTHEAD undated traceback frame $i`n") }
+    [void]$sb.Append("2026-08-01 04:30:25,036 buildarr [WARNING] STALEDATED something old`n")
+    for ($i = 0; $i -lt 200; $i++) { [void]$sb.Append("    STALEBODY continuation $i`n") }
+    [void]$sb.Append("2026-09-02 04:31:00,349 buildarr [WARNING] FRESHDATED something current`n")
+    [System.IO.File]::WriteAllText($tmp, $sb.ToString())
+
+    $h  = Get-RemoteHeredoc
+    $i0 = $h.IndexOf('freshtail() {')
+    $i1 = $h.IndexOf('export -f freshtail')
+    if ($i0 -lt 0 -or $i1 -le $i0) { throw 'freshtail body not found in the generated heredoc' }
+    $fn = $h.Substring($i0, $i1 - $i0)
+
+    $logBash = $tmp -replace '\\', '/'
+    $body = @(
+        'FRESH_CUTOFF=2026-08-30'
+        $fn
+        "OUT=`$(freshtail '$logBash' 60)"
+        'printf "%s|%s|%s|%s\n" "$(printf ''%s'' "$OUT" | grep -c ANCIENTHEAD)" "$(printf ''%s'' "$OUT" | grep -c FRESHDATED)" "$(printf ''%s'' "$OUT" | grep -c STALEDATED)" "$(printf ''%s'' "$OUT" | grep -c STALEBODY)"'
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($sf, $body + "`n")
+
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $out = (& $bashExe ($sf -replace '\\', '/') 2>&1 | Out-String).Trim()
+        $q = $out -split '\|'
+        return [pscustomobject]@{ AncientKept=$q[0]; FreshKept=$q[1]; StaleKept=$q[2]; StaleBodyKept=$q[3]; Raw=$out }
+    } finally {
+        $ErrorActionPreference = $prevEap
+        Remove-Item -Force $tmp, $sf -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-FreshtailFailOpenProbe {
+    <#
+      The mirror law. A file with NO dated line anywhere must emit its window
+      whole - freshlines and freshtail both fail OPEN on undated content, and
+      freshtail bounding the EMIT must not quietly turn that into fail-closed.
+    #>
+    $bashExe = Get-GitBashExe
+    if (-not $bashExe) { return $null }
+    $tmp = Join-Path $env:TEMP "rea-freshtail-fo-$(Get-Random).log"
+    $sf  = Join-Path $env:TEMP "rea-freshtail-fo-$(Get-Random).sh"
+    $sb  = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt 100; $i++) { [void]$sb.Append("  UNDATED supervisor echo line $i`n") }
+    [System.IO.File]::WriteAllText($tmp, $sb.ToString())
+
+    $h  = Get-RemoteHeredoc
+    $i0 = $h.IndexOf('freshtail() {'); $i1 = $h.IndexOf('export -f freshtail')
+    $fn = $h.Substring($i0, $i1 - $i0)
+    $logBash = $tmp -replace '\\', '/'
+    [System.IO.File]::WriteAllText($sf,
+        ("FRESH_CUTOFF=2026-08-30`n$fn`nfreshtail '$logBash' 60 | grep -c UNDATED`n"))
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        return (& $bashExe ($sf -replace '\\', '/') 2>&1 | Out-String).Trim()
+    } finally {
+        $ErrorActionPreference = $prevEap
+        Remove-Item -Force $tmp, $sf -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case 'BEHAVIOURAL: freshtail scans the whole file but never emits ancient leading undated lines' {
+    # buildarr.err, measured 2026-09-02: 1,383 lines, only ~40 of them dated.
+    # freshlines passes undated lines above the first dated line (a deliberate
+    # fail-open law), so `freshlines < file | tail -n 60` returned a long
+    # UNDATED traceback from the HEAD of the file, whose ~100-char lines then
+    # ate the whole 3000-byte section budget and starved the current dated
+    # warnings out of it. Scanning whole is right; emitting whole is not.
+    if (-not (Get-GitBashExe)) { Assert-True $true 'Git Bash not installed'; return }
+    $r = Invoke-FreshtailProbe
+    Assert-Equal '0' $r.AncientKept   'the ancient undated head, outside the window, is NOT emitted'
+    Assert-Equal '1' $r.FreshKept     'the current dated line IS emitted'
+    Assert-Equal '0' $r.StaleKept     'a stale-dated header is dropped'
+    Assert-Equal '0' $r.StaleBodyKept 'and its undated body is dropped WITH it (inheritance survives the window)'
+}
+
+Test-Case 'BEHAVIOURAL: freshtail still fails OPEN on a wholly undated file' {
+    # bazarr2.log is supervisor echoes with no dates at all, and rides the
+    # fail-open path whole BY DESIGN. Bounding the emit must not become a
+    # fail-closed filter that silently drops every undated source.
+    if (-not (Get-GitBashExe)) { Assert-True $true 'Git Bash not installed'; return }
+    Assert-Equal '60' (Invoke-FreshtailFailOpenProbe) 'a fully undated file emits its whole window'
+}
+
 
 Test-Case 'BEHAVIOURAL: freshlines drops a traceback whose dated header is outside any EOF-relative window' {
     # Reproduces the 2026-09-02 bazarr2.err geometry exactly: a stale dated
