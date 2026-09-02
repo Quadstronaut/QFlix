@@ -916,6 +916,48 @@ classes:
       speak in this string at all.
     added: 2026-08-25
 
+  - id: plex-post-reap-missing-input
+    title: Plex transcode 404 for a part qflix-reaper already deleted
+    rx: '(?i)error opening input(?: files?)?[: ].*(?:404 not found|/library/parts/)'
+    field: excerpt
+    prompt_clause: 'Plex transcode "Error opening input(s): Server returned 404 Not Found" for a part the reaper already deleted'
+    why: >-
+      qflix-reaper deletes media on a 45-day threshold and Plex keeps the part
+      in its DB until the next scan, so a client (or Plex's own analysis pass)
+      asking for a reaped part gets a 404 from
+      127.0.0.1:32400/library/parts/<id>. Same post-reap family as
+      plex-post-reap-parent-iterator, already ruled benign.
+      SIXTEEN of the 45 pages in the 2026-09-01/02 storm were this one class,
+      re-described by the models a dozen ways (file-not-found /
+      missing-source-file / transcode-404 / missing-media-file /
+      missing-file-during-transcode / file-not-found-stream), which is also why
+      signature-keyed dedup could never collapse them.
+      Whether a file that SHOULD exist is missing is not REA's question: the
+      arr-plex-parity canary owns "files the arrs imported must be visible in
+      Plex" and hardlink-integrity owns broken links, both on their own timers
+      with their own Kuma checks. Deliberately does NOT match a bare
+      "Failed to transcode file (N)", which can be a genuinely corrupt file.
+    added: 2026-09-02
+
+  - id: arr-rss-sync-missed-period
+    title: Sonarr/Radarr Torznab "rss sync didn't cover the period" warning
+    rx: '(?i)rss sync (?:didn.t|did not) cover the period between'
+    field: null
+    prompt_clause: 'Sonarr/Radarr Torznab "rss sync didn''t cover the period between X and Y" warnings'
+    why: >-
+      A Warn-level bookkeeping note that an indexer's RSS window had a gap and a
+      manual search may be needed for that interval. Not a fault, and already
+      OWNED: manitoba-maint-canary-prowlarr-indexer-health IS the "Prowlarr
+      indexer cascade + RSS staleness detector", runs every 15 minutes with its
+      own Kuma monitor, and was green throughout the 2026-09-01/02 storm while
+      REA paged on the same lines. A second opinion from an LLM reading the same
+      log is not a second signal, it is a duplicate a human has to correlate.
+      Escalated indexer failure is still covered by
+      arr-indexer-unavailable-backoff ("indexer is disabled till ... due to
+      recent failures").
+    added: 2026-09-02
+
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1015,6 +1057,12 @@ prompt_segments:
   - index: 30
     marker: 'Plex CreditsDetectionManager "Job failed: Video does not exist" lines'
     classes: [plex-credits-job-video-missing]
+  - index: 31
+    marker: 'Plex transcode "Error opening input(s): Server returned 404 Not Found" for a part the reaper already deleted'
+    classes: [plex-post-reap-missing-input]
+  - index: 32
+    marker: 'Sonarr/Radarr Torznab "rss sync didn''t cover the period between X and Y" warnings'
+    classes: [arr-rss-sync-missed-period]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
