@@ -4,7 +4,7 @@
 A PROVISIONING and PROTECTION system. The operator invites friends by hand off
 the form at qflix.starhold.dev; this observes the Plex share flipping to
 accepted, provisions a disabled Seerr account, and thereafter grants or
-withdraws access to match https://entitlements.starhold.app.
+withdraws access to match https://entitlements.quadstronix.dev.
 
 Access is an AND:
 

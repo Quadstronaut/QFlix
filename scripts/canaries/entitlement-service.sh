@@ -115,13 +115,36 @@ KEY=$(tr -d "\r\n" < "$KEYF")
   printf "STAGE=ent-empty-key msg=entitlement.key-is-empty\n" >&2; exit 2; }
 
 BASE=$(tr -d "\r\n" < "$HOME/secrets/entitlement.url" 2>/dev/null)
-[ -n "$BASE" ] && BASE="${BASE%/}" || BASE="https://entitlements.starhold.app"
+[ -n "$BASE" ] && BASE="${BASE%/}" || BASE="https://entitlements.quadstronix.dev"
 
 # --- leg 1: liveness ------------------------------------------------------
 # /healthz takes no auth by design, so this leg isolates "service down" from
 # "key rejected". Without the split, a rotated key reads as an outage and the
 # operator restarts a service that was never broken.
 HCODE=$(curl -s -o /dev/null -m 20 -w "%{http_code}" "$BASE/healthz" 2>/dev/null)
+CURL_RC=$?
+
+# A curl failure means no HTTP response ever arrived -- DNS, TCP or TLS died
+# before the service was reached. That is NOT the same fault as "the service
+# answered badly", and collapsing the two costs real time: on 2026-09-01 the
+# app was healthy on 127.0.0.1:9200 the whole while, but the public hostname
+# had been renamed out from under us, so the TLS handshake failed and this
+# canary reported "service-down" for 19 hours. The operator would have
+# restarted a service that never stopped. Name the transport, and say to check
+# the URL BEFORE touching the service.
+if [ "$CURL_RC" -ne 0 ]; then
+  case "$CURL_RC" in
+    6)     WHY="dns-cannot-resolve-host" ;;
+    7)     WHY="tcp-connection-refused" ;;
+    28)    WHY="timed-out" ;;
+    35|60) WHY="tls-handshake-failed-hostname-probably-not-served-here" ;;
+    *)     WHY="transport-error" ;;
+  esac
+  printf "STAGE=ent-unreachable msg=%s-curl-rc-%s-at-%s-verify-secrets-entitlement.url-before-restarting-anything\n" \
+    "$WHY" "$CURL_RC" "$BASE" >&2
+  exit 1
+fi
+
 if [ "$HCODE" != "200" ]; then
   printf "STAGE=ent-service-down msg=healthz-HTTP-%s-gate-freezes-silently-no-member-is-provisioned\n" \
     "${HCODE:-000}" >&2
