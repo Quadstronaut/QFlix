@@ -334,7 +334,15 @@ def test_arming_preconditions_hold():
 # directive (the person does not use the service and holds no share; the row
 # was kept, un-exempted, so any future share lands named and graded). This is
 # exactly the deliberate-edit-with-a-reason this guard exists to force.
-EXPECTED_EXEMPT_HOUSEHOLDS = 3
+#
+# 3 -> 4 on 2026-09-01: one household was added exempt by operator directive on
+# 2026-08-23 (never gated; the share was accepted 2026-08-22). That roster edit
+# was made on the box and this guard was not moved with it, so the count sat
+# wrong for nine days. Worth noting WHY that stayed invisible: this test is
+# @_live and CI runs without the roster, so only a local run against real
+# secrets can catch a roster/guard divergence. The guard is real; its coverage
+# is workstation-only.
+EXPECTED_EXEMPT_HOUSEHOLDS = 4
 
 
 @_live
