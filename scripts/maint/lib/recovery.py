@@ -5,6 +5,7 @@ Never raises — all failure modes collapse into the result dict + a notify.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -105,6 +106,97 @@ def is_permanently_failed(app_name: str) -> bool:
 def _mark_permanently_failed(app_name: str) -> None:
     with _permanently_failed_mutex:
         _permanently_failed[app_name] = time.monotonic()
+
+
+# ---------------------------------------------------------------------------
+# Escalation-page cooldown
+# ---------------------------------------------------------------------------
+# The latch above auto-re-arms every _PERMANENT_FAILURE_REARM_S so a transient
+# root cause can still recover unattended. That is right, and it stays. What was
+# wrong until 2026-09-02 is that each re-arm re-ran the 3-attempt loop and ended
+# it with a fresh error-level operator page: 900s latch + ~180s loop = one
+# identical "✗ plex could not be started — operator needed" every ~18 minutes,
+# forever. The Plex container was removed out from under UCC at 07:45Z and the
+# unchanged fault produced 33 Discord pings in ten hours, which is how a channel
+# gets muted and how the NEXT real alert goes unread.
+#
+# Retrying is not the bug. Re-PAGING is. So the loop keeps its cadence and the
+# page gets its own clock, kept in a small ledger beside state.json.
+#
+# WALL-CLOCK IN A FILE, not monotonic in memory: manitoba-maint restarts (deploy,
+# upgrade, OOM) and an in-memory cooldown would reset with it — the storm would
+# come straight back on the first restart, which is exactly when an operator is
+# least able to tell a new fault from an old one. The ledger is separate from
+# state.json because state.record() REPLACES the per-app entry wholesale, so a
+# field parked there would be wiped by the very next record() call.
+_ESCALATION_PAGE_LEDGER: Path = _state_dir() / "escalation-pages.json"
+
+# How long one app's terminal "operator needed" page silences its own repeats.
+# A day: long enough that a dead app is one line in the channel, short enough
+# that a fault still broken tomorrow is re-surfaced rather than forgotten.
+# Silence-forever would be the opposite failure to the one this fixes.
+_ESCALATION_PAGE_COOLDOWN_S: float = float(
+    os.environ.get("MANITOBA_ESCALATION_PAGE_COOLDOWN_S", str(24 * 3600))
+)
+
+
+def _read_escalation_ledger() -> dict:
+    """Ledger as {app_name: unix_ts_of_last_page}. Corrupt/missing reads as
+    empty — see _escalation_page_due for why that direction is the safe one."""
+    try:
+        with _ESCALATION_PAGE_LEDGER.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _escalation_page_due(app_name: str) -> bool:
+    """True if `app_name`'s terminal escalation should actually ping the
+    operator now. Stamps the ledger when it returns True, so the caller pages
+    exactly once per cooldown.
+
+    FAILS OPEN. Every error path here — unreadable ledger, unwritable state
+    dir, garbage JSON — returns True and pages. A bug in the noise suppressor
+    must never be able to swallow "your media server is down"; the worst case
+    of failing open is the storm we already had, the worst case of failing
+    closed is silence nobody notices."""
+    try:
+        now = time.time()
+        ledger = _read_escalation_ledger()
+        last = ledger.get(app_name)
+        if isinstance(last, (int, float)) and 0 < (now - last) < _ESCALATION_PAGE_COOLDOWN_S:
+            return False
+        ledger[app_name] = now
+        _write_escalation_ledger(ledger)
+        return True
+    except Exception as _exc:
+        sys.stderr.write(
+            "recovery.py: escalation-page cooldown check failed, paging anyway: "
+            + repr(_exc) + "\n")
+        return True
+
+
+def _write_escalation_ledger(ledger: dict) -> None:
+    _ESCALATION_PAGE_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _ESCALATION_PAGE_LEDGER.with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(ledger, fh, indent=2)
+    os.replace(tmp, _ESCALATION_PAGE_LEDGER)
+
+
+def clear_escalation_page(app_name: str) -> None:
+    """Drop `app_name`'s page stamp so the NEXT outage pages immediately.
+
+    The cooldown is per-OUTAGE, not per-wall-clock-day: an app that fails,
+    recovers, and fails again an hour later is news both times. Called by the
+    pusher on every successful probe, alongside clear_permanent_failure."""
+    try:
+        ledger = _read_escalation_ledger()
+        if ledger.pop(app_name, None) is not None:
+            _write_escalation_ledger(ledger)
+    except Exception:
+        pass
 
 
 # Events in state.json whose presence means the app's last recorded outcome was
@@ -342,7 +434,9 @@ def _recovery_loop(app: App) -> dict:
         f"✗ {app_name} could not be started after {attempts_max} attempts"
         f" — operator needed"
     )
-    _emit("failed", app_name, attempts_max, "down", "n/a", msg, "error")
+    # page_once: the loop re-runs every latch re-arm; the operator hears once.
+    _emit("failed", app_name, attempts_max, "down", "n/a", msg, "error",
+          page_once=True)
     return _result(app_name, "failed", attempts_max, "down", "n/a")
 
 
@@ -376,7 +470,7 @@ def _attempt_auto_downgrade(app: App, attempts: int) -> Optional[dict]:
             f"with exception: {exc} — operator needed"
         )
         _emit("auto_downgrade_failed", app.name, attempts, "down", "n/a",
-              msg, "error")
+              msg, "error", page_once=True)
         return _result(app.name, "auto_downgrade_failed", attempts, "down", "n/a")
 
     if result.ok:
@@ -393,7 +487,7 @@ def _attempt_auto_downgrade(app: App, attempts: int) -> Optional[dict]:
         f"{result.reason} — operator needed"
     )
     _emit("auto_downgrade_failed", app.name, attempts, "down", "n/a",
-          msg, "error")
+          msg, "error", page_once=True)
     return _result(app.name, "auto_downgrade_failed", attempts, "down", "n/a")
 
 
@@ -414,7 +508,20 @@ def _result(app_name: str, event: str, attempts: int,
 
 def _emit(event: str, app_name: str, attempts: int,
           final_health: str, kuma_status: str,
-          message: str, level: str) -> None:
+          message: str, level: str, *, page_once: bool = False) -> None:
+    """Record the outcome, then tell the operator.
+
+    `page_once=True` routes the notify through the escalation-page cooldown:
+    the state record ALWAYS lands (state.json is the durable audit trail the
+    runbook reads), only the Discord ping is rate-limited. A suppressed page
+    still writes a stderr line, so a cooldown that starts eating real alerts
+    is visible in journald rather than silent."""
+    notify_operator = True
+    if page_once and not _escalation_page_due(app_name):
+        notify_operator = False
+        sys.stderr.write(
+            f"[recovery] {app_name}: escalation page suppressed "
+            f"(already paged within {int(_ESCALATION_PAGE_COOLDOWN_S)}s) — {message}\n")
     try:
         state.record(
             _STATE_PATH,
@@ -427,6 +534,8 @@ def _emit(event: str, app_name: str, attempts: int,
     except Exception as _exc:
         sys.stderr.write("recovery.py: STATE RECORD of recovery outcome failed (best-effort, continuing): "
                          + repr(_exc) + "\n")
+    if not notify_operator:
+        return
     try:
         notify.notify(message, level)
     except Exception as _exc:

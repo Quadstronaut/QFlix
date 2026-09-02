@@ -922,17 +922,23 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # Full awk program pinned per collector: keep-direction (d >= c), the
     # site-specific substr offset (bazarr date at col 1; tdarr skips its
     # leading "[" via col 2), and the continuation-inheritance BEGIN{keep=1}.
-    # Bazarr: inheritance awk over a 3x pre-window, trimmed to 120 AFTER, so a
-    # stale header just above the 120 cut still sheds its body. Tdarr: NO
+    # Bazarr: inheritance filter over the WHOLE file, trimmed to 120 AFTER. It
+    # was a `tail -n 360` pre-window until 2026-09-02, when a 2026-08-18
+    # traceback was measured shipping as current for fifteen days: the dated
+    # header governing it sat 81 lines ABOVE the start of that window, so awk
+    # opened at keep=1 and never saw a date. An EOF-relative window cannot
+    # guarantee it contains the dated line that governs the lines inside it.
+    # Tdarr: NO
     # inheritance - it runs post-grep where adjacent lines are weeks apart and
     # the only undated lines are interleave-corrupted REAL errors that must
     # pass (fail open), not inherit a stale verdict (fail closed).
-    $bazarrSite = 'tail -n 360 "$f" | awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr(\$0,1,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }"'
+    $bazarrSite = 'freshlines < "$f"'
     # 2026-08-25: tdarr site moved off the fixed col-2 substr to match() so a
     # date NOT at column 2 (interleave-spliced lines) still gets a verdict;
     # undated lines still pass through (plain fail-open, no inheritance).
     $tdarrSite  = 'awk -v c="$FRESH_CUTOFF" "{ if (match(\$0, /\[[0-9]{4}-[0-9]{2}-[0-9]{2}T/)) { d=substr(\$0, RSTART+1, 10); if (d < c) next } print }"'
-    Assert-True ($h.Contains($bazarrSite)) 'bazarr filter verbatim (360 pre-window, col-1 offset, inheritance)'
+    Assert-True ($h.Contains($bazarrSite)) 'bazarr filter reads the WHOLE file, not an EOF-relative window'
+    Assert-False ($h.Contains('tail -n 360 "$f"')) 'the 360-line pre-window that leaked a 15-day-old traceback is gone'
     Assert-True ($h.Contains($tdarrSite))  'tdarr filter verbatim (match-anchored date, plain fail-open)'
     # arr Error/Fatal grep (2026-08-15: expired July indexer-backoff line paged
     # from a sparse-error file - whole-file grep needs the same date floor).
@@ -984,10 +990,15 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # and Aug-02 buildarr warnings paged. Bazarr-style inheritance awk over a
     # 3x pre-window, trimmed to the 60-line budget AFTER, so a stale header
     # just above the cut still sheds its undated traceback body.)
-    $cfgSite = 'tail -n 180 "$f" | awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr($0,1,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }" | tail -n 60'
-    Assert-True ($h.Contains($cfgSite.Replace('$0','\$0'))) 'config_sync filter verbatim (inheritance, 180 pre-window, trim to 60 after)'
+    $cfgSite = 'freshlines < "$f" | tail -n 60'
+    Assert-True ($h.Contains($cfgSite)) 'config_sync filter reads the WHOLE file, trimmed to 60 after'
+    Assert-False ($h.Contains('tail -n 180 "$f"')) 'the 180-line pre-window is gone too'
+    # Both legs go through the ONE helper now rather than carrying verbatim
+    # copies of its awk - a copy is what let the two sites drift to different
+    # (and differently-wrong) window sizes in the first place.
+    Assert-False ($h -match 'tail -n [0-9]+ "\$f" \| awk -v c="\$FRESH_CUTOFF" "BEGIN\{keep=1\}') 'no inline copy of the inheritance awk survives'
     Assert-False ($h.Contains("collect config_sync bash -c 'tailfresh")) 'config_sync no longer ships a raw tailfresh window'
-    Assert-True ($h -match 'BEGIN\{keep=1\}[\s\S]{0,120}\n\s*\| tail -n 120 \\\n') 'bazarr trims to 120 AFTER the filter'
+    Assert-True ($h -match 'freshlines < "\$f" \\\n\s*\| tail -n 120 \\\n') 'bazarr trims to 120 AFTER the filter'
     # Tdarr ordering: the filter must sit BETWEEN the [ERROR] grep and
     # tail -n 400, so stale lines cannot eat the 400-line window.
     Assert-True ($h -match 'grep -a "\\\[ERROR\\\]" "\$f"[\s\S]*?awk -v c="\$FRESH_CUTOFF"[\s\S]*?tail -n 400') 'tdarr filter before the 400-line window'
@@ -1723,6 +1734,220 @@ Test-Case 'Test-IsNoiseFinding suppresses "Job failed: Video does not exist" and
         excerpt   = '[2026-08-27 05:08:21.965] ERROR - [CreditsDetectionManager] Mis-matching media items detected'
     }
     Assert-Equal $null (Test-IsNoiseFinding $mism) 'Mis-matching media items still pages'
+}
+
+# ---------------------------------------------------------------------------
+# 2026-09-02: cross-run page ledger.
+#
+# Get-Consensus dedups WITHIN a run; nothing dedupped ACROSS runs. With REA on
+# an hourly timer and FreshDays=3, one log line could page 72 times. Measured
+# that day: 45 Discord pages in 24h from ~8 distinct causes, including a single
+# transient listmonk postgres blip that was the last line of a 52-line log and
+# therefore sat in the tail re-paging every hour.
+# ---------------------------------------------------------------------------
+
+function New-TestGroup {
+    param([string]$Sig, [string]$Key)
+    [pscustomobject]@{
+        signature = $Sig; page_key = $Key; app = 'plex'; file = 'x'
+        severity = 'error'; time = '2026-09-02T00:00:00Z'
+        summary = 's'; excerpt = 'e'; models_flagged = @('a','b')
+    }
+}
+
+function Use-TempReaState {
+    param([scriptblock]$Block)
+    $prev = $env:APPDATA
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-ledger-$(Get-Random)"
+    try { & $Block } finally {
+        try { Remove-Item -Recurse -Force $env:APPDATA -ErrorAction SilentlyContinue } catch {}
+        $env:APPDATA = $prev
+    }
+}
+
+Test-Case 'Get-Consensus emits page_key, the collector-anchored cross-run identity' {
+    # signature is model-authored and re-invented hourly; the excerpt key is not.
+    $f = @{ signature='bazarr:connection-refused'; severity='error'; app='bazarr'; file='f'
+            time='2026-09-02T00:00:00Z'; summary='s'
+            excerpt='urllib3.exceptions.NewConnectionError: HTTPConnection(host=127.0.0.1, port=17003): Connection refused'
+            _model='m1' }
+    $g = @(Get-Consensus -Findings @([pscustomobject]$f))
+    Assert-Equal 1 $g.Count 'one group'
+    Assert-True ($g[0].PSObject.Properties.Name -contains 'page_key') 'page_key emitted'
+    Assert-True ([string]$g[0].page_key -notmatch '[0-9]') 'digits stripped so timestamps collapse'
+}
+
+Test-Case 'two runs, same underlying line: the second does not page' {
+    Use-TempReaState {
+        $g = @(New-TestGroup 'plex:file-not-found' 'plex error opening input server returned not found')
+        $r1 = Select-DuePageGroups -Groups $g
+        Assert-Equal 1 @($r1.Due).Count   'first run pages'
+        Assert-Equal 0 @($r1.Muted).Count 'nothing muted on first sight'
+
+        # Same line, model invents a DIFFERENT signature (the real 2026-09-02
+        # pattern: file-not-found / missing-source-file / transcode-404 ...).
+        $g2 = @(New-TestGroup 'plex:missing-source-file' 'plex error opening input server returned not found')
+        $r2 = Select-DuePageGroups -Groups $g2
+        Assert-Equal 0 @($r2.Due).Count   'second run does NOT page'
+        Assert-Equal 1 @($r2.Muted).Count 'second run muted by excerpt key, not signature'
+    }
+}
+
+Test-Case 'twenty-four hourly runs of one unchanged fault page exactly once' {
+    Use-TempReaState {
+        $paged = 0
+        for ($i = 0; $i -lt 24; $i++) {
+            $r = Select-DuePageGroups -Groups @(New-TestGroup "sig-$i" 'one unchanged underlying log line here')
+            $paged += @($r.Due).Count
+        }
+        Assert-Equal 1 $paged '24 runs -> 1 page (was 24)'
+    }
+}
+
+Test-Case 'the cooldown expires so a still-broken fault is re-surfaced' {
+    Use-TempReaState {
+        $key = 'a fault that is still broken tomorrow morning'
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 's' $key)
+        # Backdate the stamp past the cooldown.
+        $led = Read-PageLedger
+        $led[$key] = $led[$key] - ($Script:PageCooldownHours * 3600) - 60
+        Write-PageLedger $led
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 's' $key)
+        Assert-Equal 1 @($r.Due).Count 'pages again after the cooldown - silence-forever is the opposite failure'
+    }
+}
+
+Test-Case 'the ledger is per-key: one muted finding cannot mute a different one' {
+    Use-TempReaState {
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 'a' 'first distinct underlying log line aaaaaa')
+        $r = Select-DuePageGroups -Groups @(
+            (New-TestGroup 'a' 'first distinct underlying log line aaaaaa'),
+            (New-TestGroup 'b' 'second distinct underlying log line bbbbb'))
+        Assert-Equal 1 @($r.Due).Count   'the new one pages'
+        Assert-Equal 1 @($r.Muted).Count 'the repeat is muted'
+        Assert-Equal 'b' @($r.Due)[0].signature 'the RIGHT one pages'
+    }
+}
+
+Test-Case 'the ledger survives across processes (file, not memory)' {
+    Use-TempReaState {
+        $key = 'a line that must stay muted across a restart'
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 's' $key)
+        Assert-True (Test-Path (Get-PageLedgerPath)) 'ledger written to disk'
+        # Read-PageLedger is the whole of the cross-process state; a fresh
+        # process sees exactly this.
+        Assert-True ((Read-PageLedger).ContainsKey($key)) 'key persisted'
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 's' $key)
+        Assert-Equal 0 @($r.Due).Count 'still muted after a simulated restart'
+    }
+}
+
+Test-Case 'a group with no page_key pages rather than being silently swallowed' {
+    Use-TempReaState {
+        $g = [pscustomobject]@{ signature='no-key'; app='x'; file='f'; severity='error'
+                                time='t'; summary='s'; excerpt='e'; models_flagged=@('a','b') }
+        $r = Select-DuePageGroups -Groups @($g)
+        Assert-Equal 1 @($r.Due).Count 'no identity to dedup on => it pages'
+    }
+}
+
+Test-Case 'a corrupt ledger FAILS OPEN and pages' {
+    Use-TempReaState {
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 's' 'some underlying line that was already paged')
+        Set-Content -LiteralPath (Get-PageLedgerPath) -Value '{not json at all' -Encoding UTF8
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 's' 'some underlying line that was already paged')
+        Assert-Equal 1 @($r.Due).Count 'a broken suppressor must never eat an alert'
+    }
+}
+
+Test-Case 'the ledger prunes entries it can no longer mute with' {
+    Use-TempReaState {
+        $old = 'an ancient line nobody will ever see again'
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 's' $old)
+        $led = Read-PageLedger
+        $led[$old] = $led[$old] - (3 * $Script:PageCooldownHours * 3600)
+        Write-PageLedger $led
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 't' 'a completely different current log line')
+        Assert-False ((Read-PageLedger).ContainsKey($old)) 'stale entry pruned'
+    }
+}
+
+Test-Case 'the heartbeat does not call a run with muted repeats clean' {
+    $p = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 0 -MutedCount 2
+    Assert-True ($p.embeds[0].title -notlike '*clean*') 'still-broken is not clean'
+    Assert-True ($p.embeds[0].description -like '*2 repeat finding(s) muted*') 'muted count is stated'
+    Assert-Equal '' $p.content 'a muted repeat must still not ping'
+    $q = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 0 -MutedCount 0
+    Assert-True ($q.embeds[0].title -like '*clean*') 'a genuinely clean run still says clean'
+}
+
+
+function Get-GitBashExe {
+    # The SAME resolution the `bash -n` pin uses. Plain `bash` on this
+    # workstation is WSL, whose /mnt view and line-ending handling produce
+    # phantom failures (measured 2026-08-25, 245 of them); Git Bash is the
+    # shell whose semantics actually match the seedbox.
+    @(
+        (Join-Path $env:USERPROFILE 'scoop\apps\git\current\bin\bash.exe'),
+        (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe')
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+
+function Invoke-FreshlinesProbe {
+    <#
+      Runs the SHIPPED freshlines helper - extracted from the generated heredoc,
+      so this can never drift from the implementation - over a synthetic log
+      carrying the measured 2026-09-02 bazarr2.err geometry: one dated header,
+      400 undated filler lines (more than the old 360-line pre-window), then the
+      traceback. Returns the surviving traceback count as a string.
+    #>
+    param([string]$HeaderDate)
+    $bashExe = Get-GitBashExe
+    if (-not $bashExe) { return $null }
+
+    $tmp = Join-Path $env:TEMP "rea-freshlines-$(Get-Random).log"
+    $sf  = Join-Path $env:TEMP "rea-freshlines-$(Get-Random).sh"
+    $sb  = New-Object System.Text.StringBuilder
+    [void]$sb.Append("$HeaderDate 06:39:05,437 - root : ERROR (signalr_client:159) - BAZARR SignalR client connection lost`n")
+    for ($i = 0; $i -lt 400; $i++) { [void]$sb.Append("    undated filler continuation line $i`n") }
+    [void]$sb.Append("urllib3.exceptions.NewConnectionError: HTTPConnection(host=127.0.0.1, port=17003): Connection refused`n")
+    [System.IO.File]::WriteAllText($tmp, $sb.ToString())
+
+    $h  = Get-RemoteHeredoc
+    $i0 = $h.IndexOf('freshlines() {')
+    $i1 = $h.IndexOf('export -f freshlines')
+    if ($i0 -lt 0 -or $i1 -le $i0) { throw 'freshlines body not found in the generated heredoc' }
+    $fn = $h.Substring($i0, $i1 - $i0)
+
+    $logBash = $tmp -replace '\\', '/'
+    [System.IO.File]::WriteAllText($sf,
+        "FRESH_CUTOFF=2026-08-30`n$fn`nfreshlines < '$logBash' | grep -c 'NewConnectionError'`n")
+
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        return (& $bashExe ($sf -replace '\\', '/') 2>&1 | Out-String).Trim()
+    } finally {
+        $ErrorActionPreference = $prevEap
+        Remove-Item -Force $tmp, $sf -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case 'BEHAVIOURAL: freshlines drops a traceback whose dated header is outside any EOF-relative window' {
+    # Reproduces the 2026-09-02 bazarr2.err geometry exactly: a stale dated
+    # header, then >360 lines of undated filler, then the traceback. Under the
+    # old `tail -n 360` pre-window awk opened mid-filler at keep=1 and shipped
+    # the traceback as current. Reading the file whole, the header governs it.
+    if (-not (Get-GitBashExe)) { Assert-True $true 'Git Bash not installed - the shape pins above still cover this'; return }
+    Assert-Equal '0' (Invoke-FreshlinesProbe -HeaderDate '2026-08-18') 'stale traceback dropped, header 400+ lines up'
+}
+
+Test-Case 'BEHAVIOURAL: freshlines keeps the same traceback when its header is fresh' {
+    # The mirror assertion. A filter that dropped everything would pass the test
+    # above; this is what stops that from being the fix.
+    if (-not (Get-GitBashExe)) { Assert-True $true 'Git Bash not installed'; return }
+    Assert-Equal '1' (Invoke-FreshlinesProbe -HeaderDate '2026-09-02') 'a CURRENT traceback still ships'
 }
 
 # Summary
