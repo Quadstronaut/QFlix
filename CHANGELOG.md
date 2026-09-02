@@ -1,5 +1,160 @@
 # Changelog
 
+## 2026-09-02 - 78 pings from one fault, and the 4% signal rate underneath it
+
+Plex went down at 07:45Z. Over the following 24h the stack sent **78 Discord
+messages** about it: 33 from the box, 45 from REA. Two of the 45 were the real
+fault. The operator's verdict is the whole of this entry:
+
+> *"if I'm getting pinged 40+ times that's just noise, not a useful alert,
+> therefore it's not fulfilling its function."*
+
+Correct. A 4% signal rate is not an alerting system. Four defects, in the order
+they were found, each measured before it was fixed.
+
+### 1. Nothing dedupped ACROSS runs, on either half
+
+Both halves deduplicated *within* one invocation and nothing deduplicated
+across invocations, so the ping count was a function of the **timer cadence**,
+not of how much was wrong.
+
+`lib/recovery.py`: the permanent-failure latch re-arms every 900s so a
+transient root cause can still recover unattended - correct, unchanged. But
+each re-arm re-ran the 3-attempt loop and ended it with a fresh `error`-level
+page: 900s latch + ~180s loop = one identical ping every ~18 minutes, forever.
+**Retrying is not the bug. Re-paging is.** The loop keeps its cadence; the page
+gets its own 24h clock in `~/.opt/maint/escalation-pages.json`. The state record
+always lands - only the ping is rate-limited - and the pusher clears the stamp
+on any successful probe, so the cooldown is per-**outage**, not per wall-clock
+day.
+
+`qflix-rea.ps1`: `Get-Consensus` already merged model-invented signature
+variants onto a collector-anchored *excerpt* key, but that key died with the
+run. Hourly timer x `FreshDays=3` => one log line could page **72 times**. The
+listmonk "connection refused" was ONE transient postgres blip at 12:25 that
+happened to be the last line of a 52-line log, so it sat in the tail re-paging
+every hour after. The excerpt key is now persisted as `page_key` with the same
+24h cooldown. **Never key on `signature`** - models re-invent it every run
+(`bazarr-connection-refused` / `bazarr:connection-refused` /
+`bazarr:sonarr-api-connection-refused` all named one line), which is exactly why
+the intra-run merge already avoided it.
+
+Both ledgers **fail open**: unreadable, unparseable or unwritable => page anyway.
+A bug in a noise suppressor must never be able to swallow "the media server is
+down". Wall-clock in a file, not monotonic in memory, because the daemon
+restarts and a reset cooldown would bring the storm back at the worst moment.
+
+### 2. An EOF-relative freshness window shipped a 15-day-old traceback
+
+The bazarr and config_sync collector legs ran the date-inheritance awk over a
+fixed tail window (360 and 180 lines) and trimmed afterwards. Both sized the
+window from EOF, but **what governs a line is the last dated line above THAT
+LINE**, and no EOF-relative window can be guaranteed to contain it.
+
+Measured: `bazarr2.err` is 36,400 lines. A SignalR `Connection refused`
+traceback sits at line 36,111. Its governing dated header - `2026-08-18` - is at
+35,960: only 151 lines above the traceback, but **81 lines above the start of
+the `tail -n 360` window**. awk opened at `keep=1` (fail open), never saw a date,
+and shipped a fifteen-day-old traceback as a live fault every hour for fifteen
+days. The old comment named this residual and called it *accepted*; it was not
+theoretical.
+
+Fixing it by reading whole then trimming introduced the mirror bug in the same
+session: `freshlines` passes undated lines *above the first dated line* (a
+deliberate law), which in a tail window are recent but in a whole-file read are
+the oldest lines there are. `buildarr.err` is 1,383 lines with ~40 dated, so
+`freshlines < file | tail -n 60` returned a long undated traceback from the
+**head** of the file whose ~100-char lines ate the entire 3000-byte section
+budget - the "one class eats the section" pathology, reintroduced from the other
+end. `freshtail <file> <window>` does both correctly: two passes, inheritance
+carried from line 1, printing only inside the window.
+
+Both defects were invisible to 439 passing tests and obvious in one real
+collector run against the box.
+
+### 3. REA was paging about things a monitor already owned
+
+The ledger capped **repetition**. It did not touch *what REA chooses to page
+about*, which is the actual defect. REA reads LOGS, which are history; Kuma and
+the 36 canaries measure LIVE STATE. "Connection refused at 14:55" is a true
+statement about 14:55 and says nothing about now.
+
+**REA's job is the RESIDUE: faults that no monitor and no canary can see.**
+Anything already owned is a duplicate in BOTH directions - owner green means the
+blip already resolved and there is nothing to do; owner red means the owner
+already paged and now two alerts have to be correlated by a human at 3am.
+
+Three families were 35 of the 45:
+
+| Family | n | Owner |
+|---|---|---|
+| app->app connection failures | 15 | that target's own Kuma monitor |
+| Plex 404 for a reaper-deleted part | 16 | `arr-plex-parity`, `hardlink-integrity` |
+| Torznab "rss sync didn't cover the period" | 4 | `prowlarr-indexer-health`, green throughout |
+
+The **ownership gate** keys on the target **port**, not the app name:
+model-authored `app` fields are unreliable and app names appear in prose, but a
+port in a connection error is emitted by the failing client library and cannot
+be hallucinated onto a different service. `secrets/*.port` IS the stack's port
+registry. Excerpt-scoped, so a speculative summary cannot mute a finding whose
+real evidence is something else.
+
+### 4. A gate that keys on evidence is blind to findings that lack it
+
+Watching the FIRST run under the gate - rather than declaring victory at the
+merge - showed 0 pages and 17 suppressions, and named two findings the gate
+structurally cannot judge. **0 of 3,904 `Tautulli WebSocket ::` lines carry a
+port**, so that whole channel fails open; it was held on that run only by the
+consensus floor, which is luck, not design. Tautulli's *other* Plex failure
+shape, `/status/sessions`, does carry `port=17025` and was already gated - the
+same fault reported through a channel the gate cannot see. Both it and Plex's
+new post-1.43.3 HDHomeRun tuner probe (one WARN at boot; `curl` confirms the
+docker gateway answers 301 and no tuner exists) became named classes.
+**When a gate fails open, the class still needs a named rule.**
+
+### Accepted residual, stated out loud
+
+A broken **link** between two apps that are both individually green - the
+`bazarr2 -> sonarr2` SignalR negotiate path is the real example - is now held and
+will not page. Deliberate: per the compartmentalize law a link that matters gets
+its OWN canary with its own timer and Kuma check, not an LLM re-reading a
+traceback hourly. Registered as R7 in `docs/audit-residual-risk.md`. Held
+findings are audit-logged by rule id and counted on the daily heartbeat, which
+no longer titles itself "clean" when its only findings were already-paged
+repeats - still-broken is not clean, it is already-reported.
+
+### Also corrected: a wrong diagnosis, on the record
+
+I reported the Plex Docker container as **removed**. It was not. `app-plex
+version` returns *"re-check if it's installed or not"* for a merely **down** app
+- the subcommand queries the running app's API - and `install --dry-run` only
+prints what install *would* run, it never probes for the container. Neither was
+evidence. The Ultra.cc control panel had Plex present with an update pending;
+applying it restored the server. **The CP app list is the authority; from SSH
+there is no read-only probe that distinguishes down-from-removed.**
+
+### Result
+
+| | Before | After |
+|---|---|---|
+| Box "operator needed" | 3-4/hr, indefinitely | 1, then 24h cooldown |
+| REA pages / 24h | 45 (2 real) | 0 across the first two runs |
+| REA suppressions / run | 2 | 17 |
+| Noise classes | 35 | 39 |
+
+Verified against the 2026-09-02 excerpts **verbatim**, with controls that must
+survive and do: `plex could not be started after 3 attempts`, a Tautulli
+websocket **authentication** failure, an `EDQUOT` quota failure, a bare
+`Failed to transcode file (8)`, an HTTP 500 from a **live** Plex, an external
+API on `:443`, an unregistered local port, and a certificate failure against a
+real hostname.
+
+The honest limit: a quiet alerting system on a healthy stack does not prove the
+gate would let a real fault through. That is covered by tests and controls, not
+by production evidence. The next genuine fault is the real test.
+
+PRs #10, #11, #12, #13. 2690 pytest, 477 pwsh.
+
 ## 2026-08-24 - The codec was never the policy
 
 Verification of yesterday's Tdarr work turned up the gap underneath it. The
