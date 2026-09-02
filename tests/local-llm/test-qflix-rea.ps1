@@ -1725,6 +1725,151 @@ Test-Case 'Test-IsNoiseFinding suppresses "Job failed: Video does not exist" and
     Assert-Equal $null (Test-IsNoiseFinding $mism) 'Mis-matching media items still pages'
 }
 
+# ---------------------------------------------------------------------------
+# 2026-09-02: cross-run page ledger.
+#
+# Get-Consensus dedups WITHIN a run; nothing dedupped ACROSS runs. With REA on
+# an hourly timer and FreshDays=3, one log line could page 72 times. Measured
+# that day: 45 Discord pages in 24h from ~8 distinct causes, including a single
+# transient listmonk postgres blip that was the last line of a 52-line log and
+# therefore sat in the tail re-paging every hour.
+# ---------------------------------------------------------------------------
+
+function New-TestGroup {
+    param([string]$Sig, [string]$Key)
+    [pscustomobject]@{
+        signature = $Sig; page_key = $Key; app = 'plex'; file = 'x'
+        severity = 'error'; time = '2026-09-02T00:00:00Z'
+        summary = 's'; excerpt = 'e'; models_flagged = @('a','b')
+    }
+}
+
+function Use-TempReaState {
+    param([scriptblock]$Block)
+    $prev = $env:APPDATA
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-ledger-$(Get-Random)"
+    try { & $Block } finally {
+        try { Remove-Item -Recurse -Force $env:APPDATA -ErrorAction SilentlyContinue } catch {}
+        $env:APPDATA = $prev
+    }
+}
+
+Test-Case 'Get-Consensus emits page_key, the collector-anchored cross-run identity' {
+    # signature is model-authored and re-invented hourly; the excerpt key is not.
+    $f = @{ signature='bazarr:connection-refused'; severity='error'; app='bazarr'; file='f'
+            time='2026-09-02T00:00:00Z'; summary='s'
+            excerpt='urllib3.exceptions.NewConnectionError: HTTPConnection(host=127.0.0.1, port=17003): Connection refused'
+            _model='m1' }
+    $g = @(Get-Consensus -Findings @([pscustomobject]$f))
+    Assert-Equal 1 $g.Count 'one group'
+    Assert-True ($g[0].PSObject.Properties.Name -contains 'page_key') 'page_key emitted'
+    Assert-True ([string]$g[0].page_key -notmatch '[0-9]') 'digits stripped so timestamps collapse'
+}
+
+Test-Case 'two runs, same underlying line: the second does not page' {
+    Use-TempReaState {
+        $g = @(New-TestGroup 'plex:file-not-found' 'plex error opening input server returned not found')
+        $r1 = Select-DuePageGroups -Groups $g
+        Assert-Equal 1 @($r1.Due).Count   'first run pages'
+        Assert-Equal 0 @($r1.Muted).Count 'nothing muted on first sight'
+
+        # Same line, model invents a DIFFERENT signature (the real 2026-09-02
+        # pattern: file-not-found / missing-source-file / transcode-404 ...).
+        $g2 = @(New-TestGroup 'plex:missing-source-file' 'plex error opening input server returned not found')
+        $r2 = Select-DuePageGroups -Groups $g2
+        Assert-Equal 0 @($r2.Due).Count   'second run does NOT page'
+        Assert-Equal 1 @($r2.Muted).Count 'second run muted by excerpt key, not signature'
+    }
+}
+
+Test-Case 'twenty-four hourly runs of one unchanged fault page exactly once' {
+    Use-TempReaState {
+        $paged = 0
+        for ($i = 0; $i -lt 24; $i++) {
+            $r = Select-DuePageGroups -Groups @(New-TestGroup "sig-$i" 'one unchanged underlying log line here')
+            $paged += @($r.Due).Count
+        }
+        Assert-Equal 1 $paged '24 runs -> 1 page (was 24)'
+    }
+}
+
+Test-Case 'the cooldown expires so a still-broken fault is re-surfaced' {
+    Use-TempReaState {
+        $key = 'a fault that is still broken tomorrow morning'
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 's' $key)
+        # Backdate the stamp past the cooldown.
+        $led = Read-PageLedger
+        $led[$key] = $led[$key] - ($Script:PageCooldownHours * 3600) - 60
+        Write-PageLedger $led
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 's' $key)
+        Assert-Equal 1 @($r.Due).Count 'pages again after the cooldown - silence-forever is the opposite failure'
+    }
+}
+
+Test-Case 'the ledger is per-key: one muted finding cannot mute a different one' {
+    Use-TempReaState {
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 'a' 'first distinct underlying log line aaaaaa')
+        $r = Select-DuePageGroups -Groups @(
+            (New-TestGroup 'a' 'first distinct underlying log line aaaaaa'),
+            (New-TestGroup 'b' 'second distinct underlying log line bbbbb'))
+        Assert-Equal 1 @($r.Due).Count   'the new one pages'
+        Assert-Equal 1 @($r.Muted).Count 'the repeat is muted'
+        Assert-Equal 'b' @($r.Due)[0].signature 'the RIGHT one pages'
+    }
+}
+
+Test-Case 'the ledger survives across processes (file, not memory)' {
+    Use-TempReaState {
+        $key = 'a line that must stay muted across a restart'
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 's' $key)
+        Assert-True (Test-Path (Get-PageLedgerPath)) 'ledger written to disk'
+        # Read-PageLedger is the whole of the cross-process state; a fresh
+        # process sees exactly this.
+        Assert-True ((Read-PageLedger).ContainsKey($key)) 'key persisted'
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 's' $key)
+        Assert-Equal 0 @($r.Due).Count 'still muted after a simulated restart'
+    }
+}
+
+Test-Case 'a group with no page_key pages rather than being silently swallowed' {
+    Use-TempReaState {
+        $g = [pscustomobject]@{ signature='no-key'; app='x'; file='f'; severity='error'
+                                time='t'; summary='s'; excerpt='e'; models_flagged=@('a','b') }
+        $r = Select-DuePageGroups -Groups @($g)
+        Assert-Equal 1 @($r.Due).Count 'no identity to dedup on => it pages'
+    }
+}
+
+Test-Case 'a corrupt ledger FAILS OPEN and pages' {
+    Use-TempReaState {
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 's' 'some underlying line that was already paged')
+        Set-Content -LiteralPath (Get-PageLedgerPath) -Value '{not json at all' -Encoding UTF8
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 's' 'some underlying line that was already paged')
+        Assert-Equal 1 @($r.Due).Count 'a broken suppressor must never eat an alert'
+    }
+}
+
+Test-Case 'the ledger prunes entries it can no longer mute with' {
+    Use-TempReaState {
+        $old = 'an ancient line nobody will ever see again'
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 's' $old)
+        $led = Read-PageLedger
+        $led[$old] = $led[$old] - (3 * $Script:PageCooldownHours * 3600)
+        Write-PageLedger $led
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 't' 'a completely different current log line')
+        Assert-False ((Read-PageLedger).ContainsKey($old)) 'stale entry pruned'
+    }
+}
+
+Test-Case 'the heartbeat does not call a run with muted repeats clean' {
+    $p = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 0 -MutedCount 2
+    Assert-True ($p.embeds[0].title -notlike '*clean*') 'still-broken is not clean'
+    Assert-True ($p.embeds[0].description -like '*2 repeat finding(s) muted*') 'muted count is stated'
+    Assert-Equal '' $p.content 'a muted repeat must still not ping'
+    $q = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 0 -MutedCount 0
+    Assert-True ($q.embeds[0].title -like '*clean*') 'a genuinely clean run still says clean'
+}
+
 # Summary
 Write-Host "`n========================================" -F White
 Write-Host "  $Script:Pass passed, $Script:Fail failed" -F $(if($Script:Fail){'Red'}else{'Green'})
