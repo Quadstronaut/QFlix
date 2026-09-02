@@ -253,6 +253,10 @@ def push_once(
             # Always-on safety: clear any prior permanent-failure mark so the
             # next outage gets a fresh 3-attempt loop.
             recovery_mod.clear_permanent_failure(app.name)
+            # And clear the escalation-page stamp, so the cooldown is per
+            # OUTAGE rather than per wall-clock day: an app that fails,
+            # recovers, and fails again an hour later is news both times.
+            recovery_mod.clear_escalation_page(app.name)
             # Reconcile a stale failure record left by an out-of-band recovery
             # (qBit boot-bind-race healer, UCC auto-restart, operator restart)
             # the maint recovery loop never saw, so state.json's last_recovery
