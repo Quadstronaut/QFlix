@@ -35,7 +35,7 @@ empty-because-broken.
 TOKEN ROTATION -- OFF BY DEFAULT, AND WHY
 ------------------------------------------
 SPEC A1/A2 (2026-08-07): the money path reads Patreon ONLY through
-entitlements.starhold.app. This tool is now explicitly an OPTIONAL,
+entitlements.quadstronix.dev. This tool is now explicitly an OPTIONAL,
 workstation-only diagnostic, off that path -- but it shares Patreon's OAuth
 model with whatever client secrets/patreon.json belongs to, and Patreon
 refresh tokens are SINGLE-USE. If secrets/patreon.json's client_id is the
@@ -170,7 +170,7 @@ def _get(url: str, token: str) -> Tuple[int, str]:
 
 SHARED_CLIENT_HAZARD = (
     "Patreon refresh tokens are SINGLE-USE. If secrets/patreon.json's OAuth "
-    "client is the SAME one entitlements.starhold.app uses, rotating it here "
+    "client is the SAME one entitlements.quadstronix.dev uses, rotating it here "
     "spends STARHOLD'S token and breaks the money-path sync every member's "
     "access depends on. Re-run with --allow-token-rotation ONLY after "
     "confirming this tool has its own SEPARATE Patreon OAuth client "
