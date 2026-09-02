@@ -922,17 +922,23 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # Full awk program pinned per collector: keep-direction (d >= c), the
     # site-specific substr offset (bazarr date at col 1; tdarr skips its
     # leading "[" via col 2), and the continuation-inheritance BEGIN{keep=1}.
-    # Bazarr: inheritance awk over a 3x pre-window, trimmed to 120 AFTER, so a
-    # stale header just above the 120 cut still sheds its body. Tdarr: NO
+    # Bazarr: inheritance filter over the WHOLE file, trimmed to 120 AFTER. It
+    # was a `tail -n 360` pre-window until 2026-09-02, when a 2026-08-18
+    # traceback was measured shipping as current for fifteen days: the dated
+    # header governing it sat 81 lines ABOVE the start of that window, so awk
+    # opened at keep=1 and never saw a date. An EOF-relative window cannot
+    # guarantee it contains the dated line that governs the lines inside it.
+    # Tdarr: NO
     # inheritance - it runs post-grep where adjacent lines are weeks apart and
     # the only undated lines are interleave-corrupted REAL errors that must
     # pass (fail open), not inherit a stale verdict (fail closed).
-    $bazarrSite = 'tail -n 360 "$f" | awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr(\$0,1,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }"'
+    $bazarrSite = 'freshlines < "$f"'
     # 2026-08-25: tdarr site moved off the fixed col-2 substr to match() so a
     # date NOT at column 2 (interleave-spliced lines) still gets a verdict;
     # undated lines still pass through (plain fail-open, no inheritance).
     $tdarrSite  = 'awk -v c="$FRESH_CUTOFF" "{ if (match(\$0, /\[[0-9]{4}-[0-9]{2}-[0-9]{2}T/)) { d=substr(\$0, RSTART+1, 10); if (d < c) next } print }"'
-    Assert-True ($h.Contains($bazarrSite)) 'bazarr filter verbatim (360 pre-window, col-1 offset, inheritance)'
+    Assert-True ($h.Contains($bazarrSite)) 'bazarr filter reads the WHOLE file, not an EOF-relative window'
+    Assert-False ($h.Contains('tail -n 360 "$f"')) 'the 360-line pre-window that leaked a 15-day-old traceback is gone'
     Assert-True ($h.Contains($tdarrSite))  'tdarr filter verbatim (match-anchored date, plain fail-open)'
     # arr Error/Fatal grep (2026-08-15: expired July indexer-backoff line paged
     # from a sparse-error file - whole-file grep needs the same date floor).
@@ -984,10 +990,15 @@ Test-Case 'stale-line collectors compare each line date against FRESH_CUTOFF' {
     # and Aug-02 buildarr warnings paged. Bazarr-style inheritance awk over a
     # 3x pre-window, trimmed to the 60-line budget AFTER, so a stale header
     # just above the cut still sheds its undated traceback body.)
-    $cfgSite = 'tail -n 180 "$f" | awk -v c="$FRESH_CUTOFF" "BEGIN{keep=1} { d=substr($0,1,10); if (d ~ /^[0-9]{4}-/) keep=(d >= c); if (keep) print }" | tail -n 60'
-    Assert-True ($h.Contains($cfgSite.Replace('$0','\$0'))) 'config_sync filter verbatim (inheritance, 180 pre-window, trim to 60 after)'
+    $cfgSite = 'freshlines < "$f" | tail -n 60'
+    Assert-True ($h.Contains($cfgSite)) 'config_sync filter reads the WHOLE file, trimmed to 60 after'
+    Assert-False ($h.Contains('tail -n 180 "$f"')) 'the 180-line pre-window is gone too'
+    # Both legs go through the ONE helper now rather than carrying verbatim
+    # copies of its awk - a copy is what let the two sites drift to different
+    # (and differently-wrong) window sizes in the first place.
+    Assert-False ($h -match 'tail -n [0-9]+ "\$f" \| awk -v c="\$FRESH_CUTOFF" "BEGIN\{keep=1\}') 'no inline copy of the inheritance awk survives'
     Assert-False ($h.Contains("collect config_sync bash -c 'tailfresh")) 'config_sync no longer ships a raw tailfresh window'
-    Assert-True ($h -match 'BEGIN\{keep=1\}[\s\S]{0,120}\n\s*\| tail -n 120 \\\n') 'bazarr trims to 120 AFTER the filter'
+    Assert-True ($h -match 'freshlines < "\$f" \\\n\s*\| tail -n 120 \\\n') 'bazarr trims to 120 AFTER the filter'
     # Tdarr ordering: the filter must sit BETWEEN the [ERROR] grep and
     # tail -n 400, so stale lines cannot eat the 400-line window.
     Assert-True ($h -match 'grep -a "\\\[ERROR\\\]" "\$f"[\s\S]*?awk -v c="\$FRESH_CUTOFF"[\s\S]*?tail -n 400') 'tdarr filter before the 400-line window'
@@ -1868,6 +1879,75 @@ Test-Case 'the heartbeat does not call a run with muted repeats clean' {
     Assert-Equal '' $p.content 'a muted repeat must still not ping'
     $q = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 0 -MutedCount 0
     Assert-True ($q.embeds[0].title -like '*clean*') 'a genuinely clean run still says clean'
+}
+
+
+function Get-GitBashExe {
+    # The SAME resolution the `bash -n` pin uses. Plain `bash` on this
+    # workstation is WSL, whose /mnt view and line-ending handling produce
+    # phantom failures (measured 2026-08-25, 245 of them); Git Bash is the
+    # shell whose semantics actually match the seedbox.
+    @(
+        (Join-Path $env:USERPROFILE 'scoop\apps\git\current\bin\bash.exe'),
+        (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe')
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+
+function Invoke-FreshlinesProbe {
+    <#
+      Runs the SHIPPED freshlines helper - extracted from the generated heredoc,
+      so this can never drift from the implementation - over a synthetic log
+      carrying the measured 2026-09-02 bazarr2.err geometry: one dated header,
+      400 undated filler lines (more than the old 360-line pre-window), then the
+      traceback. Returns the surviving traceback count as a string.
+    #>
+    param([string]$HeaderDate)
+    $bashExe = Get-GitBashExe
+    if (-not $bashExe) { return $null }
+
+    $tmp = Join-Path $env:TEMP "rea-freshlines-$(Get-Random).log"
+    $sf  = Join-Path $env:TEMP "rea-freshlines-$(Get-Random).sh"
+    $sb  = New-Object System.Text.StringBuilder
+    [void]$sb.Append("$HeaderDate 06:39:05,437 - root : ERROR (signalr_client:159) - BAZARR SignalR client connection lost`n")
+    for ($i = 0; $i -lt 400; $i++) { [void]$sb.Append("    undated filler continuation line $i`n") }
+    [void]$sb.Append("urllib3.exceptions.NewConnectionError: HTTPConnection(host=127.0.0.1, port=17003): Connection refused`n")
+    [System.IO.File]::WriteAllText($tmp, $sb.ToString())
+
+    $h  = Get-RemoteHeredoc
+    $i0 = $h.IndexOf('freshlines() {')
+    $i1 = $h.IndexOf('export -f freshlines')
+    if ($i0 -lt 0 -or $i1 -le $i0) { throw 'freshlines body not found in the generated heredoc' }
+    $fn = $h.Substring($i0, $i1 - $i0)
+
+    $logBash = $tmp -replace '\\', '/'
+    [System.IO.File]::WriteAllText($sf,
+        "FRESH_CUTOFF=2026-08-30`n$fn`nfreshlines < '$logBash' | grep -c 'NewConnectionError'`n")
+
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        return (& $bashExe ($sf -replace '\\', '/') 2>&1 | Out-String).Trim()
+    } finally {
+        $ErrorActionPreference = $prevEap
+        Remove-Item -Force $tmp, $sf -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case 'BEHAVIOURAL: freshlines drops a traceback whose dated header is outside any EOF-relative window' {
+    # Reproduces the 2026-09-02 bazarr2.err geometry exactly: a stale dated
+    # header, then >360 lines of undated filler, then the traceback. Under the
+    # old `tail -n 360` pre-window awk opened mid-filler at keep=1 and shipped
+    # the traceback as current. Reading the file whole, the header governs it.
+    if (-not (Get-GitBashExe)) { Assert-True $true 'Git Bash not installed - the shape pins above still cover this'; return }
+    Assert-Equal '0' (Invoke-FreshlinesProbe -HeaderDate '2026-08-18') 'stale traceback dropped, header 400+ lines up'
+}
+
+Test-Case 'BEHAVIOURAL: freshlines keeps the same traceback when its header is fresh' {
+    # The mirror assertion. A filter that dropped everything would pass the test
+    # above; this is what stops that from being the fix.
+    if (-not (Get-GitBashExe)) { Assert-True $true 'Git Bash not installed'; return }
+    Assert-Equal '1' (Invoke-FreshlinesProbe -HeaderDate '2026-09-02') 'a CURRENT traceback still ships'
 }
 
 # Summary
