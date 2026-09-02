@@ -958,6 +958,45 @@ classes:
     added: 2026-09-02
 
 
+  - id: tautulli-plex-websocket-refused
+    title: Tautulli PMS websocket dropped / refused
+    rx: '(?i)tautulli websocket ::.*(?:errno 111|connection refused|connection is already closed|connection to remote host was lost)'
+    field: excerpt
+    prompt_clause: 'Tautulli "Tautulli WebSocket :: [Errno 111] Connection refused" PMS websocket drops'
+    why: >-
+      Tautulli's websocket target is BY DEFINITION the configured PMS, so this
+      line can only ever mean "Plex is not answering right now" - which is
+      exactly what the Plex monitor and manitoba-maint-canary-tautulli-plex-link
+      (every 15 min, own Kuma check) exist to say. Tautulli reconnects on its
+      own: measured 2026-09-02, the refusals stopped at 18:33:18 the moment Plex
+      came back and the thread logged "Opening websocket" -> "Ready" 61 seconds
+      later, with no intervention.
+      THIS NEEDS ITS OWN CLASS RATHER THAN THE OWNERSHIP GATE: that gate keys on
+      a target port in the excerpt, and 0 of the 3,904 "Tautulli WebSocket ::"
+      lines in the live log carry one. A gate that cannot see the evidence
+      cannot judge it, so it correctly fails open and the finding survives to
+      here. Tautulli's OTHER Plex failure shape, the /status/sessions one, does
+      carry host=...,port=17025 and is held by the gate.
+    added: 2026-09-02
+
+  - id: plex-tuner-discover-ssl
+    title: Plex HDHomeRun tuner discovery hitting the docker gateway over TLS
+    rx: '(?i)discover\.json.*(?:ssl|certificate).*(?:not ok|subject name|peer certificate)'
+    field: excerpt
+    prompt_clause: 'Plex "GET http://<gateway>/discover.json ... SSL peer certificate ... was not OK" tuner-discovery probes'
+    why: >-
+      Plex probes the local network for an HDHomeRun tuner at boot. On this box
+      the docker bridge gateway answers :80 with a 301 to HTTPS and an nginx
+      certificate that cannot match a bare IP literal, so the probe fails on
+      certificate subject-name verification. There is no tuner and QFlix has no
+      live-TV or DVR configuration, so the probe has nothing to find and nothing
+      to fix from the box. Same family as plex-nat-pmp-upnp: an external,
+      cosmetic, boot-time network probe against infrastructure Plex does not own.
+      Measured 2026-09-02 after the 1.43.3 upgrade: exactly ONE occurrence, at
+      startup, WARN level.
+    added: 2026-09-02
+
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1063,6 +1102,12 @@ prompt_segments:
   - index: 32
     marker: 'Sonarr/Radarr Torznab "rss sync didn''t cover the period between X and Y" warnings'
     classes: [arr-rss-sync-missed-period]
+  - index: 33
+    marker: 'Tautulli "Tautulli WebSocket :: [Errno 111] Connection refused" PMS websocket drops'
+    classes: [tautulli-plex-websocket-refused]
+  - index: 34
+    marker: 'Plex "GET http://<gateway>/discover.json ... SSL peer certificate ... was not OK" tuner-discovery probes'
+    classes: [plex-tuner-discover-ssl]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
