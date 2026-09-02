@@ -1,7 +1,7 @@
 # QFlix Entitlement Gate — operator runbook
 
 The gate reconciles Plex library shares and Seerr permissions against
-`entitlements.starhold.app` every 15 minutes. It provisions new members and
+`entitlements.quadstronix.dev` every 15 minutes. It provisions new members and
 protects against lapsed ones. It never sends an invite — you do that by hand.
 
 > **Current state: ARMED and enforcing** (operator decision 2026-08-08, after a
@@ -205,7 +205,7 @@ shares=14 exempt=4 pending=10
 | `pending` | not entitled, clock running | fix a `never_seen` address, or wait |
 | `unknown-payer` | the service has **no record of the address at all** — a lookup MISS, not a verdict. Frozen in place: never revoked, never paged, listed under `unknown_payers` in the audit manifest and `--json`. Five of twelve shares sat here on 2026-08-20, all at 11.9 days | **reconcile the address** — either it is misspelled in the roster, or the payer is on a rail the service cannot see. Missing data is never an interlock, so the gate will hold them here indefinitely rather than guess |
 | `expired` | reduced to Welcome | none — working as designed |
-| `no-answer` | the API did not answer; **nothing moved** | check `entitlements.starhold.app` |
+| `no-answer` | the API did not answer; **nothing moved** | check `entitlements.quadstronix.dev` |
 | `unnamed-share` | accepted share with no household | **add them to the roster** |
 | `not-accepted` | invite sent, not taken | none |
 
