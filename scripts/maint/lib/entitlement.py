@@ -1,4 +1,4 @@
-"""lib/entitlement.py -- ask entitlements.starhold.app about one email.
+"""lib/entitlement.py -- ask entitlements.quadstronix.dev about one email.
 
 Pure stdlib. No Plex, no Seerr, no roster, no mutation. This module answers
 exactly one question -- "what does the entitlement service currently say about
@@ -81,7 +81,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-DEFAULT_BASE_URL = "https://entitlements.starhold.app"
+DEFAULT_BASE_URL = "https://entitlements.quadstronix.dev"
 DEFAULT_TIMEOUT = 15
 UA = "qflix-entitlement-gate/1.0"
 
