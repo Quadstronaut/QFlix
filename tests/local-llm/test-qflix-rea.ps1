@@ -2079,6 +2079,91 @@ Test-Case 'BEHAVIOURAL: freshlines keeps the same traceback when its header is f
     Assert-Equal '1' (Invoke-FreshlinesProbe -HeaderDate '2026-09-02') 'a CURRENT traceback still ships'
 }
 
+# ---------------------------------------------------------------------------
+# 2026-09-02: the ownership gate.
+#
+# Operator verdict that produced it: "if I'm getting pinged 40+ times that's
+# just noise, not a useful alert, therefore it's not fulfilling its function."
+# Measured 45 pages / 24h, 2 of them real. The largest single family (14) was
+# one managed app logging that it could not reach ANOTHER managed app - always
+# a duplicate of a monitor that already owns that target, in both directions.
+#
+# Every excerpt below is VERBATIM from the 2026-09-02 collector fetch or the
+# live logs, not invented.
+# ---------------------------------------------------------------------------
+
+function New-ConnFinding { param([string]$Excerpt, [string]$App = 'x')
+    [pscustomobject]@{ app=$App; file='f'; severity='error'; time='2026-09-02T00:00:00Z'
+                       summary='s'; signature='sig'; excerpt=$Excerpt }
+}
+
+Test-Case 'the port registry is read from secrets/*.port' {
+    $map = Get-StackPortMap
+    Assert-True ($map.Count -ge 10) 'registry populated from the real secrets dir'
+    Assert-Equal 'plex'     $map['17025'] 'plex port mapped'
+    Assert-Equal 'sonarr2'  $map['17003'] 'sonarr2 port mapped'
+    Assert-Equal 'postgres' $map['42009'] 'postgres port mapped'
+}
+
+Test-Case 'Get-ConnectionTargetPort reads all three shapes this stack emits' {
+    Assert-Equal '17003' (Get-ConnectionTargetPort "urllib3.exceptions.NewConnectionError: HTTPConnection(host='127.0.0.1', port=17003): Failed to establish a new connection: [Errno 111] Connection refused") 'urllib3 port= form'
+    Assert-Equal '42009' (Get-ConnectionTargetPort 'manager.go:431: error fetching campaigns: dial tcp 127.0.0.1:42009: connect: connection refused') 'go dial tcp form'
+    Assert-Equal '17025' (Get-ConnectionTargetPort '[error][Plex Scan]: Scan interrupted {"errorMessage":"connect ECONNREFUSED 172.17.0.1:17025"}') 'node ECONNREFUSED form'
+    Assert-Equal ''      (Get-ConnectionTargetPort 'no port anywhere in this line') 'no port -> empty'
+}
+
+Test-Case 'the four real 2026-09-02 connectivity families are all held' {
+    # bazarr2 -> sonarr2
+    Assert-Equal 'monitor-owns-target:sonarr2' (Test-IsOwnedByAMonitor (New-ConnFinding "urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='127.0.0.1', port=17003): Max retries exceeded with url: /sonarr2/signalr/messages/negotiate" 'bazarr2')) 'bazarr2 -> sonarr2 held'
+    # tautulli -> plex
+    Assert-Equal 'monitor-owns-target:plex' (Test-IsOwnedByAMonitor (New-ConnFinding "Failed to access uri endpoint /status/sessions. Connection error: HTTPConnectionPool(host='172.17.0.1', port=17025): Max retries exceeded with url: /status/sessions (Caused by NewConnectionError(""HTTPConnection(host='172.17.0.1', port=17025): Failed to establish a new connection: [Errno 111] Connection refused""))" 'tautulli')) 'tautulli -> plex held'
+    # stream-stats -> plex
+    Assert-Equal 'monitor-owns-target:plex' (Test-IsOwnedByAMonitor (New-ConnFinding "requests.exceptions.ConnectionError: HTTPConnectionPool(host='127.0.0.1', port=17025): Max retries exceeded with url: / (Caused by NewConnectionError(""HTTPConnection(host='127.0.0.1', port=17025): Failed to establish a new connection: [Errno 111] Connection refused""))" 'stream-stats')) 'stream-stats -> plex held'
+    # listmonk -> postgres
+    Assert-Equal 'monitor-owns-target:postgres' (Test-IsOwnedByAMonitor (New-ConnFinding 'manager.go:431: error fetching campaigns: dial tcp 127.0.0.1:42009: connect: connection refused' 'listmonk')) 'listmonk -> postgres held'
+    # seerr -> plex
+    Assert-Equal 'monitor-owns-target:plex' (Test-IsOwnedByAMonitor (New-ConnFinding '[error][Plex Scan]: Scan interrupted {"errorMessage":"connect ECONNREFUSED 172.17.0.1:17025"}' 'seerr')) 'seerr -> plex held'
+}
+
+Test-Case 'the gate does NOT eat the real fault it sat next to' {
+    # THE finding that mattered on 2026-09-02. No transport failure, no port -
+    # it must survive, or the whole exercise made the alerting worse.
+    Assert-Equal $null (Test-IsOwnedByAMonitor (New-ConnFinding 'INFO lib.notify: alert sent: [error] X plex could not be started after 3 attempts - operator needed' 'maint-pusher')) 'plex could-not-start still pages'
+}
+
+Test-Case 'an UNMANAGED target still pages - that is what REA is actually for' {
+    Assert-Equal $null (Test-IsOwnedByAMonitor (New-ConnFinding "requests.exceptions.ConnectionError: HTTPConnectionPool(host='api.themoviedb.org', port=443): Max retries exceeded" 'radarr')) 'external API not in the port registry -> pages'
+    Assert-Equal $null (Test-IsOwnedByAMonitor (New-ConnFinding "HTTPConnectionPool(host='127.0.0.1', port=39999): Failed to establish a new connection: [Errno 111] Connection refused" 'x')) 'unregistered local port -> pages'
+}
+
+Test-Case 'an app-level error that merely MENTIONS a managed port is not a transport failure' {
+    # The gate keys on the transport giving up, never on a port appearing.
+    Assert-Equal $null (Test-IsOwnedByAMonitor (New-ConnFinding 'Plex returned HTTP 500 from http://127.0.0.1:17025/library/sections while scanning' 'seerr')) 'a 500 from a LIVE plex is a real fault, not a connection failure'
+    Assert-Equal $null (Test-IsOwnedByAMonitor (New-ConnFinding 'EDQUOT: disk quota exceeded writing to port 17025 log' 'plex')) 'quota failure survives'
+}
+
+Test-Case 'the gate is EXCERPT-scoped: model prose cannot mute a finding' {
+    # Same law as the 2026-08-16 rules. A speculative summary must never be able
+    # to suppress a finding whose real evidence is something else.
+    $f = [pscustomobject]@{ app='x'; file='f'; severity='error'; time='t'
+                            summary="probably just connection refused on port=17025 again"
+                            signature='connection-refused'; excerpt='EDQUOT: disk quota exceeded' }
+    Assert-Equal $null (Test-IsOwnedByAMonitor $f) 'prose-only match does not suppress an EDQUOT excerpt'
+}
+
+Test-Case 'the gate FAILS OPEN when it cannot judge' {
+    Assert-Equal $null (Test-IsOwnedByAMonitor $null) 'null finding -> pages'
+    $noExcerpt = [pscustomobject]@{ app='x'; file='f'; severity='error'; time='t'
+                                    summary='s'; signature='s'; excerpt='' }
+    Assert-Equal $null (Test-IsOwnedByAMonitor $noExcerpt) 'empty excerpt -> pages'
+}
+
+Test-Case 'the ownership gate runs as ENFORCEMENT in the filter loop, not as advice' {
+    $src = Get-Content -Raw -LiteralPath (Join-Path (Get-RepoRoot) 'scripts/local-llm/qflix-rea.ps1')
+    Assert-True ($src.Contains('$ownedBy = Test-IsOwnedByAMonitor $h')) 'called in the per-finding loop'
+    Assert-True ($src -match '\$ownedBy\) \{ \$suppressed \+= \$ownedBy; continue \}') 'a held finding is counted in the suppressed list, never silent'
+}
+
 # Summary
 Write-Host "`n========================================" -F White
 Write-Host "  $Script:Pass passed, $Script:Fail failed" -F $(if($Script:Fail){'Red'}else{'Green'})
