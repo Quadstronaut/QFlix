@@ -997,6 +997,37 @@ classes:
     added: 2026-09-02
 
 
+  - id: maint-notify-echo
+    title: REA re-paging an alert the maint stack already sent to Discord
+    rx: '(?i)lib\.notify:\s*alert sent:'
+    field: excerpt
+    prompt_clause: 'manitoba-maint "lib.notify: alert sent:" lines, which are the alerting system CONFIRMING it already told the operator'
+    why: >-
+      This line is emitted by lib/notify.py ONLY on the success branch, AFTER a
+      Discord POST returned ok. Its existence is proof the operator already has
+      the message. REA re-reporting it is not a second signal, it is the same
+      alert delivered twice by two different systems.
+      Measured 2026-09-03T00:10Z: REA paged critical, 2/3 models, on
+      "INFO lib.notify: alert sent: [error] plex could not be started after 3
+      attempts - operator needed" - a notify line written at 2026-09-02T18:24Z,
+      SIX HOURS earlier, for a Plex outage that ended at 18:33Z. The box had
+      already sent that exact text to Discord at 18:24Z. So the operator was
+      paged twice for one fault, hours apart, the second time about a condition
+      that no longer existed.
+      Nothing else could catch it: the ownership gate keys on a target port and
+      this line has none; the vlogs _msg carries no embedded timestamp so
+      Test-IsStaleFinding fails open; and the cross-run ledger correctly allows
+      a key its first page. The right answer is not another clock - it is that
+      REA must never treat the alerting pipeline's own output as evidence of a
+      fault.
+      SAFE BY CONSTRUCTION: the two failure branches of notify() log at WARNING
+      as "alert NOT sent (no webhook configured)" and "alert send FAILED", and
+      neither contains the string "alert sent:". A Discord delivery failure -
+      the case where the operator genuinely was NOT told - still pages, and is
+      additionally recorded in notify-fail.log.
+    added: 2026-09-03
+
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1108,6 +1139,9 @@ prompt_segments:
   - index: 34
     marker: 'Plex "GET http://<gateway>/discover.json ... SSL peer certificate ... was not OK" tuner-discovery probes'
     classes: [plex-tuner-discover-ssl]
+  - index: 35
+    marker: 'manitoba-maint "lib.notify: alert sent:" lines, which are the alerting system CONFIRMING it already told the operator'
+    classes: [maint-notify-echo]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
