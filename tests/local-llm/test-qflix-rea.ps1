@@ -2164,6 +2164,43 @@ Test-Case 'the ownership gate runs as ENFORCEMENT in the filter loop, not as adv
     Assert-True ($src -match '\$ownedBy\) \{ \$suppressed \+= \$ownedBy; continue \}') 'a held finding is counted in the suppressed list, never silent'
 }
 
+Test-Case 'REA must not re-page an alert the maint stack already sent (2026-09-03 00:10Z)' {
+    # The line is emitted by lib/notify.py ONLY on the success branch, AFTER a
+    # Discord POST returned ok - so its existence is proof the operator already
+    # has the message. Measured: REA paged critical 2/3 on a notify line written
+    # SIX HOURS earlier, for a Plex outage that had ended 5.5h before, and whose
+    # text the box had already delivered to Discord itself.
+    $f = @{
+        signature = 'maint-pusher:plex-start-failure'
+        summary   = 'Plex failed to start after 3 attempts and requires operator intervention'
+        excerpt   = 'manitoba manitoba-maint[2557668]: INFO lib.notify: alert sent: [error] X plex could not be started after 3 attempts - operator needed'
+    }
+    Assert-Equal 'maint-notify-echo' (Test-IsNoiseFinding ([pscustomobject]$f)) 'the delivered-alert echo is suppressed'
+}
+
+Test-Case 'but a notify FAILURE still pages - that is the case the operator was NOT told' {
+    # Both failure branches log at WARNING and neither contains "alert sent:".
+    # This is the whole safety argument for the rule, so it is pinned.
+    $noWebhook = @{ signature='x'; summary='s'
+        excerpt='manitoba-maint: WARNING alert NOT sent (no webhook configured): [error] plex could not be started after 3 attempts' }
+    Assert-Equal $null (Test-IsNoiseFinding ([pscustomobject]$noWebhook)) 'no-webhook failure survives'
+
+    $postFailed = @{ signature='x'; summary='s'
+        excerpt='manitoba-maint: WARNING alert send FAILED: [error] plex could not be started (connection error: HTTPSConnectionPool)' }
+    Assert-Equal $null (Test-IsNoiseFinding ([pscustomobject]$postFailed)) 'Discord POST failure survives'
+
+    $realFault = @{ signature='x'; summary='s'
+        excerpt='manitoba-maint: ERROR lib.pusher: probe raised OSError EMFILE too many open files' }
+    Assert-Equal $null (Test-IsNoiseFinding ([pscustomobject]$realFault)) 'a genuine maint-pusher fault survives'
+}
+
+Test-Case 'the echo rule is excerpt-scoped: model prose cannot mute a real fault' {
+    $f = [pscustomobject]@{ signature='lib.notify: alert sent:'
+        summary = 'looks like lib.notify: alert sent: again'
+        excerpt = 'manitoba-maint: ERROR write failed: EDQUOT disk quota exceeded' }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'signature/summary match cannot suppress an EDQUOT excerpt'
+}
+
 # Summary
 Write-Host "`n========================================" -F White
 Write-Host "  $Script:Pass passed, $Script:Fail failed" -F $(if($Script:Fail){'Red'}else{'Green'})
