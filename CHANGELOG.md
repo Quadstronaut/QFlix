@@ -153,7 +153,43 @@ The honest limit: a quiet alerting system on a healthy stack does not prove the
 gate would let a real fault through. That is covered by tests and controls, not
 by production evidence. The next genuine fault is the real test.
 
-PRs #10, #11, #12, #13. 2690 pytest, 477 pwsh.
+### One more, found the same night from the operator's own Discord
+
+`2026-09-03T00:10Z` REA paged CRITICAL, 2/3 models, on:
+
+    INFO lib.notify: alert sent: [error] plex could not be started after 3
+    attempts - operator needed
+
+That notify line was written at `18:24Z` - **six hours earlier** - for an outage
+that ended at `18:33Z`, and its text is the message the box itself had already
+posted to Discord. `lib/notify.py` emits `alert sent:` **only** on the success
+branch, after a Discord POST returns ok, so the line's existence is proof the
+operator already had it. The operator was paged twice for one fault, hours
+apart, by two systems, the second time about a condition that no longer existed.
+
+None of the four floors could see it, and each was checked rather than assumed:
+the ownership gate keys on a target port and this line has none; the vlogs
+`_msg` carries no embedded timestamp so the staleness check correctly fails
+open; the ledger correctly allows a key its first page. Class
+`maint-notify-echo`. Safe by construction - notify()'s two failure branches log
+`alert NOT sent (` and `alert send FAILED:`, neither containing `alert sent:`,
+so the case where the operator genuinely was *not* told still pages.
+
+Verified in the same investigation, no action needed: Plex `/identity` 200 with
+**both machine identifiers unchanged** across the 1.43.3 upgrade, and the
+entitlement gate's 15-minute Discord down/up was ONE transient plex.tv
+`GET /api/servers/<id> -> HTTP 404`, recovered next run. 43 of the 44
+entitlement failures in 24h were the Plex outage itself; the gate failed safe
+and changed nothing, which is the designed behaviour.
+
+### Shipped
+
+PRs #10, #11, #12, #13 (alerting), #14 (docs), #15 (notify echo).
+Tagged **`release-0.2.0`** @ `61d9fb5` and **`release-0.2.1`** @ `138d242` -
+0.2.1 cut with `QFLIX_RELEASE_FORCE=1` on operator instruction, 0-day soak,
+because #15 landed hours after 0.2.0 and the operator wanted the fix inside a
+revertable point rather than dangling past one.
+2690 pytest, 484 pwsh, 40 noise classes.
 
 ## 2026-08-24 - The codec was never the policy
 
