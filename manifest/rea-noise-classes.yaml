@@ -1027,6 +1027,56 @@ classes:
       additionally recorded in notify-fail.log.
     added: 2026-09-03
 
+  - id: plex-vanished-file-decision-failure
+    title: Plex media-decision failure for a file that was deleted or mid-replace
+    rx: '(?i)(?:failed to get a decision for:|mde:\s*video has neither a video stream nor an audio stream|mde:\s*no compatible media decisions are available)'
+    field: excerpt
+    prompt_clause: 'Plex "Failed to get a decision for: <path>" errors and the paired "MDE: video has neither a video stream nor an audio stream" / "MDE: no compatible media decisions are available" lines'
+    why: >-
+      The last un-suppressed member of the vanished-file family that already
+      holds plex-post-reap-scan, plex-credits-job-video-missing and
+      plex-post-reap-missing-input. Plex's Media Decision Engine was asked to
+      grade a Media whose Part had no stream rows, which happens when the file
+      was deleted or was being rewritten underneath an analysis pass already in
+      flight. Paged the operator 2026-09-09 19:08 on Shrinking S01E10.
+      PROVEN AT THE SIBLING-CLASS BAR, not asserted. All 79 distinct
+      occurrences across every retained PMS log rotation were enumerated and
+      each path stat()ed on 2026-09-10:
+        54  the file is GONE today (retention delete or *arr removal)
+        25  the file EXISTS but its mtime is LATER than the error timestamp,
+            i.e. the path was absent or mid-write when MDE read it and was
+            (re)written afterwards - Law & Order S01 errored 2026-08-08 18:19
+            and the files landed 2026-08-09 03:46, nine hours later
+         0  a file that existed BEFORE the error and is still there unchanged
+      That zero is the whole argument: this line has never once been emitted
+      for a stable, present file, so it has never once carried a fault a member
+      could hit. The alerted instance is the clearest case - qflix-reaper
+      DELETED 'Parks and Recreation' at 05:04:15Z and 'Shrinking' at 05:04:34Z,
+      PUT /library/sections/2/emptyTrash landed at 05:04:34, and the decision
+      errors run 05:04:41-05:04:52, interleaved with "Failed to create parent
+      iterator ... No such file or directory" for the same titles and
+      "[CreditsDetectionManager] Job failed: Video does not exist". Plex search
+      returns nothing for either show today: no orphan, nothing wedged.
+      DELIBERATELY NOT anchored to the reaper hour - two thirds of the corpus is
+      the equally benign import/upgrade replace race, and anchoring would keep
+      paging on it (the same reasoning plex-credits-job-video-missing records).
+      "MDE: no compatible media decisions are available" is included because it
+      is not an independent signal here: it appears 158 times in the live logs
+      and "video has neither a video stream nor an audio stream" appears 158
+      times, a strict 1:1 pairing with no standalone occurrence of either.
+      DELIBERATELY NOT matched: "MDE: unable to find a working transcode
+      profile for video stream" (1,860 occurrences, a real client/codec
+      negotiation shape) and "MDE: item has no media items" - both still page.
+      WHO OWNS THE REAL VERSION: manitoba-maint-canary-plex-playback performs an
+      actual decision + HLS session + segment-throughput measurement every 30
+      min with its own Kuma check, so "Plex cannot produce a decision" is held
+      by a monitor reading live state. HONEST LIMIT: that canary samples the
+      Movies library only, and every occurrence in this corpus was TV or Anime.
+      arr-plex-parity owns "files the *arrs imported must be visible in Plex"
+      and hardlink-integrity owns broken links, which is what a genuinely
+      missing file would trip.
+    added: 2026-09-10
+
 
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
@@ -1142,6 +1192,9 @@ prompt_segments:
   - index: 35
     marker: 'manitoba-maint "lib.notify: alert sent:" lines, which are the alerting system CONFIRMING it already told the operator'
     classes: [maint-notify-echo]
+  - index: 36
+    marker: 'Plex "Failed to get a decision for: <path>" errors and the paired "MDE: video has neither a video stream nor an audio stream" / "MDE: no compatible media decisions are available" lines'
+    classes: [plex-vanished-file-decision-failure]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths

@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — Prowlarr must never return a Fatal (HTTP 500) to an *arr
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push prowlarr-proxy-link-fatal
+StandardOutput=journal
+StandardError=journal

@@ -148,6 +148,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-indexer-health.timer \
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-app-sync.service \
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-app-sync.timer \
+    scripts/maint/systemd/manitoba-maint-canary-prowlarr-proxy-link-fatal.service \
+    scripts/maint/systemd/manitoba-maint-canary-prowlarr-proxy-link-fatal.timer \
     scripts/maint/systemd/manitoba-maint-canary-plex-unmatched.service \
     scripts/maint/systemd/manitoba-maint-canary-plex-unmatched.timer \
     scripts/maint/systemd/manitoba-maint-canary-rea-liveness.service \
@@ -275,6 +277,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/ucc-gate-stuck.sh \
     scripts/canaries/dash-asset-integrity.sh \
     scripts/canaries/prowlarr-app-sync.sh \
+    scripts/canaries/prowlarr-proxy-link-fatal.sh \
     scripts/canaries/plex-unmatched.sh \
     scripts/canaries/rea-liveness.sh \
     scripts/configure/55-kometa-install.sh \
@@ -561,6 +564,8 @@ for unit in \
     manitoba-maint-canary-prowlarr-indexer-health.timer \
     manitoba-maint-canary-prowlarr-app-sync.service \
     manitoba-maint-canary-prowlarr-app-sync.timer \
+    manitoba-maint-canary-prowlarr-proxy-link-fatal.service \
+    manitoba-maint-canary-prowlarr-proxy-link-fatal.timer \
     manitoba-maint-canary-plex-unmatched.service \
     manitoba-maint-canary-plex-unmatched.timer \
     manitoba-maint-canary-rea-liveness.service \
@@ -692,6 +697,13 @@ systemctl --user enable --now manitoba-maint-canary-prowlarr-indexer-health.time
 # docs/prowlarr-indexer-remediation-2026-08-03.md is applied — the red IS the
 # acceptance test for that runbook.
 systemctl --user enable --now manitoba-maint-canary-prowlarr-app-sync.timer
+# prowlarr-proxy-link-fatal: the RUNTIME half of the same surface. Prowlarr
+# returning a Fatal (HTTP 500) to an *arr means that entire release page was
+# dropped, and both canaries above are structurally blind to it:
+# /api/v1/health and /api/v1/indexerstatus are [] because the INDEXER is
+# fine, and no 429 is emitted. 6h window, threshold 1, on a clean 22-day
+# zero baseline. Expect it GREEN on arrival.
+systemctl --user enable --now manitoba-maint-canary-prowlarr-proxy-link-fatal.timer
 # plex-unmatched: episodes stuck on a `local://` guid (scanner beat the agent
 # match), so the member gets no synopsis, no artwork and no air date. Detect
 # only — the remedy destroys ratingKeys and watch state, so it stays an operator
@@ -1073,7 +1085,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
