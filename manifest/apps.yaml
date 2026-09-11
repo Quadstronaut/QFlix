@@ -871,6 +871,49 @@ canaries:
     kuma_monitor: "Canary Prowlarr App Sync"
     script: "scripts/canaries/prowlarr-app-sync.sh"
     schedule: "hourly"
+  prowlarr-proxy-link-fatal:
+    # Added 2026-09-10. Asserts Prowlarr never returns a FATAL (HTTP 500) to an
+    # *arr asking it for releases.
+    #
+    # The fault it was built for, 2026-09-06 22:18 -> 2026-09-07 09:56, eight
+    # times: NewznabController pipes every torrent result through
+    # DownloadMappingService.ConvertToProxyLink, which AES-encrypts the magnet
+    # and base64url-embeds it in a query string (~1.4x expansion), and .NET
+    # refuses to build a Uri past 65519 chars. One nekoBT upload with a bloated
+    # tracker list therefore 500s the WHOLE hundred-result page, with no
+    # try/catch around the loop — verified against Prowlarr source at the
+    # deployed tag v2.5.2.5491 (NewznabController.cs L193/L197,
+    # DownloadMappingService.cs L28-L41). The indexer fetch SUCCEEDED every
+    # time; what failed was serving the answer to Sonarr. Effect: that RSS sync
+    # silently returns nothing from the indexer while the bad release is in its
+    # feed. preferMagnetUrl does not help — it is read at L201, AFTER both
+    # conversions, and only picks which already-proxied URL goes in the XML.
+    #
+    # INVISIBLE TO THE TWO PROWLARR CANARIES ABOVE, and not because either is
+    # mistuned. /api/v1/health and /api/v1/indexerstatus were both [] the whole
+    # time (Prowlarr never marks the indexer down — the indexer is fine), so
+    # prowlarr-indexer-health's numerator is structurally zero; no 429 is
+    # emitted, so its cascade probe correctly counts zero; and
+    # prowlarr-app-sync reads CONFIG state, while this is a runtime response
+    # fault. The only thing that saw it was REA reading the raw log two days
+    # later, and a deterministic greppable local-file predicate must not have a
+    # log-reading LLM as its sole owner.
+    #
+    # PREDICATE is the bare level token "|Fatal|", not the exception text:
+    # measured over every retained rotation (2026-08-20 -> 2026-09-11, ~22
+    # days) there are EIGHT Fatal lines in total, all eight this episode, and no
+    # other logger has ever logged at Fatal. A clean 22-day zero baseline is
+    # what buys the wider net for free. Threshold 1 for the same reason.
+    #
+    # WINDOW 6h vs a 30-min cadence is deliberate: the episode fired about once
+    # per 87 minutes, so a window sized to the timer would have gone red, green,
+    # red, green and paged on every red edge. Six hours stays continuously red
+    # for the life of an episode and self-clears ~6h after the last fatal — one
+    # page per episode. Both rotations are read, because prowlarr.txt rotates
+    # roughly every 17h and a 6h window straddles that a third of the time.
+    kuma_monitor: "Canary Prowlarr Proxy Link"
+    script: "scripts/canaries/prowlarr-proxy-link-fatal.sh"
+    schedule: "every-30min"
   hardlink-integrity:
     # Sample the 20 most-recently-modified video files across Movies + TV
     # Shows + Anime and assert linkcount >= 2 (= the *arr import used

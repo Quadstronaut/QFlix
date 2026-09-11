@@ -837,7 +837,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
 
     <section class="deck" id="sec-monitoring">
       <h2><span class="num">10</span>Kuma &amp; canaries</h2>
-      <p class="deck-sub">Push monitors, status page, and the 36 end-to-end canaries.</p>
+      <p class="deck-sub">Push monitors, status page, and the 37 end-to-end canaries.</p>
 
       <article class="card tut" id="q-kuma-arch" data-tags="kuma push monitor pusher webhook netns isolation 60 seconds">
         <h3>Why is auto-heal in the pusher and not in a Kuma webhook? <a class="qhash" href="#q-kuma-arch">#</a></h3>
@@ -848,7 +848,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
       </article>
 
       <article class="card tut" id="q-canaries" data-tags="canary movie anime deletion mobile-ux pipeline end-to-end hardlink qbit vlogs kometa quota prowlarr maintainerr">
-        <h3>What do the 36 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
+        <h3>What do the 37 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
         <table class="tbl">
           <thead><tr><th>Canary</th><th>Cadence</th><th>Asserts</th></tr></thead>
           <tbody>
@@ -871,6 +871,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
             <tr><td><code>canary-hardlink-integrity</code></td><td>every 30 min</td><td>Enumerate qBit-completed torrents; check every one has a library twin with the same (dev, inode). Detached &ge; threshold &rarr; fire. (Old design sampled library mtime &mdash; deprecated 2026-05-22 after firing 20/20 false-positive while *arr was at 100% coverage.)</td></tr>
             <tr><td><code>canary-prowlarr-app-sync</code></td><td>hourly</td><td>Every indexer Prowlarr <em>believes</em> it syncs is actually present in that *arr, and the two indexers with a known-broken proxy download path still prefer magnet links. The canary above reads logs and Prowlarr's health endpoint &mdash; and that endpoint returns an empty list for both of these faults, so it was never a tuning problem, it simply had nothing to look at. One indexer had been missing from the movie side since at least May: Prowlarr re-offered it every six hours, the *arr rejected it every time because the indexer's stock definition files its whole front page under the wrong category, and both sides reported themselves perfectly healthy throughout. The second check catches the chain behind &ldquo;API Grab Limit reached&rdquo; &mdash; a misleading message, since no grab limit is configured anywhere: a download link that returns 403 makes Prowlarr disable the indexer for 15&nbsp;minutes, and the grab silently fails. Every deliberate exclusion is counted and named, so a regression shows up as a number moving between buckets rather than something quietly vanishing.</td></tr>
             <tr><td><code>canary-prowlarr-indexer-health</code></td><td>every 15 min</td><td>Prowlarr is actually returning search results (429 throttles tolerated); zero indexers in long-term-failure state</td></tr>
+            <tr><td><code>canary-prowlarr-proxy-link-fatal</code></td><td>every 30 min</td><td>Prowlarr never answers one of the download managers with a server error. In September one anime indexer carried a single upload whose magnet link was enormous &mdash; a tracker list thousands of entries long &mdash; and Prowlarr rewrites every link it hands on into one of its own, which made that one too long for the web framework to accept at all. The request then failed outright, taking the entire hundred-result page with it, so for eleven hours that indexer contributed nothing to the automatic search and everything reported itself healthy: the indexer was fine, the fetch worked, only the handing-over broke. The two checks above cannot see this by construction &mdash; one reads Prowlarr's own health list, which stays empty because nothing is wrong with the indexer, and the other compares configuration rather than live traffic. The window is deliberately six hours rather than one, so a bad upload that resurfaces every hour or so produces a single alert that clears itself rather than a stream of them.</td></tr>
             <tr><td><code>canary-kometa-libraries</code></td><td>hourly</td><td>All 4 Plex libraries match the expected manifest set after Kometa's nightly run</td></tr>
             <tr><td><code>canary-kometa-deploy-drift</code></td><td>daily 04:30</td><td>Kometa's deployed config matches the repo &mdash; an in-place UI edit that gets blown away on next git-sync gets caught here</td></tr>
             <tr><td><code>canary-stale-log-watchdog</code></td><td>hourly</td><td>3 long-cadence apps (kometa / recyclarr / buildarr) have written within their expected windows &mdash; catches a silently-failing weekly timer</td></tr>
@@ -923,7 +924,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
             <tr><td>1. Prowlarr</td><td>Indexer count &ge; 5; search round-trip for &ldquo;ubuntu&rdquo; returns &ge; 1</td></tr>
             <tr><td>2. *arr &harr; qBit</td><td><code>testall</code> returns 200 for sonarr / sonarr2 / radarr / radarr2</td></tr>
             <tr><td>3. Library hygiene</td><td>Hardlink count &ge; 2 on Movies samples</td></tr>
-            <tr><td>4. App liveness</td><td>qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 36 canaries</td></tr>
+            <tr><td>4. App liveness</td><td>qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 37 canaries</td></tr>
             <tr><td>5. Maintenance system</td><td>Webhook <code>/health</code>, window timer scheduled, manifest validates, pusher active, Kuma drift = 0, Kuma all-up (external + parked excluded)</td></tr>
           </tbody>
         </table>
@@ -1258,7 +1259,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
           <strong>qBittorrent</strong> is C++ / Qt &mdash; the spiritual open-source successor to &micro;Torrent. The moment &micro;Torrent went ad-supported in 2012, qBit picked up the torch and never looked back. <strong>Plex Media Server</strong> is mostly C/C++ with Python plugins; its lineage traces back through OSXBMC (2008) to <a href="https://kodi.tv/">XBMC</a>, the original Xbox Media Center.
         </p>
         <p>
-          The boring-but-essential stack underneath: <strong>nginx</strong> (Igor Sysoev, 2004) does HTTPS termination + reverse-proxy with QFlix's <code>proxy.d</code> fragments. <strong>PostgreSQL</strong> (1996 &mdash; older than half the apps it supports) holds Listmonk subscriber data. <strong>systemd</strong> (Lennart Poettering, 2010) runs every long-lived service as a user-unit; QFlix had 59 services + 57 timers under <code>~/.config/systemd/user/</code> as of 2026-07-30 (the exact count keeps climbing as new janitors and canaries ship, so treat this as a snapshot, not a spec).
+          The boring-but-essential stack underneath: <strong>nginx</strong> (Igor Sysoev, 2004) does HTTPS termination + reverse-proxy with QFlix's <code>proxy.d</code> fragments. <strong>PostgreSQL</strong> (1996 &mdash; older than half the apps it supports) holds Listmonk subscriber data. <strong>systemd</strong> (Lennart Poettering, 2010) runs every long-lived service as a user-unit; QFlix had 59 services + 58 timers under <code>~/.config/systemd/user/</code> as of 2026-07-30 (the exact count keeps climbing as new janitors and canaries ship, so treat this as a snapshot, not a spec).
         </p>
       </article>
 
