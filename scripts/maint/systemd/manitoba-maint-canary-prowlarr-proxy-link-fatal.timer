@@ -1,0 +1,18 @@
+[Unit]
+Description=Manitoba canary — Prowlarr proxy-link fatal / 500-to-an-arr (every 30 min)
+
+[Timer]
+# Every 30 min against a 6-HOUR window. The window is the thing that controls
+# paging, not the cadence: the 2026-09-06/07 episode fired about once per 87
+# minutes, so a window sized to this timer would flap red/green/red and page on
+# every red edge. Six hours stays continuously red for the life of an episode
+# and self-clears ~6h after the last fatal, which is one page per episode.
+# The cadence therefore only buys DETECTION LATENCY (<=30 min), and the check
+# itself is a grep of two local files plus, on failure only, one loopback API
+# call — cheap enough that a tighter cadence would be the wrong trade anyway.
+OnCalendar=*:0/30
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
