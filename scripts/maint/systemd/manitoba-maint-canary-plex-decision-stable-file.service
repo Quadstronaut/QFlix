@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — Plex decision failures must only ever name a file that is gone or was replaced
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push plex-decision-stable-file
+StandardOutput=journal
+StandardError=journal

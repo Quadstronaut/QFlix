@@ -1067,14 +1067,22 @@ classes:
       DELIBERATELY NOT matched: "MDE: unable to find a working transcode
       profile for video stream" (1,860 occurrences, a real client/codec
       negotiation shape) and "MDE: item has no media items" - both still page.
-      WHO OWNS THE REAL VERSION: manitoba-maint-canary-plex-playback performs an
-      actual decision + HLS session + segment-throughput measurement every 30
-      min with its own Kuma check, so "Plex cannot produce a decision" is held
-      by a monitor reading live state. HONEST LIMIT: that canary samples the
-      Movies library only, and every occurrence in this corpus was TV or Anime.
-      arr-plex-parity owns "files the *arrs imported must be visible in Plex"
-      and hardlink-integrity owns broken links, which is what a genuinely
-      missing file would trip.
+      WHO OWNS THE REAL VERSION: manitoba-maint-canary-plex-decision-stable-file
+      (hourly, own Kuma check, scripts/canaries/plex-decision-stable-file.sh),
+      added 2026-09-12 FOR THIS CLASS. It re-derives the census above every hour
+      against live state: for every decision failure in its window it stats the
+      path and grades it gone / replaced-afterwards / present-and-unchanged, and
+      reds on the third. The day this class is wrong, that canary is what says
+      so - the suppression is an enforced invariant, not a historical claim.
+      THIS REPLACES AN EARLIER, WRONG OWNERSHIP CLAIM. The first draft cited
+      manitoba-maint-canary-plex-playback. An adversarial review checked it:
+      that canary is hardcoded to SECTION_TITLE "QFlix - Movies", and 100% of
+      the 79 occurrences here are TV or Anime - the cited backstop had ZERO
+      overlap with the population being silenced. A backstop that cannot reach
+      the population is not a backstop, and "honest limit" prose did not make it
+      one. plex-playback still owns "the transcoder can produce segments for the
+      worst Movies item"; arr-plex-parity owns "files the *arrs imported must be
+      visible in Plex"; hardlink-integrity owns broken links.
     added: 2026-09-10
 
 

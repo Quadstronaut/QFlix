@@ -150,6 +150,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-app-sync.timer \
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-proxy-link-fatal.service \
     scripts/maint/systemd/manitoba-maint-canary-prowlarr-proxy-link-fatal.timer \
+    scripts/maint/systemd/manitoba-maint-canary-plex-decision-stable-file.service \
+    scripts/maint/systemd/manitoba-maint-canary-plex-decision-stable-file.timer \
     scripts/maint/systemd/manitoba-maint-canary-plex-unmatched.service \
     scripts/maint/systemd/manitoba-maint-canary-plex-unmatched.timer \
     scripts/maint/systemd/manitoba-maint-canary-rea-liveness.service \
@@ -278,6 +280,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/dash-asset-integrity.sh \
     scripts/canaries/prowlarr-app-sync.sh \
     scripts/canaries/prowlarr-proxy-link-fatal.sh \
+    scripts/canaries/plex-decision-stable-file.sh \
     scripts/canaries/plex-unmatched.sh \
     scripts/canaries/rea-liveness.sh \
     scripts/configure/55-kometa-install.sh \
@@ -566,6 +569,8 @@ for unit in \
     manitoba-maint-canary-prowlarr-app-sync.timer \
     manitoba-maint-canary-prowlarr-proxy-link-fatal.service \
     manitoba-maint-canary-prowlarr-proxy-link-fatal.timer \
+    manitoba-maint-canary-plex-decision-stable-file.service \
+    manitoba-maint-canary-plex-decision-stable-file.timer \
     manitoba-maint-canary-plex-unmatched.service \
     manitoba-maint-canary-plex-unmatched.timer \
     manitoba-maint-canary-rea-liveness.service \
@@ -704,6 +709,13 @@ systemctl --user enable --now manitoba-maint-canary-prowlarr-app-sync.timer
 # fine, and no 429 is emitted. 6h window, threshold 1, on a clean 22-day
 # zero baseline. Expect it GREEN on arrival.
 systemctl --user enable --now manitoba-maint-canary-prowlarr-proxy-link-fatal.timer
+# plex-decision-stable-file: keeps the REA noise class
+# `plex-vanished-file-decision-failure` HONEST. That class silences every
+# "Failed to get a decision" line on the evidence of a one-time census; this
+# re-derives the census bucket that was empty (file EXISTS and was not
+# replaced) every hour. Expect it GREEN on arrival - validated against the
+# live log at WINDOW_H=500: seen=10 gone=10 replaced=0 stable=0.
+systemctl --user enable --now manitoba-maint-canary-plex-decision-stable-file.timer
 # plex-unmatched: episodes stuck on a `local://` guid (scanner beat the agent
 # match), so the member gets no synopsis, no artwork and no air date. Detect
 # only — the remedy destroys ratingKeys and watch state, so it stays an operator
@@ -1085,7 +1097,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"

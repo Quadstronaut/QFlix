@@ -7,7 +7,7 @@ case below drives the REAL artifact end to end: real bash, real grep, real
 injected through the documented PROWLARR_FATAL_NOW override so the window
 arithmetic is deterministic rather than wall-clock dependent.
 
-Six jobs:
+Seven jobs:
 
   1. THE FAULT IT WAS BUILT FOR, replayed verbatim. REAL_EPISODE carries the
      eight "|Fatal|ProwlarrErrorPipeline|Request Failed. GET /27/api" lines
@@ -15,10 +15,12 @@ Six jobs:
      and `test_the_real_episode_reds` asserts the canary reds on them. A canary
      whose fixtures are invented can pass while matching nothing real.
 
-  2. THE ROTATION STRADDLE. prowlarr.txt rotates on size roughly every 17h and
-     the window is 6h, so a third of the time the evidence is in prowlarr.0.txt.
-     `test_fatal_only_in_previous_rotation_still_reds` is the reason both files
-     are concatenated; drop the `cat "$PREV"` and this is the test that fails.
+  2. THE ROTATION STRADDLE. prowlarr.txt rotates on size; measured spans are
+     ~102-106h against an 8h window, so a straddle is uncommon rather than
+     routine (an earlier draft said ~17h, extrapolated from a partial live
+     file). `test_fatal_only_in_previous_rotation_still_reds` is the reason both
+     files are concatenated; drop the `cat "$PREV"` and this is the test that
+     fails.
 
   3. THE WINDOW IS A WINDOW. A fatal older than WINDOW_H must NOT red, or the
      monitor never clears and the next real episode is invisible inside a
@@ -37,6 +39,13 @@ Six jobs:
      (Prowlarr logs those routinely and they are not 500s to an *arr), and a
      Fatal from a DIFFERENT logger must red (the whole point of matching the
      level rather than the UriFormatException text).
+
+  7. THE FIVE FALSE-GREEN PATHS an adversarial review reproduced against the
+     first draft, each now closed and pinned here. Every one of them printed
+     `PASS ... 0 fatal` with the fault present, and none was caught by the
+     other eighteen tests: a negative WINDOW_H, a non-integer staleness budget,
+     an existing-but-unreadable previous rotation, a DST fall-back, and a log
+     kept "fresh" by background chatter while the request path was dead.
 
 Requires bash + GNU coreutils (`date -d`) on PATH -- the same dependency
 scripts/canaries/rea-liveness.sh already has. Skips cleanly if absent.
@@ -92,6 +101,10 @@ REAL_EPISODE = [
 # Routine traffic, also real shapes: the Info lines Prowlarr emits every few
 # minutes are what makes the freshness probe pass.
 def _chatter(stamp: str) -> str:
+    """A REQUEST-PATH line. Probe 0 asserts freshness against the loggers that
+    only run because Prowlarr is serving requests -- a fixture of background
+    Housekeeper ticks is deliberately NOT enough (see
+    test_background_chatter_alone_is_cannot_assert)."""
     return (stamp + "|Info|ReleaseSearchService|Searching indexer(s): [nekoBT] "
             "for Term: [] for Season / Episode:[], Offset: 0, Limit: 100, "
             "Categories: [5000, 5070]")
@@ -171,7 +184,7 @@ def test_clean_log_passes(tmp_path):
                            _chatter("2026-09-07 09:59:00.0")])
     res = _run(d)
     assert res.returncode == 0, res.stderr
-    assert "PASS: prowlarr-proxy-link-fatal - 0 fatal in 6h" in res.stdout
+    assert "PASS: prowlarr-proxy-link-fatal - 0 fatal in 8h" in res.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -310,9 +323,12 @@ def test_a_fatal_from_another_logger_still_reds(tmp_path):
     res = _run(d)
     assert res.returncode == 1
     assert _stage(res) == "prowlarr-fatal-500"
-    # No "GET /<id>/api" in the line, so there is no indexer to name. The page
-    # must say so rather than render an empty list.
-    assert "no-indexer-id-in-line" in res.stderr, res.stderr
+    # No "GET /<id>/api" in the line, so the *arr-facing claim would be a
+    # misattribution. ProwlarrErrorPipeline.cs:82 is a catch-all for ANY
+    # unhandled API exception and WindowsApp/ConsoleApp log Fatal on a process
+    # crash, so the message must send triage at the log, not at the *arrs.
+    assert "none-on-a-newznab-path" in res.stderr, res.stderr
+    assert "arrs-got-500" not in res.stderr, res.stderr
 
 
 def test_threshold_is_honoured(tmp_path):
@@ -337,9 +353,162 @@ def test_header_documents_the_defaults_the_code_uses():
     the header and a different one in the code is exactly how the
     prowlarr-indexer-health 25-vs-40 split shipped."""
     body = SCRIPT.read_text(encoding="utf-8")
-    assert "PROWLARR_FATAL_WINDOW_H:-6}" in body
+    assert "PROWLARR_FATAL_WINDOW_H:-8}" in body
     assert "PROWLARR_FATAL_THRESHOLD:-1}" in body
     assert "PROWLARR_FATAL_STALE_BUDGET_MIN:-45}" in body
-    assert "WINDOW IS 6h" in body
+    assert "WINDOW IS 8h" in body
     assert "THRESHOLD is 1" in body
     assert "default 45" in body
+
+
+# ---------------------------------------------------------------------------
+# 7. The five false-green paths an adversarial review reproduced against the
+#    first draft. Each one printed "PASS ... 0 fatal" with the fault present,
+#    and none was caught by the eighteen tests above. They are the reason
+#    Probe -1 and the epoch compare exist; delete either and these go red.
+# ---------------------------------------------------------------------------
+def _bad_knob(tmp_path, **env_overrides):
+    """One genuine in-window fatal, plus one hostile env value."""
+    d = _logdir(tmp_path, [
+        "2026-09-07 09:00:00.0|Fatal|ProwlarrErrorPipeline|Request Failed. GET /27/api",
+        _chatter("2026-09-07 09:59:00.0"),
+    ])
+    env = dict(os.environ)
+    env["PROWLARR_FATAL_LOG_DIR"] = str(d)
+    env["PROWLARR_FATAL_NOW"] = NOW
+    env["PROWLARR_FATAL_SKIP_LOOKUP"] = "1"
+    env["PROWLARR_FATAL_TRAIL"] = str(tmp_path / "trail.log")
+    env.update(env_overrides)
+    return d, subprocess.run(["bash", str(SCRIPT)], env=env,
+                             capture_output=True, text=True, timeout=60)
+
+
+def test_negative_window_is_rejected_not_silently_inverted(tmp_path):
+    """A negative WINDOW_H puts the cutoff in the FUTURE, so every real fatal
+    falls outside it and the canary is green forever. Reproduced on the first
+    draft: `PASS: ... 0 fatal in -5h` with a genuine fatal one hour old."""
+    d, res = _bad_knob(tmp_path, PROWLARR_FATAL_WINDOW_H="-5")
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert _stage(res) == "prowlarr-canary-bad-config"
+    assert "PASS" not in res.stdout
+    # Guard the guard: the same fixture with a sane window really does red.
+    assert _run(d, window_h=8).returncode == 1
+
+
+def test_non_integer_knobs_are_rejected_not_treated_as_false(tmp_path):
+    """`[ "$AGE" -gt abc ]` prints "integer expected" and evaluates FALSE, which
+    reads as "not stale" -- so one typo in a systemd Environment= line silently
+    disabled the staleness guard. Guard the STATE, not the exit status."""
+    for knob in ("PROWLARR_FATAL_WINDOW_H", "PROWLARR_FATAL_THRESHOLD",
+                 "PROWLARR_FATAL_STALE_BUDGET_MIN"):
+        # NOTE: the empty string is deliberately NOT here. `${VAR:-8}` treats
+        # empty as unset, so `Environment=PROWLARR_FATAL_WINDOW_H=` falls back
+        # to the safe default rather than erroring -- failing to the default is
+        # the correct direction and is pinned by the assertion below the loop.
+        for bad in ("abc", "0", "3.5", "-1", "6h", " 6"):
+            _, res = _bad_knob(tmp_path, **{knob: bad})
+            assert res.returncode == 2, (knob, bad, res.stdout, res.stderr)
+            assert _stage(res) == "prowlarr-canary-bad-config", (knob, bad)
+            assert "PASS" not in res.stdout, (knob, bad)
+    # An EMPTY override is not hostile: `:-` falls back to the documented
+    # default, which is the safe value, and the canary still asserts.
+    _, res = _bad_knob(tmp_path, PROWLARR_FATAL_WINDOW_H="")
+    assert res.returncode == 1, (res.stdout, res.stderr)
+    assert "in-8h" in res.stderr, res.stderr
+
+
+def test_a_bad_stale_budget_cannot_mask_a_stale_log(tmp_path):
+    """The specific reproduction: a 180-min-stale log with a garbage budget
+    printed PASS on the first draft, because the failed `[` comparison meant
+    "not stale"."""
+    d = _logdir(tmp_path, [_chatter("2026-09-07 07:00:00.0")])  # 180 min old
+    env = dict(os.environ)
+    env.update({"PROWLARR_FATAL_LOG_DIR": str(d), "PROWLARR_FATAL_NOW": NOW,
+                "PROWLARR_FATAL_SKIP_LOOKUP": "1",
+                "PROWLARR_FATAL_TRAIL": str(tmp_path / "t.log"),
+                "PROWLARR_FATAL_STALE_BUDGET_MIN": "abc"})
+    res = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True,
+                         text=True, timeout=60)
+    assert res.returncode == 2
+    assert "PASS" not in res.stdout
+    # unset, the same fixture is correctly reported stale rather than clean
+    assert _stage(_run(d)) == "prowlarr-log-stale"
+
+
+def test_unreadable_previous_rotation_is_not_an_absent_one(tmp_path):
+    """ABSENT and UNREADABLE are the same `cat 2>/dev/null` answer and want
+    OPPOSITE verdicts. On the first draft, a prowlarr.0.txt that existed but
+    could not be read hid a genuine 2h-old fatal behind `PASS ... 0 fatal`."""
+    d = _logdir(tmp_path, [_chatter("2026-09-07 09:59:00.0")])
+    # A directory stands in for any read failure on a path that exists.
+    (d / "prowlarr.0.txt").mkdir()
+    res = _run(d)
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert _stage(res) == "prowlarr-log-unreadable"
+    assert "PASS" not in res.stdout
+
+
+def test_background_chatter_alone_is_cannot_assert(tmp_path):
+    """Freshness must prove the REQUEST PATH is alive, not merely that the file
+    was written to. Prowlarr's background loggers tick on their own timer, so a
+    log of nothing but Housekeeper lines is fresh and carries no information
+    about the pipeline that would emit the fatal."""
+    d = _logdir(tmp_path, [
+        "2026-09-07 09:55:00.0|Info|Housekeeper|Running housekeeping tasks",
+        "2026-09-07 09:59:00.0|Info|Housekeeper|Running housekeeping tasks",
+    ])
+    res = _run(d)
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert _stage(res) == "prowlarr-request-path-silent"
+    assert "PASS" not in res.stdout
+    # Guard the guard: add one request-path line and it asserts again.
+    (tmp_path / "b").mkdir()
+    d2 = _logdir(tmp_path / "b", [
+        "2026-09-07 09:55:00.0|Info|Housekeeper|Running housekeeping tasks",
+        _chatter("2026-09-07 09:59:00.0"),
+    ])
+    assert _run(d2).returncode == 0
+
+
+def test_dst_fall_back_cannot_hide_a_fatal(tmp_path):
+    """Europe/Amsterdam repeats 02:00-03:00 on 2026-10-25. The first draft
+    compared timestamps as STRINGS, and a fatal genuinely 5h05m old was
+    EXCLUDED from a 6h window because the cutoff string resolved to the CEST
+    pass while the event belonged to the CET pass. The epoch compare fixes the
+    direction: glibc resolves an ambiguous local time to the SECOND pass, so a
+    parsed epoch is always >= the true instant and the residual error can only
+    ever over-include -- a page, never a silence."""
+    d = _logdir(tmp_path, [
+        "2026-10-25 02:30:00.0|Fatal|ProwlarrErrorPipeline|Request Failed. GET /27/api",
+        _chatter("2026-10-25 06:55:00.0"),
+    ])
+    env = dict(os.environ)
+    env.update({"PROWLARR_FATAL_LOG_DIR": str(d),
+                "PROWLARR_FATAL_NOW": "2026-10-25 07:00:00",
+                "PROWLARR_FATAL_SKIP_LOOKUP": "1",
+                "PROWLARR_FATAL_TRAIL": str(tmp_path / "t.log"),
+                "TZ": "Europe/Amsterdam"})
+    res = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True,
+                         text=True, timeout=60)
+    assert res.returncode == 1, (res.stdout, res.stderr)
+    assert _stage(res) == "prowlarr-fatal-500"
+
+
+def test_window_clears_the_largest_real_inter_fatal_gap():
+    """The 8h default is not a round number. The largest gap inside the real
+    episode is 6h12m14s (03:43:52 -> 09:56:06); a 6h window would have split
+    that episode into two pages for any phasing that did not happen to land in
+    the dead zone between the :00/:30 timer anchors. The default must exceed
+    the measured gap with real margin."""
+    import datetime as dt
+    stamps = [dt.datetime.strptime(l[:19], "%Y-%m-%d %H:%M:%S") for l in REAL_EPISODE]
+    gaps = [(b - a).total_seconds() for a, b in zip(stamps, stamps[1:])]
+    largest = max(gaps)
+    assert abs(largest - (6 * 3600 + 12 * 60 + 14)) < 1, largest
+    body = SCRIPT.read_text(encoding="utf-8")
+    import re as _re
+    default_h = int(_re.search(r"PROWLARR_FATAL_WINDOW_H:-(\d+)\}", body).group(1))
+    assert default_h * 3600 > largest, (
+        "the default window must exceed the largest observed inter-fatal gap, "
+        "or one episode pages twice")
+    assert default_h * 3600 - largest >= 3600, "margin under one hour is luck, not design"
