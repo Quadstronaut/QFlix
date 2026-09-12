@@ -2,7 +2,15 @@
 Description=Manitoba canary - entitlement service (hourly)
 
 [Timer]
-OnCalendar=hourly
+# PHASE-SHIFTED 2026-09-12: `hourly` means minute :00, and sixteen canaries
+# plus eleven quarter-hourly ones all meant the same minute. That burst, on
+# top of the pusher's 31 pushes a minute, is what Kuma's SQLite connection
+# pool could not absorb -- six minutes of KnexTimeoutError on 2026-09-12,
+# every push monitor tripping "No heartbeat in the time window", ~80 Discord
+# messages for zero real faults. The PERIOD is still one hour; only the start
+# minute moved, so every heartbeat timeout and lookback window sized against
+# an hourly cadence stays exactly as valid as before.
+OnCalendar=*:25:00
 RandomizedDelaySec=300
 Persistent=true
 
