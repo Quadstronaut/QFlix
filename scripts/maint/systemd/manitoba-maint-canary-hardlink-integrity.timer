@@ -2,7 +2,18 @@
 Description=Manitoba canary — Hardlink integrity (every 30 min)
 
 [Timer]
-OnCalendar=*:0/30
+# PHASE-SHIFTED 2026-09-12. The period is unchanged; only the START minute
+# moved. At 03:16 and 03:18 CEST every push monitor in the fleet reported
+# "No heartbeat in the time window" and Discord took ~80 messages, because
+# Kuma's SQLite connection pool timed out for six minutes (KnexTimeoutError,
+# recurring in the 03:00 hour since May). Nineteen canary timers fired in the
+# SAME MINUTE at :00, on top of the pusher's 31 pushes a minute, and that
+# burst is the load Kuma was least able to absorb. Widening
+# RandomizedDelaySec was the wrong lever: it grows worst-case run spacing,
+# which several canaries size their own lookback windows against. Moving the
+# phase keeps consecutive runs exactly one period apart and leaves every
+# downstream tuning valid.
+OnCalendar=*:7/30
 RandomizedDelaySec=120
 Persistent=true
 
