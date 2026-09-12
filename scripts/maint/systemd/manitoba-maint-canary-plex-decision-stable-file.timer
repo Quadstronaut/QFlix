@@ -1,0 +1,17 @@
+[Unit]
+Description=Manitoba canary — Plex decision-failure adjudication (hourly)
+
+[Timer]
+# Hourly against a 26h window. The cadence is not the control here: a decision
+# failure is history by the time it is logged, so there is nothing to catch in
+# minutes. What matters is that the window is wider than the daily cycle the
+# reaper and the *arr upgrade path run on, so one missed run can never drop an
+# occurrence, and that the same occurrence re-adjudicates identically on every
+# tick (the check is stateless and idempotent — it re-reads the log and re-stats
+# the paths, so a red clears by itself once the file is deleted or replaced).
+OnCalendar=hourly
+RandomizedDelaySec=240
+Persistent=true
+
+[Install]
+WantedBy=timers.target
