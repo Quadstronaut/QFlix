@@ -344,7 +344,10 @@ def test_systemd_units_exist_and_are_consistent():
     svc = (SYSTEMD_DIR / (UNIT_STEM + ".service")).read_text(encoding="utf-8")
     tmr = (SYSTEMD_DIR / (UNIT_STEM + ".timer")).read_text(encoding="utf-8")
     assert "canary push prowlarr-proxy-link-fatal" in svc
-    assert "OnCalendar=*:0/30" in tmr
+    # Phase-shifted to :24/:54 on 2026-09-12 so it does not land in the :00/:30
+    # herd. The 30-minute PERIOD is what the 8h window was sized against, and
+    # that is unchanged.
+    assert "OnCalendar=*:24/30" in tmr
     assert "Persistent=true" in tmr
 
 
