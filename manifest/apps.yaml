@@ -914,6 +914,41 @@ canaries:
     kuma_monitor: "Canary Prowlarr Proxy Link"
     script: "scripts/canaries/prowlarr-proxy-link-fatal.sh"
     schedule: "every-30min"
+  plex-decision-stable-file:
+    # Added 2026-09-12, as the EARNED half of the REA noise class
+    # `plex-vanished-file-decision-failure` (manifest/rea-noise-classes.yaml).
+    #
+    # That class silences Plex's "Failed to get a decision for: <path>" on the
+    # evidence of a 79-occurrence census: 54 files gone today, 25 present with
+    # an mtime LATER than the error, and ZERO for a file that existed before the
+    # error and was still there unchanged. An adversarial review made the right
+    # objection — a census is HISTORY, not a mechanism, and the class named
+    # plex-playback as its backstop while that canary is hardcoded to
+    # `QFlix - Movies` and 100% of the suppressed corpus is TV and Anime. The
+    # cited backstop had zero overlap with the population being silenced.
+    #
+    # This re-derives the empty bucket every hour, forever: gone -> benign,
+    # mtime later than the error -> benign (replaced underneath an analysis pass
+    # already in flight), file EXISTS and was NOT replaced -> FINDING, because
+    # that is not a race, it is a file a member cannot play. The day that bucket
+    # stops being empty, REA is deliberately silent and this is the only thing
+    # that will say so.
+    #
+    # The absence test is EARNED, not assumed (the 2026-08-23 tdarr-ghost
+    # lesson): "the file is gone" and "I could not look" are the same `[ -e ]`
+    # answer and want opposite verdicts, so a path counts as gone only when the
+    # nearest still-existing ancestor is a readable, traversable directory
+    # INSIDE the media root. An unmounted tree reports `unreachable` and exits 2
+    # rather than reporting an empty library as clean. The first draft asked
+    # only about the immediate parent and scored all ten live occurrences
+    # unadjudicable, because a series delete takes the season and show
+    # directories with it — caught by replaying the real log, not in review.
+    #
+    # PMS logs in UTC while the box runs CEST and Prowlarr logs box-local, so
+    # every stamp is parsed with `TZ=UTC date -d`.
+    kuma_monitor: "Canary Plex Decision Stable File"
+    script: "scripts/canaries/plex-decision-stable-file.sh"
+    schedule: "hourly"
   hardlink-integrity:
     # Sample the 20 most-recently-modified video files across Movies + TV
     # Shows + Anime and assert linkcount >= 2 (= the *arr import used
