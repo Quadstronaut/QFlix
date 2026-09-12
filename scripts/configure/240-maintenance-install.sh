@@ -284,6 +284,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/plex-unmatched.sh \
     scripts/canaries/rea-liveness.sh \
     scripts/configure/55-kometa-install.sh \
+    scripts/configure/240-maintenance-install.sh \
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
@@ -418,6 +419,17 @@ chmod +x ~/scripts/canaries/*.sh
 # kometa-deploy-drift canary reads this install script's heredoc to know
 # what library names should be deployed — needs the file resident.
 cp -f   "$STG"/scripts/configure/55-kometa-install.sh ~/scripts/configure/55-kometa-install.sh
+# THIS SCRIPT, copied to the box on purpose. It is workstation-side and nothing
+# on the box ever runs it -- but a copy has been resident under ~/scripts since
+# some past manual scp, and deploy-drift.sh walks EVERY *.sh under ~/scripts and
+# compares it to origin/master. So the installer was the one deployed file that
+# could never be brought into agreement by running the installer: editing it
+# guaranteed a red on the very next deploy-drift tick, clearable only by a hand
+# scp. Caught 2026-09-12 immediately after this canary pair shipped
+# (`1-of-242-deployed-files-differ`). Staging it closes the loop; the honest
+# alternative was deleting the box copy, and adding a file is the reversible one.
+cp -f   "$STG"/scripts/configure/240-maintenance-install.sh ~/scripts/configure/240-maintenance-install.sh
+chmod +x ~/scripts/configure/240-maintenance-install.sh
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.
