@@ -1620,7 +1620,9 @@ def test_tick_literal_matches_the_timer_oncalendar():
     unit = (REPO_ROOT / "scripts" / "maint" / "systemd"
             / "manitoba-maint-canary-dash-asset-integrity.timer")
     body = unit.read_text(encoding="utf-8")
-    m = re.search(r"OnCalendar=\*:0/(\d+)", body)
+    # *:M/N since the 2026-09-12 phase shift. The PERIOD is what TICK_S has to
+    # agree with; the start minute is irrelevant to that.
+    m = re.search(r"OnCalendar=\*:\d+/(\d+)", body)
     assert m, body
     minutes = int(m.group(1))
     text = SCRIPT.read_text(encoding="utf-8")
