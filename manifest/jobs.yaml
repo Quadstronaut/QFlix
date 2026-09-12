@@ -274,6 +274,31 @@ jobs:
   manitoba-maint-canary-prowlarr-app-sync:
     timer: scripts/maint/systemd/manitoba-maint-canary-prowlarr-app-sync.timer
     kuma_monitor: "Canary Prowlarr App Sync"
+  # Added 2026-09-10. A THIRD Prowlarr timer, and not a fourth probe bolted onto
+  # either of the two above, for the same reason app-sync was split out: those
+  # read Prowlarr's /api/v1/health, the *arr 429 stream and Prowlarr/*arr CONFIG,
+  # and ALL THREE numerators are structurally zero for this fault. On
+  # 2026-09-06/07 Prowlarr answered Sonarr with eight Fatal (HTTP 500) responses
+  # on GET /27/api (nekoBT) -- ConvertToProxyLink built a proxy download URL past
+  # .NET's 65519-char Uri ceiling from one bloated magnet, taking the whole
+  # hundred-result page with it -- while /health and /indexerstatus stayed []
+  # because the INDEXER was never unhealthy. Different signal (runtime response
+  # vs health/config), different cadence (every 30 min against a 6h window),
+  # independently swappable. Dead-man: its own Kuma push monitor, so a stopped
+  # timer reds on heartbeat silence exactly like every other canary here.
+  manitoba-maint-canary-prowlarr-proxy-link-fatal:
+    timer: scripts/maint/systemd/manitoba-maint-canary-prowlarr-proxy-link-fatal.timer
+    kuma_monitor: "Canary Prowlarr Proxy Link"
+  # Added 2026-09-12. Own timer rather than a leg on plex-playback or
+  # plex-unmatched: those two ask live-state questions of the Plex API (can the
+  # transcoder produce segments; is an item stuck on a local:// guid), while
+  # this one reads the PMS LOG and adjudicates it against the filesystem. It is
+  # also the thing that keeps a REA suppression honest, which is a different
+  # concern with a different owner from either. Dead-man: its own Kuma push
+  # monitor, so a stopped timer reds on heartbeat silence.
+  manitoba-maint-canary-plex-decision-stable-file:
+    timer: scripts/maint/systemd/manitoba-maint-canary-plex-decision-stable-file.timer
+    kuma_monitor: "Canary Plex Decision Stable File"
   manitoba-maint-canary-hardlink-integrity:
     timer: scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer
     kuma_monitor: "Canary Hardlink Integrity"
