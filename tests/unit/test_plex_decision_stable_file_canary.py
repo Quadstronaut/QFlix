@@ -363,7 +363,13 @@ def test_systemd_units_exist_and_are_consistent():
     svc = (SYSTEMD_DIR / (UNIT_STEM + ".service")).read_text(encoding="utf-8")
     tmr = (SYSTEMD_DIR / (UNIT_STEM + ".timer")).read_text(encoding="utf-8")
     assert "canary push plex-decision-stable-file" in svc
-    assert "OnCalendar=hourly" in tmr
+    # Hourly, but phase-shifted off minute :00 on 2026-09-12 -- `hourly` meant
+    # the same minute for sixteen canaries, and that herd is what stalled Kuma.
+    # The PERIOD is what the 26h window and the heartbeat timeout are sized
+    # against, so it is the period this pins, not the start minute.
+    m = re.search(r"OnCalendar=\*:(\d{2}):00", tmr)
+    assert m, "timer is no longer an hourly *:MM:00 schedule:\n" + tmr
+    assert m.group(1) != "00", "must not sit in the :00 herd"
     assert "Persistent=true" in tmr
 
 
