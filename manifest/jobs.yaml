@@ -289,6 +289,16 @@ jobs:
   manitoba-maint-canary-prowlarr-proxy-link-fatal:
     timer: scripts/maint/systemd/manitoba-maint-canary-prowlarr-proxy-link-fatal.timer
     kuma_monitor: "Canary Prowlarr Proxy Link"
+  # Added 2026-09-12. Own timer rather than a leg on plex-playback or
+  # plex-unmatched: those two ask live-state questions of the Plex API (can the
+  # transcoder produce segments; is an item stuck on a local:// guid), while
+  # this one reads the PMS LOG and adjudicates it against the filesystem. It is
+  # also the thing that keeps a REA suppression honest, which is a different
+  # concern with a different owner from either. Dead-man: its own Kuma push
+  # monitor, so a stopped timer reds on heartbeat silence.
+  manitoba-maint-canary-plex-decision-stable-file:
+    timer: scripts/maint/systemd/manitoba-maint-canary-plex-decision-stable-file.timer
+    kuma_monitor: "Canary Plex Decision Stable File"
   manitoba-maint-canary-hardlink-integrity:
     timer: scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer
     kuma_monitor: "Canary Hardlink Integrity"
