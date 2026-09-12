@@ -189,6 +189,19 @@ def test_rules_match_their_canonical_log_lines(ledgers):
          "Aug 20, 2026 01:33:02.126 [140218933841720] WARN - Webhook: Error "
          "delivering payload to https://discord.com/api/webhooks/"
          "1177487639654441000/REDACTED: 400"),
+        # 2026-09-10. The REA page of 2026-09-09 19:08, verbatim, plus the two
+        # MDE lines PMS emits immediately above it — models quote whichever of
+        # the three landed in their excerpt window, so all three must fire.
+        ("plex-vanished-file-decision-failure",
+         "Sep 09, 2026 05:04:52.049 [139868285422392] ERROR - Failed to get a "
+         "decision for: /home/quadstronaut/media/TV Shows/Shrinking/Season 1/"
+         "Shrinking - S01E10 - Closure WEBDL-1080p.mkv"),
+        ("plex-vanished-file-decision-failure",
+         "Sep 09, 2026 05:04:52.049 [139868285422392] ERROR - MDE: video has "
+         "neither a video stream nor an audio stream"),
+        ("plex-vanished-file-decision-failure",
+         "Sep 09, 2026 05:04:52.049 [139868285422392] ERROR - MDE: no "
+         "compatible media decisions are available"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -298,6 +311,27 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
             "Error trying to get releases from Github. Timeout Error."):
         assert not re.search(rl, network_fault), (
             "an updater network fault must still page: " + network_fault)
+
+    # 2026-09-10. The vanished-file decision rule sits next to the SAME "MDE:"
+    # prefix that carries Plex's real client/codec negotiation failures. The
+    # only thing keeping them apart is that the rule enumerates two exact MDE
+    # sentences rather than keying on "MDE:" — delete that enumeration and REA
+    # goes quiet on 1,860 live occurrences of a shape that has never been
+    # proven benign, plus every genuinely unplayable file.
+    vf = by["plex-vanished-file-decision-failure"]
+    for still_pages in (
+            "ERROR - MDE: unable to find a working transcode profile for "
+            "video stream",
+            "ERROR - MDE: item has no media items",
+            "ERROR - Failed to transcode file (3)",
+            "ERROR - Failed to get a decision",
+            "WARN - Failed to find any streams for media item 12345"):
+        assert not re.search(vf, still_pages), (
+            "an unproven MDE/transcode shape must still page: " + still_pages)
+    # The trailing colon is load-bearing: it is what makes the rule a claim
+    # about ONE NAMED PATH that MDE could not grade, which is the only shape
+    # the 79-occurrence stat() census covers.
+    assert re.search(vf, "ERROR - Failed to get a decision for: /media/x.mkv")
 
     # The structural backstop: fires only when the excerpt has an *arr |Debug|
     # token and NO error-level token anywhere in it. The guard must span every
