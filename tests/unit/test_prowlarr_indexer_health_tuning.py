@@ -74,8 +74,15 @@ def _timer_worst_case_spacing_minutes():
     D, which pulls the following gap the other way -- so the safe bound a
     lookback window must clear is N + 2D."""
     body = TIMER.read_text(encoding="utf-8")
-    m = re.search(r"OnCalendar=\*:0/(\d+)", body)
-    assert m, "timer OnCalendar is no longer a */N minute schedule:\n" + body
+    # *:M/N, not *:0/N. Fourteen canary timers were PHASE-SHIFTED 2026-09-12 to
+    # stop nineteen of them firing in the same minute at :00 -- the burst that
+    # tipped Kuma's SQLite pool into a six-minute stall and cost ~80 Discord
+    # messages. Only the START minute M moved; the PERIOD N is what this spacing
+    # bound depends on, and it is unchanged. A regex pinned to the old start
+    # minute would have failed the change for a reason that does not affect the
+    # arithmetic at all.
+    m = re.search(r"OnCalendar=\*:\d+/(\d+)", body)
+    assert m, "timer OnCalendar is no longer a *:M/N minute schedule:\n" + body
     period = int(m.group(1))
     d = re.search(r"RandomizedDelaySec=(\d+)", body)
     jitter_min = (int(d.group(1)) / 60.0) if d else 0.0
