@@ -167,6 +167,20 @@ DAY_SECONDS = 86400
 # "Available" (not re-requestable). reconcile_seerr() loops until exhausted.
 _SEERR_MEDIA_PAGE = 100
 
+# Seerr MediaStatus values this module reasons about. PENDING/PROCESSING are
+# in-flight requests a member is waiting on and are never reconciled away.
+_SEERR_STATUS_PENDING = 2
+_SEERR_STATUS_PROCESSING = 3
+# BLOCKLISTED. An admin explicitly forbade this title, and a blocklisted title
+# has NO backing *arr record BY DESIGN -- which is exactly the shape the "gone"
+# check fires on. Deleting the media row cascades the blocklist row away
+# (blocklist.mediaId is a CASCADE FK), silently un-blocking something a human
+# deliberately blocked. Zero live rows today; latent, not theoretical.
+_SEERR_STATUS_BLOCKLISTED = 6
+# DELETED. What a reaped season lands on, and what strands it: Seerr shows the
+# season as gone but offers no way to request it again.
+_SEERR_STATUS_DELETED = 7
+
 # Kuma push (bazarr2-sync model, reused verbatim in shape).
 KUMA_BASE = os.environ.get("KUMA_BASE", "http://127.0.0.1:42005")
 KUMA_PUSH_KEY = "qflix-reaper"           # key under ~/secrets/kuma-push-tokens.json
@@ -995,6 +1009,42 @@ def _seerr_req(method: str, port: str, key: str, path: str, query: str = "", tim
         return code, raw
 
 
+def _seerr_stuck_seasons(port, key, row):
+    """Season numbers this Seerr row reports as DELETED(7) or BLOCKLISTED-free
+    stale, for a series that IS still present in its *arr.
+
+    Returns [] on ANY doubt — an unreachable detail endpoint, an unparseable
+    body, or no season data at all. Fail closed: a row we could not inspect is
+    left alone rather than deleted, because the deletion cascades every season
+    row with it. "I could not look" must never render as "it is stale".
+
+    Only status 7 counts as stuck. A season at 1 was never requested, 4/5 are
+    real availability, and 2/3 are in-flight and already excluded upstream.
+    """
+    tmdb = row.get("tmdbId")
+    if tmdb is None:
+        return []
+    status, body = _seerr_req("GET", port, key, "/api/v1/tv/" + str(int(tmdb)))
+    if status != 200 or not isinstance(body, dict):
+        return []
+    info = body.get("mediaInfo")
+    if not isinstance(info, dict):
+        return []
+    seasons = info.get("seasons")
+    if not isinstance(seasons, list) or not seasons:
+        return []
+    stuck = []
+    for se in seasons:
+        if not isinstance(se, dict):
+            continue
+        try:
+            if int(se.get("status")) == _SEERR_STATUS_DELETED:
+                stuck.append(int(se.get("seasonNumber")))
+        except (TypeError, ValueError):
+            continue
+    return sorted(stuck)
+
+
 def reconcile_seerr(execute: bool):
     """After all libraries are reaped, delete Seerr media rows whose backing arr
     item is gone, so the title becomes re-requestable. Returns (deleted, failed).
@@ -1005,6 +1055,9 @@ def reconcile_seerr(execute: bool):
     Tolerates an empty / unreachable Seerr without aborting."""
     deleted = 0
     failed = 0
+    in_flight = 0
+    blocklisted = 0
+    would = 0
     try:
         port, key = _seerr_creds()
     except FileNotFoundError:
@@ -1014,23 +1067,42 @@ def reconcile_seerr(execute: bool):
         warn("seerr creds empty — skipping Seerr reconciliation")
         return deleted, failed
 
-    # Page through ALL available media. A single take=N would silently skip
-    # rows past the cap, leaving deleted titles stuck "Available" (members
-    # couldn't re-request them). Loop skip+=PAGE until a short page arrives or
-    # pageInfo.results is exhausted; a hard ceiling guards a misbehaving API.
+    # Page through EVERY media row, not just the available ones. A single take=N
+    # would silently skip rows past the cap, leaving deleted titles stuck and
+    # members unable to re-request them. Loop skip+=PAGE until a short page
+    # arrives or pageInfo.results is exhausted; a hard ceiling guards a
+    # misbehaving API.
+    #
+    # `filter=available` WAS the query here, and it was the bug. A reaped title
+    # does not stay "available" — Seerr moves it to status 7 (DELETED), which
+    # that filter cannot see, so those rows were never reconciled and the title
+    # stayed un-re-requestable forever. Measured 2026-09-12 in Seerr's own DB:
+    # 66 seasons across 28 DISTINCT shows sat at status 7, Law & Order alone
+    # holding 23, with 763 season_request rows still pointing at them. The
+    # operator's father could not request Law & Order seasons 3 and 4; an admin
+    # had to push them through by hand. The function's own docstring promised
+    # exactly the outcome the filter prevented.
     results = []
     skip = 0
     while True:
         status, body = _seerr_req(
             "GET", port, key, "/api/v1/media",
-            query="take=" + str(_SEERR_MEDIA_PAGE) + "&skip=" + str(skip) +
-            "&filter=available",
+            query="take=" + str(_SEERR_MEDIA_PAGE) + "&skip=" + str(skip),
         )
         if status != 200 or not isinstance(body, dict):
             if skip == 0:
-                warn("Seerr media list unreachable/empty (HTTP " + str(status) +
-                     ") — skipping")
-                return deleted, failed
+                # OPERATOR RULING 2026-09-13: no tolerance — page.
+                # This used to return (0, 0), which the caller cannot tell apart
+                # from "nothing needed reconciling", so a Seerr outage during the
+                # nightly run reported GREEN while zero titles were reconciled.
+                # The repo's own test enshrined that as intended behaviour. It
+                # was wrong: silence about work that did not happen is the same
+                # class of defect as a canary that reads clean when it could not
+                # look. failed=1 makes main() mark the run partial, which reds
+                # Kuma and pages Discord.
+                warn("Seerr media list unreachable (HTTP " + str(status) +
+                     ") — reconciliation did NOT run; marking the run partial")
+                return deleted, failed + 1
             # Mid-pagination failure: reconcile what we already fetched rather
             # than abort — a partial pass beats none, and it's logged.
             warn("Seerr media page at skip=" + str(skip) + " failed (HTTP " +
@@ -1049,30 +1121,60 @@ def reconcile_seerr(execute: bool):
             warn("Seerr pagination exceeded 100000 rows — stopping")
             break
     if not results:
-        log("Seerr: no available media rows to reconcile")
+        log("Seerr: no media rows to reconcile")
         return deleted, failed
-    log("Seerr: reconciling " + str(len(results)) + " available media row(s)")
+    log("Seerr: reconciling " + str(len(results)) + " media row(s) (all statuses)")
 
     # Build the live arr index once: movie tmdbIds with files, and series tvdbIds.
+    #
+    # THIS INDEX IS THE ONLY THING STANDING BETWEEN A SWEEP AND THE WHOLE TABLE.
+    # `gone` is "absent from the index", so an EMPTY index means every settled
+    # row looks orphaned. The original code swallowed a client construction
+    # failure with `except Exception: continue` and carried on with whatever it
+    # had — so if the *arrs were unreachable it would delete every settled Seerr
+    # row in one pass.
+    #
+    # Not theoretical: observed 2026-09-13. A harness loaded this module from a
+    # path where `lib` was not importable, all four clients raised
+    # ModuleNotFoundError, the index came back empty, and the dry run went from
+    # 42 rows to 131 — every non-in-flight row in the table. The dry run is the
+    # only reason that was caught.
+    #
+    # Now: any instance that cannot be indexed makes the whole reconciliation
+    # refuse. Same rule as everywhere else here — "I could not look" must never
+    # render as "it is gone".
     radarr_with_file = set()
     sonarr_tvdbids = set()
+    index_failures = []
     for entry in LIBRARIES:
+        slug = entry["slug"]
         try:
-            client = _arr_client(entry["slug"])
-        except Exception:
-            continue
-        if entry["kind"] == "movie":
-            st, mv = client.get("/movie")
-            if st == 200 and isinstance(mv, list):
+            client = _arr_client(slug)
+            if entry["kind"] == "movie":
+                st, mv = client.get("/movie")
+                if st != 200 or not isinstance(mv, list):
+                    index_failures.append(slug + ":http" + str(st))
+                    continue
                 for m in mv:
                     if m.get("hasFile") and m.get("tmdbId") is not None:
                         radarr_with_file.add(m.get("tmdbId"))
-        else:
-            st, sr = client.get("/series")
-            if st == 200 and isinstance(sr, list):
+            else:
+                st, sr = client.get("/series")
+                if st != 200 or not isinstance(sr, list):
+                    index_failures.append(slug + ":http" + str(st))
+                    continue
                 for s in sr:
                     if s.get("tvdbId") is not None:
                         sonarr_tvdbids.add(s.get("tvdbId"))
+        except Exception as exc:
+            index_failures.append(slug + ":" + type(exc).__name__)
+
+    if index_failures:
+        warn("Seerr reconciliation REFUSED — could not index " +
+             str(len(index_failures)) + " *arr instance(s): " +
+             ", ".join(index_failures) +
+             ". An incomplete index would make every settled row look orphaned.")
+        return deleted, failed + 1
 
     for row in results:
         # Coerce the Seerr id to int before it can reach a URL path — a non-integer
@@ -1082,18 +1184,76 @@ def reconcile_seerr(execute: bool):
         except (TypeError, ValueError):
             continue
         media_type = row.get("mediaType")
+
+        # NEVER touch an in-flight request. Widening off `filter=available`
+        # brought PENDING(2) and PROCESSING(3) rows into scope for the first
+        # time, and those are requests a member is currently waiting on — a row
+        # can legitimately sit in PROCESSING with no *arr record yet while the
+        # push is still in progress or has just failed. Deleting it would throw
+        # the request away silently. Only settled rows are reconciled.
+        try:
+            row_status = int(row.get("status"))
+        except (TypeError, ValueError):
+            row_status = None
+        if row_status in (_SEERR_STATUS_PENDING, _SEERR_STATUS_PROCESSING):
+            in_flight += 1
+            continue
+        if row_status == _SEERR_STATUS_BLOCKLISTED:
+            blocklisted += 1
+            continue
+
         gone = False
+        reason = "orphan"
         if media_type == "movie":
             tmdb = row.get("tmdbId")
             gone = tmdb is not None and tmdb not in radarr_with_file
         elif media_type == "tv":
             tvdb = row.get("tvdbId")
             gone = tvdb is not None and tvdb not in sonarr_tvdbids
+            if not gone and tvdb is not None:
+                # SEASON GRANULARITY — the actual reported bug.
+                #
+                # The reaper normally reaps PER SEASON, so the series stays in
+                # Sonarr with some seasons full and some empty. The whole-series
+                # check above then answers "present", the row is skipped, and any
+                # season Seerr left at DELETED stays that way forever. Measured
+                # 2026-09-12: Law & Order (tmdb 549) held TWENTY-THREE season
+                # rows at status 7 while its media row sat at 4 and its tvdb was
+                # very much still in Sonarr. The operator's father could not
+                # request seasons 3 and 4; an admin pushed them through by hand.
+                #
+                # Seerr 3.4.1 exposes NO per-season lever — DELETE
+                # /media/<id>/season/<n> is a 404, and GET /media/<id> is not
+                # even allowed. The only lever is the media row, and deleting it
+                # CASCADES every season row with it.
+                #
+                # That is safe because Seerr rebuilds the truth itself. PROVEN
+                # live on Futurama 2026-09-13, not assumed:
+                #   before  media 107  seasons 0:1 1:5 ... 10:1 11:7
+                #   DELETE  -> 0 media rows, 0 season rows (cascade confirmed)
+                #   sonarr-scan
+                #   after   media 331  seasons 0:1 1:5 ... 10:1 11:1
+                # The genuine "available" season came BACK from Sonarr; only the
+                # stuck 7 was cleared, becoming 1 (never requested) and therefore
+                # requestable again. Seerr runs sonarr-scan, plex-full-scan and
+                # availability-sync daily on its own, so this self-heals even if
+                # nothing triggers a scan.
+                #
+                # COST, stated plainly: the media row's request history goes with
+                # it. For a title whose seasons are stuck that is the point.
+                stuck = _seerr_stuck_seasons(port, key, row)
+                if stuck:
+                    gone = True
+                    reason = "stuck-seasons=" + ",".join(str(n) for n in stuck[:8])
         if not gone:
             continue
         log("Seerr: media " + str(media_id) + " (" + str(media_type) +
-            ") backing arr item gone -> " + ("DELETE" if execute else "would delete"))
+            ", " + reason + ") -> " + ("DELETE" if execute else "would delete"))
         if not execute:
+            # `deleted` keeps its literal meaning — rows actually DELETEd — so
+            # the execute-path summary stays honest. The dry-run blast radius is
+            # reported separately below instead of being folded into it.
+            would += 1
             continue
         st, _ = _seerr_req("DELETE", port, key, "/api/v1/media/" + str(media_id))
         if 200 <= st < 300:
@@ -1101,6 +1261,16 @@ def reconcile_seerr(execute: bool):
         else:
             failed += 1
             warn("Seerr delete media " + str(media_id) + " failed: HTTP " + str(st))
+    if in_flight:
+        log("Seerr: skipped " + str(in_flight) +
+            " in-flight row(s) (pending/processing — a member is waiting on them)")
+    if blocklisted:
+        log("Seerr: skipped " + str(blocklisted) +
+            " blocklisted row(s) (an admin blocked these on purpose)")
+    if would:
+        # A dry run that logs 42 "would delete" lines and then reports nothing
+        # tells the operator the change is a no-op. Say the number out loud.
+        log("Seerr: DRY RUN — " + str(would) + " stale row(s) would be cleared")
     return deleted, failed
 
 
