@@ -1354,3 +1354,42 @@ def test_seerr_reconcile_dry_run_reports_its_blast_radius(reaper, monkeypatch):
     # ...but the blast radius must be stated out loud, or the operator reads the
     # run as a no-op. Measured live 2026-09-12: 42 stale rows, reported as 0.
     assert "DRY RUN" in out and "3 stale row(s) would be cleared" in out, out
+
+
+def test_seerr_reconcile_never_unblocks_a_blocklisted_title(reaper, monkeypatch):
+    """Status 6 (BLOCKLISTED) must be skipped, not swept.
+
+    An admin explicitly forbade the title, and a blocklisted title has NO
+    backing *arr record BY DESIGN — which is precisely the shape the `gone`
+    check fires on. Deleting the media row cascades the blocklist row away
+    (blocklist.mediaId is a CASCADE foreign key), silently un-blocking
+    something a human deliberately blocked. Zero live rows carry status 6
+    today, so this is latent rather than active — which is exactly when it is
+    cheapest to close."""
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    rows = {"results": [
+        {"id": 60, "mediaType": "tv", "tvdbId": 606060, "status": 6},   # blocked
+        {"id": 70, "mediaType": "tv", "tvdbId": 707070, "status": 7},   # settled
+    ]}
+    deletes = []
+
+    def fake_req(method, port, key, path, query="", timeout=30):
+        if method == "GET" and path == "/api/v1/media":
+            return 200, rows
+        if method == "DELETE":
+            deletes.append(path)
+            return 200, ""
+        return 404, None
+
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: FakeArr(slug))
+    import io as _io, contextlib as _ctx
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        deleted, failed = reaper.reconcile_seerr(execute=True)
+    out = buf.getvalue()
+    # Neither has an arr record. Only the settled one may go.
+    assert deletes == ["/api/v1/media/70"], deletes
+    assert deleted == 1 and failed == 0
+    # Counted and named, like every other deliberate exclusion.
+    assert "skipped 1 blocklisted row(s)" in out, out
