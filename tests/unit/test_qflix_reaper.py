@@ -1239,8 +1239,13 @@ def test_seerr_reconcile_is_not_scoped_to_available(reaper, monkeypatch):
 def test_seerr_reconcile_clears_a_deleted_status_row(reaper, monkeypatch):
     """A status-7 (DELETED) row whose arr record is gone must be reconciled.
 
-    This is the Law & Order shape. Under filter=available it was never fetched,
-    so it was never deleted, so the member could never re-request it."""
+    This is the Law & Order shape: settled, orphaned, and therefore clearable.
+
+    SCOPE NOTE — this test does NOT prove the query-scoping fix. Its fake
+    ignores the query string, so it passes with or without `filter=available`
+    (verified by mutation). The widening itself is pinned solely by
+    test_seerr_reconcile_is_not_scoped_to_available; what THIS test guards is
+    the status-7 + arr-index `gone` logic once the row has been fetched."""
     monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
     rows = {
         "results": [
@@ -1297,10 +1302,20 @@ def test_seerr_reconcile_never_discards_an_in_flight_request(reaper, monkeypatch
 
     monkeypatch.setattr(reaper, "_seerr_req", fake_req)
     monkeypatch.setattr(reaper, "_arr_client", lambda slug: FakeArr(slug))
-    deleted, failed = reaper.reconcile_seerr(execute=True)
+    import io as _io, contextlib as _ctx
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        deleted, failed = reaper.reconcile_seerr(execute=True)
+    out = buf.getvalue()
     # None of the three has an arr record, but only the settled one may go.
     assert deletes == ["/api/v1/media/12"], deletes
     assert deleted == 1 and failed == 0
+    # ...and the skip must be COUNTED AND NAMED, not silent. Without this the
+    # log block is decorative: a reviewer deleted it outright and all 66 tests
+    # stayed green. "Every deliberate exclusion is counted and named" is the
+    # house rule precisely so a regression shows as a number MOVING between
+    # buckets rather than as an absence.
+    assert "skipped 2 in-flight row(s)" in out, out
 
 
 def test_seerr_reconcile_dry_run_reports_its_blast_radius(reaper, monkeypatch):
