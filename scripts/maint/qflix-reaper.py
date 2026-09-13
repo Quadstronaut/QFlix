@@ -167,6 +167,17 @@ DAY_SECONDS = 86400
 # "Available" (not re-requestable). reconcile_seerr() loops until exhausted.
 _SEERR_MEDIA_PAGE = 100
 
+# Seerr MediaStatus values this module reasons about. PENDING/PROCESSING are
+# in-flight requests a member is waiting on and are never reconciled away.
+_SEERR_STATUS_PENDING = 2
+_SEERR_STATUS_PROCESSING = 3
+# BLOCKLISTED. An admin explicitly forbade this title, and a blocklisted title
+# has NO backing *arr record BY DESIGN -- which is exactly the shape the "gone"
+# check fires on. Deleting the media row cascades the blocklist row away
+# (blocklist.mediaId is a CASCADE FK), silently un-blocking something a human
+# deliberately blocked. Zero live rows today; latent, not theoretical.
+_SEERR_STATUS_BLOCKLISTED = 6
+
 # Kuma push (bazarr2-sync model, reused verbatim in shape).
 KUMA_BASE = os.environ.get("KUMA_BASE", "http://127.0.0.1:42005")
 KUMA_PUSH_KEY = "qflix-reaper"           # key under ~/secrets/kuma-push-tokens.json
@@ -1005,6 +1016,9 @@ def reconcile_seerr(execute: bool):
     Tolerates an empty / unreachable Seerr without aborting."""
     deleted = 0
     failed = 0
+    in_flight = 0
+    blocklisted = 0
+    would = 0
     try:
         port, key = _seerr_creds()
     except FileNotFoundError:
@@ -1014,17 +1028,27 @@ def reconcile_seerr(execute: bool):
         warn("seerr creds empty — skipping Seerr reconciliation")
         return deleted, failed
 
-    # Page through ALL available media. A single take=N would silently skip
-    # rows past the cap, leaving deleted titles stuck "Available" (members
-    # couldn't re-request them). Loop skip+=PAGE until a short page arrives or
-    # pageInfo.results is exhausted; a hard ceiling guards a misbehaving API.
+    # Page through EVERY media row, not just the available ones. A single take=N
+    # would silently skip rows past the cap, leaving deleted titles stuck and
+    # members unable to re-request them. Loop skip+=PAGE until a short page
+    # arrives or pageInfo.results is exhausted; a hard ceiling guards a
+    # misbehaving API.
+    #
+    # `filter=available` WAS the query here, and it was the bug. A reaped title
+    # does not stay "available" — Seerr moves it to status 7 (DELETED), which
+    # that filter cannot see, so those rows were never reconciled and the title
+    # stayed un-re-requestable forever. Measured 2026-09-12 in Seerr's own DB:
+    # 66 seasons across 28 DISTINCT shows sat at status 7, Law & Order alone
+    # holding 23, with 763 season_request rows still pointing at them. The
+    # operator's father could not request Law & Order seasons 3 and 4; an admin
+    # had to push them through by hand. The function's own docstring promised
+    # exactly the outcome the filter prevented.
     results = []
     skip = 0
     while True:
         status, body = _seerr_req(
             "GET", port, key, "/api/v1/media",
-            query="take=" + str(_SEERR_MEDIA_PAGE) + "&skip=" + str(skip) +
-            "&filter=available",
+            query="take=" + str(_SEERR_MEDIA_PAGE) + "&skip=" + str(skip),
         )
         if status != 200 or not isinstance(body, dict):
             if skip == 0:
@@ -1049,9 +1073,9 @@ def reconcile_seerr(execute: bool):
             warn("Seerr pagination exceeded 100000 rows — stopping")
             break
     if not results:
-        log("Seerr: no available media rows to reconcile")
+        log("Seerr: no media rows to reconcile")
         return deleted, failed
-    log("Seerr: reconciling " + str(len(results)) + " available media row(s)")
+    log("Seerr: reconciling " + str(len(results)) + " media row(s) (all statuses)")
 
     # Build the live arr index once: movie tmdbIds with files, and series tvdbIds.
     radarr_with_file = set()
@@ -1082,6 +1106,24 @@ def reconcile_seerr(execute: bool):
         except (TypeError, ValueError):
             continue
         media_type = row.get("mediaType")
+
+        # NEVER touch an in-flight request. Widening off `filter=available`
+        # brought PENDING(2) and PROCESSING(3) rows into scope for the first
+        # time, and those are requests a member is currently waiting on — a row
+        # can legitimately sit in PROCESSING with no *arr record yet while the
+        # push is still in progress or has just failed. Deleting it would throw
+        # the request away silently. Only settled rows are reconciled.
+        try:
+            row_status = int(row.get("status"))
+        except (TypeError, ValueError):
+            row_status = None
+        if row_status in (_SEERR_STATUS_PENDING, _SEERR_STATUS_PROCESSING):
+            in_flight += 1
+            continue
+        if row_status == _SEERR_STATUS_BLOCKLISTED:
+            blocklisted += 1
+            continue
+
         gone = False
         if media_type == "movie":
             tmdb = row.get("tmdbId")
@@ -1094,6 +1136,10 @@ def reconcile_seerr(execute: bool):
         log("Seerr: media " + str(media_id) + " (" + str(media_type) +
             ") backing arr item gone -> " + ("DELETE" if execute else "would delete"))
         if not execute:
+            # `deleted` keeps its literal meaning — rows actually DELETEd — so
+            # the execute-path summary stays honest. The dry-run blast radius is
+            # reported separately below instead of being folded into it.
+            would += 1
             continue
         st, _ = _seerr_req("DELETE", port, key, "/api/v1/media/" + str(media_id))
         if 200 <= st < 300:
@@ -1101,6 +1147,16 @@ def reconcile_seerr(execute: bool):
         else:
             failed += 1
             warn("Seerr delete media " + str(media_id) + " failed: HTTP " + str(st))
+    if in_flight:
+        log("Seerr: skipped " + str(in_flight) +
+            " in-flight row(s) (pending/processing — a member is waiting on them)")
+    if blocklisted:
+        log("Seerr: skipped " + str(blocklisted) +
+            " blocklisted row(s) (an admin blocked these on purpose)")
+    if would:
+        # A dry run that logs 42 "would delete" lines and then reports nothing
+        # tells the operator the change is a no-op. Say the number out loud.
+        log("Seerr: DRY RUN — " + str(would) + " stale row(s) would be cleared")
     return deleted, failed
 
 

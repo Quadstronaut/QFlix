@@ -1202,3 +1202,194 @@ def test_prune_is_non_fatal_when_the_listing_fails(reaper, monkeypatch):
 def test_prune_tolerates_unparseable_json(reaper, monkeypatch):
     monkeypatch.setattr(reaper, "_plex_get", lambda *a, **k: (200, "not json"))
     assert reaper.prune_empty_collections("1", "t", "4") == 0
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-12: the reconciliation sweep must not be scoped to `available`.
+#
+# reconcile_seerr() promised in its own docstring that a reaped title becomes
+# re-requestable, then queried `filter=available` — which a reaped title is no
+# longer. Seerr moves it to status 7 (DELETED), invisible to that filter, so the
+# row was never reconciled and members could not re-request it. Measured in
+# Seerr's own DB on the box: 66 seasons across 28 DISTINCT shows sat at status
+# 7, Law & Order alone holding 23, with 763 season_request rows still pointing
+# at them. The operator's father hit it on Law & Order seasons 3 and 4.
+# ---------------------------------------------------------------------------
+def test_seerr_reconcile_is_not_scoped_to_available(reaper, monkeypatch):
+    """The query must NOT carry filter=available, or reaped rows are invisible."""
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    queries = []
+
+    def fake_req(method, port, key, path, query="", timeout=30):
+        if method == "GET" and path == "/api/v1/media":
+            queries.append(query)
+            return 200, {"results": [], "pageInfo": {"results": 0}}
+        return 404, None
+
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: FakeArr(slug))
+    reaper.reconcile_seerr(execute=False)
+    assert queries, "no media page was fetched"
+    for q in queries:
+        assert "filter=available" not in q, (
+            "reconciliation is scoped to available again — a reaped row sits at "
+            "status 7 (DELETED) and this filter cannot see it: " + q)
+
+
+def test_seerr_reconcile_clears_a_deleted_status_row(reaper, monkeypatch):
+    """A status-7 (DELETED) row whose arr record is gone must be reconciled.
+
+    This is the Law & Order shape: settled, orphaned, and therefore clearable.
+
+    SCOPE NOTE — this test does NOT prove the query-scoping fix. Its fake
+    ignores the query string, so it passes with or without `filter=available`
+    (verified by mutation). The widening itself is pinned solely by
+    test_seerr_reconcile_is_not_scoped_to_available; what THIS test guards is
+    the status-7 + arr-index `gone` logic once the row has been fetched."""
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    rows = {
+        "results": [
+            # the reaped title: status 7, no sonarr record -> must be cleared
+            {"id": 77, "mediaType": "tv", "tvdbId": 72368, "status": 7},
+            # still backed by sonarr -> keep, whatever its status says
+            {"id": 78, "mediaType": "tv", "tvdbId": 81189, "status": 7},
+        ]
+    }
+    deletes = []
+
+    def fake_req(method, port, key, path, query="", timeout=30):
+        if method == "GET" and path == "/api/v1/media":
+            return 200, rows
+        if method == "DELETE":
+            deletes.append(path)
+            return 200, ""
+        return 404, None
+
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    monkeypatch.setattr(
+        reaper, "_arr_client",
+        lambda slug: FakeArr(slug, series=[{"id": 1, "tvdbId": 81189}]))
+    deleted, failed = reaper.reconcile_seerr(execute=True)
+    assert deleted == 1 and failed == 0
+    assert deletes == ["/api/v1/media/77"]
+
+
+def test_seerr_reconcile_never_discards_an_in_flight_request(reaper, monkeypatch):
+    """PENDING(2)/PROCESSING(3) are requests a member is WAITING on.
+
+    Widening off filter=available brought them into scope for the first time. A
+    row can legitimately sit in PROCESSING with no *arr record yet — the push is
+    still running, or just failed and wants a retry. Deleting it would throw the
+    member's request away silently, which is a worse bug than the one being
+    fixed."""
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    rows = {
+        "results": [
+            {"id": 10, "mediaType": "tv", "tvdbId": 111111, "status": 2},   # pending
+            {"id": 11, "mediaType": "tv", "tvdbId": 222222, "status": 3},   # processing
+            {"id": 12, "mediaType": "tv", "tvdbId": 333333, "status": 7},   # settled
+        ]
+    }
+    deletes = []
+
+    def fake_req(method, port, key, path, query="", timeout=30):
+        if method == "GET" and path == "/api/v1/media":
+            return 200, rows
+        if method == "DELETE":
+            deletes.append(path)
+            return 200, ""
+        return 404, None
+
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: FakeArr(slug))
+    import io as _io, contextlib as _ctx
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        deleted, failed = reaper.reconcile_seerr(execute=True)
+    out = buf.getvalue()
+    # None of the three has an arr record, but only the settled one may go.
+    assert deletes == ["/api/v1/media/12"], deletes
+    assert deleted == 1 and failed == 0
+    # ...and the skip must be COUNTED AND NAMED, not silent. Without this the
+    # log block is decorative: a reviewer deleted it outright and all 66 tests
+    # stayed green. "Every deliberate exclusion is counted and named" is the
+    # house rule precisely so a regression shows as a number MOVING between
+    # buckets rather than as an absence.
+    assert "skipped 2 in-flight row(s)" in out, out
+
+
+def test_seerr_reconcile_dry_run_reports_its_blast_radius(reaper, monkeypatch):
+    """A dry-run must return the count it WOULD delete, not 0.
+
+    Measured live 2026-09-12: the dry run logged 42 "would delete" lines and
+    returned 0, because the counter only advanced on the execute path. The
+    caller prints the RETURNED number, so an operator sizing the change reads
+    zero and believes it is a no-op."""
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    rows = {"results": [
+        {"id": 1, "mediaType": "tv", "tvdbId": 111, "status": 7},
+        {"id": 2, "mediaType": "tv", "tvdbId": 222, "status": 7},
+        {"id": 3, "mediaType": "movie", "tmdbId": 333, "status": 5},
+    ]}
+    deletes = []
+
+    def fake_req(method, port, key, path, query="", timeout=30):
+        if method == "GET" and path == "/api/v1/media":
+            return 200, rows
+        if method == "DELETE":
+            deletes.append(path)
+            return 200, ""
+        return 404, None
+
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: FakeArr(slug))
+    import io as _io, contextlib as _ctx
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        deleted, failed = reaper.reconcile_seerr(execute=False)
+    out = buf.getvalue()
+    # The RETURN value keeps its literal meaning: nothing was deleted.
+    assert deleted == 0 and failed == 0
+    assert deletes == [], "dry-run must not issue a single DELETE"
+    # ...but the blast radius must be stated out loud, or the operator reads the
+    # run as a no-op. Measured live 2026-09-12: 42 stale rows, reported as 0.
+    assert "DRY RUN" in out and "3 stale row(s) would be cleared" in out, out
+
+
+def test_seerr_reconcile_never_unblocks_a_blocklisted_title(reaper, monkeypatch):
+    """Status 6 (BLOCKLISTED) must be skipped, not swept.
+
+    An admin explicitly forbade the title, and a blocklisted title has NO
+    backing *arr record BY DESIGN — which is precisely the shape the `gone`
+    check fires on. Deleting the media row cascades the blocklist row away
+    (blocklist.mediaId is a CASCADE foreign key), silently un-blocking
+    something a human deliberately blocked. Zero live rows carry status 6
+    today, so this is latent rather than active — which is exactly when it is
+    cheapest to close."""
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    rows = {"results": [
+        {"id": 60, "mediaType": "tv", "tvdbId": 606060, "status": 6},   # blocked
+        {"id": 70, "mediaType": "tv", "tvdbId": 707070, "status": 7},   # settled
+    ]}
+    deletes = []
+
+    def fake_req(method, port, key, path, query="", timeout=30):
+        if method == "GET" and path == "/api/v1/media":
+            return 200, rows
+        if method == "DELETE":
+            deletes.append(path)
+            return 200, ""
+        return 404, None
+
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: FakeArr(slug))
+    import io as _io, contextlib as _ctx
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        deleted, failed = reaper.reconcile_seerr(execute=True)
+    out = buf.getvalue()
+    # Neither has an arr record. Only the settled one may go.
+    assert deletes == ["/api/v1/media/70"], deletes
+    assert deleted == 1 and failed == 0
+    # Counted and named, like every other deliberate exclusion.
+    assert "skipped 1 blocklisted row(s)" in out, out
