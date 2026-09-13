@@ -171,6 +171,12 @@ _SEERR_MEDIA_PAGE = 100
 # in-flight requests a member is waiting on and are never reconciled away.
 _SEERR_STATUS_PENDING = 2
 _SEERR_STATUS_PROCESSING = 3
+# BLOCKLISTED. An admin explicitly forbade this title, and a blocklisted title
+# has NO backing *arr record BY DESIGN -- which is exactly the shape the "gone"
+# check fires on. Deleting the media row cascades the blocklist row away
+# (blocklist.mediaId is a CASCADE FK), silently un-blocking something a human
+# deliberately blocked. Zero live rows today; latent, not theoretical.
+_SEERR_STATUS_BLOCKLISTED = 6
 
 # Kuma push (bazarr2-sync model, reused verbatim in shape).
 KUMA_BASE = os.environ.get("KUMA_BASE", "http://127.0.0.1:42005")
@@ -1011,6 +1017,7 @@ def reconcile_seerr(execute: bool):
     deleted = 0
     failed = 0
     in_flight = 0
+    blocklisted = 0
     would = 0
     try:
         port, key = _seerr_creds()
@@ -1113,6 +1120,9 @@ def reconcile_seerr(execute: bool):
         if row_status in (_SEERR_STATUS_PENDING, _SEERR_STATUS_PROCESSING):
             in_flight += 1
             continue
+        if row_status == _SEERR_STATUS_BLOCKLISTED:
+            blocklisted += 1
+            continue
 
         gone = False
         if media_type == "movie":
@@ -1140,6 +1150,9 @@ def reconcile_seerr(execute: bool):
     if in_flight:
         log("Seerr: skipped " + str(in_flight) +
             " in-flight row(s) (pending/processing — a member is waiting on them)")
+    if blocklisted:
+        log("Seerr: skipped " + str(blocklisted) +
+            " blocklisted row(s) (an admin blocked these on purpose)")
     if would:
         # A dry run that logs 42 "would delete" lines and then reports nothing
         # tells the operator the change is a no-op. Say the number out loud.
