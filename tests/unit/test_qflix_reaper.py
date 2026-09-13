@@ -1301,3 +1301,41 @@ def test_seerr_reconcile_never_discards_an_in_flight_request(reaper, monkeypatch
     # None of the three has an arr record, but only the settled one may go.
     assert deletes == ["/api/v1/media/12"], deletes
     assert deleted == 1 and failed == 0
+
+
+def test_seerr_reconcile_dry_run_reports_its_blast_radius(reaper, monkeypatch):
+    """A dry-run must return the count it WOULD delete, not 0.
+
+    Measured live 2026-09-12: the dry run logged 42 "would delete" lines and
+    returned 0, because the counter only advanced on the execute path. The
+    caller prints the RETURNED number, so an operator sizing the change reads
+    zero and believes it is a no-op."""
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    rows = {"results": [
+        {"id": 1, "mediaType": "tv", "tvdbId": 111, "status": 7},
+        {"id": 2, "mediaType": "tv", "tvdbId": 222, "status": 7},
+        {"id": 3, "mediaType": "movie", "tmdbId": 333, "status": 5},
+    ]}
+    deletes = []
+
+    def fake_req(method, port, key, path, query="", timeout=30):
+        if method == "GET" and path == "/api/v1/media":
+            return 200, rows
+        if method == "DELETE":
+            deletes.append(path)
+            return 200, ""
+        return 404, None
+
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: FakeArr(slug))
+    import io as _io, contextlib as _ctx
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        deleted, failed = reaper.reconcile_seerr(execute=False)
+    out = buf.getvalue()
+    # The RETURN value keeps its literal meaning: nothing was deleted.
+    assert deleted == 0 and failed == 0
+    assert deletes == [], "dry-run must not issue a single DELETE"
+    # ...but the blast radius must be stated out loud, or the operator reads the
+    # run as a no-op. Measured live 2026-09-12: 42 stale rows, reported as 0.
+    assert "DRY RUN" in out and "3 stale row(s) would be cleared" in out, out
