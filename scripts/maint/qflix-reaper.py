@@ -1011,6 +1011,7 @@ def reconcile_seerr(execute: bool):
     deleted = 0
     failed = 0
     in_flight = 0
+    would = 0
     try:
         port, key = _seerr_creds()
     except FileNotFoundError:
@@ -1125,6 +1126,10 @@ def reconcile_seerr(execute: bool):
         log("Seerr: media " + str(media_id) + " (" + str(media_type) +
             ") backing arr item gone -> " + ("DELETE" if execute else "would delete"))
         if not execute:
+            # `deleted` keeps its literal meaning — rows actually DELETEd — so
+            # the execute-path summary stays honest. The dry-run blast radius is
+            # reported separately below instead of being folded into it.
+            would += 1
             continue
         st, _ = _seerr_req("DELETE", port, key, "/api/v1/media/" + str(media_id))
         if 200 <= st < 300:
@@ -1135,6 +1140,10 @@ def reconcile_seerr(execute: bool):
     if in_flight:
         log("Seerr: skipped " + str(in_flight) +
             " in-flight row(s) (pending/processing — a member is waiting on them)")
+    if would:
+        # A dry run that logs 42 "would delete" lines and then reports nothing
+        # tells the operator the change is a no-op. Say the number out loud.
+        log("Seerr: DRY RUN — " + str(would) + " stale row(s) would be cleared")
     return deleted, failed
 
 
