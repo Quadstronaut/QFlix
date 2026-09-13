@@ -124,7 +124,10 @@ def main() -> int:
             rc = max(rc, 2)
             continue
         try:
-            tag_id = ensure_tag(base, key, args.execute)
+            # Only create the tag where it can be used. ensure_tag ran
+            # unconditionally across all four instances and left dead
+            # `permanent` tags behind in radarr/radarr2.
+            tag_id = ensure_tag(base, key, args.execute and inst in TV)
             rows = _req("%s/%s" % (base, collection(inst)), key) or []
         except (urllib.error.URLError, OSError, ValueError) as exc:
             report["instances"][inst] = {"error": "unreachable: %s" % exc}
@@ -132,7 +135,8 @@ def main() -> int:
             continue
 
         info = {"total": len(rows), "tag_id": tag_id,
-                "tagged": [], "would_tag": [], "untagged": [], "skipped_ended": 0}
+                "tagged": [], "would_tag": [], "untagged": [], "would_untag": [],
+                "skipped_ended": 0}
 
         for s in rows:
             title = s.get("title", "")
@@ -151,10 +155,19 @@ def main() -> int:
                 drop = True
 
             if drop and has:
+                # The removal branch MUST be gated on --execute exactly like the
+                # add branch below it. It was not: `untagged` was appended
+                # unconditionally, so a dry run reported a protection as REMOVED
+                # while writing nothing. An operator following the dry-run-first
+                # discipline would be told a de-protection succeeded when the
+                # series was still tagged. Asymmetry between the two branches of
+                # one tool is exactly how that slips through review.
                 if args.execute and tag_id is not None:
                     _req("%s/%s/%s" % (base, collection(inst), s["id"]), key, "PUT",
                          dict(s, tags=[t for t in tags if t != tag_id]))
-                info["untagged"].append(title)
+                    info["untagged"].append(title)
+                else:
+                    info["would_untag"].append(title)
             elif want and not has:
                 if args.execute and tag_id is not None:
                     _req("%s/%s/%s" % (base, collection(inst), s["id"]), key, "PUT",
@@ -177,16 +190,18 @@ def main() -> int:
                 print("  %-9s ERROR %s" % (inst, info["error"]))
                 continue
             print("  %-9s total=%-4s tag_id=%-5s tagged=%-3d would_tag=%-3d "
-                  "untagged=%-3d ended_skipped=%d"
+                  "untagged=%-3d would_untag=%-3d ended_skipped=%d"
                   % (inst, info["total"], info["tag_id"], len(info["tagged"]),
                      len(info["would_tag"]), len(info["untagged"]),
-                     info["skipped_ended"]))
+                     len(info["would_untag"]), info["skipped_ended"]))
             for t in info["tagged"]:
                 print("      + %s" % t)
             for t in info["would_tag"]:
                 print("      ~ would tag: %s" % t)
             for t in info["untagged"]:
                 print("      - %s" % t)
+            for t in info["would_untag"]:
+                print("      ~ would untag: %s" % t)
     return rc
 
 
