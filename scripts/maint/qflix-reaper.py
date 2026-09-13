@@ -177,6 +177,9 @@ _SEERR_STATUS_PROCESSING = 3
 # (blocklist.mediaId is a CASCADE FK), silently un-blocking something a human
 # deliberately blocked. Zero live rows today; latent, not theoretical.
 _SEERR_STATUS_BLOCKLISTED = 6
+# DELETED. What a reaped season lands on, and what strands it: Seerr shows the
+# season as gone but offers no way to request it again.
+_SEERR_STATUS_DELETED = 7
 
 # Kuma push (bazarr2-sync model, reused verbatim in shape).
 KUMA_BASE = os.environ.get("KUMA_BASE", "http://127.0.0.1:42005")
@@ -1006,6 +1009,42 @@ def _seerr_req(method: str, port: str, key: str, path: str, query: str = "", tim
         return code, raw
 
 
+def _seerr_stuck_seasons(port, key, row):
+    """Season numbers this Seerr row reports as DELETED(7) or BLOCKLISTED-free
+    stale, for a series that IS still present in its *arr.
+
+    Returns [] on ANY doubt — an unreachable detail endpoint, an unparseable
+    body, or no season data at all. Fail closed: a row we could not inspect is
+    left alone rather than deleted, because the deletion cascades every season
+    row with it. "I could not look" must never render as "it is stale".
+
+    Only status 7 counts as stuck. A season at 1 was never requested, 4/5 are
+    real availability, and 2/3 are in-flight and already excluded upstream.
+    """
+    tmdb = row.get("tmdbId")
+    if tmdb is None:
+        return []
+    status, body = _seerr_req("GET", port, key, "/api/v1/tv/" + str(int(tmdb)))
+    if status != 200 or not isinstance(body, dict):
+        return []
+    info = body.get("mediaInfo")
+    if not isinstance(info, dict):
+        return []
+    seasons = info.get("seasons")
+    if not isinstance(seasons, list) or not seasons:
+        return []
+    stuck = []
+    for se in seasons:
+        if not isinstance(se, dict):
+            continue
+        try:
+            if int(se.get("status")) == _SEERR_STATUS_DELETED:
+                stuck.append(int(se.get("seasonNumber")))
+        except (TypeError, ValueError):
+            continue
+    return sorted(stuck)
+
+
 def reconcile_seerr(execute: bool):
     """After all libraries are reaped, delete Seerr media rows whose backing arr
     item is gone, so the title becomes re-requestable. Returns (deleted, failed).
@@ -1052,9 +1091,18 @@ def reconcile_seerr(execute: bool):
         )
         if status != 200 or not isinstance(body, dict):
             if skip == 0:
-                warn("Seerr media list unreachable/empty (HTTP " + str(status) +
-                     ") — skipping")
-                return deleted, failed
+                # OPERATOR RULING 2026-09-13: no tolerance — page.
+                # This used to return (0, 0), which the caller cannot tell apart
+                # from "nothing needed reconciling", so a Seerr outage during the
+                # nightly run reported GREEN while zero titles were reconciled.
+                # The repo's own test enshrined that as intended behaviour. It
+                # was wrong: silence about work that did not happen is the same
+                # class of defect as a canary that reads clean when it could not
+                # look. failed=1 makes main() mark the run partial, which reds
+                # Kuma and pages Discord.
+                warn("Seerr media list unreachable (HTTP " + str(status) +
+                     ") — reconciliation did NOT run; marking the run partial")
+                return deleted, failed + 1
             # Mid-pagination failure: reconcile what we already fetched rather
             # than abort — a partial pass beats none, and it's logged.
             warn("Seerr media page at skip=" + str(skip) + " failed (HTTP " +
@@ -1078,25 +1126,55 @@ def reconcile_seerr(execute: bool):
     log("Seerr: reconciling " + str(len(results)) + " media row(s) (all statuses)")
 
     # Build the live arr index once: movie tmdbIds with files, and series tvdbIds.
+    #
+    # THIS INDEX IS THE ONLY THING STANDING BETWEEN A SWEEP AND THE WHOLE TABLE.
+    # `gone` is "absent from the index", so an EMPTY index means every settled
+    # row looks orphaned. The original code swallowed a client construction
+    # failure with `except Exception: continue` and carried on with whatever it
+    # had — so if the *arrs were unreachable it would delete every settled Seerr
+    # row in one pass.
+    #
+    # Not theoretical: observed 2026-09-13. A harness loaded this module from a
+    # path where `lib` was not importable, all four clients raised
+    # ModuleNotFoundError, the index came back empty, and the dry run went from
+    # 42 rows to 131 — every non-in-flight row in the table. The dry run is the
+    # only reason that was caught.
+    #
+    # Now: any instance that cannot be indexed makes the whole reconciliation
+    # refuse. Same rule as everywhere else here — "I could not look" must never
+    # render as "it is gone".
     radarr_with_file = set()
     sonarr_tvdbids = set()
+    index_failures = []
     for entry in LIBRARIES:
+        slug = entry["slug"]
         try:
-            client = _arr_client(entry["slug"])
-        except Exception:
-            continue
-        if entry["kind"] == "movie":
-            st, mv = client.get("/movie")
-            if st == 200 and isinstance(mv, list):
+            client = _arr_client(slug)
+            if entry["kind"] == "movie":
+                st, mv = client.get("/movie")
+                if st != 200 or not isinstance(mv, list):
+                    index_failures.append(slug + ":http" + str(st))
+                    continue
                 for m in mv:
                     if m.get("hasFile") and m.get("tmdbId") is not None:
                         radarr_with_file.add(m.get("tmdbId"))
-        else:
-            st, sr = client.get("/series")
-            if st == 200 and isinstance(sr, list):
+            else:
+                st, sr = client.get("/series")
+                if st != 200 or not isinstance(sr, list):
+                    index_failures.append(slug + ":http" + str(st))
+                    continue
                 for s in sr:
                     if s.get("tvdbId") is not None:
                         sonarr_tvdbids.add(s.get("tvdbId"))
+        except Exception as exc:
+            index_failures.append(slug + ":" + type(exc).__name__)
+
+    if index_failures:
+        warn("Seerr reconciliation REFUSED — could not index " +
+             str(len(index_failures)) + " *arr instance(s): " +
+             ", ".join(index_failures) +
+             ". An incomplete index would make every settled row look orphaned.")
+        return deleted, failed + 1
 
     for row in results:
         # Coerce the Seerr id to int before it can reach a URL path — a non-integer
@@ -1125,16 +1203,52 @@ def reconcile_seerr(execute: bool):
             continue
 
         gone = False
+        reason = "orphan"
         if media_type == "movie":
             tmdb = row.get("tmdbId")
             gone = tmdb is not None and tmdb not in radarr_with_file
         elif media_type == "tv":
             tvdb = row.get("tvdbId")
             gone = tvdb is not None and tvdb not in sonarr_tvdbids
+            if not gone and tvdb is not None:
+                # SEASON GRANULARITY — the actual reported bug.
+                #
+                # The reaper normally reaps PER SEASON, so the series stays in
+                # Sonarr with some seasons full and some empty. The whole-series
+                # check above then answers "present", the row is skipped, and any
+                # season Seerr left at DELETED stays that way forever. Measured
+                # 2026-09-12: Law & Order (tmdb 549) held TWENTY-THREE season
+                # rows at status 7 while its media row sat at 4 and its tvdb was
+                # very much still in Sonarr. The operator's father could not
+                # request seasons 3 and 4; an admin pushed them through by hand.
+                #
+                # Seerr 3.4.1 exposes NO per-season lever — DELETE
+                # /media/<id>/season/<n> is a 404, and GET /media/<id> is not
+                # even allowed. The only lever is the media row, and deleting it
+                # CASCADES every season row with it.
+                #
+                # That is safe because Seerr rebuilds the truth itself. PROVEN
+                # live on Futurama 2026-09-13, not assumed:
+                #   before  media 107  seasons 0:1 1:5 ... 10:1 11:7
+                #   DELETE  -> 0 media rows, 0 season rows (cascade confirmed)
+                #   sonarr-scan
+                #   after   media 331  seasons 0:1 1:5 ... 10:1 11:1
+                # The genuine "available" season came BACK from Sonarr; only the
+                # stuck 7 was cleared, becoming 1 (never requested) and therefore
+                # requestable again. Seerr runs sonarr-scan, plex-full-scan and
+                # availability-sync daily on its own, so this self-heals even if
+                # nothing triggers a scan.
+                #
+                # COST, stated plainly: the media row's request history goes with
+                # it. For a title whose seasons are stuck that is the point.
+                stuck = _seerr_stuck_seasons(port, key, row)
+                if stuck:
+                    gone = True
+                    reason = "stuck-seasons=" + ",".join(str(n) for n in stuck[:8])
         if not gone:
             continue
         log("Seerr: media " + str(media_id) + " (" + str(media_type) +
-            ") backing arr item gone -> " + ("DELETE" if execute else "would delete"))
+            ", " + reason + ") -> " + ("DELETE" if execute else "would delete"))
         if not execute:
             # `deleted` keeps its literal meaning — rows actually DELETEd — so
             # the execute-path summary stays honest. The dry-run blast radius is
