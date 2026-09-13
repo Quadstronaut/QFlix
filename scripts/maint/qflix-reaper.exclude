@@ -30,3 +30,20 @@
 # video somehow acquiring an *arr id -- the instruction video still cannot age
 # out. It is the front door of the membership funnel, not media.
 Welcome to QFlix
+
+# INTERIM PIN, operator-approved 2026-09-12. Futurama has now been reaped TWICE
+# within hours of being requested: arrId=169 on 09-05 and arrId=271 on 09-12 at
+# 05:17:57Z, seventy minutes after the request landed and sixty-seven minutes
+# after the files imported. 7.16 GB and seven episodes on the second pass.
+#
+# The reaper graded it on the PLEX SERIES addedAt, which was 1739683831 =
+# 2025-02-16, i.e. 572 days against a 45-day threshold -- because Plex's
+# addedAt on a show is when the SHOW first entered the library, not when its
+# current files arrived. A show shell that survives a reap therefore makes
+# every future re-acquisition instantly eligible, so a re-request dies on the
+# next daily run and burns a fresh set of Usenet grabs each cycle.
+#
+# THIS PIN IS A TOURNIQUET, NOT THE FIX. It protects one title; the defect is
+# the grading input and is being adjudicated separately. Remove this line once
+# retention grades on the newest FILE date rather than the series addedAt.
+tvdb:73871
