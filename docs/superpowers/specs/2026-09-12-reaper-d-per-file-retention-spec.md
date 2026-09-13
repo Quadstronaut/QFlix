@@ -44,6 +44,22 @@ A monitored episode with no file is re-grabbed immediately — an infinite
 download loop on content we just expired. **This is a hard requirement, not an
 optimisation.**
 
+**R-5 IS PROVEN LIVE, not assumed** (2026-09-12, non-destructively). Sonarr's
+own `/api/v3/wanted/missing` — the set it hunts on every RSS sync and search —
+returned exactly 3 records, **every one `monitored=True, hasFile=False`**. The
+10 reaped Futurama S11 episodes, all `monitored=False, hasFile=False`, appear
+nowhere in it and have not been re-grabbed since the 2026-09-12T05:17:57Z reap.
+
+| episode state | in `wanted/missing`? | outcome |
+|---|---|---|
+| `monitored=True`, no file | **yes** | Sonarr re-grabs |
+| `monitored=False`, no file | no | left alone |
+
+No file was deleted to establish this: the already-reaped S11 season supplied
+the negative control and `wanted/missing` the positive one. Delete-without-
+unmonitor would expire a file at 45 days and re-grab it within the hour,
+forever, against a paid Usenet block account.
+
 ---
 
 ## 3. The `permanent` flag
@@ -71,6 +87,23 @@ removes a record.
 
 **P-5.** Named permanents to be tagged this session: **South Park, Family Guy,
 American Dad** (plus Futurama, which qualifies automatically as `continuing`).
+
+**MEASURED 2026-09-12 — two of the three are already gone**, which corroborates
+the operator's account that parked cartoons were wiped:
+
+| show | state |
+|---|---|
+| South Park | in Sonarr, `continuing`, **0 files**, tag `[6]` |
+| Futurama | in Sonarr, `continuing`, 9 files (re-requested today) |
+| Family Guy | **absent from Sonarr — already reaped** |
+| American Dad | **absent from Sonarr — already reaped** |
+
+South Park is not reapable *today* only because with 0 files it has no Plex item
+at all, and the reaper enumerates Plex. It becomes eligible the moment one
+episode lands and inherits a container clock. **17 series are currently
+`continuing`** and would auto-qualify under P-3.
+
+Re-adding Family Guy and American Dad is part of this work, not a follow-up.
 
 ---
 
@@ -130,8 +163,9 @@ Series id 272, `ended=false`, `status=continuing`, S01 9/9 files (requested live
 
 1. Futurama acquires the `permanent` tag automatically (continuing).
 2. An S01 file past 45 days is deleted **and its episode unmonitored**; Sonarr
-   does **not** re-grab it. *(This is the one behaviour asserted from general
-   Sonarr knowledge rather than measured — it MUST be proven live before ship.)*
+   does **not** re-grab it. *(Mechanism proven live — see R-5. What remains to
+   verify is that OUR delete path sets `monitored=false` atomically with the
+   file removal.)*
 3. Futurama's series record survives at zero files.
 4. An **ended** series at zero files loses its record.
 5. A reaped season returns to a requestable status in Seerr.
