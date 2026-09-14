@@ -2201,6 +2201,66 @@ Test-Case 'the echo rule is excerpt-scoped: model prose cannot mute a real fault
     Assert-Equal $null (Test-IsNoiseFinding $f) 'signature/summary match cannot suppress an EDQUOT excerpt'
 }
 
+# --- Yield-to-operator gate (2026-09-13) ---
+# REA's model phase pins every core (llama-server runs AboveNormal) and 5-7 GB
+# of an 8 GB GPU for up to ~20 min an hour, which stuttered YouTube in Edge.
+# Scheduled runs now skip while the operator is at the keyboard or anything is
+# audibly playing. The verdict is a pure function so it is testable offline.
+Test-Case 'Get-BusyVerdict: idle keyboard + silence = not busy' {
+    Assert-Equal '' (Get-BusyVerdict -InputIdleMinutes 30 -AudibleApps @()) 'idle and silent yields empty verdict'
+}
+
+Test-Case 'Get-BusyVerdict: recent input = busy (reason=input)' {
+    $v = Get-BusyVerdict -InputIdleMinutes 2 -AudibleApps @()
+    Assert-True ($v -match 'reason=input') "verdict names input: $v"
+    Assert-True ($v -notmatch '\s') 'verdict is one space-free token (audit-log friendly)'
+}
+
+Test-Case 'Get-BusyVerdict: idle keyboard but media playing = busy (reason=audio)' {
+    # The YouTube case: a video plays for 20 min with no mouse input.
+    $v = Get-BusyVerdict -InputIdleMinutes 45 -AudibleApps @('msedge')
+    Assert-True ($v -match 'reason=audio') "verdict names audio: $v"
+    Assert-True ($v -match 'msedge') 'verdict names the audible app'
+}
+
+Test-Case 'Get-BusyVerdict: audio-plumbing processes never count as media' {
+    # Sonar renders its mix to the real device all the time; audiodg is the
+    # engine itself. Counting either would block REA forever.
+    $v = Get-BusyVerdict -InputIdleMinutes 45 -AudibleApps @('SteelSeriesSonar','audiodg','Idle')
+    Assert-Equal '' $v 'plumbing-only audio yields empty verdict'
+}
+
+Test-Case 'Get-UserBusyReason fails OPEN when a probe throws' {
+    # A broken probe must never be the reason REA goes dark (2026-07-29 class).
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        function Get-InputIdleMinutes { throw 'probe exploded' }
+        Assert-Equal '' (Get-UserBusyReason) 'probe failure reads as not busy'
+        $log = Get-Content -Raw (Join-Path (Get-StateDir) 'audit.log')
+        Assert-True ($log -match 'busy-probe FAILED') 'probe failure is logged, never silent'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'live probes run on this box without throwing' {
+    $idle = Get-InputIdleMinutes
+    Assert-True ($idle -ge 0) "input idle minutes is non-negative ($idle)"
+    $apps = @(Get-AudibleApps -Samples 3 -IntervalMs 50)
+    Assert-True ($apps -is [array]) "audible-app probe returns an array ($($apps -join ','))"
+}
+
+Test-Case 'Invoke-Model asks Ollama to unload the model when done (keep_alive=0)' {
+    # Each model is used once per run; leaving it resident for Ollama's default
+    # keep-alive holds 5-7 GB of VRAM after the run ends.
+    $Script:CapturedBody = $null
+    function Invoke-RestMethod { param($Uri,$Method,$Body,$ContentType,$TimeoutSec,$ErrorAction) $Script:CapturedBody = $Body; [pscustomobject]@{ response = '[]' } }
+    [void](Invoke-Model -Model 'm' -Prompt 'p' -SystemPrompt 's')
+    $b = $Script:CapturedBody | ConvertFrom-Json
+    Assert-True ($b.PSObject.Properties.Name -contains 'keep_alive') 'request carries keep_alive'
+    Assert-Equal 0 $b.keep_alive 'keep_alive is 0 (unload immediately)'
+}
+
 # Summary
 Write-Host "`n========================================" -F White
 Write-Host "  $Script:Pass passed, $Script:Fail failed" -F $(if($Script:Fail){'Red'}else{'Green'})
