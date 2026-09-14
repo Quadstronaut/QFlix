@@ -35,7 +35,7 @@ def test_tdarr_dual_default_pattern_matches():
     """The exact observed bug: EAC3 5.1 default + appended aac/2ch default."""
     streams = [_v(), _a("eac3", 6, 1), _a("aac", 2, 1)]
     plan = adj.classify_streams(streams)
-    assert plan == {"target": 1, "clear": [0], "audio_count": 2}
+    assert plan == {"target": 1, "clear": [0], "audio_count": 2, "kind": "dual_default"}
 
 
 def test_single_default_untouched():
@@ -60,7 +60,7 @@ def test_last_compat_track_wins():
     LAST keeps default, everything else clears."""
     streams = [_v(), _a("aac", 2, 1), _a("eac3", 6, 1), _a("aac", 2, 1)]
     plan = adj.classify_streams(streams)
-    assert plan == {"target": 2, "clear": [0, 1], "audio_count": 3}
+    assert plan == {"target": 2, "clear": [0, 1], "audio_count": 3, "kind": "dual_default"}
 
 
 def test_no_audio_streams():
@@ -360,3 +360,214 @@ def test_run_dry_run_mutates_nothing(tmp_path, monkeypatch):
     res = adj.run(roots=["/x"], execute=False, max_items=50)
     assert res["candidates"] == [str(f)]
     assert res["fixed"] == []
+
+
+# ---------------------------------------------------------------------------
+# CLASS 2 — "foreign_default" (2026-09-13, Futurama S1 incident). Operator
+# ruling: English is the default audio on all media, forever. This class
+# fires only when the current default is CONFIRMED non-English (every
+# default stream tagged, none of them eng) and an eng track exists to
+# promote instead. An untagged default is never touched.
+# ---------------------------------------------------------------------------
+
+def _al(codec: str, channels: int, default: int, lang) -> dict:
+    """Audio stream with a language tag. lang=None omits the tags dict
+    entirely (the "no tag at all" untagged case, distinct from but
+    equivalent to an explicit "und")."""
+    s = {"codec_type": "audio", "codec_name": codec, "channels": channels,
+         "disposition": {"default": default}}
+    if lang is not None:
+        s["tags"] = {"language": lang}
+    return s
+
+
+def test_foreign_default_futurama_exact_layout_matches():
+    """The exact observed Futurama S01E01 track layout (ffprobe'd live
+    2026-09-13): a:0 ger default=1, a:1 eng default=0, then 8 more
+    languages (spa spa fre hun ita pol por tur), all default=0."""
+    streams = [_v(),
+               _al("aac", 2, 1, "ger"),
+               _al("aac", 2, 0, "eng"),
+               _al("aac", 2, 0, "spa"),
+               _al("aac", 2, 0, "spa"),
+               _al("aac", 2, 0, "fre"),
+               _al("aac", 2, 0, "hun"),
+               _al("aac", 2, 0, "ita"),
+               _al("aac", 2, 0, "pol"),
+               _al("eac3", 6, 0, "tur")]
+    plan = adj.classify_streams(streams)
+    assert plan == {"target": 1, "clear": [0], "audio_count": 9,
+                     "kind": "foreign_default"}
+
+
+def test_foreign_default_prefers_compat_eng_track_over_earlier_noncompat_eng():
+    """Two eng tracks: an early 5.1 one and a later aac/2ch one. Target must
+    be the compat (aac<=2ch) track even though it is not first by index."""
+    streams = [_v(),
+               _al("eac3", 6, 1, "ger"),
+               _al("eac3", 6, 0, "eng"),      # eng but NOT compat
+               _al("aac", 2, 0, "eng")]       # eng AND compat -> wins
+    plan = adj.classify_streams(streams)
+    assert plan["target"] == 2
+    assert plan["kind"] == "foreign_default"
+
+
+def test_foreign_default_falls_back_to_first_eng_by_index_when_none_compat():
+    streams = [_v(),
+               _al("eac3", 6, 1, "ger"),
+               _al("eac3", 6, 0, "eng"),
+               _al("dts", 6, 0, "eng")]
+    plan = adj.classify_streams(streams)
+    assert plan["target"] == 1               # first eng by index
+
+
+def test_foreign_default_accepts_short_en_tag():
+    """Spec explicitly accepts the 2-letter form for both the target-eng
+    search and the eng-already-default short-circuit."""
+    streams = [_v(), _al("aac", 2, 1, "ger"), _al("aac", 2, 0, "en")]
+    plan = adj.classify_streams(streams)
+    assert plan is not None
+    assert plan["kind"] == "foreign_default"
+    assert plan["target"] == 1
+
+
+def test_foreign_default_untagged_default_refused_no_tags_key():
+    """A default with NO language tag at all -> refuse the whole file, even
+    though an eng track exists elsewhere. Untagged is never touched or
+    chosen as evidence the current default is wrong."""
+    streams = [_v(), _al("aac", 2, 1, None), _al("aac", 2, 0, "eng")]
+    assert adj.classify_streams(streams) is None
+
+
+def test_foreign_default_und_tagged_default_refused():
+    """"und" (ISO 639-2 undetermined) is the explicit-tag spelling of the
+    same untagged case and must refuse identically."""
+    streams = [_v(), _al("aac", 2, 1, "und"), _al("aac", 2, 0, "eng")]
+    assert adj.classify_streams(streams) is None
+
+
+def test_foreign_default_eng_only_file_is_none():
+    """A file with a single audio track that is already eng and already
+    default -- nothing foreign, nothing to fix."""
+    assert adj.classify_streams([_v(), _al("aac", 2, 1, "eng")]) is None
+
+
+def test_foreign_default_no_eng_track_anywhere_is_none():
+    """All-foreign file with no English track present at all -- there is
+    nothing to promote to, so refuse rather than pick an arbitrary track."""
+    streams = [_v(), _al("aac", 2, 1, "ger"), _al("aac", 2, 0, "fre")]
+    assert adj.classify_streams(streams) is None
+
+
+def test_foreign_default_already_eng_default_among_multiple_is_none():
+    """Exactly one default and it's already eng (2-letter form) -- no-op
+    even though other non-default eng/foreign tracks exist."""
+    streams = [_v(), _al("aac", 2, 0, "ger"), _al("aac", 2, 1, "en")]
+    assert adj.classify_streams(streams) is None
+
+
+def test_dual_default_pattern_unaffected_by_foreign_default_addition():
+    """Regression: the original Tdarr dual-default class (no language tags
+    at all in the original fixture) still matches exactly as before, and
+    the dual_default check is tried first."""
+    streams = [_v(), _a("eac3", 6, 1), _a("aac", 2, 1)]
+    plan = adj.classify_streams(streams)
+    assert plan == {"target": 1, "clear": [0], "audio_count": 2,
+                     "kind": "dual_default"}
+
+
+# -- verify_fixed, both kinds -------------------------------------------
+
+def test_verify_fixed_foreign_default_accepts_eng_sole_default():
+    fixed = [_v(), _al("aac", 2, 0, "ger"), _al("aac", 2, 1, "eng")]
+    assert adj.verify_fixed(fixed, expect_stream_count=3, kind="foreign_default")
+
+
+def test_verify_fixed_foreign_default_accepts_short_en_tag():
+    fixed = [_v(), _al("aac", 2, 0, "ger"), _al("aac", 2, 1, "en")]
+    assert adj.verify_fixed(fixed, expect_stream_count=3, kind="foreign_default")
+
+
+def test_verify_fixed_foreign_default_rejects_non_eng_sole_default():
+    fixed = [_v(), _al("aac", 2, 1, "ger"), _al("aac", 2, 0, "eng")]
+    assert not adj.verify_fixed(fixed, expect_stream_count=3, kind="foreign_default")
+
+
+def test_verify_fixed_foreign_default_rejects_still_multiple_defaults():
+    fixed = [_v(), _al("aac", 2, 1, "ger"), _al("aac", 2, 1, "eng")]
+    assert not adj.verify_fixed(fixed, expect_stream_count=3, kind="foreign_default")
+
+
+def test_verify_fixed_dual_default_kind_is_the_default_param():
+    """Backward compatibility: old callers that never pass `kind` still get
+    dual_default semantics."""
+    fixed = [_v(), _a("eac3", 6, 0), _a("aac", 2, 1)]
+    assert adj.verify_fixed(fixed, expect_stream_count=3)
+    assert adj.verify_fixed(fixed, expect_stream_count=3, kind="dual_default")
+
+
+def test_verify_fixed_dual_default_kind_rejects_eng_tagged_noncompat_default():
+    """kind="dual_default" must still require the AAC-compat rule, not just
+    any eng tag -- the two verification rules are not interchangeable."""
+    fixed = [_v(), _al("eac3", 6, 1, "eng")]     # eng but not aac<=2ch
+    assert not adj.verify_fixed(fixed, expect_stream_count=2, kind="dual_default")
+
+
+# -- build_ffmpeg_cmd shape, foreign_default plan ------------------------
+
+def test_ffmpeg_cmd_shape_foreign_default_plan():
+    """build_ffmpeg_cmd is plan-shape-generic -- a foreign_default plan
+    produces the same disposition-only, stream-copy command shape."""
+    cmd = adj.build_ffmpeg_cmd("/in.mkv", "/.in.dispfix.tmp",
+                                {"target": 1, "clear": [0], "audio_count": 9,
+                                 "kind": "foreign_default"})
+    assert ["-map", "0", "-c", "copy"] == cmd[cmd.index("-map"):cmd.index("-map") + 4]
+    assert ["-disposition:a:0", "0"] == cmd[cmd.index("-disposition:a:0"):cmd.index("-disposition:a:0") + 2]
+    assert ["-disposition:a:1", "default"] == cmd[cmd.index("-disposition:a:1"):cmd.index("-disposition:a:1") + 2]
+
+
+# ---------------------------------------------------------------------------
+# Anime exclusion (2026-09-13) -- structural, not a DEFAULT_ROOTS omission.
+# Anime libraries are jpn-only-original; jpn as the shipped default there is
+# correct, not a bug either class targets. Must hold even if an anime path
+# is explicitly passed via --roots.
+# ---------------------------------------------------------------------------
+
+def test_excluded_roots_constant_names_both_anime_dirs():
+    """The real (non-monkeypatched) constant must cover both known anime
+    roots by name, so a future DEFAULT_ROOTS edit can't silently drop the
+    exclusion."""
+    from pathlib import Path as _P
+    names = [_P(p).name for p in adj.EXCLUDED_ROOTS]
+    assert "Anime" in names
+    assert "Anime Movies" in names
+
+
+def test_scan_files_skips_excluded_root_even_when_passed_directly(tmp_path, monkeypatch):
+    anime = tmp_path / "Anime"
+    anime.mkdir()
+    (anime / "ep.mkv").write_bytes(b"x")
+    monkeypatch.setattr(adj, "EXCLUDED_ROOTS", [str(anime)])
+    assert list(adj.scan_files([str(anime)])) == []
+
+
+def test_scan_files_skips_excluded_subdir_when_ancestor_root_passed(tmp_path, monkeypatch):
+    """The harder case: someone passes a PARENT of an excluded dir (e.g. the
+    whole media/ root). The anime subtree must still never be yielded, and
+    sibling libraries must still scan normally."""
+    anime = tmp_path / "Anime"
+    anime.mkdir()
+    (anime / "ep.mkv").write_bytes(b"x")
+    tv = tmp_path / "TV Shows"
+    tv.mkdir()
+    (tv / "show.mkv").write_bytes(b"x")
+    monkeypatch.setattr(adj, "EXCLUDED_ROOTS", [str(anime)])
+    found = list(adj.scan_files([str(tmp_path)]))
+    assert [f.name for f in found] == ["show.mkv"]
+
+
+def test_scan_files_skips_both_named_anime_dirs_by_default():
+    """Sanity check against the REAL constant + DEFAULT_ROOTS shape: neither
+    default root is an anime path, and the constant names are exactly the
+    two known anime libraries -- nothing broader, nothing narrower."""
+    assert len(adj.EXCLUDED_ROOTS) == 2

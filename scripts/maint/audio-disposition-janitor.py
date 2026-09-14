@@ -1,23 +1,45 @@
 #!/usr/bin/env python3
 """scripts/maint/audio-disposition-janitor.py — sole-default audio enforcement.
 
-Problem (found 2026-07-19): the Tdarr "QFlix Direct-Play Fix" flow's
-ensure-AAC step adds an aac/en/2ch compatibility track, but ffmpeg copies the
-default disposition from the source stream it encodes from — so the output
-carries BOTH the original (e.g. EAC3 5.1) and the added AAC track flagged
-`default`. Plex resolves the tie to the lower-index original and LIVE-
-TRANSCODES audio on every browser play, ignoring the compatible AAC track
-sitting right there. Confirmed by ffprobe on multiple files; pattern is
-library-wide wherever the flow added an alternate track.
+Two independent classes converge on one operator policy: **English is the
+default audio on all media, forever.** Each class is a narrow, positive
+predicate — anything that doesn't exactly match either one is left alone.
 
-Policy this janitor converges on: **a file with Tdarr's dual-default pattern
-gets exactly ONE default audio stream — the AAC compatibility track.** The
-original higher-quality track is preserved and manually selectable; it just
-stops being the auto-picked stream that forces a transcode. Files without the
-dual-default pattern are never touched (narrow predicate: refuse anything we
-don't positively recognize).
+CLASS 1 — "dual_default" (found 2026-07-19): the Tdarr "QFlix Direct-Play
+Fix" flow's ensure-AAC step adds an aac/en/2ch compatibility track, but
+ffmpeg copies the default disposition from the source stream it encodes
+from — so the output carries BOTH the original (e.g. EAC3 5.1) and the added
+AAC track flagged `default`. Plex resolves the tie to the lower-index
+original and LIVE-TRANSCODES audio on every browser play, ignoring the
+compatible AAC track sitting right there. Confirmed by ffprobe on multiple
+files; pattern is library-wide wherever the flow added an alternate track.
+Fix: exactly ONE default audio stream survives — the AAC compatibility
+track. The original higher-quality track is preserved and manually
+selectable; it just stops being the auto-picked stream that forces a
+transcode.
 
-Fix mechanics per file: ffmpeg full stream-copy remux (`-map 0 -c copy`)
+CLASS 2 — "foreign_default" (found 2026-09-13, Futurama S1 incident): all
+9 of 9 Season-1 files shipped from the upstream release with the German dub
+(`ger`) flagged the sole default audio stream and English (`eng`) present
+but silent at track index 1, alongside 8 more languages (spa spa fre hun
+ita pol por tur) — not a Tdarr artifact, a foreign-language-default
+upstream release. A same-day 25-file TV sample found 2 more files with the
+same shape, one of them carrying 9 distinct audio languages. Fix: when the
+current default audio is CONFIRMED non-English and an English track exists,
+flag the English track default instead. "Confirmed" is load-bearing — every
+currently-default stream must carry an explicit language tag, and if even
+one default is untagged (no `language` key, or `und`) the whole file is
+refused: we never overwrite a default we can't prove is wrong. This class
+does not strip or remove any track (stripping is explicitly deferred by
+operator ruling) — it only moves which one is flagged default.
+
+Both classes exclude the ANIME libraries structurally — see
+EXCLUDED_ROOTS — because those libraries are jpn-only-original and jpn
+being the shipped default there is correct, not a bug; "English default" is
+a policy for everything else, not anime.
+
+Fix mechanics per file (both classes, identical mechanism): ffmpeg full
+stream-copy remux (`-map 0 -c copy`)
 adjusting only `-disposition:a:N` flags — no re-encode, IO-bound only —
 written to a temp in the same directory whose name ENDS IN ".tmp" and is
 also dot-prefixed (see fix_file: the ".tmp" ending is what hides it from
@@ -65,6 +87,17 @@ from lib.secrets import read_secret  # noqa: E402
 DEFAULT_ROOTS = [
     str(Path.home() / "media" / "Movies"),
     str(Path.home() / "media" / "TV Shows"),
+]
+# STRUCTURAL exclusion (2026-09-13, foreign_default rollout): anime libraries
+# are jpn-only-original — jpn as the shipped default there is CORRECT, not
+# the bug either class targets. "English default, forever" is a policy for
+# the rest of the library, not anime. Enforced inside scan_files() itself
+# (both at the root level AND per-file, see _is_excluded) so it holds no
+# matter what --roots is passed — DEFAULT_ROOTS omitting these two dirs is
+# not sufficient on its own, because it is trivially bypassed by a flag.
+EXCLUDED_ROOTS = [
+    str(Path.home() / "media" / "Anime"),
+    str(Path.home() / "media" / "Anime Movies"),
 ]
 VIDEO_EXTS = {".mkv", ".mp4"}
 # Output muxer per source container. REQUIRED, not optional: the temp in
@@ -199,22 +232,31 @@ def _is_compat_track(stream: dict) -> bool:
             and int(stream.get("channels") or 0) <= 2)
 
 
-def classify_streams(streams: list):
-    """Decide whether a file has the Tdarr dual-default pattern and, if so,
-    return the fix plan. Pure function.
-
-    Returns None (leave the file alone) unless ALL hold:
-      - >= 2 audio streams are flagged default (the bug signature), AND
-      - at least one of those defaults is an aac <=2ch compat track.
-    Plan: {"target": audio-relative index to keep default (the LAST matching
-    compat track — Tdarr appends its stream), "clear": audio-relative indices
-    of every other default audio stream, "audio_count": N}.
-    Anything not positively matching the known-bad pattern is refused — this
-    janitor narrows to the bug it was built for, nothing else.
+def _lang(stream: dict):
+    """Normalized language tag for a stream, or None if we don't actually
+    know. ffmpeg/mkvmerge write "no tag at all" and the literal ISO 639-2
+    "und" (undetermined) to mean the same thing — both come back None here
+    on purpose, because foreign_default's whole safety property is refusing
+    to touch a default it can't PROVE is non-English (see classify_streams).
     """
-    audio = [s for s in streams if s.get("codec_type") == "audio"]
-    defaults = [i for i, s in enumerate(audio)
-                if (s.get("disposition") or {}).get("default")]
+    tag = (stream.get("tags") or {}).get("language")
+    if not tag:
+        return None
+    tag = tag.strip().lower()
+    return None if tag in ("", "und") else tag
+
+
+def _is_eng(lang) -> bool:
+    """Spec explicitly accepts both the 3-letter ("eng") and 2-letter ("en")
+    ISO forms — both appear in the wild depending on the muxer that wrote
+    the file."""
+    return lang in ("eng", "en")
+
+
+def _classify_dual_default(audio: list, defaults: list):
+    """CLASS 1 (2026-07-19). See module docstring. Unchanged behaviour from
+    before the foreign_default split; only the returned dict gained a
+    "kind" key."""
     if len(defaults) < 2:
         return None
     compat = [i for i in defaults if _is_compat_track(audio[i])]
@@ -222,7 +264,67 @@ def classify_streams(streams: list):
         return None
     target = compat[-1]                      # Tdarr appends: last compat wins
     clear = [i for i in defaults if i != target]
-    return {"target": target, "clear": clear, "audio_count": len(audio)}
+    return {"target": target, "clear": clear, "audio_count": len(audio),
+            "kind": "dual_default"}
+
+
+def _classify_foreign_default(audio: list, defaults: list):
+    """CLASS 2 (2026-09-13, Futurama S1 incident). See module docstring.
+
+    Fires iff ALL hold:
+      - >= 1 audio stream is tagged eng/en, AND
+      - there is at least one current default audio stream, AND
+      - every current default carries an explicit (non-und) language tag
+        — one untagged default and we refuse the WHOLE file, no partial
+        credit, because "untagged" means we cannot prove it isn't already
+        English or something we shouldn't touch, AND
+      - none of those tagged defaults is itself eng/en (nothing foreign to
+        fix — English is already winning).
+    Target = an eng track that is aac<=2ch (compat) if one exists, else the
+    first eng track by index. Clear = every current default (all proven
+    non-eng by the checks above).
+    """
+    if not defaults:
+        return None
+    eng_indices = [i for i, s in enumerate(audio) if _is_eng(_lang(s))]
+    if not eng_indices:
+        return None
+    default_langs = []
+    for i in defaults:
+        lang = _lang(audio[i])
+        if lang is None:
+            return None            # untagged default — refuse, never guess
+        default_langs.append(lang)
+    if any(_is_eng(lang) for lang in default_langs):
+        return None                # already eng-default somewhere — no-op
+    compat_eng = [i for i in eng_indices if _is_compat_track(audio[i])]
+    target = compat_eng[0] if compat_eng else eng_indices[0]
+    return {"target": target, "clear": list(defaults), "audio_count": len(audio),
+            "kind": "foreign_default"}
+
+
+def classify_streams(streams: list):
+    """Decide whether a file matches either recognized bad-default pattern
+    and, if so, return the fix plan. Pure function; tries dual_default
+    (CLASS 1) first, then foreign_default (CLASS 2) — the two predicates are
+    disjoint in practice (dual_default requires >=2 defaults with a compat
+    track among them; foreign_default requires all defaults to be tagged
+    non-eng, which a Tdarr-added aac/en compat default already contradicts),
+    but the order is fixed here so behaviour is deterministic either way.
+
+    Plan shape (both kinds): {"target": audio-relative index to make the
+    sole default, "clear": audio-relative indices of every default to
+    clear, "audio_count": N, "kind": "dual_default" | "foreign_default"}.
+    Anything not positively matching a known pattern is refused — this
+    janitor narrows to bugs it was built for, nothing else.
+    """
+    audio = [s for s in streams if s.get("codec_type") == "audio"]
+    defaults = [i for i, s in enumerate(audio)
+                if (s.get("disposition") or {}).get("default")]
+    plan = _classify_dual_default(audio, defaults)
+    if plan is not None:
+        return plan
+    return _classify_foreign_default(audio, defaults)
 
 
 def build_ffmpeg_cmd(src: str, dst: str, plan: dict) -> list:
@@ -240,14 +342,23 @@ def build_ffmpeg_cmd(src: str, dst: str, plan: dict) -> list:
     return cmd
 
 
-def verify_fixed(streams: list, expect_stream_count: int) -> bool:
+def verify_fixed(streams: list, expect_stream_count: int,
+                  kind: str = "dual_default") -> bool:
     """Post-remux check: stream count preserved AND exactly one default
-    audio, and that stream is the aac compat track."""
+    audio stream, AND that stream matches what `kind` promised:
+      - dual_default:    the sole default is the aac<=2ch compat track.
+      - foreign_default: the sole default is tagged eng/en.
+    `kind` defaults to "dual_default" for backward compatibility with
+    existing callers/tests that predate the foreign_default class."""
     if len(streams) != expect_stream_count:
         return False
     audio = [s for s in streams if s.get("codec_type") == "audio"]
     defaults = [s for s in audio if (s.get("disposition") or {}).get("default")]
-    return len(defaults) == 1 and _is_compat_track(defaults[0])
+    if len(defaults) != 1:
+        return False
+    if kind == "foreign_default":
+        return _is_eng(_lang(defaults[0]))
+    return _is_compat_track(defaults[0])
 
 
 # ===========================================================================
@@ -279,14 +390,33 @@ def active_file_paths() -> set:
 # Scan + fix
 # ===========================================================================
 
+def _is_excluded(path: Path) -> bool:
+    """True if `path` sits under any EXCLUDED_ROOTS entry. Checked at BOTH
+    the root level and the per-file level in scan_files — root-level alone
+    is not enough because a caller could pass an ANCESTOR of an excluded
+    directory (e.g. the whole media/ parent) and the anime subtree would
+    still get walked and yielded without a second check here."""
+    for ex in EXCLUDED_ROOTS:
+        try:
+            path.resolve().relative_to(Path(ex).resolve())
+            return True
+        except (ValueError, OSError):
+            continue
+    return False
+
+
 def scan_files(roots: list):
     for root in roots:
         rp = Path(root)
         if not rp.is_dir():
             warn("root missing, skipped: " + root)
             continue
+        if _is_excluded(rp):
+            warn("root is an excluded anime library (jpn-only-original, "
+                 "not in scope), skipped: " + root)
+            continue
         for p in sorted(rp.rglob("*")):
-            if p.is_file() and p.suffix.lower() in VIDEO_EXTS:
+            if p.is_file() and p.suffix.lower() in VIDEO_EXTS and not _is_excluded(p):
                 yield p
 
 
@@ -360,7 +490,7 @@ def _remux_once(path: Path, tmp: Path, plan: dict, st) -> None:
                 raise TmpVanishedError("temp remux vanished before verify: "
                                        + str(tmp))
             raise                       # real probe failure — not retryable
-        if not verify_fixed(tmp_streams, src_count):
+        if not verify_fixed(tmp_streams, src_count, plan.get("kind", "dual_default")):
             raise RuntimeError("post-remux verification failed")
         try:
             os.utime(tmp, (st.st_atime, st.st_mtime))   # keep *arr/Plex mtime view

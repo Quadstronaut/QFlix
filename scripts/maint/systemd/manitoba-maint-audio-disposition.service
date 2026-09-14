@@ -1,13 +1,16 @@
 [Unit]
-Description=Manitoba maint — audio-disposition janitor (sole-default AAC after Tdarr dual-default bug)
+Description=Manitoba maint — audio-disposition janitor (sole-default audio: Tdarr dual-default bug + English-default enforcement, anime excluded)
 After=network-online.target
 
 [Service]
 Type=oneshot
-# EXECUTE is armed deliberately: the janitor's predicate is narrow (only the
-# known Tdarr dual-default pattern), the remux is stream-copy-only with a
-# post-verify, and a dry-run plan was operator-reviewed before first enable
-# (2026-07-19). Blast radius capped by --max-items in-script (default 25).
+# EXECUTE is armed deliberately: both predicates are narrow (the known Tdarr
+# dual-default pattern, and a foreign-default file with a proven-tagged eng
+# track — untagged defaults are refused outright, see classify_streams), the
+# remux is stream-copy-only with a post-verify, and a dry-run plan was
+# operator-reviewed before first enable (2026-07-19; foreign_default added
+# 2026-09-13 after the Futurama S1 incident). Blast radius capped by
+# --max-items in-script (default 25).
 # --max-items 50: initial backlog is 318 files (2026-07-19 dry-run); 50/night
 # off-peak converges in ~7 days, then steady-state is a handful per day.
 ExecStart=/usr/bin/python3 %h/scripts/maint/audio-disposition-janitor.py --execute --max-items 50
