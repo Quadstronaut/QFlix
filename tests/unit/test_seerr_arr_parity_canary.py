@@ -688,3 +688,208 @@ def test_durable_trail_is_appended_every_run(tmp_path, stack):
     lines = [ln for ln in trail.read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert len(lines) == 2
     assert all(ln.startswith("20") for ln in lines)  # ISO timestamp prefix
+
+
+# ---------------------------------------------------------------------------
+# 11. tvdbId collision -- UNTRUSTED, never "keep the first instance"
+# ---------------------------------------------------------------------------
+
+
+def test_tvdbid_collision_marks_untrusted_and_withholds_the_row(tmp_path, stack):
+    """2026-09-13 council finding (MAJOR, boundary): keeping the first-seen
+    sonarr instance's (stale, zero-file) season map for a duplicated tvdbId
+    and running the STRANDED predicate against it produced a false page for
+    a season that unambiguously has files in the OTHER instance. The tvdbId
+    must be marked UNTRUSTED and withheld entirely -- no orphan, no
+    stranded, no underreported -- for as long as the collision persists,
+    across both consecutive runs."""
+    s = stack()
+    rows = [media_row(1, "tv", 5550, 5, tvdb=555)]
+    _wire_default(s, media_rows=rows,
+                  tv_details={5550: tv_detail(555, {1: 5})},
+                  sonarr=[series(555, {1: 0})],    # stale/wrong if ever trusted
+                  sonarr2=[series(555, {1: 5})])   # the real, file-holding instance
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    r1, r2 = _run_twice(secrets, tmp_path)
+    assert r1.returncode == 0, (r1.returncode, r1.stdout, r1.stderr)
+    assert "tvdbid-collision-across-sonarr-instances" in r1.stdout
+    assert "tvdbid-untrusted-row-excluded" in r1.stdout
+    assert "orphan=0 stranded=0 underreported=0" in r1.stdout
+    # Must stay withheld on the SECOND run too -- the collision persists, so
+    # nothing about it should ever page, on any run.
+    assert r2.returncode == 0, (r2.returncode, r2.stdout, r2.stderr)
+    assert "orphan=0 stranded=0 underreported=0" in r2.stdout
+
+
+def test_tvdbid_collision_does_not_orphan_the_untrusted_id_either(tmp_path, stack):
+    """The untrusted-id exclusion must fire BEFORE the orphan check -- a
+    duplicated tvdbId dropped from sonarr_tvdb must not fall through and
+    read as 'absent from Sonarr entirely' (a false ORPHAN) either."""
+    s = stack()
+    rows = [media_row(1, "tv", 5560, 5, tvdb=556)]
+    _wire_default(s, media_rows=rows,
+                  tv_details={5560: tv_detail(556, {1: 5})},
+                  sonarr=[series(556, {1: 5})],
+                  sonarr2=[series(556, {1: 5})])
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    r1, _ = _run_twice(secrets, tmp_path)
+    assert r1.returncode == 0
+    assert "orphan=0" in r1.stdout
+    assert "tvdbid-untrusted-row-excluded" in r1.stdout
+
+
+# ---------------------------------------------------------------------------
+# 12. State-file corruption -- a named, counted skip, never a silent reset
+# ---------------------------------------------------------------------------
+
+
+def test_state_file_corruption_is_a_named_skip_and_still_arms(tmp_path, stack):
+    """2026-09-13 council finding (MAJOR, false-green): a state file that
+    fails to parse as JSON used to be treated identically to 'no file yet'
+    with zero trace anywhere, silently resetting the two-run confirmation
+    gate. It must now be a NAMED, COUNTED skip with its own trail line, and
+    the run must still ARM (not silently drop back to a false clean pass
+    forever) -- proven by the SECOND run against the now-valid state file
+    actually paging."""
+    s = stack()
+    rows = [media_row(1, "movie", 999, 5)]   # 999 is in no radarr -- an orphan
+    _wire_default(s, media_rows=rows)
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    trail = tmp_path / "trail.log"
+    state.write_text("{not json", encoding="utf-8")
+
+    r1 = _run(secrets, state=state, trail=trail)
+    assert r1.returncode == 0, (r1.returncode, r1.stdout, r1.stderr)
+    assert "state-file-corrupt-or-unreadable" in r1.stdout
+    assert "orphan=1" in r1.stdout
+    trail_text = trail.read_text(encoding="utf-8")
+    assert "STATE-CORRUPT" in trail_text
+
+    # The gate was NOT silently reset to a permanent clean pass: run 1 wrote
+    # a valid state file, so run 2 against it must confirm-and-page.
+    r2 = _run(secrets, state=state, trail=trail)
+    assert r2.returncode == 1, (r2.returncode, r2.stdout, r2.stderr)
+
+
+def test_missing_state_file_is_not_treated_as_corruption(tmp_path, stack):
+    """The expected first-deploy shape (no state file yet) must NOT be
+    counted as the corruption skip -- only a file that exists and fails to
+    parse or open is corruption."""
+    s = stack()
+    _wire_default(s, media_rows=[media_row(1, "movie", 1, 5)], radarr=[{"tmdbId": 1}])
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "does-not-exist" / "state.json"
+    r1 = _run(secrets, state=state, trail=tmp_path / "t.log")
+    assert r1.returncode == 0, (r1.returncode, r1.stdout, r1.stderr)
+    assert "state-file-corrupt-or-unreadable" not in r1.stdout
+
+
+# ---------------------------------------------------------------------------
+# 13. Persistent per-title tv-detail failure -- escalates, never masks forever
+# ---------------------------------------------------------------------------
+
+
+def test_persistent_tv_detail_failure_escalates_to_cannot_assert(tmp_path, stack):
+    """2026-09-13 council finding (MAJOR, false-green): a Seerr title whose
+    detail endpoint returns 500 EVERY run forever used to mask a genuine
+    STRANDED season behind an ever-incrementing skip counter that nothing
+    ever pages on. Per operator ruling, 3 consecutive runs against the same
+    tmdbId must escalate the whole run to CANNOT-ASSERT, naming the id."""
+    s = stack()
+    rows = [media_row(1, "tv", 1600, 7, tvdb=16600)]   # a genuine STRANDED shape
+    _wire_default(s, media_rows=rows, tv_details={}, sonarr=[series(16600, {1: 0})])
+    s.route("/api/v1/tv/1600", {}, key=SEERR_KEY, status=500)
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    trail = tmp_path / "trail.log"
+
+    r1 = _run(secrets, state=state, trail=trail)
+    r2 = _run(secrets, state=state, trail=trail)
+    r3 = _run(secrets, state=state, trail=trail)
+    r4 = _run(secrets, state=state, trail=trail)
+
+    assert r1.returncode == 0 and "tv-detail-fetch-failed" in r1.stdout
+    assert r2.returncode == 0 and "tv-detail-fetch-failed" in r2.stdout
+    assert r3.returncode == 2, (r3.returncode, r3.stdout, r3.stderr)
+    assert "STAGE=seerr-arr-parity-tv-detail-persistent-failure" in r3.stderr
+    assert "tmdb=1600" in r3.stderr
+    assert "consecutive=3" in r3.stderr
+    # Stays escalated on the 4th run too -- the id is still failing.
+    assert r4.returncode == 2, (r4.returncode, r4.stdout, r4.stderr)
+
+
+def test_persistent_tv_detail_failure_counter_resets_on_one_success(tmp_path, stack):
+    """A single successful lookup must reset the consecutive-failure counter
+    to zero -- two more failures right after must NOT immediately escalate."""
+    s = stack()
+    rows = [media_row(1, "tv", 1650, 5, tvdb=16650)]
+    calls = {"fail": True}
+
+    def _detail(_path, _qs):
+        if calls["fail"]:
+            return (500, {})
+        return tv_detail(16650, {1: 5})
+
+    _wire_default(s, media_rows=rows, sonarr=[series(16650, {1: 5})])
+    s.route("/api/v1/tv/1650", _detail, key=SEERR_KEY)
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    trail = tmp_path / "trail.log"
+
+    r1 = _run(secrets, state=state, trail=trail)          # failure 1
+    r2 = _run(secrets, state=state, trail=trail)          # failure 2
+    calls["fail"] = False
+    r3 = _run(secrets, state=state, trail=trail)          # success -- resets
+    calls["fail"] = True
+    r4 = _run(secrets, state=state, trail=trail)          # failure 1 (again)
+    r5 = _run(secrets, state=state, trail=trail)          # failure 2 (again)
+
+    for r in (r1, r2, r3, r4, r5):
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+
+
+# ---------------------------------------------------------------------------
+# 14. Pagination boundary -- an exact page*cap multiple is a clean stop
+# ---------------------------------------------------------------------------
+
+
+def test_pagination_exact_max_pages_boundary_is_a_clean_pass(tmp_path, stack):
+    """2026-09-13 council finding (MINOR, boundary): exactly MAX_PAGES full
+    pages with no short final page used to manufacture a false CANNOT-ASSERT
+    even though Seerr answered every request correctly. One confirmation
+    request after the cap must distinguish a genuinely empty trailing page
+    (clean stop) from real overflow."""
+    s = stack()
+    rows = [media_row(i, "movie", 6000 + i, 5) for i in range(1, 4)]   # exactly 3
+    _wire_default(s, media_rows=rows, radarr=[{"tmdbId": 6000 + i} for i in range(1, 4)])
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    r1 = _run(secrets, state=tmp_path / "s.json", trail=tmp_path / "t.log",
+              QFLIX_CANARY_SAP_PAGE_SIZE="1", QFLIX_CANARY_SAP_MAX_PAGES="3")
+    assert r1.returncode == 0, (r1.returncode, r1.stdout, r1.stderr)
+    assert "orphan=0" in r1.stdout
+    media_hits = [h for h in s.hits if h.startswith("/api/v1/media")]
+    assert len(media_hits) == 4   # 3 full pages + 1 confirmation page that came back empty
+
+
+def test_pagination_genuine_overflow_beyond_max_pages_is_labelled_correctly(tmp_path, stack):
+    """A page AFTER the cap that comes back NON-empty is real overflow -- it
+    must use its own STAGE (`-pagination-overflow`), not the generic
+    `-seerr-unreachable`, because Seerr answered every request fine."""
+    s = stack()
+    rows = [media_row(i, "movie", 7000 + i, 5) for i in range(1, 5)]   # 4 -- one past the cap
+    _wire_default(s, media_rows=rows)
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    r1 = _run(secrets, state=tmp_path / "s.json", trail=tmp_path / "t.log",
+              QFLIX_CANARY_SAP_PAGE_SIZE="1", QFLIX_CANARY_SAP_MAX_PAGES="3")
+    assert r1.returncode == 2, (r1.returncode, r1.stdout, r1.stderr)
+    assert "STAGE=seerr-arr-parity-pagination-overflow" in r1.stderr
+    assert "seerr-arr-parity-seerr-unreachable" not in r1.stderr

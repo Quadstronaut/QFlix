@@ -2,11 +2,25 @@
 Description=Manitoba canary - Seerr/*arr cross-system parity (hourly)
 
 [Timer]
-# Minute :41 - deliberately NOT :00, the same reasoning as every other
+# Minute :46 - deliberately NOT :00, the same reasoning as every other
 # hourly canary in this fleet: a wall of jobs firing on the hour at once
 # contends for the same loopback ports and Seerr/*arr connection pools.
-# Minute 41 was free at the time this canary was added.
-OnCalendar=*-*-* *:41:00 UTC
+#
+# 2026-09-13 CORRECTION: this timer originally claimed minute :41. That claim
+# was FALSE and disprovable by grepping the very next file in this directory
+# (manitoba-maint-canary-ucc-gate-stuck.timer, OnCalendar=*:11/15, which
+# fires every hour at :11/:26/:41/:56) -- a collision that reproduced the
+# EXACT incident class ucc-gate-stuck's own header documents from the day
+# before (2026-09-12: 19 canary timers firing in the same minute -> Kuma's
+# SQLite connection pool exhausted -> ~80 Discord messages). :46 was
+# verified free by parsing every OnCalendar in scripts/maint/systemd/ --
+# every fixed minute AND every N/15 or N/30 step pattern -- not just eyeballed
+# against the whole-hour :00 wall. tests/unit/test_canary_wiring.py now
+# parses every *.timer's OnCalendar mechanically and fails the build on any
+# NEW minute-of-hour collision between hourly-or-faster timers, so this
+# specific failure mode (a hand-written "was free" comment that goes stale or
+# was simply wrong) cannot recur silently again.
+OnCalendar=*-*-* *:46:00 UTC
 RandomizedDelaySec=180
 Persistent=true
 

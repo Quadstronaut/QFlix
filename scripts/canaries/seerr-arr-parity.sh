@@ -6,23 +6,27 @@
 # ============================================================================
 # WHY THIS EXISTS
 # ============================================================================
-# `reconcile_seerr()` exists precisely to stop reaped titles being stuck
-# un-re-requestable — its own comment says so — but it pages `filter=available`
-# only, so rows that land in DELETED (status 7) are invisible to it and are
-# NEVER cleared. Measured live in Seerr's own DB 2026-09-12: 66 status-7
-# seasons across 28 distinct shows, 763 season_request rows still pointing at
-# them, and Law & Order alone carrying 23. The operator's father could not
-# re-request Law & Order seasons 3/4 — an admin pushed them through by hand.
-# That is one of 28 affected shows, not an isolated complaint.
+# `reconcile_seerr()` was built precisely to stop reaped titles being stuck
+# un-re-requestable — its own comment says so — and as of commit eefcffd (an
+# ANCESTOR of this canary) it has been fixed to page ALL statuses, not just
+# `filter=available`, and to DELETE-cascade any status-7 (DELETED) season for
+# a series still present in Sonarr via `_seerr_stuck_seasons()`. The 66
+# status-7 / 763 season_request / Law-&-Order-class numbers measured live
+# 2026-09-12 predate that fix and are NOT re-verified against the current
+# reaper — see HONEST LIMITS below. Update the baseline (or confirm it has
+# shrunk) on first live deploy after this lands.
 #
-# The reaper's job is to ACT (S-1: expire the file, unmonitor the episode,
-# clear Plex). This canary's job is to ASSERT that the cross-system state
-# left behind is actually requestable (S-2/S-3): "correctness here is
-# CONTINUOUS, not a side effect of a reap. It gets its own canary, own timer,
-# own Kuma check" (operator design law). OPERATOR RULING: this canary is
-# REPORT ONLY. It never writes to Seerr or any *arr — a mutating "fix" here
-# would be exactly the kind of unaudited repair rule 143 in the CLAUDE.md
-# runbook forbids touching without review.
+# So this canary does NOT exist to catch a known-broken reconcile_seerr —
+# that specific bug is fixed. It exists to assert the RESIDUAL: (a)
+# reconciliation stops running (a timer disabled, a script erroring silently,
+# an upstream API shape change reconcile_seerr's own tests don't cover), or
+# (b) a strand shape reconcile_seerr's fix does not reach (e.g. a season
+# stuck via a path other than the one `_seerr_stuck_seasons()` sweeps). Either
+# way, correctness here is CONTINUOUS, not a side effect of a reap — "it gets
+# its own canary, own timer, own Kuma check" (operator design law). OPERATOR
+# RULING: this canary is REPORT ONLY. It never writes to Seerr or any *arr —
+# a mutating "fix" here would be exactly the kind of unaudited repair rule
+# 143 in the CLAUDE.md runbook forbids touching without review.
 #
 # ============================================================================
 # THE PREDICATE
@@ -64,6 +68,20 @@
 # meaningful answer. This is strictly equivalent to "absent from every *arr
 # that could possibly hold it" for this fleet's fixed movie/tv split.
 #
+# TVDBID COLLISION = UNTRUSTED, NEVER "keep the first one". If sonarr and
+# sonarr2 both report a series under the same tvdbId (2026-09-13 council
+# finding: this silently kept the FIRST-seen instance's — possibly stale,
+# zero-file — season map and ran the full STRANDED predicate against it,
+# which can page a false STRANDED for a season that unambiguously has files
+# in the OTHER instance), the tvdbId is marked UNTRUSTED and excluded from
+# EVERY per-row assertion for that id — no orphan, no stranded, no
+# underreported, ever, for as long as the collision persists. This is the
+# same "cannot know, so withhold rather than guess" contract as
+# season-unknown-to-sonarr, just at the whole-series level. Counted as
+# `tvdbid-collision-across-sonarr-instances` (at parse time, once per
+# duplicate series seen) and `tvdbid-untrusted-row-excluded` (at predicate
+# time, once per settled Seerr row that resolves to an untrusted id).
+#
 # ============================================================================
 # NOISE CONTROL (same two mechanisms as arr-plex-parity.sh, same reasoning:
 # the operator directive that false positives render the alert channel
@@ -72,6 +90,15 @@
 #   1. 26h GRACE on the Seerr row's own `updatedAt`. A row that changed status
 #      minutes ago may still be mid-reconcile; a scan/import cycle plus the
 #      reaper's own daily cadence needs the better part of a day to settle.
+#      KNOWN LIMIT (not confirmed live, MINOR, 2026-09-13 council): if Seerr
+#      bumps `updatedAt` on a row for reasons unrelated to a real state
+#      change (routine internal touch), a permanently-stranded row could stay
+#      "within grace" forever and never confirm. arr-plex-parity.sh trusts
+#      the same field the same way, so this is not a new assumption, but it
+#      IS unverified against live Seerr behaviour. Left as-is per operator
+#      ruling; if this is ever confirmed live, gate grace on a monotonic
+#      "first seen by THIS canary" timestamp in the state file instead of
+#      trusting Seerr's own `updatedAt`.
 #   2. TWO-CONSECUTIVE-RUN gate. A state file under ~/.opt/maint/ records this
 #      run's finding keys; a key seen on THIS run and the PREVIOUS run is
 #      "confirmed" and pages. First sighting arms (exit 0, `watching=N`);
@@ -86,10 +113,34 @@
 #      an unlocked read-modify-write with a NAMED, COUNTED skip. The box is
 #      Linux; `fcntl.flock` is the only path that ever runs there.)
 #
+#      STATE-FILE INTEGRITY (2026-09-13 council finding, MAJOR): a state file
+#      that fails to open or fails to parse as JSON is NOT silently treated
+#      as "no prior findings" and forgotten — that used to swallow the event
+#      with zero trace, contradicting rule 4 below. A genuinely MISSING file
+#      (first run ever, `FileNotFoundError`) is the expected first-deploy
+#      shape and is not a skip. Anything else unreadable-or-corrupt IS a
+#      named, counted skip (`state-file-corrupt-or-unreadable`) with its own
+#      trail line, and per OPERATOR RULING the gate still arms-this-run (same
+#      behaviour as a first run) rather than being treated as a false clean
+#      pass — it just no longer happens invisibly.
+#
+#      PERSISTENT PER-TITLE FAILURE ESCALATION (2026-09-13 council finding,
+#      MAJOR): a `tv-detail-fetch-failed` skip on its own only withholds that
+#      ONE row for THIS run — harmless for a transient 500. But a Seerr
+#      title whose detail endpoint fails EVERY run forever would mask a real
+#      STRANDED season indefinitely behind an ever-incrementing skip counter
+#      nothing pages on. The state file now tracks CONSECUTIVE per-tmdbId
+#      detail-fetch failures across runs; a tmdbId failing on 3 consecutive
+#      runs escalates the whole run to CANNOT-ASSERT
+#      (`seerr-arr-parity-tv-detail-persistent-failure`, exit 2), naming the
+#      stuck id(s) rather than a silent, forever-skipped row. Recovering even
+#      once resets that id's counter to 0.
+#
 # Every intentional exclusion (not-settled status, within-grace, unresolvable
-# id, season *arr does not know about, tvdbId collision) is COUNTED AND
-# NAMED in `skips=N(reason:count,...)`, appended to every PASS and STAGE line
-# — rule 4, "a suppression or skip must be counted and logged, never silent".
+# id, season *arr does not know about, tvdbId collision, state-file
+# corruption) is COUNTED AND NAMED in `skips=N(reason:count,...)`, appended to
+# every PASS and STAGE line — rule 4, "a suppression or skip must be counted
+# and logged, never silent".
 #
 # LIVE BASELINE (to reproduce on first deploy, per the spec): 47 rows would
 # reconcile today (42 orphan + 5 stuck-season/STRANDED). Because of the
@@ -109,8 +160,10 @@
 #   1  finding — >=1 orphan or stranded season confirmed across two
 #      consecutive runs.
 #   2  CANNOT-ASSERT — Seerr unreachable, ANY of the four *arrs unreachable,
-#      an empty *arr list, an empty Seerr list, or a bad numeric override.
-#      Empty-because-broken must never read as empty-because-clean.
+#      an empty *arr list, an empty Seerr list, a bad numeric override, a
+#      genuine pagination overflow, or a tmdbId whose tv-detail lookup has
+#      failed 3 consecutive runs. Empty-because-broken must never read as
+#      empty-because-clean.
 #
 # STAGE labels (stderr -> Kuma msg=):
 #   seerr-arr-parity-bad-config       a numeric override is not a positive
@@ -119,8 +172,16 @@
 #   seerr-arr-parity-seerr-unreachable  Seerr API failed or returned garbage
 #   seerr-arr-parity-seerr-empty      Seerr's media list is empty (2 pages, 0
 #                                     rows) — cannot be real on a live box
+#   seerr-arr-parity-pagination-overflow  a page AFTER the MAX_PAGES cap came
+#                                     back non-empty — Seerr answered every
+#                                     request correctly, this is not
+#                                     "unreachable", it is "there is more data
+#                                     than the cap allows for"
 #   seerr-arr-parity-arr-unreachable  one of the four *arrs failed
 #   seerr-arr-parity-arr-empty        one of the four *arrs returned 0 items
+#   seerr-arr-parity-tv-detail-persistent-failure  a tmdbId's /api/v1/tv
+#                                     detail call has failed 3 consecutive
+#                                     runs — cannot rule out a masked STRANDED
 #   seerr-arr-parity                  >=1 orphan/stranded confirmed (exit 1)
 #
 # ============================================================================
@@ -132,7 +193,10 @@
 #   QFLIX_CANARY_SAP_TIMEOUT_S      per-HTTP-request timeout, seconds. dflt 15
 #   QFLIX_CANARY_SAP_RETRIES        transport-error retries per request. dflt 1
 #   QFLIX_CANARY_SAP_PAGE_SIZE      Seerr /api/v1/media page size. default 100
-#   QFLIX_CANARY_SAP_MAX_PAGES      pagination safety cap. default 200
+#   QFLIX_CANARY_SAP_MAX_PAGES      pagination safety cap, in FULL pages.
+#                                    default 200. One extra confirmation
+#                                    request is always issued after MAX_PAGES
+#                                    full pages — see HONEST LIMITS 4.
 #   QFLIX_CANARY_SAP_STATE          two-run state file, default
 #                                    ~/.opt/maint/seerr-arr-parity/state.json
 #   QFLIX_CANARY_SAP_TRAIL          durable append-only trail, default
@@ -156,6 +220,18 @@
 #   3. UNDERREPORTED is tracked through the identical two-run/state-file
 #      machinery as ORPHAN/STRANDED but deliberately never contributes to
 #      the exit-1 decision — "report separately, lower severity" per spec.
+#   4. PAGINATION BOUNDARY (2026-09-13 council finding, MINOR, fixed): the
+#      original loop treated exactly MAX_PAGES full-length pages (a page
+#      whose length == PAGE_SIZE, no short final page) as pagination
+#      overflow, indistinguishable from a genuinely broken Seerr — a real
+#      false CANNOT-ASSERT whenever the live table happens to sit at an exact
+#      multiple of PAGE_SIZE at scan time. It now issues ONE more request
+#      after the MAX_PAGES'th full page: a short-or-empty trailing page is a
+#      clean stop (Seerr answered correctly, there was just a boundary-sized
+#      table); a NON-empty page beyond the cap is the real overflow and is
+#      its own STAGE (`seerr-arr-parity-pagination-overflow`), not
+#      `seerr-unreachable` — Seerr answered every request fine, there is
+#      simply more data than the configured cap allows for.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -364,6 +440,17 @@ if missing:
 SEERR_BASE = "http://127.0.0.1:%s" % SEERR_PORT
 
 # --- Seerr media, paged -------------------------------------------------
+# HONEST LIMITS 4 / 2026-09-13 council finding (MINOR, boundary): a live
+# Seerr table sitting at an EXACT multiple of PAGE_SIZE up to MAX_PAGES full
+# pages used to be indistinguishable from genuine pagination breakage -- the
+# for/else fired on the MAX_PAGES'th full page even though every single
+# request up to that point succeeded and returned real data. Fetching one
+# CONFIRMATION page after the cap tells the two cases apart: short-or-empty
+# means the table just happened to land on a page boundary (clean stop, no
+# STAGE at all); non-empty means there really is more data than the cap
+# allows for, which is a genuine (if rare) overflow -- and is reported as
+# such (`pagination-overflow`), NOT as `seerr-unreachable`, because Seerr
+# answered every request correctly.
 rows = []
 skip_n = 0
 for _page in range(MAX_PAGES):
@@ -381,8 +468,23 @@ for _page in range(MAX_PAGES):
         break
     skip_n += PAGE_SIZE
 else:
-    cannot("seerr-arr-parity-seerr-unreachable",
-           "media-pagination-exceeded-max-pages=%d" % MAX_PAGES)
+    # Every one of the MAX_PAGES pages fetched so far was a FULL page -- ask
+    # for exactly one more before concluding anything is actually wrong.
+    ok_, data = http_json(SEERR_BASE + "/api/v1/media", SEERR_KEY,
+                           params={"take": PAGE_SIZE, "skip": skip_n})
+    if not ok_:
+        cannot("seerr-arr-parity-seerr-unreachable",
+               "media-api-%s-at-skip=%d" % (data, skip_n))
+    if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+        cannot("seerr-arr-parity-seerr-unreachable",
+               "media-api-malformed-response-at-skip=%d" % skip_n)
+    confirm_page = data["results"]
+    if confirm_page:
+        cannot("seerr-arr-parity-pagination-overflow",
+               "media-pagination-exceeded-max-pages=%d-confirm-page-nonempty=%d"
+               % (MAX_PAGES, len(confirm_page)))
+    # else: a genuinely empty trailing page -- the table landed exactly on a
+    # PAGE_SIZE*MAX_PAGES boundary. Clean stop, nothing to report.
 
 if not rows:
     cannot("seerr-arr-parity-seerr-empty",
@@ -390,6 +492,7 @@ if not rows:
 
 # --- the four *arrs, fetched once ---------------------------------------
 sonarr_tvdb = {}     # tvdbId -> {seasonNumber: episodeFileCount}
+untrusted_tvdb = set()  # tvdbId seen in >1 sonarr instance -- see below
 radarr_tmdb = set()
 
 for slug, spec in arrs.items():
@@ -416,8 +519,21 @@ for slug, spec in arrs.items():
                 fc = (se.get("statistics") or {}).get("episodeFileCount")
                 if num is not None and fc is not None:
                     seasons[num] = fc
-            if tvdb in sonarr_tvdb:
+            if tvdb in sonarr_tvdb or tvdb in untrusted_tvdb:
+                # 2026-09-13 council finding (MAJOR, boundary): keeping the
+                # FIRST-seen instance's map here and running the predicate
+                # against it produced a false STRANDED page for a season
+                # that unambiguously had files in the OTHER sonarr instance.
+                # There is no way to know from this side alone which
+                # instance is authoritative for a duplicated tvdbId, so the
+                # id is marked UNTRUSTED and its (possibly stale) map is
+                # DROPPED entirely rather than kept -- every per-row
+                # assertion for this tvdbId is withheld below, the same
+                # "cannot know, so don't guess" contract as
+                # season-unknown-to-sonarr, just at the whole-series level.
                 skip("tvdbid-collision-across-sonarr-instances")
+                untrusted_tvdb.add(tvdb)
+                sonarr_tvdb.pop(tvdb, None)
                 continue
             sonarr_tvdb[tvdb] = seasons
     else:
@@ -433,6 +549,7 @@ GRACE_S = GRACE_H * 3600
 orphans = {}
 stranded = {}
 underreported = {}
+tv_detail_failed_ids = set()   # tmdbIds whose /api/v1/tv/<id> failed THIS run
 
 for row in rows:
     status = row.get("status")
@@ -473,12 +590,25 @@ for row in rows:
 
     ok_, detail = http_json(SEERR_BASE + "/api/v1/tv/%s" % tmdb, SEERR_KEY)
     if not ok_ or not isinstance(detail, dict):
+        # A single transient 500 is harmless -- withhold just this row. But
+        # see PERSISTENT PER-TITLE FAILURE ESCALATION below: if the SAME
+        # tmdbId fails 3 consecutive runs, that stops being transient and a
+        # real STRANDED season behind it could be masked forever.
         skip("tv-detail-fetch-failed")
+        tv_detail_failed_ids.add(tmdb)
         continue
 
     tvdb = row.get("tvdbId") or (detail.get("externalIds") or {}).get("tvdbId")
     if not tvdb:
         skip("tv-no-tvdbid-resolvable")
+        continue
+
+    if tvdb in untrusted_tvdb:
+        # A duplicated tvdbId can never resolve to a trustworthy orphan/
+        # stranded/underreported verdict from this side -- withhold the
+        # WHOLE row, not just the seasons, rather than fabricate an answer
+        # from data we already know is ambiguous.
+        skip("tvdbid-untrusted-row-excluded")
         continue
 
     seerr_seasons = {}
@@ -573,18 +703,65 @@ except ImportError:
 
 _lock()
 prev_findings = {}
+prev_tv_failures = {}
 try:
     with open(STATE_PATH, encoding="utf-8") as fh:
-        prev_findings = (json.load(fh) or {}).get("findings") or {}
+        loaded = json.load(fh) or {}
+    prev_findings = loaded.get("findings") or {}
+    prev_tv_failures = loaded.get("tv_detail_failures") or {}
+except FileNotFoundError:
+    # Expected shape on the very first run ever (fresh deploy, or a state
+    # dir a human cleared) -- nothing to compare against, and NOT a
+    # corruption event, so no skip is counted for this leg.
+    pass
 except (OSError, ValueError):
+    # 2026-09-13 council finding (MAJOR, false-green): this used to swallow
+    # a present-but-unreadable-or-corrupt state file the exact same way as
+    # "no file yet", with zero trace anywhere -- silently resetting the
+    # two-run confirmation gate every time it happened, contradicting rule 4
+    # ("a suppression or skip must be counted and logged, never silent").
+    # OPERATOR RULING: corruption still arms-this-run (same behaviour as a
+    # true first run -- there is genuinely nothing trustworthy to compare
+    # against), but it is now a NAMED, COUNTED skip with its own trail line
+    # instead of an invisible reset.
+    skip("state-file-corrupt-or-unreadable")
+    note("STATE-CORRUPT state=%s unreadable-or-invalid-json -- treating as "
+         "arm-this-run (no prior findings trusted), gate not silently reset"
+         % STATE_PATH)
     prev_findings = {}
+    prev_tv_failures = {}
+
+# PERSISTENT PER-TITLE FAILURE ESCALATION (operator ruling 2, MAJOR): a
+# tmdbId whose /api/v1/tv detail call fails on THIS run AND failed on the
+# previous run(s) recorded in state gets its consecutive-failure counter
+# bumped; anything that did NOT fail this run is dropped (one success resets
+# it to zero, never "decays" toward the threshold). 3 consecutive failures
+# for the SAME id means the row has been silently withheld for three whole
+# runs running -- long enough that "transient 500" no longer covers it, and
+# a real STRANDED season behind that id could be masked indefinitely.
+new_tv_failures = {}
+escalate_ids = []
+for _tmdb in tv_detail_failed_ids:
+    _key = str(_tmdb)
+    _count = prev_tv_failures.get(_key, 0) + 1
+    new_tv_failures[_key] = _count
+    if _count >= 3:
+        escalate_ids.append((_tmdb, _count))
+
 tmp_path = STATE_PATH + ".tmp"
 with open(tmp_path, "w", encoding="utf-8") as fh:
-    json.dump({"checked": NOW, "findings": {k: True for k in current}}, fh)
+    json.dump({"checked": NOW, "findings": {k: True for k in current},
+               "tv_detail_failures": new_tv_failures}, fh)
 os.replace(tmp_path, STATE_PATH)
 _unlock()
 if lock_fh is not None:
     lock_fh.close()
+
+if escalate_ids:
+    escalate_ids.sort(key=lambda pair: -pair[1])
+    named = ",".join("tmdb=%s(consecutive=%d)" % (t, c) for t, c in escalate_ids[:10])
+    cannot("seerr-arr-parity-tv-detail-persistent-failure",
+           "tv-detail-lookup-failed-3-plus-consecutive-runs=%s" % named)
 
 confirmed = {k: v for k, v in current.items() if k in prev_findings}
 c_orphan = {k: v for k, v in confirmed.items() if k.startswith("orphan:")}

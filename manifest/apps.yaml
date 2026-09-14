@@ -1422,16 +1422,17 @@ canaries:
   seerr-arr-parity:
     # Added 2026-09-13, spec section 4 (S-1..S-3) of
     # docs/superpowers/specs/2026-09-12-reaper-d-per-file-retention-spec.md.
-    # `reconcile_seerr()` exists to stop reaped titles being stuck
-    # un-re-requestable but pages `filter=available` only, so rows that land
-    # in DELETED (status 7) are invisible to it and never clear. Measured live
-    # 2026-09-12: 66 status-7 seasons across 28 shows, 763 season_request rows
-    # still pointing at them, Law & Order alone carrying 23 — an admin had to
-    # push seasons 3/4 through by hand for one member. The reaper ACTS; this
-    # canary continuously ASSERTS the cross-system state it leaves behind is
-    # actually re-requestable ("correctness here is continuous, not a side
-    # effect of a reap" — operator design law). REPORT ONLY per operator
-    # ruling; it never mutates Seerr or any *arr.
+    # `reconcile_seerr()` was built to stop reaped titles being stuck
+    # un-re-requestable; as of ancestor commit eefcffd it pages ALL statuses
+    # (not just `filter=available`) and DELETE-cascades any stuck status-7
+    # season for a series still present in Sonarr. The 66 status-7 / 763
+    # season_request / Law & Order numbers measured live 2026-09-12 predate
+    # that fix and are NOT re-verified against the current reaper — re-measure
+    # on first deploy. This canary does not exist to catch that (fixed) bug;
+    # it ASSERTS the RESIDUAL — reconciliation stops running, or a strand
+    # shape the fix doesn't reach — continuously ("correctness here is
+    # continuous, not a side effect of a reap" — operator design law).
+    # REPORT ONLY per operator ruling; it never mutates Seerr or any *arr.
     #
     # Predicate, for every SETTLED Seerr media row (not PENDING/PROCESSING/
     # BLOCKLISTED): a TV season at Seerr status 5/7 while Sonarr (either
