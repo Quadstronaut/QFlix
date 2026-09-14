@@ -259,7 +259,7 @@ Task properties:
 - **Settings:**
   - `StartWhenAvailable = $true` (catches missed logons)
   - `MultipleInstancesPolicy = IgnoreNew` (file lock is a belt; this is the suspenders)
-  - `ExecutionTimeLimit = PT15M` (hard ceiling — qwen3-coder:30b is the long tent pole; 3 models × ~240s + overhead fits comfortably)
+  - `ExecutionTimeLimit = PT30M` (hard ceiling — raised from PT15M 2026-09-14: measured runs take ~22 min with three models sequential and `keep_alive=0` unloads between them)
   - `AllowStartIfOnBatteries = $true` (operator runs solar)
   - `RunOnlyIfNetworkAvailable = $true`
 - **User context:** current user, "Run only when user is logged on" (no stored password required).
