@@ -38,9 +38,34 @@ EXCLUDED_ROOTS — because those libraries are jpn-only-original and jpn
 being the shipped default there is correct, not a bug; "English default" is
 a policy for everything else, not anime.
 
+SCOPE (operator-reviewed 2026-09-13, MAJOR finding from review round 2): a
+read-only dry-run against the box's real DEFAULT_ROOTS (Movies + TV Shows,
+489 video files) found exactly 50 candidates across 24 titles combining
+both classes — not just the 9 Futurama S1 files CLASS 2 was demoed against.
+Operator reviewed this count and APPROVED the 50-file first live run;
+English-default-everywhere is the ruled policy for all of Movies + TV Shows
+(Anime and Anime Movies excluded structurally, as above), including
+currently-airing titles the sample turned up (e.g. Squid Game S03,
+Star Trek: Strange New Worlds S03).
+
+Neither class ever chooses a commentary track as the new default (a stream
+with disposition.comment truthy, or a title tag containing "commentary"
+case-insensitive, is excluded from every candidate pool — see
+_is_commentary), and CLASS 1's compat-track selection additionally refuses
+a foreign-tagged candidate rather than ever installing a non-English
+default (see _classify_dual_default) — both added 2026-09-13 review round 2
+after adversarial review found the original CLASS 1 logic and CLASS 2's
+target selection could each install the wrong track as sole default.
+
 Fix mechanics per file (both classes, identical mechanism): ffmpeg full
 stream-copy remux (`-map 0 -c copy`)
-adjusting only `-disposition:a:N` flags — no re-encode, IO-bound only —
+adjusting only `-disposition:a:N` flags — no re-encode, IO-bound only. Each
+touched stream's FULL existing disposition bitmask is preserved (original,
+comment, dub, hearing_impaired, etc.) with only "default" added or removed
+(see _disposition_value) — a bare "0"/"default" literal, which is what
+ffmpeg's -disposition option actually replaces the WHOLE flag set with, was
+found 2026-09-13 review round 2 to silently strip every other flag on the
+two touched streams. Remux output is
 written to a temp in the same directory whose name ENDS IN ".tmp" and is
 also dot-prefixed (see fix_file: the ".tmp" ending is what hides it from
 Tdarr, the leading dot is what hides it from Plex and Sonarr — two different
@@ -253,15 +278,52 @@ def _is_eng(lang) -> bool:
     return lang in ("eng", "en")
 
 
+def _is_commentary(stream: dict) -> bool:
+    """Operator ruling (2026-09-13, review round 2): a commentary/descriptive
+    track must never be chosen as the new default in EITHER class, even when
+    it is otherwise English-tagged and/or aac<=2ch (compat-shaped). Two
+    independent signals, either one disqualifies:
+      - disposition.comment is the ffmpeg/mkvmerge flag muxers set for
+        director/cast commentary tracks.
+      - a title tag containing "commentary" (case-insensitive) catches
+        releases that carry the intent in metadata text but never set the
+        disposition bit (seen in the wild more often than the bit itself).
+    Excluded from every candidate pool this module builds — never just
+    filtered out of the *chosen* result, because an unfiltered pool one
+    index away from being chosen is one refactor away from being chosen."""
+    disp = stream.get("disposition") or {}
+    if disp.get("comment"):
+        return True
+    title = (stream.get("tags") or {}).get("title") or ""
+    return "commentary" in title.lower()
+
+
 def _classify_dual_default(audio: list, defaults: list):
-    """CLASS 1 (2026-07-19). See module docstring. Unchanged behaviour from
-    before the foreign_default split; only the returned dict gained a
-    "kind" key."""
+    """CLASS 1 (2026-07-19). See module docstring.
+
+    Language + commentary safety (2026-09-13 review round 2, BLOCKER):
+    the original version picked ANY aac<=2ch default track as the compat
+    target, including one tagged for a foreign language or flagged/titled
+    commentary — on a file with e.g. a French aac/2ch default alongside an
+    English EAC3 default, the old code installed the French track as the
+    SOLE default end-to-end. Now: a compat candidate is only eligible when
+    its language tag is either absent/und (we don't know it's foreign — the
+    original Tdarr-added track is usually untagged or eng) or explicitly
+    eng/en, AND it is not a commentary track. If every aac<=2ch default is
+    disqualified this way, refuse the whole file rather than guess — this
+    is a deliberate, counted-and-named refusal (classify_streams still
+    tries CLASS 2 next, which can rescue a file this refusal drops if an
+    untouched English track exists elsewhere to promote instead)."""
     if len(defaults) < 2:
         return None
-    compat = [i for i in defaults if _is_compat_track(audio[i])]
-    if not compat:
+    compat_all = [i for i in defaults
+                  if _is_compat_track(audio[i]) and not _is_commentary(audio[i])]
+    if not compat_all:
         return None
+    compat = [i for i in compat_all
+              if _lang(audio[i]) is None or _is_eng(_lang(audio[i]))]
+    if not compat:
+        return None            # every compat candidate is provably foreign — refuse
     target = compat[-1]                      # Tdarr appends: last compat wins
     clear = [i for i in defaults if i != target]
     return {"target": target, "clear": clear, "audio_count": len(audio),
@@ -283,10 +345,18 @@ def _classify_foreign_default(audio: list, defaults: list):
     Target = an eng track that is aac<=2ch (compat) if one exists, else the
     first eng track by index. Clear = every current default (all proven
     non-eng by the checks above).
+
+    Commentary safety (2026-09-13 review round 2, MAJOR): eng_indices — the
+    ENTIRE candidate pool, both for the compat-preference rule and the
+    index-order fallback — excludes commentary tracks (see _is_commentary).
+    Without this an eng-tagged director's-commentary track could outrank
+    the real English dialogue track, especially under the "prefer compat"
+    rule if the commentary track happens to be aac<=2ch shaped.
     """
     if not defaults:
         return None
-    eng_indices = [i for i, s in enumerate(audio) if _is_eng(_lang(s))]
+    eng_indices = [i for i, s in enumerate(audio)
+                   if _is_eng(_lang(s)) and not _is_commentary(s)]
     if not eng_indices:
         return None
     default_langs = []
@@ -327,17 +397,54 @@ def classify_streams(streams: list):
     return _classify_foreign_default(audio, defaults)
 
 
-def build_ffmpeg_cmd(src: str, dst: str, plan: dict) -> list:
+# ffmpeg's -disposition:a:N option REPLACES the entire flag set on that
+# stream — it is not additive. Naively passing the bare literal "0" or
+# "default" (as this module did before 2026-09-13 review round 2, MAJOR)
+# silently wipes every OTHER flag the source stream carried: original,
+# comment, dub, hearing_impaired, visual_impaired, karaoke, forced, lyrics,
+# descriptions, etc. Confirmed on a real remux: a source with
+# default+original on track 0 came back default:0,original:0 — "original"
+# vanished even though nothing about this janitor's job description ever
+# said to touch it. _disposition_value rebuilds the FULL flag string from
+# the stream's own (already-probed) disposition dict, adding/removing only
+# "default" — ffmpeg accepts a "+"-joined flag list (verified against
+# ffmpeg 8.1.1: "-disposition:a:1 comment+default" round-trips both bits).
+def _disposition_value(stream: dict, want_default: bool) -> str:
+    """Build the full -disposition:a:N argument for `stream`, preserving
+    every flag ffprobe reported truthy except overriding "default" per
+    `want_default`. ffprobe's disposition JSON keys and ffmpeg's
+    -disposition flag names are the same strings (both walk the same
+    libavformat enum), so any truthy key here round-trips as a flag name
+    ffmpeg understands. Falls back to a bare "0" only when the result would
+    otherwise be empty — ffmpeg rejects an empty -disposition value."""
+    disp = dict(stream.get("disposition") or {})
+    disp["default"] = 1 if want_default else 0
+    flags = [name for name, val in disp.items() if val]
+    return "+".join(flags) if flags else "0"
+
+
+def build_ffmpeg_cmd(src: str, dst: str, plan: dict, streams: list | None = None) -> list:
     """Disposition-only stream-copy remux command. Touches ONLY the audio
     default flags named in the plan; every stream is mapped and copied.
+
+    `streams` (optional, the SOURCE ffprobe streams array) lets each touched
+    track's non-default disposition flags survive the edit — see
+    _disposition_value. Omitting it (back-compat for the handful of
+    existing direct callers/tests that only care about the "default" bit)
+    degrades to the pre-2026-09-13 bare "0"/"default" behaviour, since there
+    is no source flag data to preserve.
 
     `-f` is derived from the SOURCE extension, never from `dst`: dst ends in
     ".tmp" so ffmpeg cannot infer the muxer at all (see MUXER)."""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
            "-i", src, "-map", "0", "-c", "copy"]
+    audio = [s for s in (streams or []) if s.get("codec_type") == "audio"]
     for i in plan["clear"]:
-        cmd += ["-disposition:a:" + str(i), "0"]
-    cmd += ["-disposition:a:" + str(plan["target"]), "default",
+        stream = audio[i] if i < len(audio) else {}
+        cmd += ["-disposition:a:" + str(i), _disposition_value(stream, want_default=False)]
+    target = plan["target"]
+    target_stream = audio[target] if target < len(audio) else {}
+    cmd += ["-disposition:a:" + str(target), _disposition_value(target_stream, want_default=True),
             "-f", MUXER[Path(src).suffix.lower()], dst]
     return cmd
 
@@ -346,7 +453,17 @@ def verify_fixed(streams: list, expect_stream_count: int,
                   kind: str = "dual_default") -> bool:
     """Post-remux check: stream count preserved AND exactly one default
     audio stream, AND that stream matches what `kind` promised:
-      - dual_default:    the sole default is the aac<=2ch compat track.
+      - dual_default:    the sole default is the aac<=2ch compat track AND
+                         (2026-09-13 review round 2, BLOCKER) it is not
+                         provably foreign — its language tag, if present and
+                         not und, must be eng/en. An untagged compat track
+                         still passes (matches the original Tdarr use case,
+                         which carries no language tags at all); a track
+                         explicitly tagged e.g. "fre" never does, even
+                         though it is aac<=2ch-shaped. This closes the same
+                         hole as _classify_dual_default's compat filter —
+                         belt AND suspenders, since verify_fixed is the last
+                         gate before an atomic replace lands on disk.
       - foreign_default: the sole default is tagged eng/en.
     `kind` defaults to "dual_default" for backward compatibility with
     existing callers/tests that predate the foreign_default class."""
@@ -356,9 +473,13 @@ def verify_fixed(streams: list, expect_stream_count: int,
     defaults = [s for s in audio if (s.get("disposition") or {}).get("default")]
     if len(defaults) != 1:
         return False
+    sole = defaults[0]
     if kind == "foreign_default":
-        return _is_eng(_lang(defaults[0]))
-    return _is_compat_track(defaults[0])
+        return _is_eng(_lang(sole))
+    if not _is_compat_track(sole):
+        return False
+    lang = _lang(sole)
+    return lang is None or _is_eng(lang)
 
 
 # ===========================================================================
@@ -475,14 +596,22 @@ def fix_file(path: Path, plan: dict) -> None:
 def _remux_once(path: Path, tmp: Path, plan: dict, st) -> None:
     """Single remux attempt: ffmpeg -> verify -> atomic replace. Raises
     TmpVanishedError when the temp is gone at verify/replace time (retryable
-    by fix_file); any other failure raises straight through."""
+    by fix_file); any other failure raises straight through.
+
+    Probes the SOURCE before invoking ffmpeg (reordered 2026-09-13, MAJOR
+    fix) so build_ffmpeg_cmd can read each touched stream's existing
+    disposition flags and preserve them (see _disposition_value) — this is
+    a pure remux, the source is never mutated until the final os.replace,
+    so probing it before vs. after ffmpeg runs observes the same bytes
+    either way; probing first is what lets the command carry the flags."""
     try:
-        proc = subprocess.run(build_ffmpeg_cmd(str(path), str(tmp), plan),
+        src_streams = ffprobe_streams(str(path))
+        src_count = len(src_streams)
+        proc = subprocess.run(build_ffmpeg_cmd(str(path), str(tmp), plan, src_streams),
                               capture_output=True, text=True, timeout=3600)
         if proc.returncode != 0:
             raise RuntimeError("ffmpeg exit " + str(proc.returncode) + ": "
                                + proc.stderr.strip()[:200])
-        src_count = len(ffprobe_streams(str(path)))
         try:
             tmp_streams = ffprobe_streams(str(tmp))
         except Exception:

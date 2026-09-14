@@ -116,6 +116,7 @@ def test_verify_rejects_wrong_sole_default():
 # failure, --max-items cap, and active-session skip, all with mocked I/O.
 # ---------------------------------------------------------------------------
 import os
+import shutil
 import subprocess as _subprocess
 import types
 
@@ -571,3 +572,318 @@ def test_scan_files_skips_both_named_anime_dirs_by_default():
     default root is an anime path, and the constant names are exactly the
     two known anime libraries -- nothing broader, nothing narrower."""
     assert len(adj.EXCLUDED_ROOTS) == 2
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 (2026-09-13) — BLOCKER: dual_default's compat-track
+# selection was language-blind, and both classes' target selection ignored
+# disposition.comment/title-commentary. Operator rulings (1) and (2).
+# ---------------------------------------------------------------------------
+
+def _alc(codec: str, channels: int, default: int, lang=None,
+         comment: int = 0, title: str | None = None) -> dict:
+    """Audio stream builder with full control: language tag, the
+    disposition.comment bit, and a title tag -- covers both signals
+    _is_commentary checks."""
+    disp = {"default": default, "comment": comment}
+    s = {"codec_type": "audio", "codec_name": codec, "channels": channels,
+         "disposition": disp}
+    tags = {}
+    if lang is not None:
+        tags["language"] = lang
+    if title is not None:
+        tags["title"] = title
+    if tags:
+        s["tags"] = tags
+    return s
+
+
+def test_dual_default_never_targets_a_foreign_tagged_compat_track():
+    """The exact BLOCKER scenario from review round 2: an aac/2ch FRENCH
+    default alongside an EAC3/2ch FRENCH default (wrongly picked as the
+    dual_default target pre-fix) plus a silent English aac/2ch compat
+    track. classify_streams must never make audio[0] (French) the sole
+    default -- dual_default refuses (its only compat candidate is foreign)
+    and foreign_default rescues the file, correctly promoting the real
+    English track instead."""
+    streams = [_v(),
+               _alc("aac", 2, 1, "fre"),      # dual_default's old target -- WRONG
+               _alc("eac3", 6, 1, "fre"),
+               _alc("aac", 2, 0, "eng")]
+    plan = adj.classify_streams(streams)
+    assert plan is not None
+    # Invariant: whatever plan comes back, the chosen target is never the
+    # French track and is provably eng-or-untagged.
+    target_lang = adj._lang(streams[1:][plan["target"]])
+    assert target_lang != "fre"
+    assert target_lang is None or adj._is_eng(target_lang)
+    assert plan["kind"] == "foreign_default"
+    assert plan["target"] == 2                 # the real English aac compat track
+
+
+def test_dual_default_refuses_outright_when_only_compat_candidate_is_foreign_and_no_rescue():
+    """Same shape as above but with NO English track anywhere -- there is
+    nothing for foreign_default to rescue with, so the whole file must be
+    refused (None), never defaulting to the foreign compat track."""
+    streams = [_v(),
+               _alc("aac", 2, 1, "fre"),
+               _alc("eac3", 6, 1, "fre")]
+    assert adj.classify_streams(streams) is None
+
+
+def test_dual_default_untagged_compat_track_still_matches_original_tdarr_case():
+    """Regression: the ORIGINAL Tdarr dual_default bug ships with no
+    language tags on either stream at all. The new language filter must
+    not require a tag -- untagged must still be eligible."""
+    streams = [_v(), _a("eac3", 6, 1), _a("aac", 2, 1)]
+    plan = adj.classify_streams(streams)
+    assert plan == {"target": 1, "clear": [0], "audio_count": 2, "kind": "dual_default"}
+
+
+def test_dual_default_skips_commentary_flagged_compat_track():
+    """A dual-default pair where the ONLY aac<=2ch default is flagged
+    disposition.comment must not be chosen -- refuse (no other rescue
+    available here)."""
+    streams = [_v(), _alc("eac3", 6, 1), _alc("aac", 2, 1, comment=1)]
+    assert adj.classify_streams(streams) is None
+
+
+def test_verify_fixed_dual_default_rejects_foreign_tagged_sole_default():
+    """Exact attack-probe scenario from review round 2: a French aac/2ch
+    sole default must NOT verify as fixed under kind="dual_default", even
+    though it is aac<=2ch-shaped."""
+    fixed = [_alc("aac", 2, 1, "fre")]
+    assert not adj.verify_fixed(fixed, expect_stream_count=1, kind="dual_default")
+
+
+def test_verify_fixed_dual_default_accepts_untagged_compat_default():
+    """Backward-compat: the original Tdarr case (no language tags at all)
+    must still verify true -- the new language check must not regress
+    the untagged path."""
+    fixed = [_v(), _a("eac3", 6, 0), _a("aac", 2, 1)]
+    assert adj.verify_fixed(fixed, expect_stream_count=3, kind="dual_default")
+
+
+def test_verify_fixed_dual_default_accepts_eng_tagged_compat_default():
+    fixed = [_alc("aac", 2, 1, "eng")]
+    assert adj.verify_fixed(fixed, expect_stream_count=1, kind="dual_default")
+
+
+# -- foreign_default commentary exclusion (operator ruling 2) --------------
+
+def test_foreign_default_skips_commentary_disposition_for_target_selection():
+    streams = [_v(),
+               _alc("ac3", 6, 1, "ger"),                    # foreign default to clear
+               _alc("ac3", 2, 0, "eng", comment=1, title="Commentary"),   # decoy
+               _alc("eac3", 6, 0, "eng")]                   # real dialogue track
+    plan = adj.classify_streams(streams)
+    assert plan is not None
+    assert plan["kind"] == "foreign_default"
+    assert plan["target"] == 2                              # real English track, not the commentary one
+
+
+def test_foreign_default_skips_commentary_shaped_as_compat_track():
+    """The sharper case: the commentary track is ALSO aac<=2ch (compat-
+    shaped), which would otherwise win outright under the "prefer compat"
+    rule. Commentary exclusion must still keep it out of the pool."""
+    streams = [_v(),
+               _alc("ac3", 6, 1, "ger"),
+               _alc("aac", 2, 0, "eng", comment=1),          # compat-shaped commentary -- must be skipped
+               _alc("eac3", 6, 0, "eng")]                    # non-compat but the only legit eng track
+    plan = adj.classify_streams(streams)
+    assert plan is not None
+    assert plan["target"] == 2                               # audio-relative index of the real eng track
+
+
+def test_foreign_default_skips_title_tagged_commentary_without_disposition_bit():
+    """A track titled "English Commentary" but with disposition.comment
+    left at 0 (some muxers only ever set the title, never the bit) must
+    still be excluded -- the title-substring check is independent of the
+    disposition flag."""
+    streams = [_v(),
+               _alc("ac3", 6, 1, "ger"),
+               _alc("aac", 2, 0, "eng", title="English Commentary"),
+               _alc("eac3", 6, 0, "eng")]
+    plan = adj.classify_streams(streams)
+    assert plan is not None
+    assert plan["target"] == 2                               # audio-relative index of the real eng track
+
+
+def test_foreign_default_refuses_when_every_eng_track_is_commentary():
+    """No legitimate English track survives the commentary filter -- refuse
+    rather than promote a commentary track as the sole default."""
+    streams = [_v(),
+               _alc("ac3", 6, 1, "ger"),
+               _alc("aac", 2, 0, "eng", comment=1)]
+    assert adj.classify_streams(streams) is None
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 (2026-09-13) — MAJOR: -disposition:a:N fully overwrites the
+# stream's disposition bitmask, silently destroying every other flag
+# (original/comment/dub/etc.) on the two touched streams. Operator ruling
+# (3): rebuild the FULL flag list from the stream's existing disposition,
+# adding/removing only "default".
+# ---------------------------------------------------------------------------
+
+def test_disposition_value_preserves_original_flag_when_clearing_default():
+    stream = {"disposition": {"default": 1, "original": 1, "comment": 0}}
+    assert adj._disposition_value(stream, want_default=False) == "original"
+
+
+def test_disposition_value_preserves_comment_flag_when_setting_default():
+    stream = {"disposition": {"default": 0, "comment": 1}}
+    assert adj._disposition_value(stream, want_default=True) == "default+comment"
+
+
+def test_disposition_value_falls_back_to_bare_zero_when_no_flags_remain():
+    stream = {"disposition": {"default": 1}}
+    assert adj._disposition_value(stream, want_default=False) == "0"
+
+
+def test_disposition_value_bare_default_when_only_default_flag_set():
+    stream = {"disposition": {"default": 0}}
+    assert adj._disposition_value(stream, want_default=True) == "default"
+
+
+def test_disposition_value_handles_missing_disposition_key():
+    assert adj._disposition_value({}, want_default=True) == "default"
+    assert adj._disposition_value({}, want_default=False) == "0"
+
+
+def test_build_ffmpeg_cmd_preserves_source_disposition_flags():
+    """The exact incident shape from review round 2: source track 0 has
+    default+original, source track 1 has comment (not default). The
+    command sent to ffmpeg must preserve "original" on the cleared track
+    and "comment" on the newly-defaulted one -- not bare "0"/"default"."""
+    streams = [_v(),
+               {"codec_type": "audio", "codec_name": "ac3", "channels": 6,
+                "disposition": {"default": 1, "original": 1}},
+               {"codec_type": "audio", "codec_name": "aac", "channels": 2,
+                "disposition": {"default": 0, "comment": 1}}]
+    cmd = adj.build_ffmpeg_cmd("/in.mkv", "/.in.dispfix.tmp",
+                                {"target": 1, "clear": [0], "audio_count": 2},
+                                streams)
+    assert ["-disposition:a:0", "original"] == cmd[cmd.index("-disposition:a:0"):cmd.index("-disposition:a:0") + 2]
+    assert ["-disposition:a:1", "default+comment"] == cmd[cmd.index("-disposition:a:1"):cmd.index("-disposition:a:1") + 2]
+
+
+def test_build_ffmpeg_cmd_without_streams_arg_falls_back_to_bare_literals():
+    """Back-compat: existing direct callers that never pass `streams` keep
+    getting the bare "0"/"default" literals (no source flag data exists to
+    preserve)."""
+    cmd = adj.build_ffmpeg_cmd("/in.mkv", "/.in.dispfix.tmp",
+                                {"target": 1, "clear": [0], "audio_count": 2})
+    assert ["-disposition:a:0", "0"] == cmd[cmd.index("-disposition:a:0"):cmd.index("-disposition:a:0") + 2]
+    assert ["-disposition:a:1", "default"] == cmd[cmd.index("-disposition:a:1"):cmd.index("-disposition:a:1") + 2]
+
+
+def test_remux_once_passes_source_streams_into_build_ffmpeg_cmd(tmp_path, monkeypatch):
+    """fix_file's internal wiring must actually pass the freshly-probed
+    SOURCE streams through to build_ffmpeg_cmd -- a regression here would
+    silently fall back to the flag-destroying bare-literal path even
+    though build_ffmpeg_cmd itself is correct."""
+    src = _mk(tmp_path / "ep.mkv")
+    monkeypatch.setattr(adj.shutil, "disk_usage",
+                        lambda p: types.SimpleNamespace(free=10**9))
+    before_with_flags = [_v(),
+                          {"codec_type": "audio", "codec_name": "ac3", "channels": 6,
+                           "disposition": {"default": 1, "original": 1}},
+                          {"codec_type": "audio", "codec_name": "aac", "channels": 2,
+                           "disposition": {"default": 0, "comment": 1}}]
+    after_with_flags = [_v(),
+                         {"codec_type": "audio", "codec_name": "ac3", "channels": 6,
+                          "disposition": {"default": 0, "original": 1}},
+                         {"codec_type": "audio", "codec_name": "aac", "channels": 2,
+                          "disposition": {"default": 1, "comment": 1}}]
+    seen_cmds = []
+
+    def _fake_run(cmd, **kw):
+        seen_cmds.append(cmd)
+        Path(cmd[-1]).write_bytes(b"fixed")
+        return _Proc(0)
+    monkeypatch.setattr(adj.subprocess, "run", _fake_run)
+    monkeypatch.setattr(adj, "ffprobe_streams",
+                        lambda p: before_with_flags if p == str(src) else after_with_flags)
+    adj.fix_file(src, {"target": 1, "clear": [0], "audio_count": 2})
+    cmd = seen_cmds[0]
+    assert ["-disposition:a:0", "original"] == cmd[cmd.index("-disposition:a:0"):cmd.index("-disposition:a:0") + 2]
+    assert ["-disposition:a:1", "default+comment"] == cmd[cmd.index("-disposition:a:1"):cmd.index("-disposition:a:1") + 2]
+
+
+# ---------------------------------------------------------------------------
+# Real-mkv regression (operator ruling 3): actually invoke ffmpeg/ffprobe --
+# no mocks -- against a synthesized file with original/comment flags set,
+# and assert they survive fix_file end to end. Skips cleanly if ffmpeg is
+# not on PATH (CI runners without it).
+# ---------------------------------------------------------------------------
+import pytest as _pytest
+
+_HAVE_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+
+
+def _real_ffprobe_disposition(path, audio_index):
+    out = _subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", str(path)],
+        capture_output=True, text=True, timeout=30, check=True)
+    import json as _json
+    streams = _json.loads(out.stdout)["streams"]
+    audio = [s for s in streams if s["codec_type"] == "audio"]
+    return audio[audio_index]["disposition"]
+
+
+@_pytest.mark.skipif(not _HAVE_FFMPEG, reason="ffmpeg/ffprobe not on PATH")
+def test_fix_file_real_mkv_preserves_original_and_comment_flags(tmp_path):
+    """Build a real 2-audio-track mkv: track 0 = ger, default+original;
+    track 1 = eng aac/2ch, comment (not default). Run the REAL fix_file
+    (no mocked subprocess/ffprobe) with a foreign_default-shaped plan
+    promoting track 1. After the fix: track 0 must be default=0,
+    original=1 (original SURVIVES); track 1 must be default=1, comment=1
+    (comment SURVIVES) -- the exact incident from review round 2, where
+    the old bare "0"/"default" literals wiped both flags."""
+    src = tmp_path / "src.mkv"
+    build = _subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=1",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=220:duration=1",
+         "-map", "0:v", "-map", "1:a", "-map", "2:a",
+         "-c:v", "libx264", "-c:a", "aac",
+         "-metadata:s:a:0", "language=ger",
+         "-disposition:a:0", "default+original",
+         "-metadata:s:a:1", "language=eng",
+         "-disposition:a:1", "comment",
+         str(src)],
+        capture_output=True, text=True, timeout=60)
+    assert build.returncode == 0, build.stderr
+
+    plan = {"target": 1, "clear": [0], "audio_count": 2, "kind": "foreign_default"}
+    adj.fix_file(src, plan)          # real ffmpeg + real ffprobe, no mocks
+
+    disp0 = _real_ffprobe_disposition(src, 0)
+    disp1 = _real_ffprobe_disposition(src, 1)
+    assert disp0["default"] == 0
+    assert disp0["original"] == 1        # SURVIVED the disposition edit
+    assert disp1["default"] == 1
+    assert disp1["comment"] == 1         # SURVIVED the disposition edit
+
+
+# ---------------------------------------------------------------------------
+# Scope (2026-09-13 review round 2, MAJOR): the shipped/armed backlog claim
+# in the systemd unit comment was stale ("~7 days" from the original
+# dual_default-only 318-file backlog) and did not reflect the measured
+# current backlog (50 candidates, both classes, live dry-run 2026-09-13).
+# Operator ruling (4): update the comment; document the 50/24 finding in
+# the module docstring too.
+# ---------------------------------------------------------------------------
+
+def test_service_file_backlog_comment_reflects_measured_50_not_stale_claim():
+    svc = (ROOT / "scripts" / "maint" / "systemd"
+           / "manitoba-maint-audio-disposition.service").read_text(encoding="utf-8")
+    assert "converges in ~7 days" not in svc
+    assert "50 candidates" in svc
+    assert "one run" in svc.lower()
+
+
+def test_module_docstring_notes_2026_09_13_full_library_dry_run_scope():
+    assert "50 candidates across 24 titles" in adj.__doc__
