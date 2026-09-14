@@ -1098,16 +1098,21 @@ classes:
       model-authored signatures (html-response, invalid-xml-response,
       expected-mediacontainer-found-html) for the SAME 89 lines.
       PROVEN AT THE SIBLING-CLASS BAR. 98/98 occurrences across every retained
-      PMS rotation (four months) are immediately preceded, ON THE SAME Req#,
-      by either "Invalid library metadata ID N passed" or "Timeline: Unknown
-      metadata item N": 89 in the live log, 2026-09-12 05:18:04-05:32:45Z, all
+      PMS rotation (six rotations, 2026-08-03 to 2026-09-14; re-derived by an
+      independent reviewer 2026-09-14) are immediately preceded, ON THE SAME
+      Req#, by either "Invalid library metadata ID N passed" or "Timeline:
+      Unknown metadata item N": 89 in the live log, 2026-09-12 05:18:04-05:32:45Z, all
       on ratingKey 9380 (qflix-reaper deleted Futurama at 05:17:57Z and a
       client kept sending timeline heartbeats every 10s against the deleted
       item for ~14 minutes); 9 older ones on Aug 05/07/26/28, each paired the
       same way and each sitting beside the already-enrolled vanished-file
       lines (Failed to get a decision for, CreditsDetectionManager Job failed:
-      Video does not exist, Error scanning directory ... No such file). Zero
-      unpaired occurrences. Every one falls in the 05:02-05:17Z reaper hour or
+      Video does not exist, Error scanning directory ... No such file). One of
+      the nine (2026-08-20 01:59:43) is "Invalid library metadata ID 999999"
+      on a transcode session named qflix-neg-*: a deliberate negative probe
+      against a sentinel id that never existed, so the same vanished-item
+      shape, followed by the transcoder's own "unable to get container" for
+      that sentinel. Zero unpaired occurrences. Every one falls in the 05:02-05:17Z reaper hour or
       an import-replace window. Zero occurrences since 05:32:45Z 2026-09-12.
       THE DISCRIMINATOR LIVES ON A DIFFERENT LINE than the one REA matches, so
       this rule cannot check it per-hit; a future HTML answer from plex.tv or
@@ -1130,7 +1135,8 @@ classes:
       -job-video-missing: a credits-marker job whose video was deleted or
       replaced under it before it could extract a single frame. Paged
       2026-09-13 09:10 as "thumbnail-generation-failure" at 2/3 models.
-      CENSUS 2026-09-14, every retained PMS rotation: 4 occurrences total, all
+      CENSUS 2026-09-14, every retained PMS rotation (2026-08-03 to 2026-09-14):
+      4 occurrences total, all
       on 2026-09-12 - 02:29:51 and 02:33:48, thirteen minutes after
       "Library section 2 will be updated because of a change in Law & Order
       S04E21" (an *arr import replacing the file mid-scan), and 05:22:19 and
@@ -1158,13 +1164,15 @@ classes:
       encoder is about to create. Paged 2026-09-13 19:07 and again 21:11 under
       two different model-authored signatures (eae-watchfolder-error and
       transcode-eae-watchfolder-error) for ONE line.
-      CENSUS 2026-09-14, every retained PMS rotation: 2 occurrences in four
-      months - 2026-09-12 02:17:28 and 2026-09-14 01:17:52 - both a single
-      line, both immediately followed by the same session continuing
-      ("Time value greater than duration" INFO on the following requests) and
-      neither followed by a transcode failure, a member-facing error, or a
-      repeat. Two lines in four months, self-clearing within the same session,
-      is chatter, not a fault a member could hit.
+      CENSUS 2026-09-14, every retained PMS rotation (2026-08-03 to
+      2026-09-14): 2 occurrences - 2026-09-12 02:17:28 and 2026-09-14
+      01:17:52 - each a single line with no repeat. The second is followed by
+      the same session continuing ("Time value greater than duration" INFO on
+      its next requests); the first is followed two minutes later by an
+      unrelated thread's "MDE: unable to find a working transcode profile"
+      WARN, which is its own uncensused shape and still pages. Neither is
+      followed by a transcode failure or a member-facing error. Two lines in
+      six weeks, self-clearing, is chatter, not a fault a member could hit.
       WHO OWNS THE REAL VERSION: a transcoder that cannot produce segments reds
       manitoba-maint-canary-plex-transcoder and -plex-playback every run; an
       EAE that is genuinely broken fails those, not this rule.

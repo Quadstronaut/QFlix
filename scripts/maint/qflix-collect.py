@@ -1317,8 +1317,16 @@ def main() -> int:
         # a day saying nothing happened, in the same channel as real pages.
         # The operator's rule: Discord carries alerts, not heartbeats. The
         # heartbeat already rides the Kuma push and the journal; Discord only
-        # hears about a cycle that acted (or lost coverage, below).
-        if acted:
+        # hears about a cycle that acted (or lost coverage, below). A SAB
+        # restart_repair firing counts as acting: the breaker runs outside
+        # `candidates` by design (strike b is never a candidate), so gating
+        # on `acted` alone silenced a rate-limited automated restart
+        # (adversarial review 2026-09-14).
+        if escalation.get("fired"):
+            msg += ("; SAB restart_repair fired trigger=%s ids=%s"
+                    % (escalation.get("trigger"),
+                       ",".join(escalation.get("ids") or []) or "-"))
+        if acted or escalation.get("fired"):
             _notify(msg, "info")
         if cov_broken:
             _notify("Collector lost log coverage: " + cov_msg, "error")

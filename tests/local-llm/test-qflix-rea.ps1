@@ -546,6 +546,36 @@ Test-Case 'Test-IsNoiseFinding suppresses the Plex client-abort stream write' {
     Assert-Equal 'plex-client-abort-stream-write' (Test-IsNoiseFinding $f) 'matched by rule id'
 }
 
+Test-Case 'Test-IsNoiseFinding suppresses a single-line excerpt rule hit' {
+    $f = @{
+        signature = 'plex:html-response'
+        summary   = 'Plex returned HTML instead of XML'
+        excerpt   = 'Sep 12, 2026 05:32:45.290 [139867936561976] ERROR - [Req#13b5b4] downloadContainer: expected MediaContainer element, found html'
+    }
+    Assert-Equal 'plex-download-container-html-for-vanished-item' (Test-IsNoiseFinding $f) 'one noise line is noise'
+}
+
+Test-Case 'Test-IsNoiseFinding does NOT suppress a multi-line excerpt that bundles a noise line with an unclaimed line' {
+    # Adversarial review 2026-09-14: an excerpt-field rule is a claim about
+    # one log line, but a model quoting the surrounding block bundled the
+    # noise phrase with a real transcoder fault and the whole finding vanished.
+    $f = @{
+        signature = 'plex:html-response'
+        summary   = 'Plex returned HTML instead of XML'
+        excerpt   = "Sep 12, 2026 05:32:45.290 [x] ERROR - [Req#13b5b4] downloadContainer: expected MediaContainer element, found html`nSep 12, 2026 05:32:45.300 [x] ERROR - [Req#13b5b4/Transcode] TranscodeUniversalRequest: unable to find a matching profile"
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'an unclaimed line in the bundle pages'
+}
+
+Test-Case 'Test-IsNoiseFinding still suppresses a multi-line excerpt where every line is claimed noise' {
+    $f = @{
+        signature = 'plex:html-response'
+        summary   = 's'
+        excerpt   = "ERROR - [Req#1] downloadContainer: expected MediaContainer element, found html`nERROR - [Req#2] downloadContainer: expected MediaContainer element, found html"
+    }
+    Assert-Equal 'plex-download-container-html-for-vanished-item' (Test-IsNoiseFinding $f) 'all-noise bundle is noise'
+}
+
 Test-Case 'Test-IsNoiseFinding suppresses on signature alone when excerpt is empty' {
     $f = @{ signature = 'plex:ssl-protocol-shutdown'; summary = ''; excerpt = '' }
     Assert-Equal 'plex-client-abort-stream-write' (Test-IsNoiseFinding $f) 'signature-only match'
@@ -1869,6 +1899,20 @@ Test-Case 'the ledger mutes a differently-trimmed excerpt of an already-paged li
         # And the other direction: paged short first, longer trim arrives next run.
         $r2 = Select-DuePageGroups -Groups @(New-TestGroup 'plex:x' ($long + ' using default completion duration'))
         Assert-Equal 0 @($r2.Due).Count 'a longer trim of a paged line is muted too'
+    }
+}
+
+Test-Case 'cross-run containment never merges a DIFFERENT fault that merely quotes an earlier one' {
+    # Adversarial review 2026-09-14: a 57-char sonarr<->radarr outage paged
+    # hour 1; hour 2 a 133-char prowlarr credential finding quoted it verbatim
+    # as context and was muted as a "repeat". Containment alone is not
+    # identity - the shorter key must be most (>=60%) of the longer one.
+    Use-TempReaState {
+        $a = 'sonarr unable to communicate with radarr connection refused'
+        $b = 'prowlarr indexer validation failure caused by sonarr unable to communicate with radarr connection refused while checking newznab credentials'
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 'arr:sonarr-radarr-down' $a)
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 'arr:prowlarr-indexer-creds' $b)
+        Assert-Equal 1 @($r.Due).Count 'a mostly-new finding pages even when it contains an old one'
     }
 }
 
