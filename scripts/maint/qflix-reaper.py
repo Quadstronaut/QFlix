@@ -14,11 +14,33 @@ WHAT IT DELETES: items in the four QFlix Plex libraries
     'QFlix - TV'            -> sonarr   (series, match tvdbId)
     'QFlix - Anime'         -> sonarr2  (series, match tvdbId)
 
-whose Plex addedAt is STRICTLY older than --threshold-days (default
-DEFAULT_THRESHOLD_DAYS, currently 45 — see the note on that constant), that are
-not excluded, and that POSITIVELY resolve to exactly one *arr id. Resolution is
+whose grading clock (see PER-FILE RETENTION below) is STRICTLY older than
+--threshold-days (default DEFAULT_THRESHOLD_DAYS, currently 45, clamped by a
+raise-only MIN_FILE_AGE_FLOOR_DAYS floor — see REQ-CLAMP), that are not
+excluded, and that POSITIVELY resolve to exactly one *arr id. Resolution is
 mandatory: an item that does not map to a single Radarr movie / Sonarr series is
 NEVER deleted — it is skipped and logged UNRESOLVED. Such an item is an "orphan".
+
+PER-FILE RETENTION (2026-09-13, spec docs/superpowers/specs/2026-09-12-reaper-
+d-per-file-retention-spec.md — supersedes whole-container grading). The unit of
+retention is the FILE, never the series: a movie's one movieFile, or EACH
+Sonarr episodeFile independently. The Plex SHOW's own container addedAt (R-4)
+and any file's mtime (R-3, Tdarr's 24/7 re-encodes rewrite it) are REJECTED as
+grading inputs outright — this is the exact defect that reaped Futurama 70
+minutes after it was requested, because a show's container addedAt is stamped
+once when the show first enters the library and never moves again no matter
+how many new files land under it later. Instead, each file is graded on its
+own Plex LEAF addedAt corroborated by the *arr's own episodeFile/movieFile
+dateAdded; where the two disagree by more than 24h the NEWER wins and the
+disagreement is recorded. A file whose clock cannot be determined AT ALL is
+WITHHELD — counted, named, logged loudly — never deleted (fail closed).
+Deleting an episode file unmonitors its episode in the SAME operation (a
+monitored episode with no file is re-grabbed by Sonarr's own wanted/missing
+sweep — proven live, not assumed). A series record is removed only when it is
+`ended`, carries zero files, and does NOT carry the `permanent` tag (set by the
+separate scripts/maint/qflix-permanent.py, per the one-concern-one-module law)
+— an unfinished ("continuing") show's record always survives at zero files so
+future episodes keep arriving without a re-request.
 
 THREE CAUSES, and the triage differs, so identify the cause before acting:
   1. GHOST ITEM — the files are gone and no *arr record exists. Fix: delete the
@@ -162,6 +184,54 @@ DEFAULT_THRESHOLD_DAYS = 45
 DEFAULT_MAX_ITEMS = 50
 DEFAULT_MAX_PCT = 30
 DAY_SECONDS = 86400
+
+# ---------------------------------------------------------------------------
+# REQ-CLAMP (spec docs/superpowers/specs/2026-09-12-reaper-d-per-file-retention-
+# spec.md section 5, carried verbatim from the superseded grading spec). The
+# minimum-age floor a --threshold-days may ever effectively use is a MODULE
+# CONSTANT, never just a CLI default -- a default can be overridden to zero by
+# a typo or a bad drop-in; a floor enforced in code cannot. The flag is
+# RAISE-ONLY: max(FLOOR, requested). A request below the floor is CLAMPED UP,
+# loudly (WARN naming both values), and this is NEVER fatal -- a mistaken
+# --threshold-days=0 must not crash the box's autonomous 90% trigger, it must
+# refuse to be as destructive as asked.
+#
+# WHY THIS IS ITS OWN FUNCTION, NOT INLINE IN run(). The last attempt at this
+# exact requirement shipped a floor that only worked for a literal 0.0 -- the
+# one value its own test happened to pin -- and silently let -1, 0 (int), and
+# 0.5 all sail through unclamped. A free-standing, directly-unit-testable
+# function is what makes "does -1 clamp" a one-line assertion instead of a
+# full run() integration test that could just as easily be fooled the same
+# way twice.
+MIN_FILE_AGE_FLOOR_DAYS = 45
+
+
+def clamp_threshold_days(requested_days):
+    """Return (effective_days, was_clamped). effective_days is
+    max(MIN_FILE_AGE_FLOOR_DAYS, requested_days); was_clamped is True iff that
+    raised the value. requested_days may be int OR float -- --threshold-days
+    accepts fractional days (0.5) specifically so this clamp has something to
+    catch between 0 and 1."""
+    effective = max(MIN_FILE_AGE_FLOOR_DAYS, requested_days)
+    return effective, (effective != requested_days)
+
+
+# R-2: Plex leaf addedAt and the *arr's own dateAdded are corroborating clocks
+# for the SAME file. Measured 2026-09-12: they agree on 83/83 items live. Where
+# they differ by more than this many seconds (24h), take the NEWER one and
+# record the disagreement rather than silently trusting either -- a stale Plex
+# leaf addedAt after a Radarr/Sonarr upgrade-replace is exactly the shape of
+# clock error R-4 already proved this codebase is capable of shipping.
+CLOCK_DISAGREEMENT_SECS = 24 * 3600
+
+# P-1: the tag LABEL that exempts a series RECORD from removal (never its
+# files -- see P-2). Resolved to an id PER INSTANCE via GET /tag, never
+# hardcoded, because sonarr and sonarr2 are separate tag namespaces (measured
+# 2026-09-12: sonarr's `permanent` is tag id 13, sonarr2's is tag id 1). Setting
+# the tag is scripts/maint/qflix-permanent.py's job (P-3/P-5, a separate
+# module per the compartmentalization law); the reaper only ever READS it.
+PERMANENT_TAG_LABEL = "permanent"
+
 # Seerr /api/v1/media page size for reconciliation. The list is paged; a single
 # take=N would silently skip rows past N, leaving deleted titles stuck
 # "Available" (not re-requestable). reconcile_seerr() loops until exhausted.
@@ -574,6 +644,89 @@ def _orphan_json(fresh, known):
 
 
 # ===========================================================================
+# Per-file grading clock (spec section 2, R-1..R-5). The unit of retention is
+# the FILE, never the series/movie container. mtime and Plex CONTAINER addedAt
+# are REJECTED as inputs here (R-3, R-4) -- R-4 is the exact defect that reaped
+# Futurama 70 minutes after it was requested, because a show's own addedAt is
+# stamped once when the show FIRST enters the library and never moves again no
+# matter how many new files land under it later.
+# ===========================================================================
+def _norm_path(path):
+    """Normalize a file path for the Plex<->*arr join. Both sides speak the
+    identical /home/quadstronaut/media/... namespace on this box (the same
+    join key arr-plex-parity.sh already uses live), so this is deliberately
+    light-touch -- strip whitespace and flip any stray backslash, but do NOT
+    case-fold (the filesystem is case-sensitive Linux) or resolve symlinks
+    (that would silently paper over a real path mismatch instead of reporting
+    it as withheld). Returns None for a falsy input so callers can treat "no
+    path" and "path that fails to join" identically."""
+    if not path:
+        return None
+    return str(path).strip().replace("\\", "/")
+
+
+def _parse_arr_timestamp(raw):
+    """Parse a Radarr/Sonarr `dateAdded` string to a UTC epoch int, or None if
+    unparseable/absent. These come back as '2026-08-20T05:18:19Z', sometimes
+    with a fractional-second suffix of UNPREDICTABLE width (observed both 3-
+    and 7-digit) that stdlib's datetime.fromisoformat() rejects outright on
+    anything but 3 or 6 digits. Truncating at the first '.' and parsing
+    to-the-second sidesteps that entirely -- the exact shape already proven
+    live against this same field by arr-plex-parity.sh's parse_iso_epoch,
+    reused here rather than reinvented."""
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if s.endswith("Z"):
+        s = s[:-1]
+    s = s.split(".")[0]
+    try:
+        return int(datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
+                   .replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        return None
+
+
+def grade_file_clock(plex_added_at, arr_date_added_raw):
+    """Decide ONE file's grading clock per R-2/R-3/R-4.
+
+    plex_added_at: Plex LEAF addedAt as an epoch int, or None/0/falsy if there
+        is no Plex-side clock for this file (e.g. the join by path failed).
+    arr_date_added_raw: the *arr's raw dateAdded string for the same file
+        (episodeFile.dateAdded / movieFile.dateAdded), or None.
+
+    Returns (gradedAt, gradeSource, clockDisagreementSec):
+      gradedAt is an epoch int, or None if NEITHER clock resolved -- the
+        caller MUST withhold the file in that case (fail closed, R-2).
+      gradeSource is one of "both" | "plex-leaf" | "arr-dateadded" | "none".
+      clockDisagreementSec is the absolute gap in seconds when both clocks
+        resolved, else None. It is recorded even when the two AGREE (<=24h
+        apart) so the manifest always shows the measurement, not just the
+        alarming cases.
+
+    Only ONE of the two inputs resolving is NOT a withhold -- R-2 requires
+    corroboration where available but does not require it; a file with a good
+    Plex leaf and an *arr side that 404s (mid-scan, API hiccup) still has a
+    perfectly good clock. Withholding is reserved for when NEITHER resolves.
+    """
+    plex_ts = int(plex_added_at) if (plex_added_at and int(plex_added_at) > 0) else None
+    arr_ts = _parse_arr_timestamp(arr_date_added_raw)
+    if plex_ts is None and arr_ts is None:
+        return None, "none", None
+    if arr_ts is None:
+        return plex_ts, "plex-leaf", None
+    if plex_ts is None:
+        return arr_ts, "arr-dateadded", None
+    disagreement = abs(plex_ts - arr_ts)
+    if disagreement > CLOCK_DISAGREEMENT_SECS:
+        # R-2: take the newer. A stale Plex leaf addedAt after an *arr upgrade-
+        # replace (or vice versa, a Plex rescan re-stamping a file the *arr
+        # already had on record) must never win by being asked first.
+        return max(plex_ts, arr_ts), "both", disagreement
+    return plex_ts, "both", disagreement
+
+
+# ===========================================================================
 # Plex (stdlib urllib + X-Plex-Token; mirror arr_client error handling — never
 # raise into the main loop, return ([], err) shapes).
 # ===========================================================================
@@ -686,6 +839,60 @@ def series_size_bytes(port: str, token: str, rating_key: str):
     for episode in (mc.get("Metadata") or []):
         total += _sum_media_parts(episode)
     return total, None
+
+
+def plex_series_leaves(port: str, token: str, rating_key: str):
+    """Return (leaves, err) — the per-EPISODE-FILE detail needed for R-1/R-2
+    grading, as opposed to series_size_bytes()'s single byte total. One extra
+    /allLeaves call alongside series_size_bytes' own (both are O(shows), which
+    the rest of this module already accepts as the cost of a once-a-day job —
+    see series_size_bytes' docstring); kept as a separate function rather than
+    merged into it because the two are read by different callers for different
+    reasons and a byte-sum has no business also being the grading path.
+
+    Each leaf: {"addedAt": int|None, "seasonNumber": int|None,
+    "path": str|None, "sizeBytes": int}. addedAt is None (not 0) when Plex gave
+    no/unparseable value, so grade_file_clock() can tell "no clock" apart from
+    "epoch zero". path is Media[0].Part[0].file — the join key against the
+    *arr's episodeFile.path (both speak the same /home/quadstronaut/media/...
+    namespace on this box, per arr-plex-parity.sh)."""
+    status, raw = _plex_get(
+        port, token, "/library/metadata/" + str(rating_key) + "/allLeaves")
+    if status != 200:
+        return [], "allLeaves HTTP " + str(status)
+    try:
+        mc = _mc(json.loads(raw))
+    except Exception as exc:                                   # noqa: BLE001
+        return [], "allLeaves JSON: " + str(exc)
+    leaves = []
+    for meta in mc.get("Metadata") or []:
+        try:
+            added = int(meta.get("addedAt") or 0)
+        except (TypeError, ValueError):
+            added = 0
+        path = None
+        size_bytes = 0
+        media_list = meta.get("Media") or []
+        if media_list:
+            parts = media_list[0].get("Part") or []
+            if parts:
+                path = parts[0].get("file")
+                try:
+                    size_bytes = int(parts[0].get("size") or 0)
+                except (TypeError, ValueError):
+                    size_bytes = 0
+        try:
+            season_num = (int(meta.get("parentIndex"))
+                         if meta.get("parentIndex") is not None else None)
+        except (TypeError, ValueError):
+            season_num = None
+        leaves.append({
+            "addedAt": added if added > 0 else None,
+            "seasonNumber": season_num,
+            "path": path,
+            "sizeBytes": size_bytes,
+        })
+    return leaves, None
 
 
 def plex_items(port: str, token: str, section_key: str):
@@ -809,6 +1016,68 @@ def resolve_sonarr_id(client, tvdb_id):
     return None
 
 
+def sonarr_series_row(client, series_id):
+    """GET /series/<id> — the full SeriesResource (ended, tags, title, ...).
+    Returns None on any non-200/unparseable response; callers treat that as
+    "cannot confirm P-4's conditions" and refuse to remove the record (fail
+    closed — see run()'s record-removal pass)."""
+    status, body = client.get("/series/" + str(series_id))
+    if status != 200 or not isinstance(body, dict):
+        return None
+    return body
+
+
+def sonarr_episode_files(client, series_id):
+    """GET /episodefile?seriesId=N -> (files, err). Each file is Sonarr's raw
+    EpisodeFileResource: {id, seasonNumber, path, dateAdded, size, ...}. This
+    IS the per-file inventory R-1 grades against — never the series' own
+    container listing."""
+    status, body = client.get("/episodefile", query="seriesId=" + str(series_id))
+    if status != 200 or not isinstance(body, list):
+        return [], "episodefile HTTP " + str(status)
+    return body, None
+
+
+def sonarr_episodes(client, series_id):
+    """GET /episode?seriesId=N -> (episodes, err). Used ONLY to map
+    episodeFileId -> episode id for the R-5 unmonitor step; a failure here does
+    not withhold grading (the file's clock is independent of this lookup) but
+    DOES fail the eventual delete, because R-5 is a hard requirement — deleting
+    a file without knowing which episode to unmonitor is not a safe delete."""
+    status, body = client.get("/episode", query="seriesId=" + str(series_id))
+    if status != 200 or not isinstance(body, list):
+        return [], "episode HTTP " + str(status)
+    return body, None
+
+
+def radarr_movie_row(client, movie_id):
+    """GET /movie/<id> — the full MovieResource, including the nested
+    `movieFile` object (path, dateAdded, size) Radarr embeds for a movie that
+    has a file. Returns None on any non-200/unparseable response (grading then
+    falls back to the Plex clock alone via grade_file_clock)."""
+    status, body = client.get("/movie/" + str(movie_id))
+    if status != 200 or not isinstance(body, dict):
+        return None
+    return body
+
+
+def resolve_permanent_tag_id(client):
+    """GET /tag and return the id whose label matches PERMANENT_TAG_LABEL
+    case-insensitively, or None if it does not exist on this instance. NEVER
+    creates the tag — that is qflix-permanent.py's job (P-3/P-5); the reaper
+    only ever reads P-1/P-2's exemption. Tag ids are PER INSTANCE (sonarr and
+    sonarr2 do not share a tag namespace — measured 2026-09-12: sonarr's
+    `permanent` is id 13, sonarr2's is id 1), so this must be called once per
+    client, never cached across instances."""
+    status, body = client.get("/tag")
+    if status != 200 or not isinstance(body, list):
+        return None
+    for t in body:
+        if str(t.get("label", "")).strip().lower() == PERMANENT_TAG_LABEL:
+            return t.get("id")
+    return None
+
+
 def _delete_landed(client, path: str) -> bool:
     """Re-READ after a non-2xx delete: did the record actually go away?
 
@@ -876,6 +1145,74 @@ def do_delete_series(client, series_id) -> bool:
     warn("delete of series " + str(series_id) + " answered HTTP " + str(status)
          + " and the re-read did NOT return 404 (record still there, or unreadable)")
     return False
+
+
+def do_delete_episode_file(client, episode_file_id) -> bool:
+    """DELETE /episodefile/<id>. Same 2xx-or-re-read-404 contract as
+    do_delete_movie/do_delete_series (see _delete_landed) — a slow delete on a
+    busy Sonarr instance is not a failed one."""
+    path = "/episodefile/" + str(episode_file_id)
+    status, _ = client.delete(path)
+    if 200 <= status < 300:
+        return True
+    if _delete_landed(client, path):
+        warn("delete of episodefile " + str(episode_file_id) + " answered HTTP "
+             + str(status) + " but the record is GONE on re-read - counting it "
+             "as deleted (slow delete, not a failed one)")
+        return True
+    warn("delete of episodefile " + str(episode_file_id) + " answered HTTP "
+         + str(status) + " and the re-read did NOT return 404 (record still "
+         "there, or unreadable)")
+    return False
+
+
+def do_unmonitor_episode(client, episode_id) -> bool:
+    """R-5, THE HARD REQUIREMENT: PUT /episode/monitor {episodeIds:[id],
+    monitored:false}. A monitored episode with no file reappears in Sonarr's
+    own /wanted/missing and gets re-grabbed on the next RSS sync — proven live
+    2026-09-12 (see spec R-5) using the already-reaped Futurama S11 episodes as
+    the negative control and a real /wanted/missing read as the positive one.
+    Deleting a file without this is not an expiry, it is an infinite re-
+    download loop against a paid Usenet block account.
+
+    Verified by re-reading the episode afterward — these APIs lie the same way
+    an *arr DELETE does (see _delete_landed): a 2xx PUT that did not actually
+    flip `monitored` would otherwise look identical to one that did."""
+    status, _ = client.put("/episode/monitor",
+                           body={"episodeIds": [episode_id], "monitored": False})
+    if not (200 <= status < 300):
+        warn("unmonitor PUT for episode " + str(episode_id) + " answered HTTP "
+             + str(status))
+        return False
+    try:
+        st, body = client.get("/episode/" + str(episode_id))
+    except Exception as exc:                                    # noqa: BLE001
+        warn("unmonitor verify re-read for episode " + str(episode_id)
+             + " raised: " + repr(exc))
+        return False
+    if st == 200 and isinstance(body, dict) and body.get("monitored") is False:
+        return True
+    warn("unmonitor for episode " + str(episode_id) + " did NOT verify on "
+         "re-read (monitored != false) - treating as FAILED, not assuming success")
+    return False
+
+
+def do_delete_episode(client, episode_file_id, episode_id) -> bool:
+    """R-5, atomic IN EFFECT: delete the file, then unmonitor its episode. Both
+    must land for this to count as a clean expiry — a file that is gone but
+    whose episode is still monitored is exactly the re-grab loop R-5 exists to
+    prevent, so that combination is reported as a FAILURE (partial), never as
+    a silent half-success. episode_id may be None when the episodeFile ->
+    episode mapping could not be built (see sonarr_episodes' docstring); that
+    is ALSO a failure, never an assumed-safe delete."""
+    if not do_delete_episode_file(client, episode_file_id):
+        return False
+    if episode_id is None:
+        warn("episodefile " + str(episode_file_id) + " was deleted but its "
+             "episode id could not be mapped - cannot unmonitor (R-5); "
+             "counting this as a FAILURE even though the file is gone")
+        return False
+    return do_unmonitor_episode(client, episode_id)
 
 
 # ===========================================================================
@@ -1322,10 +1659,16 @@ def write_manifest(manifest_dir: Path, args, per_lib_candidates):
     path = manifest_dir / fname
 
     flat = []
+    series_files = {}   # "<slug>:<arrId>" -> {arrId,title,library,files:[...]}
     total_gb = 0.0
     for title, cands in per_lib_candidates.items():
         for c in cands:
             total_gb += c.get("sizeGB", 0) or 0
+            # `addedAt` KEEPS its old meaning (the Plex CONTAINER clock) for
+            # comparability with the ~50 manifests already on disk from before
+            # per-file grading existed. It is informational only now — R-4
+            # forbids using it for candidacy, and gradedAt/gradeSource below
+            # are what actually decided this row belongs here.
             flat.append({
                 "title": c.get("title"),
                 "year": c.get("year"),
@@ -1337,7 +1680,22 @@ def write_manifest(manifest_dir: Path, args, per_lib_candidates):
                 "arrId": c.get("arrId"),
                 "sizeGB": c.get("sizeGB"),
                 "addedAt": c.get("addedAt"),
+                "gradedAt": c.get("gradedAt"),
+                "gradeSource": c.get("gradeSource"),
+                "clockDisagreementSec": c.get("clockDisagreementSec"),
             })
+            if "episodeFileId" in c:
+                key = str(c.get("slug")) + ":" + str(c.get("arrId"))
+                grp = series_files.setdefault(key, {
+                    "arrId": c.get("arrId"), "title": c.get("title"),
+                    "library": title, "files": [],
+                })
+                grp["files"].append({
+                    "episodeFileId": c.get("episodeFileId"),
+                    "path": c.get("path"),
+                    "seasonNumber": c.get("seasonNumber"),
+                    "gradedAt": c.get("gradedAt"),
+                })
 
     doc = {
         "run_timestamp": ts.isoformat().replace("+00:00", "Z"),
@@ -1349,6 +1707,7 @@ def write_manifest(manifest_dir: Path, args, per_lib_candidates):
             "execute": args.execute,
         },
         "candidates": flat,
+        "series_files": list(series_files.values()),
         "total_count": len(flat),
         "total_reclaim_gb": round(total_gb, 2),
     }
@@ -1366,9 +1725,15 @@ def parse_args(argv=None):
     )
     ap.add_argument("--execute", action="store_true",
                     help="perform real deletions (the ONLY way to mutate). Default is dry-run.")
-    ap.add_argument("--threshold-days", type=int, default=DEFAULT_THRESHOLD_DAYS,
-                    help=("addedAt age cutoff in days; item is a candidate iff age > N "
-                          "(strict). Default %(default)s."))
+    ap.add_argument("--threshold-days", type=float, default=DEFAULT_THRESHOLD_DAYS,
+                    help=("per-file grading-clock age cutoff in days (fractional "
+                          "allowed); a file is a candidate iff age > N (strict). "
+                          "Default %(default)s. REQ-CLAMP: this is RAISE-ONLY — "
+                          "any value below the MIN_FILE_AGE_FLOOR_DAYS module "
+                          "constant (currently " + str(MIN_FILE_AGE_FLOOR_DAYS) +
+                          ") is silently-never-fatal but LOUDLY clamped up to the "
+                          "floor (max(FLOOR, requested)), logged as a WARNING "
+                          "naming both the requested and effective values."))
     ap.add_argument("--exclude-file", default=None,
                     help="exclusion list (default scripts/maint/qflix-reaper.exclude beside this script).")
     ap.add_argument("--max-items", type=int, default=DEFAULT_MAX_ITEMS,
@@ -1397,11 +1762,156 @@ def parse_args(argv=None):
 
 
 # ===========================================================================
+# Per-series file grading (R-1..R-5) and record-removal (P-1/P-2/P-4).
+# ===========================================================================
+def grade_series_files(port, token, client, series_item, arr_id, rules, now, threshold_secs):
+    """R-1..R-5 for ONE resolved series: fetch its episode files + Plex leaves,
+    grade each file's OWN clock independently of the series' container addedAt
+    (which R-4 forbids using at all here), and return everything run() needs.
+
+    Returns a dict:
+      candidates: [{...}]  per-file candidate dicts, past-threshold, clock-
+          resolved, not excluded. Each inherits title/library/kind/slug/
+          tvdbId/tmdbId/ratingKey/addedAt from series_item (addedAt keeps its
+          OLD container-clock meaning for manifest comparability — see the
+          module-level note in the spec; it is NEVER consulted for candidacy)
+          plus: arrId, episodeFileId, episodeId, seasonNumber, path, gradedAt,
+          gradeSource, clockDisagreementSec, sizeGB.
+      withheld: [{episodeFileId, path, seasonNumber}] — files whose clock could
+          NOT be determined at all (fail closed, R-2). Named, never silent.
+      total_files: int — this series' CURRENT episode-file count (the TV
+          --max-pct denominator; see run()'s per_lib_totals accumulation).
+      err: str|None — a failure grading this series AT ALL (allLeaves/
+          episodefile unreachable). Non-None means nothing here is usable this
+          run and the caller must mark the run partial, per the same
+          "could not look must never render as nothing to do" rule
+          reconcile_seerr's index-failure guard already enforces.
+    """
+    result = {"candidates": [], "withheld": [], "total_files": 0, "err": None}
+
+    leaves, lerr = plex_series_leaves(port, token, series_item["ratingKey"])
+    if lerr:
+        result["err"] = "allLeaves: " + lerr
+        return result
+    files, ferr = sonarr_episode_files(client, arr_id)
+    if ferr:
+        result["err"] = "episodefile: " + ferr
+        return result
+    episodes, eerr = sonarr_episodes(client, arr_id)
+    if eerr:
+        # R-5 is a hard requirement, not best-effort: if we cannot map ANY
+        # episodeFileId -> episode for this series, we cannot safely delete
+        # ANY of its files this run. The alternative — grading files anyway
+        # with episodeId=None — would let do_delete_episode delete the file
+        # FIRST and only discover the missing mapping afterward, leaving the
+        # exact monitored-with-no-file state R-5 exists to prevent. Fail
+        # closed at the series level, same as an allLeaves/episodefile fetch
+        # failure, rather than fail closed one file too late.
+        result["err"] = "episode: " + eerr
+        return result
+    ep_by_file_id = {}
+    for e in episodes:
+        fid = e.get("episodeFileId")
+        if fid:
+            ep_by_file_id[fid] = e.get("id")
+    result["total_files"] = len(files)
+
+    leaves_by_path = {}
+    for lf in leaves:
+        norm = _norm_path(lf.get("path"))
+        if norm:
+            leaves_by_path[norm] = lf
+
+    for f in files:
+        norm = _norm_path(f.get("path"))
+        leaf = leaves_by_path.get(norm) if norm else None
+        plex_added = leaf.get("addedAt") if leaf else None
+        graded_at, source, disagreement = grade_file_clock(plex_added, f.get("dateAdded"))
+        if graded_at is None:
+            # R-2 fail-closed: neither clock resolved for this file. Counted
+            # and named here; run() logs it loudly and surfaces it in --json —
+            # "Withholding is never silent" (spec section 5).
+            result["withheld"].append({
+                "episodeFileId": f.get("id"), "path": f.get("path"),
+                "seasonNumber": f.get("seasonNumber"),
+            })
+            continue
+        if not (now - graded_at > threshold_secs):    # strictly greater-than
+            continue
+        size_bytes = (leaf.get("sizeBytes") if leaf else 0) or 0
+        if not size_bytes:
+            try:
+                size_bytes = int(f.get("size") or 0)
+            except (TypeError, ValueError):
+                size_bytes = 0
+        cand = dict(series_item)
+        cand["arrId"] = arr_id
+        cand["episodeFileId"] = f.get("id")
+        cand["episodeId"] = ep_by_file_id.get(f.get("id"))
+        cand["seasonNumber"] = f.get("seasonNumber")
+        cand["path"] = f.get("path")
+        cand["gradedAt"] = graded_at
+        cand["gradeSource"] = source
+        cand["clockDisagreementSec"] = disagreement
+        cand["sizeGB"] = round(size_bytes / (1024.0 ** 3), 4)
+        # Per-file exclusion (spec: is_excluded "must apply per file" too) —
+        # the candidate inherits tvdbId/ratingKey/title from series_item, so
+        # this re-checks the SAME rules against the SAME series identity per
+        # file. Deliberately redundant with the series-level check in run()'s
+        # enumeration loop: defense in depth, not because the outcome differs.
+        if is_excluded(cand, rules):
+            continue
+        result["candidates"].append(cand)
+    return result
+
+
+def _series_would_be_removed(row, permanent_tag_id, remaining_files) -> bool:
+    """P-4, the ONE condition that removes a series RECORD: zero episode
+    files, `ended` is true, and the series does NOT carry the permanent tag.
+    `remaining_files` MUST be a freshly re-read post-delete count when called
+    from the execute path — never a prediction — because a partial per-file
+    delete failure must not be papered over by an assumed zero. `row` may be
+    reused from grading time (ended/tags do not change from a file delete).
+
+    Movies are not handled here: do_delete_movie already removes the record
+    with its one file, unchanged from prior behaviour (spec: "Movies: record
+    deleted with the file")."""
+    if remaining_files > 0:
+        return False
+    if row is None:
+        return False                     # cannot confirm ended/tags -> leave it
+    if not row.get("ended"):
+        return False                     # P-3: unfinished shows must survive
+    tags = row.get("tags") or []
+    if permanent_tag_id is not None and permanent_tag_id in tags:
+        return False                     # P-1/P-2: record exempted
+    return True
+
+
+# ===========================================================================
 # Main orchestration
 # ===========================================================================
 def run(args) -> int:
     execute = args.execute
     mode = "EXECUTE" if execute else "DRY-RUN"
+
+    # REQ-CLAMP (spec section 5): raise-only, loud, never fatal. Applied before
+    # anything else touches args.threshold_days so every downstream consumer
+    # (the age math below, the manifest, --json, the log line right after
+    # this) sees the CLAMPED value — a below-floor request must never reach a
+    # single line of code as anything but "45 or higher, and everyone knows it
+    # was requested lower".
+    requested_threshold_days = args.threshold_days
+    args.threshold_days, was_clamped = clamp_threshold_days(args.threshold_days)
+    if was_clamped:
+        warn("REQ-CLAMP: --threshold-days=" + str(requested_threshold_days) +
+             " is below the floor (MIN_FILE_AGE_FLOOR_DAYS=" +
+             str(MIN_FILE_AGE_FLOOR_DAYS) + "d) - CLAMPING UP to " +
+             str(args.threshold_days) + "d. A prior attempt at this exact "
+             "requirement shipped a floor that only worked for a literal 0.0; "
+             "this one is enforced for every value below the floor, not just "
+             "that one.")
+
     log("--- qflix-reaper (" + mode + ") threshold=" + str(args.threshold_days) +
         "d max-items=" + str(args.max_items) + " max-pct=" + str(args.max_pct) +
         " force=" + str(args.force) + " ---")
@@ -1434,13 +1944,23 @@ def run(args) -> int:
 
     wanted = set(args.library) if args.library else None
 
-    per_lib_candidates = {}   # plex_title -> [candidate dicts]
-    per_lib_totals = {}       # plex_title -> total item count
+    per_lib_candidates = {}   # plex_title -> [candidate dicts] (FILE granularity)
+    per_lib_totals = {}       # plex_title -> total item count (movies: shows/
+                              # files 1:1; TV: total episode FILES across every
+                              # resolved series -- see the series branch below)
     per_lib_section = {}      # plex_title -> section key
     partial = False           # OPERATIONAL failure only (delete/plex/seerr/arr);
                               # orphans are tracked separately (grace window).
     orphans_seen = []         # [{key,title,library}] aged items that resolve to
                               # NO unique *arr id — graced, not an instant red.
+    withheld_files = []       # [{title,library,episodeFileId,path,seasonNumber}]
+                              # R-2 fail-closed: clock undeterminable. Named,
+                              # never silent, never a delete candidate.
+    series_removal_state = {} # (slug, arrId) -> {client,row,permanent_tag_id,
+                              # title,library,candidate_file_count}. Built here
+                              # for EVERY resolved series (whether or not it had
+                              # aged files this run) so P-4 can be evaluated for
+                              # a series that was ALREADY at zero files.
     now = int(datetime.now(timezone.utc).timestamp())
     threshold_secs = args.threshold_days * DAY_SECONDS
 
@@ -1464,7 +1984,6 @@ def run(args) -> int:
             per_lib_candidates[title] = []
             per_lib_totals[title] = 0
             continue
-        per_lib_totals[title] = len(items)
 
         # Build an arr client once per library for resolution.
         try:
@@ -1473,15 +1992,85 @@ def run(args) -> int:
             warn("could not build arr client for '" + entry["slug"] + "': " + str(exc))
             client = None
 
+        # ------------------------------------------------------------------
+        # MOVIES — unit of retention already equals the file (R-1: "a movie
+        # has one"). Plex's own addedAt is a valid grading clock for a movie
+        # (R-2: "movies: the item itself" — there is no separate container
+        # level to reject the way R-4 rejects a SHOW's addedAt), so a cheap
+        # raw-addedAt pre-filter is safe here and keeps the common case from
+        # paying for a resolve+GET on every fresh movie in the library. What
+        # is NOT safe is trusting that raw clock uncorroborated: a Radarr
+        # upgrade-replace can leave Plex's addedAt stale relative to the
+        # CURRENT file, so every item that clears the raw pre-filter is still
+        # corroborated against Radarr's own movieFile.dateAdded (R-2) and
+        # RE-CHECKED against the threshold using whichever clock is newer
+        # before it is allowed to become a candidate.
+        # ------------------------------------------------------------------
+        if entry["kind"] == "movie":
+            per_lib_totals[title] = len(items)
+            cands = []
+            for it in items:
+                # addedAt<=0 = Plex gave no/unparseable add-date; UNKNOWN age,
+                # never a candidate (a metadata gap must not look ancient).
+                if it["addedAt"] <= 0:
+                    continue
+                if not (now - it["addedAt"] > threshold_secs):
+                    continue
+                ids = item_external_ids(port, token, it["ratingKey"])
+                it["tmdbId"] = ids.get("tmdbId")
+                it["tvdbId"] = ids.get("tvdbId")
+                it["library"] = title
+                it["kind"] = entry["kind"]
+                it["slug"] = entry["slug"]
+                if is_excluded(it, rules):
+                    log("EXCLUDED " + repr(it.get("title")) + " in '" + title + "'")
+                    continue
+
+                arr_id = resolve_radarr_id(client, it["tmdbId"]) if client else None
+                if arr_id is None:
+                    warn("UNRESOLVED " + repr(it.get("title")) + " in '" + title +
+                         "' (no unique *arr match) — SKIP, will not delete")
+                    orphans_seen.append({"key": _orphan_key(it),
+                                         "title": it.get("title"), "library": title})
+                    continue
+                it["arrId"] = arr_id
+
+                movie_row = radarr_movie_row(client, arr_id)
+                arr_date_added = None
+                if movie_row:
+                    arr_date_added = (movie_row.get("movieFile") or {}).get("dateAdded")
+                graded_at, source, disagreement = grade_file_clock(it["addedAt"], arr_date_added)
+                it["gradedAt"] = graded_at
+                it["gradeSource"] = source
+                it["clockDisagreementSec"] = disagreement
+                # R-2: the corroborated clock is the one that counts, even if
+                # it RESCUES a movie the raw Plex addedAt alone made look old
+                # (a stale addedAt after an upgrade-replace is exactly R-4's
+                # failure class, just on the movie side of the fence).
+                if not (now - graded_at > threshold_secs):
+                    log("RESCUED (clock corroboration) " + repr(it.get("title")) +
+                        " in '" + title + "' — raw Plex addedAt looked expired "
+                        "but the corroborated clock (" + source + ") does not")
+                    continue
+                cands.append(it)
+
+            per_lib_candidates[title] = cands
+            log("library '" + title + "': " + str(len(items)) + " items, " +
+                str(len(cands)) + " resolved candidate(s)")
+            continue
+
+        # ------------------------------------------------------------------
+        # TV / ANIME — R-1: the unit of retention is the EPISODE FILE. R-4
+        # forbids using the SHOW's own Plex addedAt for candidacy at all — it
+        # is stamped once when the show first enters the library and never
+        # moves again no matter how many files land under it later (the
+        # Futurama defect). Every resolved series is therefore graded
+        # file-by-file regardless of how old or new its container looks.
+        # ------------------------------------------------------------------
+        per_lib_totals[title] = 0
+        permanent_tag_id = resolve_permanent_tag_id(client) if client else None
         cands = []
         for it in items:
-            # addedAt<=0 = Plex gave no/unparseable add-date; treat as UNKNOWN
-            # age and NEVER a candidate (a metadata gap must not look ancient).
-            if it["addedAt"] <= 0:
-                continue
-            age = now - it["addedAt"]
-            if not (age > threshold_secs):     # strictly greater-than
-                continue
             ids = item_external_ids(port, token, it["ratingKey"])
             it["tmdbId"] = ids.get("tmdbId")
             it["tvdbId"] = ids.get("tvdbId")
@@ -1492,27 +2081,56 @@ def run(args) -> int:
                 log("EXCLUDED " + repr(it.get("title")) + " in '" + title + "'")
                 continue
 
-            # MANDATORY positive resolve before any delete.
-            arr_id = None
-            if client is not None:
-                if entry["kind"] == "movie":
-                    arr_id = resolve_radarr_id(client, it["tmdbId"])
-                else:
-                    arr_id = resolve_sonarr_id(client, it["tvdbId"])
+            arr_id = resolve_sonarr_id(client, it["tvdbId"]) if client else None
             if arr_id is None:
-                warn("UNRESOLVED " + repr(it.get("title")) + " in '" + title +
-                     "' (no unique *arr match) — SKIP, will not delete")
-                # Not an instant partial: an orphan is graced (see reconcile_orphans).
-                # A FRESH orphan still reds the run; a KNOWN one goes green.
-                orphans_seen.append({"key": _orphan_key(it),
-                                     "title": it.get("title"), "library": title})
+                # Orphan REPORTING is still gated on the container looking
+                # aged (same conservative window as before) so a freshly-
+                # imported show that Plex has not yet guid-matched does not
+                # instantly red the run — only resolution ITSELF is now
+                # attempted unconditionally, because every resolved series
+                # must be graded regardless of its container's age.
+                if it["addedAt"] > 0 and (now - it["addedAt"] > threshold_secs):
+                    warn("UNRESOLVED " + repr(it.get("title")) + " in '" + title +
+                         "' (no unique *arr match) — SKIP, will not delete")
+                    orphans_seen.append({"key": _orphan_key(it),
+                                         "title": it.get("title"), "library": title})
                 continue
             it["arrId"] = arr_id
-            cands.append(it)
+
+            grade = grade_series_files(port, token, client, it, arr_id, rules,
+                                       now, threshold_secs)
+            if grade["err"]:
+                warn("could not grade series '" + str(it.get("title")) + "' in '"
+                     + title + "' (" + grade["err"] + ") — SKIP this run, "
+                     "0 files graded (fail closed, not fail silent)")
+                partial = True
+                continue
+
+            per_lib_totals[title] += grade["total_files"]
+            for w in grade["withheld"]:
+                withheld_files.append(dict(w, title=it.get("title"), library=title))
+            cands.extend(grade["candidates"])
+
+            series_removal_state[(entry["slug"], arr_id)] = {
+                "client": client,
+                "row": sonarr_series_row(client, arr_id),
+                "permanent_tag_id": permanent_tag_id,
+                "title": it.get("title"),
+                "library": title,
+                "candidate_file_count": len(grade["candidates"]),
+                "total_files_before": grade["total_files"],
+            }
 
         per_lib_candidates[title] = cands
-        log("library '" + title + "': " + str(len(items)) + " items, " +
-            str(len(cands)) + " resolved candidate(s)")
+        log("library '" + title + "': " + str(len(items)) + " series, " +
+            str(len(cands)) + " resolved candidate file(s)")
+
+    if withheld_files:
+        warn(str(len(withheld_files)) + " file(s) WITHHELD (no determinable "
+             "clock, R-2 fail-closed): " +
+             "; ".join(repr(w.get("title")) + "/S" + str(w.get("seasonNumber")) +
+                      " " + str(w.get("path")) for w in withheld_files[:8]) +
+             (" +" + str(len(withheld_files) - 8) + " more" if len(withheld_files) > 8 else ""))
 
     # Totals
     all_cands = [c for cands in per_lib_candidates.values() for c in cands]
@@ -1530,7 +2148,12 @@ def run(args) -> int:
     # with --max-pct 100.)
     deferred_count = 0
     if not args.force and total_count > args.max_items:
-        oldest_first = sorted(all_cands, key=lambda c: c.get("addedAt", 0))
+        # Sort by the REAL per-file grading clock (gradedAt), not the
+        # container-level addedAt every candidate also still carries (R-4:
+        # a show's own addedAt is exactly the field this whole spec exists to
+        # stop trusting). Movies always carry gradedAt too (set above), so
+        # this sort key is uniform across both kinds.
+        oldest_first = sorted(all_cands, key=lambda c: c.get("gradedAt") or c.get("addedAt", 0))
         keep_ids = set(id(c) for c in oldest_first[:args.max_items])
         deferred_count = total_count - args.max_items
         for _title in list(per_lib_candidates.keys()):
@@ -1543,6 +2166,22 @@ def run(args) -> int:
         warn("max-items cap: deferring " + str(deferred_count) +
              " candidate(s) to a future run; processing the oldest " +
              str(total_count) + " (" + str(total_gb) + " GB) this run")
+
+    # Deferral can drop some of a series' candidate files back out of scope —
+    # recompute each tracked series' actually-scheduled-this-run file count
+    # from the POST-deferral truth in per_lib_candidates, so the dry-run
+    # "would remove record" prediction (and nothing safety-relevant — the
+    # execute path always re-reads the real post-delete count, see
+    # _series_would_be_removed's docstring) never over-predicts a removal.
+    if series_removal_state:
+        by_key_counts = {}
+        for cands in per_lib_candidates.values():
+            for c in cands:
+                if "episodeFileId" in c:
+                    k = (c.get("slug"), c.get("arrId"))
+                    by_key_counts[k] = by_key_counts.get(k, 0) + 1
+        for k, st in series_removal_state.items():
+            st["candidate_file_count"] = by_key_counts.get(k, 0)
 
     # ---- Orphan grace reconciliation (independent of caps + deletes: orphans
     # are never resolved, so never candidates and never deleted). This early pass
@@ -1564,25 +2203,47 @@ def run(args) -> int:
         log("KNOWN ORPHAN (graced) " + repr(o.get("title")) + " <" +
             str(o.get("library")) + "> aged " + str(int(o.get("age_hours", 0))) + "h")
 
-    # ---- Plan printout (always) ----
-    log("PLAN: " + str(total_count) + " candidate(s), " + str(total_gb) + " GB reclaimable")
+    # ---- Plan printout (always) — per-file counts + GB (movie files count as
+    # 1 file each; TV candidates already ARE one row per episode file). ----
+    file_count = sum(1 for c in all_cands if "episodeFileId" in c)
+    movie_count = total_count - file_count
+    log("PLAN: " + str(total_count) + " candidate(s) [" + str(movie_count) +
+        " movie(s), " + str(file_count) + " episode file(s)], " +
+        str(total_gb) + " GB reclaimable")
+    if withheld_files:
+        log("WITHHELD: " + str(len(withheld_files)) + " episode file(s) with no "
+            "determinable clock (see WARNING above for names)")
     for c in all_cands:
-        log("  - " + repr(c.get("title")) + " (" + str(c.get("year")) + ") [" +
-            str(c.get("kind")) + "] " + str(c.get("sizeGB")) + " GB  <" +
-            str(c.get("library")) + ">")
+        if "episodeFileId" in c:
+            log("  - " + repr(c.get("title")) + " S" + str(c.get("seasonNumber")) +
+                " [" + str(c.get("gradeSource")) + "] " + str(c.get("sizeGB")) +
+                " GB  <" + str(c.get("library")) + ">  " + str(c.get("path")))
+        else:
+            log("  - " + repr(c.get("title")) + " (" + str(c.get("year")) + ") [" +
+                str(c.get("kind")) + "] " + str(c.get("sizeGB")) + " GB  <" +
+                str(c.get("library")) + ">")
 
     if args.emit_json:
         plan = {
             "mode": mode,
             "threshold_days": args.threshold_days,
+            "requested_threshold_days": requested_threshold_days,
+            "threshold_days_clamped": was_clamped,
             "total_count": total_count,
+            "movie_count": movie_count,
+            "episode_file_count": file_count,
             "total_reclaim_gb": total_gb,
             "candidates": [{
                 "title": c.get("title"), "year": c.get("year"), "type": c.get("kind"),
                 "library": c.get("library"), "sizeGB": c.get("sizeGB"),
                 "ratingKey": c.get("ratingKey"), "tmdbId": c.get("tmdbId"),
                 "tvdbId": c.get("tvdbId"), "arrId": c.get("arrId"),
+                "episodeFileId": c.get("episodeFileId"), "seasonNumber": c.get("seasonNumber"),
+                "gradedAt": c.get("gradedAt"), "gradeSource": c.get("gradeSource"),
+                "clockDisagreementSec": c.get("clockDisagreementSec"),
             } for c in all_cands],
+            "withheld": withheld_files,
+            "withheld_count": len(withheld_files),
             "orphans": _orphan_json(fresh_orphans, known_orphans),
             "orphan_counts": {"fresh": len(fresh_orphans), "known": len(known_orphans)},
         }
@@ -1601,6 +2262,16 @@ def run(args) -> int:
         # force override path: log the overridden values at WARNING.
         for m in cap_msgs:
             warn(m)
+
+    # ---- P-4 preview (dry-run only — no mutation, informational). Uses the
+    # POST-deferral predicted remaining count; the execute path below always
+    # re-reads the REAL post-delete count instead of trusting this prediction. ----
+    for (_slug, arr_id), st in series_removal_state.items():
+        predicted_remaining = st["total_files_before"] - st["candidate_file_count"]
+        if _series_would_be_removed(st["row"], st["permanent_tag_id"], predicted_remaining):
+            log("PLAN: series record " + repr(st["title"]) + " in '" + st["library"]
+                + "' (arrId=" + str(arr_id) + ") would be REMOVED after this run "
+                "(ended, zero files, not permanent-tagged)")
 
     # ---- DRY-RUN: stop here. No manifest, no mutation. ----
     if not execute:
@@ -1648,16 +2319,25 @@ def run(args) -> int:
         lib_deleted = 0
         for c in cands:
             if entry["kind"] == "movie":
+                # R-1: "a movie has one [file]" — deleting the movie record
+                # IS the file delete, unchanged prior behaviour.
                 ok_del = do_delete_movie(client, c["arrId"])
+                label = repr(c.get("title")) + " (arrId=" + str(c["arrId"]) + ")"
             else:
-                ok_del = do_delete_series(client, c["arrId"])
+                # R-5, hard requirement: file delete + episode unmonitor as one
+                # unit. do_delete_episode fails the WHOLE step if either half
+                # fails, so a monitored-with-no-file episode is never left
+                # behind for Sonarr's wanted/missing to re-grab.
+                ok_del = do_delete_episode(client, c["episodeFileId"], c.get("episodeId"))
+                label = (repr(c.get("title")) + " S" + str(c.get("seasonNumber"))
+                        + " episodeFileId=" + str(c["episodeFileId"]))
             if ok_del:
                 deleted += 1
                 lib_deleted += 1
-                log("DELETED " + repr(c.get("title")) + " (arrId=" + str(c["arrId"]) + ")")
+                log("DELETED " + label)
             else:
                 partial = True
-                warn("DELETE FAILED " + repr(c.get("title")) + " (arrId=" + str(c["arrId"]) + ")")
+                warn("DELETE FAILED " + label)
 
         # Plex refresh + emptyTrash per library that actually had deletes.
         if lib_deleted > 0:
@@ -1676,6 +2356,33 @@ def run(args) -> int:
                     log("pruned " + str(pruned) + " empty collection(s) from '"
                         + title + "'")
 
+    # ---- P-4: series record removal — ended + zero files + not permanent-
+    # tagged. Evaluated for EVERY resolved series (whether or not it had a
+    # file deleted THIS run), so a series already parked at zero files from a
+    # prior run is swept too. `remaining` is a FRESH re-read here, never the
+    # prediction used in the dry-run preview above — a partial per-file
+    # delete failure earlier in this same run must not be papered over. ----
+    records_removed = 0
+    for (slug, arr_id), st in series_removal_state.items():
+        files_now, ferr = sonarr_episode_files(st["client"], arr_id)
+        if ferr:
+            warn("P-4: could not re-read episodefile count for " +
+                 repr(st["title"]) + " (" + ferr + ") — leaving the record "
+                 "alone (fail closed, cannot confirm zero files)")
+            partial = True
+            continue
+        if _series_would_be_removed(st["row"], st["permanent_tag_id"], len(files_now)):
+            if do_delete_series(st["client"], arr_id):
+                records_removed += 1
+                libraries_touched.add(st["library"])
+                log("P-4: removed series record " + repr(st["title"]) +
+                    " (arrId=" + str(arr_id) + ", ended, zero files, "
+                    "not permanent-tagged)")
+            else:
+                partial = True
+                warn("P-4: record removal FAILED for " + repr(st["title"]) +
+                     " (arrId=" + str(arr_id) + ")")
+
     # ---- Seerr reconciliation (after all libraries) ----
     s_deleted, s_failed = reconcile_seerr(execute=True)
     if s_failed > 0:
@@ -1692,6 +2399,12 @@ def run(args) -> int:
     # does not have, and 14 of them accumulated unseen before 2026-08-25.
     if collections_pruned:
         summary += ", " + str(collections_pruned) + " empty collection(s) pruned"
+    if records_removed:
+        summary += ", " + str(records_removed) + " series record(s) removed (P-4)"
+    if withheld_files:
+        # Never silent (spec section 5): the summary that reaches Discord must
+        # say a file could not be graded, not just the durable log line above.
+        summary += ", " + str(len(withheld_files)) + " file(s) withheld (no clock)"
     # Re-reconcile at the guaranteed emit point (emit_reminders=True) so the weekly
     # WARN slot is consumed ONLY when we're about to actually send it — not on an
     # early cap/lock abort. first_seen/last_seen are idempotent under the same now.
@@ -1735,6 +2448,8 @@ def run(args) -> int:
             "mode": mode, "deleted": deleted, "total_reclaim_gb": total_gb,
             "libraries_touched": sorted(libraries_touched),
             "seerr_deleted": s_deleted, "seerr_failed": s_failed,
+            "records_removed": records_removed,
+            "withheld_count": len(withheld_files), "withheld": withheld_files,
             "partial": partial, "severity": severity,
             "orphans": _orphan_json(fresh_orphans, known_orphans),
             "orphan_counts": {"fresh": len(fresh_orphans), "known": len(known_orphans)},

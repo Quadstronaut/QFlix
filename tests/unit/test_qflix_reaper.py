@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -46,33 +48,68 @@ def reaper():
 # records every delete call so tests can assert mutation counts.
 # ---------------------------------------------------------------------------
 class FakeArr:
-    def __init__(self, slug, movies=None, series=None):
+    def __init__(self, slug, movies=None, series=None, tags=None,
+                episodefiles=None, episodes=None):
         self.slug = slug
         self.movies = movies or []   # [{id,tmdbId,hasFile}]
-        self.series = series or []   # [{id,tvdbId}]
+        self.series = series or []   # [{id,tvdbId,ended,tags}]
+        self.tags = tags if tags is not None else []          # [{id,label}]
+        # seriesId(int) -> [episodefile rows] / [episode rows]. Per-file
+        # retention grading + R-5 unmonitor both hang off these two.
+        self.episodefiles = {int(k): list(v) for k, v in (episodefiles or {}).items()}
+        self.episodes = {int(k): list(v) for k, v in (episodes or {}).items()}
         self.deletes = []            # list of (path, query)
+        self.puts = []               # list of (path, body)
 
     def get(self, path, query="", timeout=None):
         if path == "/movie":
             return 200, self.movies
         if path == "/series":
             return 200, self.series
+        if path == "/tag":
+            return 200, self.tags
+        if path == "/episodefile":
+            sid = dict(urllib.parse.parse_qsl(query)).get("seriesId")
+            return 200, (list(self.episodefiles.get(int(sid), [])) if sid is not None else [])
+        if path == "/episode":
+            sid = dict(urllib.parse.parse_qsl(query)).get("seriesId")
+            return 200, (list(self.episodes.get(int(sid), [])) if sid is not None else [])
+        if path.startswith("/episode/"):
+            ident = path[len("/episode/"):]
+            if ident.isdigit():
+                eid = int(ident)
+                for eps in self.episodes.values():
+                    for e in eps:
+                        if e.get("id") == eid:
+                            return 200, e
+            return 404, None
         # Single-record reads. do_delete_* re-reads here after a non-2xx
         # delete, and 404 is its proof that the delete landed anyway, so this
         # fake has to answer from its OWN state instead of blanket-404ing.
         # While it did, a FlakyArr that returned 500 without removing anything
         # was read as a successful delete and the two partial-failure guards
-        # below silently stopped testing partial failure.
+        # below silently stopped testing partial failure. The row itself
+        # (not None) is returned so radarr_movie_row/sonarr_series_row can
+        # read movieFile/ended/tags off it.
         for prefix, rows in (("/movie/", self.movies), ("/series/", self.series)):
             if path.startswith(prefix):
                 ident = path[len(prefix):]
-                if ident.isdigit() and any(r.get("id") == int(ident) for r in rows):
-                    return 200, None
+                if ident.isdigit():
+                    for r in rows:
+                        if r.get("id") == int(ident):
+                            return 200, r
                 return 404, None
         return 404, None
 
     def delete(self, path, query="", timeout=None):
         self.deletes.append((path, query))
+        if path.startswith("/episodefile/"):
+            ident = path[len("/episodefile/"):]
+            if ident.isdigit():
+                fid = int(ident)
+                for files in self.episodefiles.values():
+                    files[:] = [f for f in files if f.get("id") != fid]
+            return 200, ""
         for prefix, rows in (("/movie/", self.movies), ("/series/", self.series)):
             if path.startswith(prefix):
                 ident = path[len(prefix):]
@@ -80,10 +117,23 @@ class FakeArr:
                     rows[:] = [r for r in rows if r.get("id") != int(ident)]
         return 200, ""
 
+    def put(self, path, body=None, query="", timeout=None):
+        self.puts.append((path, body))
+        if path == "/episode/monitor":
+            ids = set((body or {}).get("episodeIds") or [])
+            monitored = (body or {}).get("monitored")
+            for eps in self.episodes.values():
+                for e in eps:
+                    if e.get("id") in ids:
+                        e["monitored"] = monitored
+            return 200, ""
+        return 200, ""
 
-def _install_plex(reaper, monkeypatch, items_by_lib, ids_by_rk):
+
+def _install_plex(reaper, monkeypatch, items_by_lib, ids_by_rk, leaves_by_rk=None):
     """Wire Plex boundary fns: creds ok, sections present for the 4 libs, items
-    per library, external ids per ratingKey. Counts refresh/emptyTrash calls."""
+    per library, external ids per ratingKey, per-series Plex leaves (R-1/R-2
+    grading input) per ratingKey. Counts refresh/emptyTrash calls."""
     monkeypatch.setattr(reaper, "_plex_creds", lambda: ("17025", "tok"))
 
     sections = {name: str(100 + i) for i, name in enumerate([
@@ -103,6 +153,12 @@ def _install_plex(reaper, monkeypatch, items_by_lib, ids_by_rk):
         lambda p, t, rk: ids_by_rk.get(str(rk), {"tmdbId": None, "tvdbId": None}),
     )
 
+    leaves_by_rk = leaves_by_rk or {}
+    monkeypatch.setattr(
+        reaper, "plex_series_leaves",
+        lambda p, t, rk: (list(leaves_by_rk.get(str(rk), [])), None),
+    )
+
     refresh_calls = []
     trash_calls = []
     monkeypatch.setattr(reaper, "plex_refresh",
@@ -110,6 +166,14 @@ def _install_plex(reaper, monkeypatch, items_by_lib, ids_by_rk):
     monkeypatch.setattr(reaper, "plex_empty_trash",
                         lambda p, t, k: trash_calls.append(k) or True)
     return sections, refresh_calls, trash_calls
+
+
+def _arr_iso(epoch: int) -> str:
+    """Format an epoch int as the *arr dateAdded shape ('...Z'). Named
+    distinctly from the module's other _iso(dt) helper (used later for orphan-
+    state timestamps, which takes a datetime, not an epoch int) — two
+    module-level functions of the same name would silently shadow each other."""
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _silence_side_effects(reaper, monkeypatch):
@@ -186,21 +250,75 @@ def test_execute_deletes_resolved_movie_exact_endpoint(reaper, tmpdir, monkeypat
     assert "addImportExclusion=false" in query
 
 
-def test_execute_deletes_resolved_series_exact_endpoint(reaper, tmpdir, monkeypatch):
+def test_execute_deletes_resolved_episode_file_and_unmonitors(reaper, tmpdir, monkeypatch):
+    """R-1/R-2/R-5: the unit of retention is the FILE, graded on its OWN
+    Plex-leaf/arr-dateAdded clock (never the show's container addedAt — the
+    show here carries the exact Futurama container shape, 1739683831, and it
+    must be irrelevant), and deleting it MUST unmonitor its episode in the
+    same operation."""
+    old_epoch = _old(reaper)          # well past the 60d threshold used below
     show = {"ratingKey": "9", "title": "Old Show", "year": 2001,
-            "addedAt": _old(reaper), "sizeGB": 30.0}
+            "addedAt": 1739683831, "sizeGB": 30.0}      # ancient container clock
+    leaves = {"9": [{"addedAt": old_epoch, "seasonNumber": 1,
+                     "path": "/home/quadstronaut/media/tv/old/S01E01.mkv",
+                     "sizeBytes": 2 * 1024 ** 3}]}
     _install_plex(reaper, monkeypatch, {"QFlix - TV": [show]},
-                  {"9": {"tmdbId": None, "tvdbId": 81189}})
+                  {"9": {"tmdbId": None, "tvdbId": 81189}}, leaves_by_rk=leaves)
     _silence_side_effects(reaper, monkeypatch)
 
-    fake = FakeArr("sonarr", series=[{"id": 7, "tvdbId": 81189}])
+    ef = {"id": 501, "seasonNumber": 1,
+          "path": "/home/quadstronaut/media/tv/old/S01E01.mkv",
+          "dateAdded": _arr_iso(old_epoch)}
+    ep = {"id": 9001, "episodeFileId": 501, "seasonNumber": 1, "monitored": True}
+    fake = FakeArr("sonarr", series=[{"id": 7, "tvdbId": 81189, "ended": False, "tags": []}],
+                  episodefiles={7: [ef]}, episodes={7: [ep]})
     monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
 
     rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
 
     assert rc == reaper.EXIT_OK
-    assert fake.deletes[0][0] == "/series/7"
-    assert "addImportListExclusion=false" in fake.deletes[0][1]
+    assert ("/episodefile/501", "") in fake.deletes
+    assert ("/series/7", "deleteFiles=true&addImportListExclusion=false") not in fake.deletes, (
+        "the SERIES record must NOT be removed -- it is still continuing "
+        "(ended=False) and, separately, still has zero files removed from "
+        "under it this run (P-4 never fires for a non-ended series)"
+    )
+    assert ("/episode/monitor", {"episodeIds": [9001], "monitored": False}) in fake.puts
+    assert fake.episodes[7][0]["monitored"] is False, "R-5: unmonitor must land"
+
+
+def test_series_record_survives_when_container_addedat_is_ancient_but_files_are_fresh(
+    reaper, tmpdir, monkeypatch,
+):
+    """R-4 REGRESSION — the exact Futurama shape. Container addedAt is 572
+    days old (1739683831); every leaf/episodefile is fresh (< 2h old). ZERO
+    files deleted, record untouched. This is the shape that deleted Futurama
+    70 minutes after it was requested under the old container-clock model."""
+    fresh_epoch = int(__import__("time").time()) - 3600     # 1h old
+    show = {"ratingKey": "9371", "title": "Futurama", "year": 1999,
+            "addedAt": 1739683831, "sizeGB": 7.16}
+    leaves = {"9371": [{"addedAt": fresh_epoch, "seasonNumber": 11,
+                        "path": "/home/quadstronaut/media/tv/futurama/S11E01.mkv",
+                        "sizeBytes": 1024 ** 3}]}
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": [show]},
+                  {"9371": {"tmdbId": None, "tvdbId": 73871}}, leaves_by_rk=leaves)
+    _silence_side_effects(reaper, monkeypatch)
+
+    ef = {"id": 1, "seasonNumber": 11,
+          "path": "/home/quadstronaut/media/tv/futurama/S11E01.mkv",
+          "dateAdded": _arr_iso(fresh_epoch)}
+    ep = {"id": 1, "episodeFileId": 1, "seasonNumber": 11, "monitored": True}
+    fake = FakeArr("sonarr", series=[{"id": 271, "tvdbId": 73871, "ended": False, "tags": []}],
+                  episodefiles={271: [ef]}, episodes={271: [ep]})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+
+    assert rc == reaper.EXIT_OK
+    assert fake.deletes == [], "container addedAt=1739683831 must NEVER grade a fresh file as expired"
+    assert fake.series == [{"id": 271, "tvdbId": 73871, "ended": False, "tags": []}], (
+        "the series record must be completely untouched"
+    )
 
 
 # ===========================================================================
@@ -268,18 +386,25 @@ def test_exclusion_prevents_movie_delete(reaper, tmpdir, monkeypatch, rule, rk, 
 def test_tvdb_exclusion_prevents_series_delete(reaper, tmpdir, monkeypatch):
     exclude = Path(str(tmpdir)) / "ex.txt"
     exclude.write_text("tvdb:81189\n", encoding="utf-8")
+    old_epoch = _old(reaper)
     show = {"ratingKey": "9", "title": "Old Show", "year": 2001,
             "addedAt": _old(reaper), "sizeGB": 30.0}
+    leaves = {"9": [{"addedAt": old_epoch, "seasonNumber": 1,
+                     "path": "/home/quadstronaut/media/tv/old/S01E01.mkv",
+                     "sizeBytes": 1024 ** 3}]}
     _install_plex(reaper, monkeypatch, {"QFlix - TV": [show]},
-                  {"9": {"tmdbId": None, "tvdbId": 81189}})
+                  {"9": {"tmdbId": None, "tvdbId": 81189}}, leaves_by_rk=leaves)
     _silence_side_effects(reaper, monkeypatch)
-    fake = FakeArr("sonarr", series=[{"id": 7, "tvdbId": 81189}])
+    ef = {"id": 501, "seasonNumber": 1,
+          "path": "/home/quadstronaut/media/tv/old/S01E01.mkv", "dateAdded": _arr_iso(old_epoch)}
+    fake = FakeArr("sonarr", series=[{"id": 7, "tvdbId": 81189, "ended": False, "tags": []}],
+                  episodefiles={7: [ef]}, episodes={7: []})
     monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
 
     rc = reaper.run(_args(reaper, execute=True, exclude_file=str(exclude),
                           manifest_dir=str(tmpdir)))
     assert rc == reaper.EXIT_OK
-    assert fake.deletes == []
+    assert fake.deletes == [], "tvdb exclusion must gate the series before any file is even graded"
 
 
 def test_missing_exclude_file_warns_and_proceeds(reaper, monkeypatch):
@@ -1598,3 +1723,308 @@ def test_seerr_reconcile_refuses_on_a_non_200_arr_listing(reaper, monkeypatch):
     monkeypatch.setattr(reaper, "_arr_client", Dead)
     deleted, failed = reaper.reconcile_seerr(execute=True)
     assert deletes == [] and deleted == 0 and failed == 1
+
+
+# ===========================================================================
+# PER-FILE RETENTION (spec docs/superpowers/specs/
+# 2026-09-12-reaper-d-per-file-retention-spec.md) — R-1..R-5, P-1/P-2/P-4,
+# REQ-CLAMP. The two series tests earlier in this file (per-file delete +
+# unmonitor, and the exact-Futurama-shape regression) already exercise the
+# real run() pipeline end to end; the tests below isolate the individual
+# grading/removal/clamp primitives directly, per the spec's explicit
+# requirement that the clamp table not be provable by a single pinned value.
+# ===========================================================================
+
+# ---- grade_file_clock: R-2/R-3/R-4 --------------------------------------
+def test_grade_file_clock_withholds_when_neither_clock_resolves(reaper):
+    graded, source, disagreement = reaper.grade_file_clock(None, None)
+    assert graded is None and source == "none" and disagreement is None
+
+
+def test_grade_file_clock_plex_only_is_not_withheld(reaper):
+    graded, source, disagreement = reaper.grade_file_clock(1700000000, None)
+    assert graded == 1700000000 and source == "plex-leaf" and disagreement is None
+
+
+def test_grade_file_clock_arr_only_is_not_withheld(reaper):
+    graded, source, disagreement = reaper.grade_file_clock(None, _arr_iso(1700000000))
+    assert graded == 1700000000 and source == "arr-dateadded"
+
+
+def test_grade_file_clock_agreeing_clocks_record_the_gap(reaper):
+    plex_ts = 1700000000
+    arr_ts = plex_ts + 3600                     # 1h apart -- within the 24h tolerance
+    graded, source, disagreement = reaper.grade_file_clock(plex_ts, _arr_iso(arr_ts))
+    assert source == "both" and disagreement == 3600
+
+
+def test_grade_file_clock_disagreement_over_24h_takes_the_newer(reaper):
+    plex_ts = 1700000000
+    arr_ts = plex_ts - 2 * reaper.DAY_SECONDS   # 2 days OLDER than Plex
+    graded, source, disagreement = reaper.grade_file_clock(plex_ts, _arr_iso(arr_ts))
+    assert graded == plex_ts                    # the NEWER of the two wins
+    assert source == "both"
+    assert disagreement == 2 * reaper.DAY_SECONDS
+
+
+def test_grade_file_clock_mtime_and_container_addedat_are_not_valid_inputs(reaper):
+    """R-3/R-4 documentation-as-test: grade_file_clock has exactly two
+    parameters (Plex leaf addedAt, *arr dateAdded) — there is no third
+    parameter through which an mtime or a container addedAt could enter."""
+    import inspect
+    params = list(inspect.signature(reaper.grade_file_clock).parameters)
+    assert params == ["plex_added_at", "arr_date_added_raw"]
+
+
+# ---- run()-level: a file with NO determinable clock is withheld ----------
+def test_file_withheld_when_no_clock_determinable(reaper, tmpdir, monkeypatch):
+    show = {"ratingKey": "30", "title": "Mystery Show", "year": 2010,
+            "addedAt": 1600000000, "sizeGB": 5.0}
+    # No Plex leaves wired at all -- the episodefile's path never joins to one.
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": [show]},
+                  {"30": {"tmdbId": None, "tvdbId": 33333}}, leaves_by_rk={})
+    _silence_side_effects(reaper, monkeypatch)
+    ef = {"id": 700, "seasonNumber": 1,
+          "path": "/home/quadstronaut/media/tv/mystery/S01E01.mkv",
+          "dateAdded": None}                    # arr side ALSO absent
+    fake = FakeArr("sonarr", series=[{"id": 60, "tvdbId": 33333, "ended": False, "tags": []}],
+                  episodefiles={60: [ef]}, episodes={60: []})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    rc = reaper.run(_args(reaper, execute=True, emit_json=True, manifest_dir=str(tmpdir)))
+
+    assert rc == reaper.EXIT_OK
+    assert fake.deletes == [], "a file with NO determinable clock must NEVER be deleted"
+
+
+def test_grade_series_files_applies_exclusion_per_file_too(reaper, monkeypatch):
+    """Spec: is_excluded 'must apply per file' — grade_series_files() re-checks
+    every rule against each per-file candidate independently of any container-
+    level gate a caller may (or may not) already have applied."""
+    old_epoch = 1_000_000_000
+    monkeypatch.setattr(
+        reaper, "plex_series_leaves",
+        lambda p, t, rk: ([{"addedAt": old_epoch, "seasonNumber": 1,
+                            "path": "/media/x/S01E01.mkv", "sizeBytes": 1024}], None),
+    )
+    ef = {"id": 700, "seasonNumber": 1, "path": "/media/x/S01E01.mkv",
+          "dateAdded": _arr_iso(old_epoch)}
+    fake = FakeArr("sonarr", episodefiles={60: [ef]}, episodes={60: []})
+    series_item = {"ratingKey": "30", "title": "Excluded Show", "tvdbId": 999}
+    rules = {"tvdb:999"}
+
+    result = reaper.grade_series_files("32400", "tok", fake, series_item, 60,
+                                       rules, old_epoch + 100 * reaper.DAY_SECONDS,
+                                       45 * reaper.DAY_SECONDS)
+    assert result["candidates"] == [], "the per-file exclusion check must exclude this file"
+
+
+def test_grade_series_files_refuses_whole_series_when_episode_mapping_unreachable(reaper, monkeypatch):
+    """R-5 fail-closed at the SERIES level, not one file too late. If /episode
+    cannot be read at all, grading files anyway with episodeId=None would let
+    do_delete_episode delete the FILE first and only discover the missing
+    unmonitor mapping afterward — exactly the monitored-with-no-file state R-5
+    exists to prevent. The whole series must be refused instead."""
+    old_epoch = 1_000_000_000
+    monkeypatch.setattr(
+        reaper, "plex_series_leaves",
+        lambda p, t, rk: ([{"addedAt": old_epoch, "seasonNumber": 1,
+                            "path": "/media/x/S01E01.mkv", "sizeBytes": 1024}], None),
+    )
+    ef = {"id": 700, "seasonNumber": 1, "path": "/media/x/S01E01.mkv",
+          "dateAdded": _arr_iso(old_epoch)}
+
+    class BrokenEpisodesArr(FakeArr):
+        def get(self, path, query="", timeout=None):
+            if path == "/episode":
+                return 503, None
+            return super().get(path, query, timeout)
+
+    fake = BrokenEpisodesArr("sonarr", episodefiles={60: [ef]}, episodes={60: []})
+    series_item = {"ratingKey": "30", "title": "Broken Mapping Show"}
+
+    result = reaper.grade_series_files("32400", "tok", fake, series_item, 60, set(),
+                                       old_epoch + 100 * reaper.DAY_SECONDS,
+                                       45 * reaper.DAY_SECONDS)
+    assert result["err"] is not None
+    assert result["candidates"] == []
+    assert result["withheld"] == []          # this is a refusal, not a per-file withhold
+    assert fake.deletes == [], "nothing may be deleted when the whole series is refused"
+
+
+def test_grade_series_files_names_the_withheld_file(reaper, monkeypatch):
+    monkeypatch.setattr(reaper, "plex_series_leaves", lambda p, t, rk: ([], None))
+    ef = {"id": 700, "seasonNumber": 3, "path": "/media/x/S03E01.mkv", "dateAdded": None}
+    fake = FakeArr("sonarr", episodefiles={60: [ef]}, episodes={60: []})
+    series_item = {"ratingKey": "30", "title": "Mystery Show"}
+    result = reaper.grade_series_files("32400", "tok", fake, series_item, 60,
+                                       set(), 2_000_000_000, 45 * reaper.DAY_SECONDS)
+    assert result["err"] is None
+    assert result["candidates"] == []
+    assert len(result["withheld"]) == 1
+    assert result["withheld"][0]["episodeFileId"] == 700
+    assert result["withheld"][0]["seasonNumber"] == 3
+
+
+# ---- P-1/P-2/P-4: permanent tag + record removal -------------------------
+def test_permanent_tagged_ended_series_survives_at_zero_files(reaper, tmpdir, monkeypatch):
+    show = {"ratingKey": "20", "title": "South Park", "year": 1997,
+            "addedAt": 1600000000, "sizeGB": 0.0}
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": [show]},
+                  {"20": {"tmdbId": None, "tvdbId": 75897}})
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("sonarr",
+                   series=[{"id": 50, "tvdbId": 75897, "ended": True, "tags": [13]}],
+                   tags=[{"id": 13, "label": "permanent"}],
+                   episodefiles={50: []}, episodes={50: []})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+
+    assert rc == reaper.EXIT_OK
+    assert fake.series == [{"id": 50, "tvdbId": 75897, "ended": True, "tags": [13]}], (
+        "P-1/P-2: a permanent-tagged record must survive at zero files"
+    )
+
+
+def test_ended_untagged_series_loses_record_at_zero_files(reaper, tmpdir, monkeypatch):
+    show = {"ratingKey": "21", "title": "Old Ended Show", "year": 1990,
+            "addedAt": 1600000000, "sizeGB": 0.0}
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": [show]},
+                  {"21": {"tmdbId": None, "tvdbId": 11111}})
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("sonarr",
+                   series=[{"id": 51, "tvdbId": 11111, "ended": True, "tags": []}],
+                   tags=[{"id": 13, "label": "permanent"}],   # tag EXISTS, just not on this series
+                   episodefiles={51: []}, episodes={51: []})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+
+    assert rc == reaper.EXIT_OK
+    assert fake.series == [], "P-4: ended + zero files + untagged must remove the record"
+
+
+def test_continuing_untagged_series_keeps_record_at_zero_files(reaper, tmpdir, monkeypatch):
+    show = {"ratingKey": "22", "title": "Continuing Show", "year": 2020,
+            "addedAt": 1600000000, "sizeGB": 0.0}
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": [show]},
+                  {"22": {"tmdbId": None, "tvdbId": 22222}})
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("sonarr", series=[{"id": 52, "tvdbId": 22222, "ended": False, "tags": []}],
+                  episodefiles={52: []}, episodes={52: []})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+
+    assert rc == reaper.EXIT_OK
+    assert fake.series == [{"id": 52, "tvdbId": 22222, "ended": False, "tags": []}], (
+        "P-3's promise: an unfinished show's record must survive at zero files"
+    )
+
+
+def test_series_would_be_removed_true_only_when_ended_zero_untagged(reaper):
+    ended_untagged = {"ended": True, "tags": []}
+    assert reaper._series_would_be_removed(ended_untagged, None, 0) is True
+    assert reaper._series_would_be_removed(ended_untagged, None, 1) is False   # files remain
+    continuing = {"ended": False, "tags": []}
+    assert reaper._series_would_be_removed(continuing, None, 0) is False      # P-3
+    ended_tagged = {"ended": True, "tags": [13]}
+    assert reaper._series_would_be_removed(ended_tagged, 13, 0) is False      # P-1/P-2
+    assert reaper._series_would_be_removed(None, 13, 0) is False              # unknown row -> fail closed
+
+
+def test_resolve_permanent_tag_id_matches_label_case_insensitive(reaper):
+    fake = FakeArr("sonarr", tags=[{"id": 3, "label": "quadstronaut"}, {"id": 13, "label": "Permanent"}])
+    assert reaper.resolve_permanent_tag_id(fake) == 13
+
+
+def test_resolve_permanent_tag_id_absent_returns_none(reaper):
+    fake = FakeArr("sonarr", tags=[{"id": 3, "label": "quadstronaut"}])
+    assert reaper.resolve_permanent_tag_id(fake) is None
+
+
+# ---- R-5: delete + unmonitor is one unit, either half failing fails both --
+def test_do_delete_episode_fails_if_unmonitor_verify_fails(reaper):
+    """The PUT answers 2xx (an API that LIES, same class _delete_landed exists
+    for) but never actually flips `monitored` — the re-read must catch it."""
+    ep = {"id": 1, "episodeFileId": 10, "monitored": True}
+    fake = FakeArr("sonarr", episodefiles={5: [{"id": 10, "path": "/x"}]}, episodes={5: [ep]})
+
+    def lying_put(path, body=None, query="", timeout=None):
+        fake.puts.append((path, body))
+        return 200, ""                          # says success, changes nothing
+
+    fake.put = lying_put
+    ok = reaper.do_delete_episode(fake, 10, 1)
+    assert ok is False
+    assert ("/episodefile/10", "") in fake.deletes, "the FILE must still be gone"
+    assert ep["monitored"] is True, "but the lie must be caught, not trusted"
+
+
+def test_do_delete_episode_fails_when_episode_id_unmapped(reaper):
+    fake = FakeArr("sonarr", episodefiles={5: [{"id": 10, "path": "/x"}]}, episodes={5: []})
+    ok = reaper.do_delete_episode(fake, 10, None)
+    assert ok is False
+    assert ("/episodefile/10", "") in fake.deletes    # file still deleted
+    assert fake.puts == [], "no unmonitor PUT attempted -- nothing to unmonitor"
+
+
+def test_do_delete_episode_succeeds_when_both_halves_land(reaper):
+    ep = {"id": 1, "episodeFileId": 10, "monitored": True}
+    fake = FakeArr("sonarr", episodefiles={5: [{"id": 10, "path": "/x"}]}, episodes={5: [ep]})
+    ok = reaper.do_delete_episode(fake, 10, 1)
+    assert ok is True
+    assert ep["monitored"] is False
+
+
+# ---- REQ-CLAMP: raise-only, loud, never fatal -----------------------------
+@pytest.mark.parametrize("requested,expected_effective,expected_clamped", [
+    (-1, 45, True),
+    (0, 45, True),
+    (0.0, 45, True),
+    (0.5, 45, True),
+    (44.9, 45, True),
+    (45, 45, False),          # AT the floor: not below it, no clamp
+    (60, 60, False),          # above-floor: unchanged
+    (100, 100, False),
+])
+def test_clamp_threshold_days_table(reaper, requested, expected_effective, expected_clamped):
+    """The exact table the spec calls out by name: -1, 0, 0.0, 0.5 must ALL
+    clamp. The prior attempt's test only pinned 0.0 and missed that -1, 0
+    (int), and 0.5 all sailed through unclamped."""
+    effective, was_clamped = reaper.clamp_threshold_days(requested)
+    assert effective == expected_effective
+    assert was_clamped == expected_clamped
+
+
+def test_run_clamps_below_floor_threshold_and_warns_loudly(reaper, tmpdir, monkeypatch, capsys):
+    _install_plex(reaper, monkeypatch, {}, {})
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("radarr")
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    args = _args(reaper, execute=False, threshold_days=0.5, manifest_dir=str(tmpdir))
+    rc = reaper.run(args)
+
+    assert rc == reaper.EXIT_OK
+    # The clamp is loud (WARNING on stderr, naming BOTH values) and it mutates
+    # args in place so every downstream consumer (log line, manifest, --json)
+    # sees the CLAMPED value, never the raw request.
+    err = capsys.readouterr().err
+    assert "REQ-CLAMP" in err and "0.5" in err and str(reaper.MIN_FILE_AGE_FLOOR_DAYS) in err
+    assert args.threshold_days == reaper.MIN_FILE_AGE_FLOOR_DAYS
+
+
+def test_run_above_floor_threshold_is_never_clamped_or_warned(reaper, tmpdir, monkeypatch, capsys):
+    _install_plex(reaper, monkeypatch, {}, {})
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("radarr")
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+
+    args = _args(reaper, execute=False, threshold_days=90, manifest_dir=str(tmpdir))
+    rc = reaper.run(args)
+
+    assert rc == reaper.EXIT_OK
+    assert "REQ-CLAMP" not in capsys.readouterr().err
+    assert args.threshold_days == 90

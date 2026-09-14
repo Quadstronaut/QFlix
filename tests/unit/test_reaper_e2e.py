@@ -364,6 +364,11 @@ def test_dry_run_reports_same_candidates_zero_deletes_execute_matches_exact_call
     assert exec_summary["deleted"] == 1
     assert calls["arr"]["radarr"].calls == [
         ("GET", "/movie", ""),
+        # R-2 corroboration: after resolving, the reaper reads the movie's own
+        # record for movieFile.dateAdded (CaptureArr answers a single-record
+        # GET with a None body, so this always falls back to the Plex clock —
+        # see grade_file_clock's "arr_ts is None" branch).
+        ("GET", "/movie/42", ""),
         ("DELETE", "/movie/42", "deleteFiles=true&addImportExclusion=false"),
     ]
     assert len(calls["plex_refresh"]) == 1 and len(calls["plex_trash"]) == 1
@@ -417,6 +422,10 @@ def test_manifest_contents_match_candidate_exactly(reaper, tmp_path, monkeypatch
         "title": "Manifest Movie", "year": 2000, "type": "movie",
         "library": "QFlix - Movies", "ratingKey": "77", "tmdbId": 603,
         "tvdbId": None, "arrId": 555, "sizeGB": 9.75, "addedAt": old_ts,
+        # gradeSource is "plex-leaf": CaptureArr's single-record GET answers a
+        # None body, so radarr_movie_row() finds no movieFile to corroborate
+        # with and the Plex addedAt stands alone as the graded clock.
+        "gradedAt": old_ts, "gradeSource": "plex-leaf", "clockDisagreementSec": None,
     }]
 
 
