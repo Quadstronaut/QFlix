@@ -1853,6 +1853,33 @@ Test-Case 'a group with no page_key pages rather than being silently swallowed' 
     }
 }
 
+Test-Case 'the ledger mutes a differently-trimmed excerpt of an already-paged line (cross-run containment)' {
+    # 2026-09-14: one 89-line Plex downloadContainer burst paged at 06:08,
+    # 09:10 and 15:08 under three signatures because each hour's model kept a
+    # different amount of the line ("error req ab downloadcontainer expected
+    # mediacontainer element found html" vs "downloadcontainer expected
+    # mediacontainer element found html"). Same line, same identity.
+    Use-TempReaState {
+        $long  = 'error req ab downloadcontainer expected mediacontainer element found html'
+        $short = 'downloadcontainer expected mediacontainer element found html'
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 'plex:html-response' $long)
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 'plex:invalid-xml-response' $short)
+        Assert-Equal 0 @($r.Due).Count 'the shorter trim of a paged line is muted'
+        Assert-Equal 1 @($r.Muted).Count 'and counted as muted'
+        # And the other direction: paged short first, longer trim arrives next run.
+        $r2 = Select-DuePageGroups -Groups @(New-TestGroup 'plex:x' ($long + ' using default completion duration'))
+        Assert-Equal 0 @($r2.Due).Count 'a longer trim of a paged line is muted too'
+    }
+}
+
+Test-Case 'cross-run containment never merges on a SHORT shared phrase' {
+    Use-TempReaState {
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 's' 'connection refused')
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 't' 'bazarr connection refused')
+        Assert-Equal 1 @($r.Due).Count 'sub-40-char keys need an exact match'
+    }
+}
+
 Test-Case 'a corrupt ledger FAILS OPEN and pages' {
     Use-TempReaState {
         $null = Select-DuePageGroups -Groups @(New-TestGroup 's' 'some underlying line that was already paged')

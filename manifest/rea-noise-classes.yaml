@@ -1085,6 +1085,91 @@ classes:
       visible in Plex"; hardlink-integrity owns broken links.
     added: 2026-09-10
 
+  - id: plex-download-container-html-for-vanished-item
+    title: 'Plex "downloadContainer: expected MediaContainer element, found html" for an item that no longer exists'
+    rx: '(?i)downloadcontainer:\s*expected mediacontainer element,\s*found html'
+    field: excerpt
+    prompt_clause: 'Plex "downloadContainer: expected MediaContainer element, found html" errors'
+    why: >-
+      Plex's own HTTP layer answering one of its own internal requests with a
+      404 HTML page instead of XML, because the request named a metadata id
+      that no longer exists. Paged 2026-09-12 07:06 at 3/3 models and then
+      re-paged on 2026-09-13 at 06:08, 09:10 and 15:08 under three different
+      model-authored signatures (html-response, invalid-xml-response,
+      expected-mediacontainer-found-html) for the SAME 89 lines.
+      PROVEN AT THE SIBLING-CLASS BAR. 98/98 occurrences across every retained
+      PMS rotation (four months) are immediately preceded, ON THE SAME Req#,
+      by either "Invalid library metadata ID N passed" or "Timeline: Unknown
+      metadata item N": 89 in the live log, 2026-09-12 05:18:04-05:32:45Z, all
+      on ratingKey 9380 (qflix-reaper deleted Futurama at 05:17:57Z and a
+      client kept sending timeline heartbeats every 10s against the deleted
+      item for ~14 minutes); 9 older ones on Aug 05/07/26/28, each paired the
+      same way and each sitting beside the already-enrolled vanished-file
+      lines (Failed to get a decision for, CreditsDetectionManager Job failed:
+      Video does not exist, Error scanning directory ... No such file). Zero
+      unpaired occurrences. Every one falls in the 05:02-05:17Z reaper hour or
+      an import-replace window. Zero occurrences since 05:32:45Z 2026-09-12.
+      THE DISCRIMINATOR LIVES ON A DIFFERENT LINE than the one REA matches, so
+      this rule cannot check it per-hit; a future HTML answer from plex.tv or
+      an upstream proxy carrying the same message would be suppressed too. That
+      trade is made deliberately, on the strength of a 98/98 four-month census
+      and because the family already made it (plex-post-reap-missing-input).
+      WHO OWNS THE REAL VERSION: an item that is genuinely present but
+      unreadable reds manitoba-maint-canary-plex-decision-stable-file (hourly)
+      and arr-plex-parity; a Plex process that answers HTML to everything is a
+      Plex outage, owned by the Plex Kuma monitor and the maint pusher.
+    added: 2026-09-14
+
+  - id: plex-credits-job-no-thumbnails
+    title: 'Plex CreditsDetectionManager "Job failed: Failed to generate any thumbnails"'
+    rx: '(?i)\[creditsdetectionmanager\]\s*job failed:\s*failed to generate any thumbnails'
+    field: excerpt
+    prompt_clause: 'Plex CreditsDetectionManager "Job failed: Failed to generate any thumbnails" lines'
+    why: >-
+      Third member of the CreditsDetectionManager family after -chatter and
+      -job-video-missing: a credits-marker job whose video was deleted or
+      replaced under it before it could extract a single frame. Paged
+      2026-09-13 09:10 as "thumbnail-generation-failure" at 2/3 models.
+      CENSUS 2026-09-14, every retained PMS rotation: 4 occurrences total, all
+      on 2026-09-12 - 02:29:51 and 02:33:48, thirteen minutes after
+      "Library section 2 will be updated because of a change in Law & Order
+      S04E21" (an *arr import replacing the file mid-scan), and 05:22:19 and
+      05:32:24, inside the reaper window that deleted Futurama at 05:17:57Z and
+      that the 89-line downloadContainer burst above sits in. No occurrence
+      outside a delete/replace window; no item repeats across days; nothing
+      wedged. This is a small corpus and the `why` says so: the class is
+      enrolled because its ONLY four members are the same vanished-file shape
+      the two sibling classes proved on 51 and 79 members, and because a
+      marker job on a file that no longer exists cannot matter to a member.
+      DELIBERATELY NOT a bare "Job failed": "Job failed: Scanner job failed"
+      (8 occurrences) and "Mis-matching media items detected" remain unproven
+      and still page.
+    added: 2026-09-14
+
+  - id: plex-eae-watchfolder-missing
+    title: 'Plex transcoder "Error iterating EAE watchfolder directory: No such file or directory"'
+    rx: '(?i)error iterating eae watchfolder directory:\s*no such file or directory'
+    field: excerpt
+    prompt_clause: 'Plex "Error iterating EAE watchfolder directory: No such file or directory" transcoder lines'
+    why: >-
+      EasyAudioEncoder (Plex's bundled audio transcoder) keeps a watch folder
+      under the transcoder temp path; a transcode session that starts before
+      the folder exists logs one ERROR while it iterates a directory the
+      encoder is about to create. Paged 2026-09-13 19:07 and again 21:11 under
+      two different model-authored signatures (eae-watchfolder-error and
+      transcode-eae-watchfolder-error) for ONE line.
+      CENSUS 2026-09-14, every retained PMS rotation: 2 occurrences in four
+      months - 2026-09-12 02:17:28 and 2026-09-14 01:17:52 - both a single
+      line, both immediately followed by the same session continuing
+      ("Time value greater than duration" INFO on the following requests) and
+      neither followed by a transcode failure, a member-facing error, or a
+      repeat. Two lines in four months, self-clearing within the same session,
+      is chatter, not a fault a member could hit.
+      WHO OWNS THE REAL VERSION: a transcoder that cannot produce segments reds
+      manitoba-maint-canary-plex-transcoder and -plex-playback every run; an
+      EAE that is genuinely broken fails those, not this rule.
+    added: 2026-09-14
+
 
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
@@ -1203,6 +1288,15 @@ prompt_segments:
   - index: 36
     marker: 'Plex "Failed to get a decision for: <path>" errors and the paired "MDE: video has neither a video stream nor an audio stream" / "MDE: no compatible media decisions are available" lines'
     classes: [plex-vanished-file-decision-failure]
+  - index: 37
+    marker: 'Plex "downloadContainer: expected MediaContainer element, found html" errors'
+    classes: [plex-download-container-html-for-vanished-item]
+  - index: 38
+    marker: 'Plex CreditsDetectionManager "Job failed: Failed to generate any thumbnails" lines'
+    classes: [plex-credits-job-no-thumbnails]
+  - index: 39
+    marker: 'Plex "Error iterating EAE watchfolder directory: No such file or directory" transcoder lines'
+    classes: [plex-eae-watchfolder-missing]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths

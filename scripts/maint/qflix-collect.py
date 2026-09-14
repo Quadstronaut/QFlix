@@ -1312,7 +1312,14 @@ def main() -> int:
         cov_broken = bool(coverage.get("roster_drop") or coverage.get("source_error"))
 
         log(msg + f" ({dur}s)")
-        _notify(msg, "info")
+        # 2026-09-14: the hourly "Snapshot NN.json: 4 torrents, 0 stale
+        # candidates, 0 actions" line went to Discord EVERY hour - 24 messages
+        # a day saying nothing happened, in the same channel as real pages.
+        # The operator's rule: Discord carries alerts, not heartbeats. The
+        # heartbeat already rides the Kuma push and the journal; Discord only
+        # hears about a cycle that acted (or lost coverage, below).
+        if acted:
+            _notify(msg, "info")
         if cov_broken:
             _notify("Collector lost log coverage: " + cov_msg, "error")
         _push_kuma("down" if cov_broken else "up", msg)
