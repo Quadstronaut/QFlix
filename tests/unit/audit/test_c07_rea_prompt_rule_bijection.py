@@ -202,6 +202,19 @@ def test_rules_match_their_canonical_log_lines(ledgers):
         ("plex-vanished-file-decision-failure",
          "Sep 09, 2026 05:04:52.049 [139868285422392] ERROR - MDE: no "
          "compatible media decisions are available"),
+        # 2026-09-14. Three classes that together re-paged the operator six
+        # times on 2026-09-13 for lines already proven benign; verbatim.
+        ("plex-download-container-html-for-vanished-item",
+         "Sep 12, 2026 05:32:45.290 [139867936561976] ERROR - [Req#13b5b4] "
+         "downloadContainer: expected MediaContainer element, found html"),
+        ("plex-credits-job-no-thumbnails",
+         "Sep 12, 2026 05:32:24.638 [139867920538424] ERROR - "
+         "[CreditsDetectionManager] Job failed: Failed to generate any "
+         "thumbnails"),
+        ("plex-eae-watchfolder-missing",
+         "Sep 14, 2026 01:17:52.151 [139867951577912] ERROR - "
+         "[Req#198bf1/Transcode] Error iterating EAE watchfolder directory: "
+         "No such file or directory"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -332,6 +345,27 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
     # about ONE NAMED PATH that MDE could not grade, which is the only shape
     # the 79-occurrence stat() census covers.
     assert re.search(vf, "ERROR - Failed to get a decision for: /media/x.mkv")
+    # 2026-09-14. The three vanished-item siblings added that day each key on
+    # one exact sentence; the neighbouring shapes that were NOT censused must
+    # keep paging.
+    for cid, still_pages in (
+            ("plex-download-container-html-for-vanished-item",
+             "ERROR - downloadContainer: expected MediaContainer element, "
+             "found json"),
+            ("plex-download-container-html-for-vanished-item",
+             "ERROR - downloadContainer: connection reset"),
+            ("plex-credits-job-no-thumbnails",
+             "ERROR - [CreditsDetectionManager] Job failed: Scanner job failed"),
+            ("plex-credits-job-no-thumbnails",
+             "ERROR - [CreditsDetectionManager] Mis-matching media items "
+             "detected"),
+            ("plex-eae-watchfolder-missing",
+             "ERROR - Error iterating EAE watchfolder directory: Permission "
+             "denied"),
+            ("plex-eae-watchfolder-missing",
+             "ERROR - EAE: failed to start EasyAudioEncoder")):
+        assert not re.search(by[cid], still_pages), (
+            cid + " must not suppress an uncensused neighbour: " + still_pages)
 
     # The structural backstop: fires only when the excerpt has an *arr |Debug|
     # token and NO error-level token anywhere in it. The guard must span every
