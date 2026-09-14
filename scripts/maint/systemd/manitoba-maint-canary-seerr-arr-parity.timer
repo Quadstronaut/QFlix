@@ -1,0 +1,14 @@
+[Unit]
+Description=Manitoba canary - Seerr/*arr cross-system parity (hourly)
+
+[Timer]
+# Minute :41 - deliberately NOT :00, the same reasoning as every other
+# hourly canary in this fleet: a wall of jobs firing on the hour at once
+# contends for the same loopback ports and Seerr/*arr connection pools.
+# Minute 41 was free at the time this canary was added.
+OnCalendar=*-*-* *:41:00 UTC
+RandomizedDelaySec=180
+Persistent=true
+
+[Install]
+WantedBy=timers.target

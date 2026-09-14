@@ -1419,3 +1419,36 @@ canaries:
     kuma_monitor: "Canary REA Liveness"
     script: "scripts/canaries/rea-liveness.sh"
     schedule: "hourly"
+  seerr-arr-parity:
+    # Added 2026-09-13, spec section 4 (S-1..S-3) of
+    # docs/superpowers/specs/2026-09-12-reaper-d-per-file-retention-spec.md.
+    # `reconcile_seerr()` exists to stop reaped titles being stuck
+    # un-re-requestable but pages `filter=available` only, so rows that land
+    # in DELETED (status 7) are invisible to it and never clear. Measured live
+    # 2026-09-12: 66 status-7 seasons across 28 shows, 763 season_request rows
+    # still pointing at them, Law & Order alone carrying 23 — an admin had to
+    # push seasons 3/4 through by hand for one member. The reaper ACTS; this
+    # canary continuously ASSERTS the cross-system state it leaves behind is
+    # actually re-requestable ("correctness here is continuous, not a side
+    # effect of a reap" — operator design law). REPORT ONLY per operator
+    # ruling; it never mutates Seerr or any *arr.
+    #
+    # Predicate, for every SETTLED Seerr media row (not PENDING/PROCESSING/
+    # BLOCKLISTED): a TV season at Seerr status 5/7 while Sonarr (either
+    # instance) shows 0 files for that season is STRANDED; a season at status
+    # 1/absent while Sonarr shows files is UNDERREPORTED (lower severity,
+    # reported separately); any settled row whose tmdbId/tvdbId is absent
+    # from the applicable *arr side entirely is ORPHAN. Same two noise gates
+    # as arr-plex-parity: 26h grace on the Seerr row's updatedAt, and a
+    # flock-protected two-consecutive-run state file (first sighting arms,
+    # second pages). Live baseline to reproduce on first deploy: 47 rows
+    # (42 orphan + 5 stranded) — the two-run gate means the first run after
+    # deploy is expected to ARM, not page immediately.
+    #
+    # Exit 0 clean/armed (PASS-WARN if only underreported is confirmed) /
+    # 1 orphan-or-stranded confirmed / 2 could-not-assert (Seerr unreachable,
+    # any of the four *arrs unreachable, an empty *arr or Seerr list, or a
+    # bad numeric override) — an empty side must never read as a clean pass.
+    kuma_monitor: "Canary Seerr Arr Parity"
+    script: "scripts/canaries/seerr-arr-parity.sh"
+    schedule: "hourly"
