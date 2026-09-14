@@ -16,8 +16,9 @@ Type=oneshot
 # clear — that dual_default-only backlog drained long ago. A full-library
 # dry-run 2026-09-13 (both classes,
 # real DEFAULT_ROOTS, 489 files scanned, operator-reviewed) found the
-# CURRENT backlog is 50 candidates across 24 titles; --max-items 50 clears
-# the entire measured backlog in ONE run, not seven nights. Left at 50
+# backlog was 50 candidates across 24 titles (44 / 20 when re-measured the
+# next day - it moves nightly); --max-items 50 bounds one run at the
+# measured backlog instead of the seven nights the old note assumed. Left at 50
 # (rather than raised) because it is also the per-run blast-radius cap this
 # comment block already documents, and steady-state going forward is a
 # handful of newly-imported files per day either way.

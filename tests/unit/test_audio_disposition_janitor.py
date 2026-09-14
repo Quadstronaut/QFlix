@@ -329,7 +329,7 @@ def test_run_max_items_caps_fixed_count(tmp_path, monkeypatch):
     files = [_mk(tmp_path / f"e{i}.mkv") for i in range(5)]
     monkeypatch.setattr(adj, "scan_files", lambda roots: iter(files))
     monkeypatch.setattr(adj, "ffprobe_streams", lambda p: _BEFORE)  # all candidates
-    monkeypatch.setattr(adj, "classify_streams", lambda streams: dict(_PLAN))
+    monkeypatch.setattr(adj, "classify_streams", lambda streams, **kw: dict(_PLAN))
     monkeypatch.setattr(adj, "active_file_paths", lambda: set())
     fixed = []
     monkeypatch.setattr(adj, "fix_file", lambda p, plan: fixed.append(str(p)))
@@ -342,7 +342,7 @@ def test_run_skips_active_plex_session(tmp_path, monkeypatch):
     f = _mk(tmp_path / "e.mkv")
     monkeypatch.setattr(adj, "scan_files", lambda roots: iter([f]))
     monkeypatch.setattr(adj, "ffprobe_streams", lambda p: _BEFORE)
-    monkeypatch.setattr(adj, "classify_streams", lambda streams: dict(_PLAN))
+    monkeypatch.setattr(adj, "classify_streams", lambda streams, **kw: dict(_PLAN))
     monkeypatch.setattr(adj, "active_file_paths", lambda: {str(f)})
     monkeypatch.setattr(adj, "fix_file",
                         lambda p, plan: (_ for _ in ()).throw(AssertionError("must skip")))
@@ -355,7 +355,7 @@ def test_run_dry_run_mutates_nothing(tmp_path, monkeypatch):
     f = _mk(tmp_path / "e.mkv")
     monkeypatch.setattr(adj, "scan_files", lambda roots: iter([f]))
     monkeypatch.setattr(adj, "ffprobe_streams", lambda p: _BEFORE)
-    monkeypatch.setattr(adj, "classify_streams", lambda streams: dict(_PLAN))
+    monkeypatch.setattr(adj, "classify_streams", lambda streams, **kw: dict(_PLAN))
     monkeypatch.setattr(adj, "fix_file",
                         lambda p, plan: (_ for _ in ()).throw(AssertionError("dry-run must not fix")))
     res = adj.run(roots=["/x"], execute=False, max_items=50)
@@ -887,3 +887,48 @@ def test_service_file_backlog_comment_reflects_measured_50_not_stale_claim():
 
 def test_module_docstring_notes_2026_09_13_full_library_dry_run_scope():
     assert "50 candidates across 24 titles" in adj.__doc__
+
+
+def test_refusal_reason_is_recorded_when_asked():
+    """Round-2 review: a safety refusal used to be indistinguishable from a
+    healthy file. classify_streams now names the reason into the caller's
+    list; without a list it stays a pure predicate."""
+    reasons = []
+    fre_compat = _a("aac", 2, 1); fre_compat["tags"] = {"language": "fre"}
+    assert adj.classify_streams([_v(), _a("eac3", 6, 1), fre_compat], refusals=reasons) is None
+    assert "dual_default:every-compat-default-is-foreign" in reasons
+    reasons = []
+    ger = _a("eac3", 6, 1); ger["tags"] = {"language": "ger"}
+    und = _a("aac", 6, 1)                       # untagged default
+    eng = _a("aac", 2, 0); eng["tags"] = {"language": "eng"}
+    assert adj.classify_streams([_v(), ger, und, eng], refusals=reasons) is None
+    assert "foreign_default:untagged-default" in reasons
+    assert adj.classify_streams([_v(), ger, und, eng]) is None   # no list: unchanged
+
+
+def test_run_counts_refusals_and_hardlink_detach(tmp_path, monkeypatch):
+    """run() surfaces refusals (named) and hardlink detaches (counted) in the
+    result doc — the two telemetry gaps round-2 review found."""
+    root = tmp_path / "TV Shows"; root.mkdir()
+    fixable = _mk(root / "fix.mkv"); refused = _mk(root / "refuse.mkv")
+    seeds = tmp_path / "downloads"; seeds.mkdir()
+    os.link(fixable, seeds / "seed-copy.mkv")           # nlink == 2, outside the scanned root
+    fre_compat = _a("aac", 2, 1); fre_compat["tags"] = {"language": "fre"}
+
+    def _probe(p):
+        if p.endswith("refuse.mkv"):
+            return [_v(), _a("eac3", 6, 1), fre_compat]
+        return _BEFORE if not p.endswith(".tmp") else _AFTER
+    monkeypatch.setattr(adj, "ffprobe_streams", _probe)
+    monkeypatch.setattr(adj, "active_file_paths", lambda: set())
+    monkeypatch.setattr(adj.shutil, "disk_usage", lambda p: types.SimpleNamespace(free=10**9))
+
+    def _fake_run(cmd, **kw):
+        Path(cmd[-1]).write_bytes(b"fixed"); return _Proc(0)
+    monkeypatch.setattr(adj.subprocess, "run", _fake_run)
+
+    res = adj.run(roots=[str(root)], execute=True, max_items=5)
+    assert res["fixed"] == [str(fixable)], res
+    assert res["hardlink_detached"] == [str(fixable)]
+    assert (seeds / "seed-copy.mkv").stat().st_nlink == 1    # seed copy kept its own inode
+    assert res["refused"] == [{"file": str(refused), "reason": "dual_default:every-compat-default-is-foreign"}]

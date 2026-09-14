@@ -40,9 +40,12 @@ a policy for everything else, not anime.
 
 SCOPE (operator-reviewed 2026-09-13, MAJOR finding from review round 2): a
 read-only dry-run against the box's real DEFAULT_ROOTS (Movies + TV Shows,
-489 video files) found exactly 50 candidates across 24 titles combining
-both classes — not just the 9 Futurama S1 files CLASS 2 was demoed against.
-Operator reviewed this count and APPROVED the 50-file first live run;
+489 video files) found 50 candidates across 24 titles combining both
+classes — not just the 9 Futurama S1 files CLASS 2 was demoed against; an
+independent re-measure the next day read 44 / 20 / 488, because the nightly
+dual_default pass and the retention churn move the set every day. The
+figure is a SIZING, not a reviewed list: every run re-derives it live.
+Operator reviewed the sizing and APPROVED the full-library first live run;
 English-default-everywhere is the ruled policy for all of Movies + TV Shows
 (Anime and Anime Movies excluded structurally, as above), including
 currently-airing titles the sample turned up (e.g. Squid Game S03,
@@ -298,7 +301,7 @@ def _is_commentary(stream: dict) -> bool:
     return "commentary" in title.lower()
 
 
-def _classify_dual_default(audio: list, defaults: list):
+def _classify_dual_default(audio: list, defaults: list, refusals=None):
     """CLASS 1 (2026-07-19). See module docstring.
 
     Language + commentary safety (2026-09-13 review round 2, BLOCKER):
@@ -323,14 +326,14 @@ def _classify_dual_default(audio: list, defaults: list):
     compat = [i for i in compat_all
               if _lang(audio[i]) is None or _is_eng(_lang(audio[i]))]
     if not compat:
-        return None            # every compat candidate is provably foreign — refuse
+        return _refuse(refusals, "dual_default:every-compat-default-is-foreign")
     target = compat[-1]                      # Tdarr appends: last compat wins
     clear = [i for i in defaults if i != target]
     return {"target": target, "clear": clear, "audio_count": len(audio),
             "kind": "dual_default"}
 
 
-def _classify_foreign_default(audio: list, defaults: list):
+def _classify_foreign_default(audio: list, defaults: list, refusals=None):
     """CLASS 2 (2026-09-13, Futurama S1 incident). See module docstring.
 
     Fires iff ALL hold:
@@ -363,7 +366,7 @@ def _classify_foreign_default(audio: list, defaults: list):
     for i in defaults:
         lang = _lang(audio[i])
         if lang is None:
-            return None            # untagged default — refuse, never guess
+            return _refuse(refusals, "foreign_default:untagged-default")
         default_langs.append(lang)
     if any(_is_eng(lang) for lang in default_langs):
         return None                # already eng-default somewhere — no-op
@@ -373,7 +376,7 @@ def _classify_foreign_default(audio: list, defaults: list):
             "kind": "foreign_default"}
 
 
-def classify_streams(streams: list):
+def classify_streams(streams: list, refusals=None):
     """Decide whether a file matches either recognized bad-default pattern
     and, if so, return the fix plan. Pure function; tries dual_default
     (CLASS 1) first, then foreign_default (CLASS 2) — the two predicates are
@@ -391,10 +394,19 @@ def classify_streams(streams: list):
     audio = [s for s in streams if s.get("codec_type") == "audio"]
     defaults = [i for i, s in enumerate(audio)
                 if (s.get("disposition") or {}).get("default")]
-    plan = _classify_dual_default(audio, defaults)
+    plan = _classify_dual_default(audio, defaults, refusals)
     if plan is not None:
         return plan
-    return _classify_foreign_default(audio, defaults)
+    return _classify_foreign_default(audio, defaults, refusals)
+
+
+def _refuse(refusals, reason: str):
+    """Record WHY a classifier declined, when the caller asked. A refusal
+    is a named safety decision; without this it read identically to a
+    healthy file in the JSON and the durable log (round-2 review)."""
+    if refusals is not None:
+        refusals.append(reason)
+    return None
 
 
 # ffmpeg's -disposition:a:N option REPLACES the entire flag set on that
@@ -554,7 +566,7 @@ class TmpVanishedError(RuntimeError):
     clean run is no longer evidence that this retry still works."""
 
 
-def fix_file(path: Path, plan: dict) -> None:
+def fix_file(path: Path, plan: dict) -> bool:
     """Remux `path` in place per plan. Raises on any failure; never leaves a
     partial temp behind. A temp that vanishes before verify (external scanner
     interference, see TmpVanishedError) gets ONE retry with a fresh remux
@@ -584,8 +596,7 @@ def fix_file(path: Path, plan: dict) -> None:
     tmp = path.with_name("." + path.stem + ".dispfix.tmp")
     for attempt in (1, 2):
         try:
-            _remux_once(path, tmp, plan, st)
-            return
+            return _remux_once(path, tmp, plan, st)   # True = a hardlink was detached
         except TmpVanishedError as exc:
             if attempt == 2:
                 raise RuntimeError(str(exc) + " (persisted after retry)")
@@ -593,7 +604,7 @@ def fix_file(path: Path, plan: dict) -> None:
                  + " — retrying once with a fresh remux")
 
 
-def _remux_once(path: Path, tmp: Path, plan: dict, st) -> None:
+def _remux_once(path: Path, tmp: Path, plan: dict, st) -> bool:
     """Single remux attempt: ffmpeg -> verify -> atomic replace. Raises
     TmpVanishedError when the temp is gone at verify/replace time (retryable
     by fix_file); any other failure raises straight through.
@@ -627,6 +638,16 @@ def _remux_once(path: Path, tmp: Path, plan: dict, st) -> None:
         except FileNotFoundError:       # same race, later window
             raise TmpVanishedError("temp remux vanished before replace: "
                                    + str(tmp))
+        # The remux is a NEW inode. If the library file was a hardlink to a
+        # qBit seed copy (the *arr import path), that link is now detached:
+        # the torrent keeps its own bytes until torrent-janitor / ratio
+        # removes it, so disk transiently doubles for this one file. This is
+        # the same effect every Tdarr re-encode has had on every file since
+        # 2026-08-20 (universal h264 policy) and hardlink-integrity only
+        # grades imports, so nothing pages — but it must be VISIBLE, not
+        # silent (round-2 remux-safety review, 2026-09-14): returned to run()
+        # and counted in the durable log and JSON.
+        return st.st_nlink > 1
     finally:
         if tmp.exists():
             try:
@@ -639,18 +660,24 @@ def run(*, roots: list, execute: bool, max_items: int) -> dict:
     playing = active_file_paths() if execute else set()
     scanned = 0
     probe_failures = []
+    refused = []          # {file, reason}: a deliberate safety refusal is
+                          # not "nothing to fix" — telemetry must tell them
+                          # apart (round-2 review, 2026-09-14)
     candidates = []       # (path, plan)
     for p in scan_files(roots):
         scanned += 1
+        reasons = []
         try:
-            plan = classify_streams(ffprobe_streams(str(p)))
+            plan = classify_streams(ffprobe_streams(str(p)), refusals=reasons)
         except Exception as exc:
             probe_failures.append({"file": str(p), "error": str(exc)[:160]})
             continue
         if plan:
             candidates.append((p, plan))
+        elif reasons:
+            refused.append({"file": str(p), "reason": ";".join(reasons)})
 
-    fixed, skipped, failures = [], [], []
+    fixed, skipped, failures, hardlink_detached = [], [], [], []
     if execute:
         for p, plan in candidates:
             if len(fixed) >= max_items:
@@ -660,7 +687,9 @@ def run(*, roots: list, execute: bool, max_items: int) -> dict:
                 skipped.append({"file": str(p), "reason": "active Plex session"})
                 continue
             try:
-                fix_file(p, plan)
+                if fix_file(p, plan):
+                    hardlink_detached.append(str(p))
+                    log("hardlink detached by remux (seed copy keeps its own bytes): " + str(p))
                 fixed.append(str(p))
                 log("FIXED " + str(p))
             except Exception as exc:
@@ -669,7 +698,8 @@ def run(*, roots: list, execute: bool, max_items: int) -> dict:
 
     return {"scanned": scanned, "candidates": [str(p) for p, _ in candidates],
             "fixed": fixed, "skipped": skipped, "failures": failures,
-            "probe_failures": probe_failures}
+            "probe_failures": probe_failures, "refused": refused,
+            "hardlink_detached": hardlink_detached}
 
 
 def main() -> int:
@@ -688,9 +718,12 @@ def main() -> int:
 
     res = run(roots=args.roots, execute=args.execute, max_items=args.max_items)
     log("scanned {} file(s): {} candidate(s), {} fixed, {} skipped, "
-        "{} failure(s), {} probe-failure(s)".format(
+        "{} failure(s), {} probe-failure(s), {} refused, {} hardlink-detached".format(
             res["scanned"], len(res["candidates"]), len(res["fixed"]),
-            len(res["skipped"]), len(res["failures"]), len(res["probe_failures"])))
+            len(res["skipped"]), len(res["failures"]), len(res["probe_failures"]),
+            len(res["refused"]), len(res["hardlink_detached"])))
+    for r in res["refused"]:
+        log("REFUSED {} ({})".format(r["file"], r["reason"]))
 
     if args.emit_json:
         json.dump(res, sys.stdout, default=str)
