@@ -86,10 +86,33 @@ CAPS (both default-on, both overridable with --force):
                   than N does NOT abort — the reaper deletes the OLDEST N this run
                   (addedAt ascending) and DEFERS the rest to the next run, so a
                   space-constrained box always makes forward progress. The runaway
-                  guard (never delete > N in one run) still holds.
+                  guard (never delete > N in one run) still holds. This is ONE
+                  SHARED budget across BOTH mutation classes: file/movie deletes
+                  AND P-4 series-RECORD removals count against the same N. Files
+                  ALWAYS take the budget first (they are picked oldest-first as
+                  before); whatever is left over is what P-4 record removals may
+                  spend this run (oldest-container-first, a tiebreak only — see
+                  series_removal_state's container_added_at comment), with the
+                  remainder deferred and counted exactly like an overflowing file
+                  backlog is (2026-09-13 fix: P-4 previously had ZERO bound at all
+                  and could fire every eligible removal — measured 200 in one run
+                  — regardless of --max-items).
   --max-pct  P    per-library TRIPWIRE: if candidates in any one library exceed P%
                   of that library's total item count, abort the WHOLE run before
                   any mutation (default 30). Prod disables it with --max-pct 100.
+                  For TV/anime libraries the denominator is the EPISODE FILE
+                  count (per_lib_totals accumulates grade_series_files'
+                  total_files per series, i.e. every episode file Sonarr
+                  currently has on record for that library) — NOT the number of
+                  Plex show items. This is a deliberate, accepted builder
+                  decision: R-1 makes the episode FILE the unit of retention for
+                  TV, so the tripwire's percentage is measured in that same unit
+                  ("N of M episode files" reads the same as "N of M movie files"
+                  for Movies), not in a unit (shows) the rest of the module
+                  never grades against. P-4 series-record removals do NOT count
+                  against max-pct (only against the shared --max-items budget
+                  above) — a record removal is a bookkeeping cleanup of an
+                  already-empty series, not itself a file-reclaiming mutation.
 A max-pct trip aborts BEFORE any mutation with exit code 2 and pages the operator.
 A max-items overflow just defers the excess (logged WARNING, exit unaffected).
 --force overrides BOTH caps (logged WARNING) but does NOT imply --execute.
@@ -102,6 +125,10 @@ stripped. A missing exclude file warns and proceeds with an empty set.
 MANIFEST: on --execute, BEFORE the first DELETE, a JSON audit record of every
 intended deletion is written to --manifest-dir (default ~) as
 qflix-reaper-<UTC-YYYYMMDD-HHMMSS>.json. In dry-run no manifest is written.
+Includes series_removals[] — every P-4 series-record removal SCHEDULED this
+run (post shared-budget capping, see --max-items above) — alongside the
+existing candidates[]/series_files[] file/movie sections (2026-09-13 fix:
+P-4 removals were previously absent from this audit trail entirely).
 
 EXIT CODES:
   0  clean (dry-run plan printed, or execute with zero failures)
@@ -700,14 +727,24 @@ def grade_file_clock(plex_added_at, arr_date_added_raw):
         caller MUST withhold the file in that case (fail closed, R-2).
       gradeSource is one of "both" | "plex-leaf" | "arr-dateadded" | "none".
       clockDisagreementSec is the absolute gap in seconds when both clocks
-        resolved, else None. It is recorded even when the two AGREE (<=24h
-        apart) so the manifest always shows the measurement, not just the
-        alarming cases.
+        resolved, else None. It is recorded EVERY time both resolve -- agree
+        or disagree -- purely as a manifest measurement; it no longer gates
+        which value is graded (see adversarial-finding note below).
 
     Only ONE of the two inputs resolving is NOT a withhold -- R-2 requires
     corroboration where available but does not require it; a file with a good
     Plex leaf and an *arr side that 404s (mid-scan, API hiccup) still has a
     perfectly good clock. Withholding is reserved for when NEITHER resolves.
+
+    Adversarial finding (2026-09-13, false-delete/MAJOR): the original code
+    only took max(plex_ts, arr_ts) when disagreement STRICTLY EXCEEDED
+    CLOCK_DISAGREEMENT_SECS (24h); at exactly-24h it fell into an "agree"
+    branch and returned plex_ts verbatim -- which could grade a file on the
+    OLDER of two resolvable clocks even though the *arr side was
+    independently inside the retention window. R-2's intent (corroboration
+    must never let an older clock decide against a fresher one) does not
+    depend on HOW MUCH the two disagree, so the branch split is gone: whenever
+    BOTH clocks resolve, ALWAYS grade on max(plex_ts, arr_ts).
     """
     plex_ts = int(plex_added_at) if (plex_added_at and int(plex_added_at) > 0) else None
     arr_ts = _parse_arr_timestamp(arr_date_added_raw)
@@ -718,12 +755,11 @@ def grade_file_clock(plex_added_at, arr_date_added_raw):
     if plex_ts is None:
         return arr_ts, "arr-dateadded", None
     disagreement = abs(plex_ts - arr_ts)
-    if disagreement > CLOCK_DISAGREEMENT_SECS:
-        # R-2: take the newer. A stale Plex leaf addedAt after an *arr upgrade-
-        # replace (or vice versa, a Plex rescan re-stamping a file the *arr
-        # already had on record) must never win by being asked first.
-        return max(plex_ts, arr_ts), "both", disagreement
-    return plex_ts, "both", disagreement
+    # R-2: take the newer, unconditionally, whenever both clocks resolve. A
+    # stale Plex leaf addedAt after an *arr upgrade-replace (or vice versa, a
+    # Plex rescan re-stamping a file the *arr already had on record) must
+    # never win by being asked first -- regardless of how close the two are.
+    return max(plex_ts, arr_ts), "both", disagreement
 
 
 # ===========================================================================
@@ -1062,20 +1098,37 @@ def radarr_movie_row(client, movie_id):
 
 
 def resolve_permanent_tag_id(client):
-    """GET /tag and return the id whose label matches PERMANENT_TAG_LABEL
-    case-insensitively, or None if it does not exist on this instance. NEVER
-    creates the tag — that is qflix-permanent.py's job (P-3/P-5); the reaper
-    only ever reads P-1/P-2's exemption. Tag ids are PER INSTANCE (sonarr and
-    sonarr2 do not share a tag namespace — measured 2026-09-12: sonarr's
-    `permanent` is id 13, sonarr2's is id 1), so this must be called once per
-    client, never cached across instances."""
+    """GET /tag and return (tag_id, ok) — a TRI-STATE result, not a bare id.
+
+      ok=True,  tag_id=<int>: the permanent tag exists on this instance, this
+        is its id.
+      ok=True,  tag_id=None:  the /tag call succeeded and the permanent tag
+        GENUINELY does not exist on this instance.
+      ok=False, tag_id=None:  the /tag call itself FAILED (non-200, timeout,
+        unparseable body) — this says NOTHING about whether the tag exists.
+        Callers MUST treat this as "could not confirm" and refuse removal,
+        never as "tag absent" (see _series_would_be_removed's tag_lookup_ok).
+
+    NEVER creates the tag — that is qflix-permanent.py's job (P-3/P-5); the
+    reaper only ever reads P-1/P-2's exemption. Tag ids are PER INSTANCE
+    (sonarr and sonarr2 do not share a tag namespace — measured 2026-09-12:
+    sonarr's `permanent` is id 13, sonarr2's is id 1), so this must be called
+    once per client, never cached across instances.
+
+    Adversarial finding (2026-09-13, record-and-regrab/BLOCKER): the prior
+    single-return-value contract collapsed "tag genuinely absent" and "could
+    not ask" into the same None, so a transient /tag 500 read identically to
+    "no permanent tag" to every caller — deleting a genuinely permanent-
+    tagged, ended series RECORD outright on a network hiccup (a P-1/P-2
+    bypass). Operator ruling 2026-09-13: on failure, refuse ALL series-record
+    removals for this instance this run, fail closed, tri-state."""
     status, body = client.get("/tag")
     if status != 200 or not isinstance(body, list):
-        return None
+        return None, False
     for t in body:
         if str(t.get("label", "")).strip().lower() == PERMANENT_TAG_LABEL:
-            return t.get("id")
-    return None
+            return t.get("id"), True
+    return None, True
 
 
 def _delete_landed(client, path: str) -> bool:
@@ -1197,22 +1250,49 @@ def do_unmonitor_episode(client, episode_id) -> bool:
     return False
 
 
-def do_delete_episode(client, episode_file_id, episode_id) -> bool:
-    """R-5, atomic IN EFFECT: delete the file, then unmonitor its episode. Both
-    must land for this to count as a clean expiry — a file that is gone but
-    whose episode is still monitored is exactly the re-grab loop R-5 exists to
-    prevent, so that combination is reported as a FAILURE (partial), never as
-    a silent half-success. episode_id may be None when the episodeFile ->
-    episode mapping could not be built (see sonarr_episodes' docstring); that
-    is ALSO a failure, never an assumed-safe delete."""
+def do_delete_episode(client, episode_file_id, episode_ids) -> bool:
+    """R-5, atomic IN EFFECT: delete the file, then unmonitor EVERY episode it
+    backs. Both halves must land for this to count as a clean expiry — a file
+    that is gone but whose episode is still monitored is exactly the re-grab
+    loop R-5 exists to prevent, so that combination is reported as a FAILURE
+    (partial), never as a silent half-success.
+
+    episode_ids may be None (mapping could not be built at all — see
+    sonarr_episodes' docstring), a single int (the common one-episode-per-file
+    case, kept for caller convenience/back-compat), or a list/tuple/set of
+    ints. That last shape matters: Sonarr's episodeFileId is ONE-TO-MANY for
+    a combined-episode release (e.g. S01E01-E02.mkv is ONE episodeFile row
+    backing TWO episode records that share its id). Adversarial finding
+    (2026-09-13, false-delete/MAJOR): the prior single-id contract silently
+    dropped every sibling episode but the last one written into the lookup
+    dict, deleting the file while leaving the dropped episode(s) monitored
+    with no file — the exact re-grab-loop state R-5 exists to prevent. Every
+    id in episode_ids is now attempted (no short-circuit, so a failure on one
+    sibling does not stop the others from being unmonitored), and the WHOLE
+    delete is reported as a failure if even one could not be verified."""
     if not do_delete_episode_file(client, episode_file_id):
         return False
-    if episode_id is None:
-        warn("episodefile " + str(episode_file_id) + " was deleted but its "
-             "episode id could not be mapped - cannot unmonitor (R-5); "
+    if episode_ids is None:
+        ids = []
+    elif isinstance(episode_ids, (list, tuple, set)):
+        ids = list(episode_ids)
+    else:
+        ids = [episode_ids]
+    if not ids:
+        warn("episodefile " + str(episode_file_id) + " was deleted but no "
+             "episode id could be mapped - cannot unmonitor (R-5); "
              "counting this as a FAILURE even though the file is gone")
         return False
-    return do_unmonitor_episode(client, episode_id)
+    all_ok = True
+    for episode_id in ids:
+        if not do_unmonitor_episode(client, episode_id):
+            all_ok = False
+    if not all_ok:
+        warn("episodefile " + str(episode_file_id) + " was deleted but NOT "
+             "every episode sharing it could be verified unmonitored (R-5); "
+             "counting this as a FAILURE — a monitored-with-no-file sibling "
+             "episode is a re-grab loop, not a partial success")
+    return all_ok
 
 
 # ===========================================================================
@@ -1648,9 +1728,21 @@ def check_caps(per_lib_candidates, per_lib_totals, max_items, max_pct, force):
 # ===========================================================================
 # Manifest
 # ===========================================================================
-def write_manifest(manifest_dir: Path, args, per_lib_candidates):
+def write_manifest(manifest_dir: Path, args, per_lib_candidates, series_removal_state=None):
     """Write the pre-execution audit record and return its Path. Called ONLY on
-    --execute, BEFORE the first DELETE. Lists every intended deletion."""
+    --execute, BEFORE the first DELETE. Lists every intended deletion.
+
+    series_removal_state: the run() dict of (slug, arrId) -> state built for
+    every resolved series (see run()'s docstring comment at its
+    declaration). Adversarial finding (2026-09-13, envelope-and-manifest/
+    MAJOR): P-4 series-RECORD removals were a whole distinct class of
+    deletion this manifest never recorded at all — an operator inspecting
+    the pre-execution manifest had zero way to see that N series records
+    were about to be removed. Only entries flagged p4_scheduled (eligible
+    AND within this run's shared --max-items budget, see run()'s P-4
+    capping block) are written to series_removals[] — that flag IS the
+    "about to be removed this run" predicate, identical to what the execute
+    path evaluates moments later."""
     ts = datetime.now(timezone.utc)
     # PID suffix so two runs in the same second can't overwrite each other's
     # pre-deletion audit record.
@@ -1697,6 +1789,20 @@ def write_manifest(manifest_dir: Path, args, per_lib_candidates):
                     "gradedAt": c.get("gradedAt"),
                 })
 
+    # P-4 series-RECORD removals — a distinct mutation class from the file/
+    # movie candidates above, scheduled by run()'s shared --max-items budget
+    # pass. Named here, before the first DELETE, same as every other intended
+    # mutation (2026-09-13 finding: this was previously absent entirely).
+    series_removals = []
+    for (slug, arr_id), st in (series_removal_state or {}).items():
+        if st.get("p4_scheduled"):
+            series_removals.append({
+                "slug": slug,
+                "arrId": arr_id,
+                "title": st.get("title"),
+                "library": st.get("library"),
+            })
+
     doc = {
         "run_timestamp": ts.isoformat().replace("+00:00", "Z"),
         "flags": {
@@ -1708,6 +1814,7 @@ def write_manifest(manifest_dir: Path, args, per_lib_candidates):
         },
         "candidates": flat,
         "series_files": list(series_files.values()),
+        "series_removals": series_removals,
         "total_count": len(flat),
         "total_reclaim_gb": round(total_gb, 2),
     }
@@ -1775,8 +1882,11 @@ def grade_series_files(port, token, client, series_item, arr_id, rules, now, thr
           tvdbId/tmdbId/ratingKey/addedAt from series_item (addedAt keeps its
           OLD container-clock meaning for manifest comparability — see the
           module-level note in the spec; it is NEVER consulted for candidacy)
-          plus: arrId, episodeFileId, episodeId, seasonNumber, path, gradedAt,
-          gradeSource, clockDisagreementSec, sizeGB.
+          plus: arrId, episodeFileId, episodeIds (a LIST — one episodeFileId
+          can back multiple episode records for a combined-episode release
+          such as S01E01-E02.mkv; every id in the list must be unmonitored
+          for the delete to count as clean, see do_delete_episode), seasonNumber,
+          path, gradedAt, gradeSource, clockDisagreementSec, sizeGB.
       withheld: [{episodeFileId, path, seasonNumber}] — files whose clock could
           NOT be determined at all (fail closed, R-2). Named, never silent.
       total_files: int — this series' CURRENT episode-file count (the TV
@@ -1802,18 +1912,23 @@ def grade_series_files(port, token, client, series_item, arr_id, rules, now, thr
         # R-5 is a hard requirement, not best-effort: if we cannot map ANY
         # episodeFileId -> episode for this series, we cannot safely delete
         # ANY of its files this run. The alternative — grading files anyway
-        # with episodeId=None — would let do_delete_episode delete the file
+        # with episodeIds=[] — would let do_delete_episode delete the file
         # FIRST and only discover the missing mapping afterward, leaving the
         # exact monitored-with-no-file state R-5 exists to prevent. Fail
         # closed at the series level, same as an allLeaves/episodefile fetch
         # failure, rather than fail closed one file too late.
         result["err"] = "episode: " + eerr
         return result
+    # One-to-many: a combined-episode release (S01E01-E02.mkv) is ONE
+    # episodeFile row backing TWO+ episode records that share its id. A plain
+    # dict here silently drops every sibling but the last one written, which
+    # is how a real multi-episode file used to leave one episode monitored
+    # with no file after delete (2026-09-13 adversarial finding, R-5 hazard).
     ep_by_file_id = {}
     for e in episodes:
         fid = e.get("episodeFileId")
         if fid:
-            ep_by_file_id[fid] = e.get("id")
+            ep_by_file_id.setdefault(fid, []).append(e.get("id"))
     result["total_files"] = len(files)
 
     leaves_by_path = {}
@@ -1847,7 +1962,7 @@ def grade_series_files(port, token, client, series_item, arr_id, rules, now, thr
         cand = dict(series_item)
         cand["arrId"] = arr_id
         cand["episodeFileId"] = f.get("id")
-        cand["episodeId"] = ep_by_file_id.get(f.get("id"))
+        cand["episodeIds"] = ep_by_file_id.get(f.get("id")) or []
         cand["seasonNumber"] = f.get("seasonNumber")
         cand["path"] = f.get("path")
         cand["gradedAt"] = graded_at
@@ -1865,7 +1980,7 @@ def grade_series_files(port, token, client, series_item, arr_id, rules, now, thr
     return result
 
 
-def _series_would_be_removed(row, permanent_tag_id, remaining_files) -> bool:
+def _series_would_be_removed(row, permanent_tag_id, tag_lookup_ok, remaining_files) -> bool:
     """P-4, the ONE condition that removes a series RECORD: zero episode
     files, `ended` is true, and the series does NOT carry the permanent tag.
     `remaining_files` MUST be a freshly re-read post-delete count when called
@@ -1873,9 +1988,21 @@ def _series_would_be_removed(row, permanent_tag_id, remaining_files) -> bool:
     delete failure must not be papered over by an assumed zero. `row` may be
     reused from grading time (ended/tags do not change from a file delete).
 
+    tag_lookup_ok is resolve_permanent_tag_id's tri-state result for THIS
+    instance, THIS run. Adversarial finding (2026-09-13, record-and-regrab/
+    BLOCKER): a transient /tag failure used to collapse to
+    permanent_tag_id=None, which was indistinguishable from "the tag
+    genuinely does not exist" and let an ended+zero-file series that DID
+    carry the real permanent tag get its record deleted outright on a
+    network hiccup. tag_lookup_ok=False now refuses removal unconditionally
+    (fail closed, operator ruling 2026-09-13) — "API down" must never be read
+    as "tag doesn't exist".
+
     Movies are not handled here: do_delete_movie already removes the record
     with its one file, unchanged from prior behaviour (spec: "Movies: record
     deleted with the file")."""
+    if not tag_lookup_ok:
+        return False                     # could not confirm exemption -> refuse
     if remaining_files > 0:
         return False
     if row is None:
@@ -1957,10 +2084,15 @@ def run(args) -> int:
                               # R-2 fail-closed: clock undeterminable. Named,
                               # never silent, never a delete candidate.
     series_removal_state = {} # (slug, arrId) -> {client,row,permanent_tag_id,
-                              # title,library,candidate_file_count}. Built here
-                              # for EVERY resolved series (whether or not it had
-                              # aged files this run) so P-4 can be evaluated for
-                              # a series that was ALREADY at zero files.
+                              # tag_lookup_ok,title,library,slug,arrId,
+                              # candidate_file_count,total_files_before,
+                              # container_added_at,p4_eligible,p4_scheduled}.
+                              # Built here for EVERY resolved series (whether
+                              # or not it had aged files this run) so P-4 can
+                              # be evaluated for a series that was ALREADY at
+                              # zero files. p4_eligible/p4_scheduled are filled
+                              # in later by the shared --max-items budget pass
+                              # (a series can be eligible but deferred).
     now = int(datetime.now(timezone.utc).timestamp())
     threshold_secs = args.threshold_days * DAY_SECONDS
 
@@ -2068,7 +2200,19 @@ def run(args) -> int:
         # file-by-file regardless of how old or new its container looks.
         # ------------------------------------------------------------------
         per_lib_totals[title] = 0
-        permanent_tag_id = resolve_permanent_tag_id(client) if client else None
+        if client:
+            permanent_tag_id, tag_lookup_ok = resolve_permanent_tag_id(client)
+        else:
+            permanent_tag_id, tag_lookup_ok = None, True
+        if not tag_lookup_ok:
+            # Operator ruling 2026-09-13: a /tag lookup failure fails CLOSED
+            # for this instance, this run — refuse every P-4 series-record
+            # removal below rather than let "API down" read as "tag absent"
+            # (see resolve_permanent_tag_id / _series_would_be_removed).
+            warn("could not confirm permanent-tag status for '" + entry["slug"] +
+                 "' this run (GET /tag failed) — refusing ALL series-record "
+                 "removals (P-4) for this instance this run (fail closed)")
+            partial = True
         cands = []
         for it in items:
             ids = item_external_ids(port, token, it["ratingKey"])
@@ -2115,10 +2259,22 @@ def run(args) -> int:
                 "client": client,
                 "row": sonarr_series_row(client, arr_id),
                 "permanent_tag_id": permanent_tag_id,
+                "tag_lookup_ok": tag_lookup_ok,
                 "title": it.get("title"),
                 "library": title,
+                "slug": entry["slug"],
+                "arrId": arr_id,
                 "candidate_file_count": len(grade["candidates"]),
                 "total_files_before": grade["total_files"],
+                # Deliberately the show's own container addedAt — NEVER used for
+                # candidacy (R-4 forbids that) but reused here purely as a
+                # deterministic, documented tiebreak for "which record goes
+                # first when the shared --max-items budget is tight this run"
+                # (see the P-4/max-items cap-sharing block below).
+                "container_added_at": it.get("addedAt") or 0,
+                # Filled in below by the shared-budget capping pass.
+                "p4_eligible": False,
+                "p4_scheduled": False,
             }
 
         per_lib_candidates[title] = cands
@@ -2182,6 +2338,46 @@ def run(args) -> int:
                     by_key_counts[k] = by_key_counts.get(k, 0) + 1
         for k, st in series_removal_state.items():
             st["candidate_file_count"] = by_key_counts.get(k, 0)
+
+    # ---- P-4 shared --max-items budget (operator ruling 2026-09-13,
+    # envelope-and-manifest/BLOCKER): a series-RECORD removal is a mutation
+    # exactly like a file/movie delete and must count against the SAME
+    # --max-items runaway guard the module docstring calls "the runaway
+    # guard (never delete > N in one run)" — it must never bypass it. This
+    # used to be evaluated in its own pass with zero bound at all: 200
+    # eligible series fired 200 DELETE /series/<id> calls in one run against
+    # --max-items=1. Files go FIRST (the file/movie deferral above already
+    # picked the oldest max_items candidates); whatever of the SAME budget is
+    # left over is what P-4 record removals may spend this run, oldest-
+    # container-first (see container_added_at's docstring at series_removal_
+    # state's construction — a tiebreak only, never a candidacy signal), with
+    # the remainder deferred and counted, never uncapped. --force bypasses
+    # this exactly like the file/movie cap above.
+    deferred_series_count = 0
+    if series_removal_state:
+        eligible_keys = {
+            k for k, st in series_removal_state.items()
+            if _series_would_be_removed(
+                st["row"], st["permanent_tag_id"], st["tag_lookup_ok"],
+                st["total_files_before"] - st["candidate_file_count"])
+        }
+        if args.force:
+            scheduled_keys = set(eligible_keys)
+        else:
+            budget = max(0, args.max_items - total_count)
+            oldest_first_keys = sorted(
+                eligible_keys,
+                key=lambda k: series_removal_state[k]["container_added_at"])
+            scheduled_keys = set(oldest_first_keys[:budget])
+            deferred_series_count = len(eligible_keys) - len(scheduled_keys)
+            if deferred_series_count > 0:
+                warn("max-items cap: deferring " + str(deferred_series_count) +
+                     " series-record removal(s) (P-4) to a future run — "
+                     "file/movie deletes take the shared budget first; " +
+                     str(len(scheduled_keys)) + " record(s) scheduled this run")
+        for k, st in series_removal_state.items():
+            st["p4_eligible"] = k in eligible_keys
+            st["p4_scheduled"] = k in scheduled_keys
 
     # ---- Orphan grace reconciliation (independent of caps + deletes: orphans
     # are never resolved, so never candidates and never deleted). This early pass
@@ -2264,14 +2460,21 @@ def run(args) -> int:
             warn(m)
 
     # ---- P-4 preview (dry-run only — no mutation, informational). Uses the
-    # POST-deferral predicted remaining count; the execute path below always
-    # re-reads the REAL post-delete count instead of trusting this prediction. ----
+    # POST-deferral, POST-shared-budget p4_scheduled flag (set above) so the
+    # preview matches exactly what --execute would actually attempt this run
+    # — a series past its eligibility check but deferred by the shared
+    # --max-items budget is reported as DEFERRED, not REMOVED. The execute
+    # path below always re-reads the REAL post-delete count before actually
+    # deleting, instead of trusting this prediction. ----
     for (_slug, arr_id), st in series_removal_state.items():
-        predicted_remaining = st["total_files_before"] - st["candidate_file_count"]
-        if _series_would_be_removed(st["row"], st["permanent_tag_id"], predicted_remaining):
+        if st.get("p4_scheduled"):
             log("PLAN: series record " + repr(st["title"]) + " in '" + st["library"]
                 + "' (arrId=" + str(arr_id) + ") would be REMOVED after this run "
                 "(ended, zero files, not permanent-tagged)")
+        elif st.get("p4_eligible"):
+            log("PLAN: series record " + repr(st["title"]) + " in '" + st["library"]
+                + "' (arrId=" + str(arr_id) + ") is P-4 eligible but DEFERRED this "
+                "run (shared --max-items budget)")
 
     # ---- DRY-RUN: stop here. No manifest, no mutation. ----
     if not execute:
@@ -2298,7 +2501,12 @@ def run(args) -> int:
         _push_kuma("down", msg)
         return EXIT_FATAL
     # Manifest FIRST — the pre-execution record of intent, before any DELETE.
-    manifest_path = write_manifest(Path(args.manifest_dir), args, per_lib_candidates)
+    # series_removal_state is passed through so P-4 record removals scheduled
+    # this run land in series_removals[] BEFORE the first DELETE fires, same
+    # guarantee the file/movie candidates already had (2026-09-13 finding:
+    # this audit trail previously had zero record of P-4 at all).
+    manifest_path = write_manifest(Path(args.manifest_dir), args, per_lib_candidates,
+                                   series_removal_state)
     log("manifest written: " + str(manifest_path))
 
     deleted = 0
@@ -2328,7 +2536,7 @@ def run(args) -> int:
                 # unit. do_delete_episode fails the WHOLE step if either half
                 # fails, so a monitored-with-no-file episode is never left
                 # behind for Sonarr's wanted/missing to re-grab.
-                ok_del = do_delete_episode(client, c["episodeFileId"], c.get("episodeId"))
+                ok_del = do_delete_episode(client, c["episodeFileId"], c.get("episodeIds"))
                 label = (repr(c.get("title")) + " S" + str(c.get("seasonNumber"))
                         + " episodeFileId=" + str(c["episodeFileId"]))
             if ok_del:
@@ -2357,13 +2565,19 @@ def run(args) -> int:
                         + title + "'")
 
     # ---- P-4: series record removal — ended + zero files + not permanent-
-    # tagged. Evaluated for EVERY resolved series (whether or not it had a
-    # file deleted THIS run), so a series already parked at zero files from a
-    # prior run is swept too. `remaining` is a FRESH re-read here, never the
-    # prediction used in the dry-run preview above — a partial per-file
+    # tagged. Evaluated for every resolved series flagged p4_scheduled (both
+    # eligible AND within this run's shared --max-items budget — see the
+    # capping block earlier in run()), so a series already parked at zero
+    # files from a prior run is swept too, but one deferred by the shared
+    # budget is correctly left alone this run (2026-09-13 finding: this pass
+    # used to have ZERO bound and fired every eligible removal in one run
+    # regardless of --max-items). `remaining` is a FRESH re-read here, never
+    # the prediction used in the dry-run preview above — a partial per-file
     # delete failure earlier in this same run must not be papered over. ----
     records_removed = 0
     for (slug, arr_id), st in series_removal_state.items():
+        if not st.get("p4_scheduled"):
+            continue
         files_now, ferr = sonarr_episode_files(st["client"], arr_id)
         if ferr:
             warn("P-4: could not re-read episodefile count for " +
@@ -2371,7 +2585,8 @@ def run(args) -> int:
                  "alone (fail closed, cannot confirm zero files)")
             partial = True
             continue
-        if _series_would_be_removed(st["row"], st["permanent_tag_id"], len(files_now)):
+        if _series_would_be_removed(st["row"], st["permanent_tag_id"],
+                                    st["tag_lookup_ok"], len(files_now)):
             if do_delete_series(st["client"], arr_id):
                 records_removed += 1
                 libraries_touched.add(st["library"])

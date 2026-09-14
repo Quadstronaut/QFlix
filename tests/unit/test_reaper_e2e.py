@@ -64,10 +64,18 @@ class CaptureArr:
     every call is recorded verbatim so tests can assert the exact request
     shape hit the *arr API, not just that "a delete happened"."""
 
-    def __init__(self, slug, movies=None, series=None):
+    def __init__(self, slug, movies=None, series=None, tags=None):
         self.slug = slug
         self.movies = movies or []
         self.series = series or []
+        # Default: NO permanent tag configured on this fake instance. Must
+        # answer 200 (not the fallback 404 below) — a bare 404 here reads as
+        # "the /tag lookup FAILED" post-2026-09-13 (resolve_permanent_tag_id's
+        # tri-state fix), which correctly fails P-4 closed and marks the run
+        # partial. Tests that don't care about permanent-tag semantics need
+        # this endpoint to behave like a real, healthy Sonarr with no tag
+        # named 'permanent' yet -- an empty 200 list, not a transport error.
+        self.tags = tags or []
         self.calls = []   # [("GET", path, query) | ("DELETE", path, query)]
 
     def get(self, path, query="", timeout=None):
@@ -76,6 +84,8 @@ class CaptureArr:
             return 200, self.movies
         if path == "/series":
             return 200, self.series
+        if path == "/tag":
+            return 200, self.tags
         # Single-record read. do_delete_* re-reads here after a non-2xx delete
         # and treats 404 as proof the delete landed anyway, so this fake must
         # answer from its own state rather than blanket-404. A blanket 404 made
@@ -164,6 +174,7 @@ def _install_full_fakes(reaper, monkeypatch, items_by_lib, ids_by_rk, arr_seed=N
             cls = seed.get("cls", CaptureArr)
             calls["arr"][slug] = cls(
                 slug, movies=seed.get("movies"), series=seed.get("series"),
+                tags=seed.get("tags"),
                 **({"fail_delete": seed["fail_delete"]} if "fail_delete" in seed else {}),
             )
         return calls["arr"][slug]
