@@ -1126,6 +1126,10 @@ def resolve_permanent_tag_id(client):
     if status != 200 or not isinstance(body, list):
         return None, False
     for t in body:
+        # A 200 whose list holds non-dict junk is "could not ask", not "tag
+        # absent" — same fail-closed leg as a non-200 (round-2 review).
+        if not isinstance(t, dict):
+            return None, False
         if str(t.get("label", "")).strip().lower() == PERMANENT_TAG_LABEL:
             return t.get("id"), True
     return None, True
@@ -2365,9 +2369,15 @@ def run(args) -> int:
             scheduled_keys = set(eligible_keys)
         else:
             budget = max(0, args.max_items - total_count)
+            # Secondary key = the (slug, arrId) tuple itself. Without it two
+            # series sharing a container addedAt tie-broke on set iteration
+            # order, which is hash-seeded per process — the same tight budget
+            # could pick a different record on consecutive nights (round-2
+            # adversarial finding, 2026-09-14). Deterministic or it is not an
+            # audit trail.
             oldest_first_keys = sorted(
                 eligible_keys,
-                key=lambda k: series_removal_state[k]["container_added_at"])
+                key=lambda k: (series_removal_state[k]["container_added_at"], k))
             scheduled_keys = set(oldest_first_keys[:budget])
             deferred_series_count = len(eligible_keys) - len(scheduled_keys)
             if deferred_series_count > 0:
@@ -2442,6 +2452,15 @@ def run(args) -> int:
             "withheld_count": len(withheld_files),
             "orphans": _orphan_json(fresh_orphans, known_orphans),
             "orphan_counts": {"fresh": len(fresh_orphans), "known": len(known_orphans)},
+            # P-4 series-record removals scheduled this run, mirrored from the
+            # manifest's series_removals[] so --json consumers (quota.sh's
+            # incident capture) see every intended mutation, not just files.
+            "series_removals": [{
+                "slug": slug, "arrId": arr_id,
+                "title": st.get("title"), "library": st.get("library"),
+            } for (slug, arr_id), st in (series_removal_state or {}).items()
+                if st.get("p4_scheduled")],
+            "deferred_series_count": deferred_series_count,
         }
         print(json.dumps(plan, indent=2), flush=True)
 

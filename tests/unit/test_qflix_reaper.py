@@ -2279,3 +2279,61 @@ def test_run_above_floor_threshold_is_never_clamped_or_warned(reaper, tmpdir, mo
     assert rc == reaper.EXIT_OK
     assert "REQ-CLAMP" not in capsys.readouterr().err
     assert args.threshold_days == 90
+
+
+def test_p4_removal_order_is_deterministic_on_tied_container_clocks(reaper, tmpdir, monkeypatch):
+    """Round-2 adversarial finding (2026-09-14, envelope/MAJOR): eligible P-4
+    keys went through a set before the addedAt sort, so two series sharing a
+    container clock tie-broke on hash-seeded iteration order — a tight budget
+    could remove a DIFFERENT record on consecutive nights. The secondary sort
+    key is the (slug, arrId) tuple: the pick must be the same whatever order
+    the state dict was built in."""
+    picks = set()
+    for order in ((0, 1, 2), (2, 1, 0), (1, 2, 0)):
+        shows, ids_by_rk, series_rows = [], {}, []
+        for i in order:
+            rk = str(i)
+            shows.append({"ratingKey": rk, "title": "Tied Show %d" % i, "year": 1990,
+                          "addedAt": 1000000000, "sizeGB": 0.0})     # SAME clock
+            ids_by_rk[rk] = {"tmdbId": None, "tvdbId": 20000 + i}
+            series_rows.append({"id": 600 + i, "tvdbId": 20000 + i, "ended": True, "tags": []})
+        _install_plex(reaper, monkeypatch, {"QFlix - TV": shows}, ids_by_rk)
+        _silence_side_effects(reaper, monkeypatch)
+        fake = FakeArr("sonarr", series=series_rows,
+                       episodefiles={600 + i: [] for i in order},
+                       episodes={600 + i: [] for i in order})
+        monkeypatch.setattr(reaper, "_arr_client", lambda slug, fake=fake: fake)
+        rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir), max_items=1))
+        assert rc == reaper.EXIT_OK
+        deletes = [d[0] for d in fake.deletes if d[0].startswith("/series/")]
+        assert len(deletes) == 1
+        picks.add(deletes[0])
+    assert len(picks) == 1, "tie must resolve identically regardless of build order: %r" % picks
+
+
+def test_resolve_permanent_tag_id_non_dict_list_element_is_not_ok(reaper):
+    """A 200 whose list carries a non-dict element is 'could not ask', never
+    'tag absent' — the fail-closed leg, not an unhandled AttributeError."""
+    fake = FakeArr("sonarr", tags=[{"id": 13, "label": "Permanent"}])
+    fake.get = lambda path, query="", timeout=None: (200, ["junk", 42]) if path == "/tag" else (404, None)
+    tag_id, ok = reaper.resolve_permanent_tag_id(fake)
+    assert tag_id is None and ok is False
+
+
+def test_json_plan_carries_scheduled_series_removals(reaper, tmpdir, monkeypatch, capsys):
+    """--json is a separately consumed audit surface (quota.sh incident
+    capture); it must show P-4 record removals, not just file deletes."""
+    shows = [{"ratingKey": "1", "title": "Ended Show", "year": 1990,
+              "addedAt": 1000000000, "sizeGB": 0.0}]
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": shows}, {"1": {"tmdbId": None, "tvdbId": 30001}})
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("sonarr", series=[{"id": 700, "tvdbId": 30001, "ended": True, "tags": []}],
+                   episodefiles={700: []}, episodes={700: []})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+    rc = reaper.run(_args(reaper, execute=True, emit_json=True, manifest_dir=str(tmpdir)))
+    assert rc == reaper.EXIT_OK
+    out = capsys.readouterr().out
+    # --json prints the plan doc first, then the result doc: decode the first.
+    plan, _ = json.JSONDecoder().raw_decode(out[out.index("{"):])
+    assert plan["series_removals"] and plan["series_removals"][0]["arrId"] == 700
+    assert plan["deferred_series_count"] == 0
