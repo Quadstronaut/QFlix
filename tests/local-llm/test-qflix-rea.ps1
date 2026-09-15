@@ -546,6 +546,36 @@ Test-Case 'Test-IsNoiseFinding suppresses the Plex client-abort stream write' {
     Assert-Equal 'plex-client-abort-stream-write' (Test-IsNoiseFinding $f) 'matched by rule id'
 }
 
+Test-Case 'Test-IsNoiseFinding suppresses a single-line excerpt rule hit' {
+    $f = @{
+        signature = 'plex:html-response'
+        summary   = 'Plex returned HTML instead of XML'
+        excerpt   = 'Sep 12, 2026 05:32:45.290 [139867936561976] ERROR - [Req#13b5b4] downloadContainer: expected MediaContainer element, found html'
+    }
+    Assert-Equal 'plex-download-container-html-for-vanished-item' (Test-IsNoiseFinding $f) 'one noise line is noise'
+}
+
+Test-Case 'Test-IsNoiseFinding does NOT suppress a multi-line excerpt that bundles a noise line with an unclaimed line' {
+    # Adversarial review 2026-09-14: an excerpt-field rule is a claim about
+    # one log line, but a model quoting the surrounding block bundled the
+    # noise phrase with a real transcoder fault and the whole finding vanished.
+    $f = @{
+        signature = 'plex:html-response'
+        summary   = 'Plex returned HTML instead of XML'
+        excerpt   = "Sep 12, 2026 05:32:45.290 [x] ERROR - [Req#13b5b4] downloadContainer: expected MediaContainer element, found html`nSep 12, 2026 05:32:45.300 [x] ERROR - [Req#13b5b4/Transcode] TranscodeUniversalRequest: unable to find a matching profile"
+    }
+    Assert-Equal $null (Test-IsNoiseFinding $f) 'an unclaimed line in the bundle pages'
+}
+
+Test-Case 'Test-IsNoiseFinding still suppresses a multi-line excerpt where every line is claimed noise' {
+    $f = @{
+        signature = 'plex:html-response'
+        summary   = 's'
+        excerpt   = "ERROR - [Req#1] downloadContainer: expected MediaContainer element, found html`nERROR - [Req#2] downloadContainer: expected MediaContainer element, found html"
+    }
+    Assert-Equal 'plex-download-container-html-for-vanished-item' (Test-IsNoiseFinding $f) 'all-noise bundle is noise'
+}
+
 Test-Case 'Test-IsNoiseFinding suppresses on signature alone when excerpt is empty' {
     $f = @{ signature = 'plex:ssl-protocol-shutdown'; summary = ''; excerpt = '' }
     Assert-Equal 'plex-client-abort-stream-write' (Test-IsNoiseFinding $f) 'signature-only match'
@@ -1853,6 +1883,47 @@ Test-Case 'a group with no page_key pages rather than being silently swallowed' 
     }
 }
 
+Test-Case 'the ledger mutes a differently-trimmed excerpt of an already-paged line (cross-run containment)' {
+    # 2026-09-14: one 89-line Plex downloadContainer burst paged at 06:08,
+    # 09:10 and 15:08 under three signatures because each hour's model kept a
+    # different amount of the line ("error req ab downloadcontainer expected
+    # mediacontainer element found html" vs "downloadcontainer expected
+    # mediacontainer element found html"). Same line, same identity.
+    Use-TempReaState {
+        $long  = 'error req ab downloadcontainer expected mediacontainer element found html'
+        $short = 'downloadcontainer expected mediacontainer element found html'
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 'plex:html-response' $long)
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 'plex:invalid-xml-response' $short)
+        Assert-Equal 0 @($r.Due).Count 'the shorter trim of a paged line is muted'
+        Assert-Equal 1 @($r.Muted).Count 'and counted as muted'
+        # And the other direction: paged short first, longer trim arrives next run.
+        $r2 = Select-DuePageGroups -Groups @(New-TestGroup 'plex:x' ($long + ' using default completion duration'))
+        Assert-Equal 0 @($r2.Due).Count 'a longer trim of a paged line is muted too'
+    }
+}
+
+Test-Case 'cross-run containment never merges a DIFFERENT fault that merely quotes an earlier one' {
+    # Adversarial review 2026-09-14: a 57-char sonarr<->radarr outage paged
+    # hour 1; hour 2 a 133-char prowlarr credential finding quoted it verbatim
+    # as context and was muted as a "repeat". Containment alone is not
+    # identity - the shorter key must be most (>=60%) of the longer one.
+    Use-TempReaState {
+        $a = 'sonarr unable to communicate with radarr connection refused'
+        $b = 'prowlarr indexer validation failure caused by sonarr unable to communicate with radarr connection refused while checking newznab credentials'
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 'arr:sonarr-radarr-down' $a)
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 'arr:prowlarr-indexer-creds' $b)
+        Assert-Equal 1 @($r.Due).Count 'a mostly-new finding pages even when it contains an old one'
+    }
+}
+
+Test-Case 'cross-run containment never merges on a SHORT shared phrase' {
+    Use-TempReaState {
+        $null = Select-DuePageGroups -Groups @(New-TestGroup 's' 'connection refused')
+        $r = Select-DuePageGroups -Groups @(New-TestGroup 't' 'bazarr connection refused')
+        Assert-Equal 1 @($r.Due).Count 'sub-40-char keys need an exact match'
+    }
+}
+
 Test-Case 'a corrupt ledger FAILS OPEN and pages' {
     Use-TempReaState {
         $null = Select-DuePageGroups -Groups @(New-TestGroup 's' 'some underlying line that was already paged')
@@ -2199,6 +2270,66 @@ Test-Case 'the echo rule is excerpt-scoped: model prose cannot mute a real fault
         summary = 'looks like lib.notify: alert sent: again'
         excerpt = 'manitoba-maint: ERROR write failed: EDQUOT disk quota exceeded' }
     Assert-Equal $null (Test-IsNoiseFinding $f) 'signature/summary match cannot suppress an EDQUOT excerpt'
+}
+
+# --- Yield-to-operator gate (2026-09-13) ---
+# REA's model phase pins every core (llama-server runs AboveNormal) and 5-7 GB
+# of an 8 GB GPU for up to ~20 min an hour, which stuttered YouTube in Edge.
+# Scheduled runs now skip while the operator is at the keyboard or anything is
+# audibly playing. The verdict is a pure function so it is testable offline.
+Test-Case 'Get-BusyVerdict: idle keyboard + silence = not busy' {
+    Assert-Equal '' (Get-BusyVerdict -InputIdleMinutes 30 -AudibleApps @()) 'idle and silent yields empty verdict'
+}
+
+Test-Case 'Get-BusyVerdict: recent input = busy (reason=input)' {
+    $v = Get-BusyVerdict -InputIdleMinutes 2 -AudibleApps @()
+    Assert-True ($v -match 'reason=input') "verdict names input: $v"
+    Assert-True ($v -notmatch '\s') 'verdict is one space-free token (audit-log friendly)'
+}
+
+Test-Case 'Get-BusyVerdict: idle keyboard but media playing = busy (reason=audio)' {
+    # The YouTube case: a video plays for 20 min with no mouse input.
+    $v = Get-BusyVerdict -InputIdleMinutes 45 -AudibleApps @('msedge')
+    Assert-True ($v -match 'reason=audio') "verdict names audio: $v"
+    Assert-True ($v -match 'msedge') 'verdict names the audible app'
+}
+
+Test-Case 'Get-BusyVerdict: audio-plumbing processes never count as media' {
+    # Sonar renders its mix to the real device all the time; audiodg is the
+    # engine itself. Counting either would block REA forever.
+    $v = Get-BusyVerdict -InputIdleMinutes 45 -AudibleApps @('SteelSeriesSonar','audiodg','Idle')
+    Assert-Equal '' $v 'plumbing-only audio yields empty verdict'
+}
+
+Test-Case 'Get-UserBusyReason fails OPEN when a probe throws' {
+    # A broken probe must never be the reason REA goes dark (2026-07-29 class).
+    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    try {
+        function Get-InputIdleMinutes { throw 'probe exploded' }
+        Assert-Equal '' (Get-UserBusyReason) 'probe failure reads as not busy'
+        $log = Get-Content -Raw (Join-Path (Get-StateDir) 'audit.log')
+        Assert-True ($log -match 'busy-probe FAILED') 'probe failure is logged, never silent'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+    }
+}
+
+Test-Case 'live probes run on this box without throwing' {
+    $idle = Get-InputIdleMinutes
+    Assert-True ($idle -ge 0) "input idle minutes is non-negative ($idle)"
+    $apps = @(Get-AudibleApps -Samples 3 -IntervalMs 50)
+    Assert-True ($apps -is [array]) "audible-app probe returns an array ($($apps -join ','))"
+}
+
+Test-Case 'Invoke-Model asks Ollama to unload the model when done (keep_alive=0)' {
+    # Each model is used once per run; leaving it resident for Ollama's default
+    # keep-alive holds 5-7 GB of VRAM after the run ends.
+    $Script:CapturedBody = $null
+    function Invoke-RestMethod { param($Uri,$Method,$Body,$ContentType,$TimeoutSec,$ErrorAction) $Script:CapturedBody = $Body; [pscustomobject]@{ response = '[]' } }
+    [void](Invoke-Model -Model 'm' -Prompt 'p' -SystemPrompt 's')
+    $b = $Script:CapturedBody | ConvertFrom-Json
+    Assert-True ($b.PSObject.Properties.Name -contains 'keep_alive') 'request carries keep_alive'
+    Assert-Equal 0 $b.keep_alive 'keep_alive is 0 (unload immediately)'
 }
 
 # Summary
