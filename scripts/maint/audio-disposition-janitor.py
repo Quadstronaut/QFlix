@@ -330,12 +330,12 @@ def _classify_dual_default(audio: list, defaults: list, refusals=None):
     # Tdarr's ensure-AAC copies the SOURCE default's audio, so if the source
     # default is jpn the untagged aac is a Japanese encode. Only an eng-tagged
     # compat track may win when any default is provably foreign.
+    if not compat:
+        return _refuse(refusals, "dual_default:every-compat-default-is-foreign")
     if any(_lang(audio[i]) is not None and not _is_eng(_lang(audio[i])) for i in defaults):
         compat = [i for i in compat if _lang(audio[i]) is not None]
         if not compat:
             return _refuse(refusals, "dual_default:untagged-compat-beside-foreign-default")
-    if not compat:
-        return _refuse(refusals, "dual_default:every-compat-default-is-foreign")
     target = compat[-1]                      # Tdarr appends: last compat wins
     clear = [i for i in defaults if i != target]
     return {"target": target, "clear": clear, "audio_count": len(audio),
