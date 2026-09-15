@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - Seerr/*arr cross-system parity (report-only; every settled Seerr row must end in a re-requestable state - spec section 4 S-1..S-3)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push seerr-arr-parity
+StandardOutput=journal
+StandardError=journal
