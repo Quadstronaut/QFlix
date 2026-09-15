@@ -161,6 +161,10 @@ def _install_plex(reaper, monkeypatch, items_by_lib, ids_by_rk, leaves_by_rk=Non
 
     refresh_calls = []
     trash_calls = []
+    item_deletes = []
+    monkeypatch.setattr(reaper, "plex_delete_item",
+                        lambda p, t, rk: item_deletes.append(str(rk)) or True)
+    reaper._test_item_deletes = item_deletes
     monkeypatch.setattr(reaper, "plex_refresh",
                         lambda p, t, k: refresh_calls.append(k) or True)
     monkeypatch.setattr(reaper, "plex_empty_trash",
@@ -2338,3 +2342,80 @@ def test_json_plan_carries_scheduled_series_removals(reaper, tmpdir, monkeypatch
     plan, _ = json.JSONDecoder().raw_decode(out[out.index("{"):])
     assert plan["series_removals"] and plan["series_removals"][0]["arrId"] == 700
     assert plan["deferred_series_count"] == 0
+
+
+def test_p4_record_removal_also_removes_the_plex_show_item(reaper, tmpdir, monkeypatch):
+    """Mob Psycho 100, 2026-09-15: Sonarr removed the show WITH its folder;
+    Plex never re-scans a folder that no longer exists, so refresh+emptyTrash
+    left a ghost with 5 leaves that paged as a 'newly-stranded orphan' the
+    next morning. After a P-4 record removal the reaper must delete the Plex
+    item itself and prove it."""
+    shows = [{"ratingKey": "8017", "title": "Ended Show", "year": 2016,
+              "addedAt": 1000000000, "sizeGB": 0.0}]
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": shows}, {"8017": {"tmdbId": None, "tvdbId": 40001}})
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("sonarr", series=[{"id": 800, "tvdbId": 40001, "ended": True, "tags": []}],
+                   episodefiles={800: []}, episodes={800: []})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+    assert rc == reaper.EXIT_OK
+    assert [d[0] for d in fake.deletes if d[0].startswith("/series/")] == ["/series/800"]
+    assert reaper._test_item_deletes == ["8017"], "the Plex show item must go with the record"
+
+
+def test_p4_plex_item_delete_failure_marks_partial(reaper, tmpdir, monkeypatch):
+    shows = [{"ratingKey": "8018", "title": "Ended Show", "year": 2016,
+              "addedAt": 1000000000, "sizeGB": 0.0}]
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": shows}, {"8018": {"tmdbId": None, "tvdbId": 40002}})
+    _silence_side_effects(reaper, monkeypatch)
+    monkeypatch.setattr(reaper, "plex_delete_item", lambda p, t, rk: False)
+    fake = FakeArr("sonarr", series=[{"id": 801, "tvdbId": 40002, "ended": True, "tags": []}],
+                   episodefiles={801: []}, episodes={801: []})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+    assert rc == reaper.EXIT_PARTIAL, "an unremovable ghost is loud, never silent"
+
+
+def test_dry_run_never_deletes_a_plex_item(reaper, tmpdir, monkeypatch):
+    shows = [{"ratingKey": "8019", "title": "Ended Show", "year": 2016,
+              "addedAt": 1000000000, "sizeGB": 0.0}]
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": shows}, {"8019": {"tmdbId": None, "tvdbId": 40003}})
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("sonarr", series=[{"id": 802, "tvdbId": 40003, "ended": True, "tags": []}],
+                   episodefiles={802: []}, episodes={802: []})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+    reaper.run(_args(reaper, execute=False))
+    assert reaper._test_item_deletes == []
+
+
+def test_plex_delete_item_proves_removal_by_reread(reaper, monkeypatch):
+    calls = []
+    monkeypatch.setattr(reaper, "_plex_delete", lambda p, t, path: calls.append(("DELETE", path)) or (200, ""))
+    monkeypatch.setattr(reaper, "_plex_get", lambda p, t, path, query="", timeout=30: (404, ""))
+    assert reaper.plex_delete_item("1", "t", "8017") is True
+    assert calls == [("DELETE", "/library/metadata/8017")]
+    # DELETE said 200 but the item is still readable -> NOT proven gone.
+    monkeypatch.setattr(reaper, "_plex_get", lambda p, t, path, query="", timeout=30: (200, "{}"))
+    assert reaper.plex_delete_item("1", "t", "8017") is False
+    # A 403 (media deletion disabled in Plex settings) is a clean False.
+    monkeypatch.setattr(reaper, "_plex_delete", lambda p, t, path: (403, ""))
+    assert reaper.plex_delete_item("1", "t", "8017") is False
+
+
+def test_p4_removes_every_plex_item_that_mapped_to_the_one_record(reaper, tmpdir, monkeypatch):
+    """PR #27 review (blast-radius/MAJOR): two Plex show items resolving to the
+    same Sonarr record (the 2026-08-16 sonarr2 rename-off collision shape)
+    used to collapse to one ratingKey -- the record went, one ghost stayed,
+    the run said SUCCESS. Every mapped item must be removed."""
+    shows = [{"ratingKey": "9030", "title": "Dup Show", "year": 2016, "addedAt": 1000000000, "sizeGB": 0.0},
+             {"ratingKey": "9031", "title": "Dup Show", "year": 2016, "addedAt": 1000000000, "sizeGB": 0.0}]
+    ids = {"9030": {"tmdbId": None, "tvdbId": 40010}, "9031": {"tmdbId": None, "tvdbId": 40010}}
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": shows}, ids)
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("sonarr", series=[{"id": 810, "tvdbId": 40010, "ended": True, "tags": []}],
+                   episodefiles={810: []}, episodes={810: []})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+    assert rc == reaper.EXIT_OK
+    assert [d[0] for d in fake.deletes if d[0].startswith("/series/")] == ["/series/810"]
+    assert sorted(reaper._test_item_deletes) == ["9030", "9031"]
