@@ -1125,11 +1125,13 @@ def resolve_permanent_tag_id(client):
     status, body = client.get("/tag")
     if status != 200 or not isinstance(body, list):
         return None, False
+    # A 200 whose list holds non-dict junk ANYWHERE is "could not ask", not
+    # "tag absent" — same fail-closed leg as a non-200. Validated over the
+    # whole body BEFORE searching, so the verdict does not depend on whether
+    # the junk landed before or after the real match (round-3 review).
+    if not all(isinstance(t, dict) for t in body):
+        return None, False
     for t in body:
-        # A 200 whose list holds non-dict junk is "could not ask", not "tag
-        # absent" — same fail-closed leg as a non-200 (round-2 review).
-        if not isinstance(t, dict):
-            return None, False
         if str(t.get("label", "")).strip().lower() == PERMANENT_TAG_LABEL:
             return t.get("id"), True
     return None, True

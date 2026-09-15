@@ -2315,9 +2315,10 @@ def test_resolve_permanent_tag_id_non_dict_list_element_is_not_ok(reaper):
     """A 200 whose list carries a non-dict element is 'could not ask', never
     'tag absent' — the fail-closed leg, not an unhandled AttributeError."""
     fake = FakeArr("sonarr", tags=[{"id": 13, "label": "Permanent"}])
-    fake.get = lambda path, query="", timeout=None: (200, ["junk", 42]) if path == "/tag" else (404, None)
-    tag_id, ok = reaper.resolve_permanent_tag_id(fake)
-    assert tag_id is None and ok is False
+    for body in (["junk", 42], [{"id": 13, "label": "permanent"}, "junk"], ["junk", {"id": 13, "label": "permanent"}], [None]):
+        fake.get = lambda path, query="", timeout=None, body=body: (200, body) if path == "/tag" else (404, None)
+        tag_id, ok = reaper.resolve_permanent_tag_id(fake)
+        assert (tag_id, ok) == (None, False), body   # order-independent (round-3 review)
 
 
 def test_json_plan_carries_scheduled_series_removals(reaper, tmpdir, monkeypatch, capsys):
