@@ -1510,6 +1510,12 @@ def _seerr_requests_to_preserve(info, stuck):
             return [], False
         if status not in _SEERR_REQUEST_LIVE:
             continue
+        if not seasons:
+            # A live TV request with NO season rows is a shape Seerr does not
+            # produce (it expands "all" into season rows before the request
+            # exists). If it ever appears we cannot know what the member asked
+            # for -- withhold rather than silently drop (PR #35 review, MAJOR).
+            return [], False
         live = sorted(n for n in seasons if n not in stuck_set)
         if not live:
             continue
@@ -1564,6 +1570,7 @@ def reconcile_seerr(execute: bool):
     would_recreate = 0
     recreated = 0
     withheld_rows = 0
+    recreated_keys = set()        # (tmdb, userId, seasons, is4k) already re-POSTed this run
     try:
         port, key = _seerr_creds()
     except FileNotFoundError:
@@ -1709,6 +1716,12 @@ def reconcile_seerr(execute: bool):
             continue
 
         recreate = []              # live requests to re-create after a stuck-season clear
+        # DELIBERATE ASYMMETRY: the ORPHAN path (title absent from every *arr)
+        # never re-creates requests. A request for content no *arr holds could
+        # only be re-created as a dangling PENDING row nothing will ever
+        # fulfil; the member re-requests and the normal pipeline takes over.
+        # Only the stuck-season path, where the series IS still in Sonarr and
+        # the request can still be served, preserves them.
         gone = False
         reason = "orphan"
         if media_type == "movie":
@@ -1790,6 +1803,16 @@ def reconcile_seerr(execute: bool):
         # behalf (the admin API accepts userId). Loud on failure: the member
         # is now waiting on a request Seerr no longer shows.
         for rq in recreate:
+            # Seerr's Media.tmdbId is indexed, not unique: two media rows can
+            # share one tmdbId (a known Overseerr duplicate-row class) and both
+            # would compute the SAME recreate list from the same /tv/<tmdb>
+            # response. One member, one request -- never two (PR #35 review).
+            rkey = (int(row.get("tmdbId")), rq["userId"], tuple(rq["seasons"]), rq["is4k"])
+            if rkey in recreated_keys:
+                log("Seerr: request for user " + str(rq["userId"]) + " on tmdb " +
+                    str(row.get("tmdbId")) + " already re-created this run (duplicate media row)")
+                continue
+            recreated_keys.add(rkey)
             payload = {"mediaType": "tv", "mediaId": int(row.get("tmdbId")),
                        "seasons": rq["seasons"], "userId": rq["userId"],
                        "is4k": rq["is4k"]}

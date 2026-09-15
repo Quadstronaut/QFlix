@@ -2524,3 +2524,41 @@ def test_delete_failure_never_recreates(reaper, monkeypatch):
     deleted, failed = reaper.reconcile_seerr(execute=True)
     assert calls["posts"] == []
     assert (deleted, failed) == (0, 1)
+
+
+def test_duplicate_media_rows_sharing_a_tmdb_recreate_a_request_once(reaper, monkeypatch):
+    """Seerr Media.tmdbId is indexed, not unique (PR #35 review, BLOCKER): two
+    rows with the same tmdb both cleared in one run must yield ONE re-created
+    request for the member, not two."""
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    rows = {"results": [{"id": 344, "mediaType": "tv", "tmdbId": 117488, "tvdbId": 399731, "status": 7},
+                        {"id": 345, "mediaType": "tv", "tmdbId": 117488, "tvdbId": 399731, "status": 7}]}
+    detail = _tv_detail([(1, 7), (4, 1)], requests=[(3278, 2, 4, [4])])
+    calls = {"deletes": [], "posts": []}
+
+    def fake_req(method, port, key, path, query="", timeout=30, body=None):
+        if method == "GET" and path == "/api/v1/media":
+            return 200, rows
+        if method == "GET" and path.startswith("/api/v1/tv/"):
+            return 200, detail
+        if method == "DELETE":
+            calls["deletes"].append(path); return 200, ""
+        if method == "POST":
+            calls["posts"].append(body); return 201, {"id": 1}
+        return 404, None
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    monkeypatch.setattr(reaper, "_arr_client",
+                        lambda slug: FakeArr(slug, series=[{"id": 279, "tvdbId": 399731}]))
+    deleted, failed = reaper.reconcile_seerr(execute=True)
+    assert len(calls["deletes"]) == 2 and (deleted, failed) == (2, 0)
+    assert len(calls["posts"]) == 1, calls["posts"]
+
+
+def test_live_request_with_no_season_rows_withholds_the_clear(reaper, monkeypatch):
+    """A live request whose seasons[] is empty is a shape we cannot interpret:
+    withhold the delete and be loud, never drop it silently (PR #35 review)."""
+    detail = _tv_detail([(1, 7), (4, 1)], requests=[(3278, 2, 4, [])])
+    calls = _stuck_row_harness(reaper, monkeypatch, detail)
+    deleted, failed = reaper.reconcile_seerr(execute=True)
+    assert calls["deletes"] == [] and calls["posts"] == []
+    assert (deleted, failed) == (0, 1)
