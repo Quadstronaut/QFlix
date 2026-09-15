@@ -1,15 +1,27 @@
 [Unit]
-Description=Manitoba maint — audio-disposition janitor (sole-default AAC after Tdarr dual-default bug)
+Description=Manitoba maint — audio-disposition janitor (sole-default audio: Tdarr dual-default bug + English-default enforcement, anime excluded)
 After=network-online.target
 
 [Service]
 Type=oneshot
-# EXECUTE is armed deliberately: the janitor's predicate is narrow (only the
-# known Tdarr dual-default pattern), the remux is stream-copy-only with a
-# post-verify, and a dry-run plan was operator-reviewed before first enable
-# (2026-07-19). Blast radius capped by --max-items in-script (default 25).
-# --max-items 50: initial backlog is 318 files (2026-07-19 dry-run); 50/night
-# off-peak converges in ~7 days, then steady-state is a handful per day.
+# EXECUTE is armed deliberately: both predicates are narrow (the known Tdarr
+# dual-default pattern, and a foreign-default file with a proven-tagged eng
+# track — untagged defaults are refused outright, see classify_streams), the
+# remux is stream-copy-only with a post-verify, and a dry-run plan was
+# operator-reviewed before first enable (2026-07-19; foreign_default added
+# 2026-09-13 after the Futurama S1 incident). Blast radius capped by
+# --max-items in-script (default 25).
+# --max-items 50: SUPERSEDES the original 2026-07-19 note, which claimed a
+# 318-file initial backlog needing 50-a-night for roughly a week to fully
+# clear — that dual_default-only backlog drained long ago. A full-library
+# dry-run 2026-09-13 (both classes,
+# real DEFAULT_ROOTS, 489 files scanned, operator-reviewed) found the
+# backlog was 50 candidates across 24 titles (44 / 20 when re-measured the
+# next day - it moves nightly); --max-items 50 bounds one run at the
+# measured backlog instead of the seven nights the old note assumed. Left at 50
+# (rather than raised) because it is also the per-run blast-radius cap this
+# comment block already documents, and steady-state going forward is a
+# handful of newly-imported files per day either way.
 ExecStart=/usr/bin/python3 %h/scripts/maint/audio-disposition-janitor.py --execute --max-items 50
 # Full-library ffprobe sweep + up to 25 large remuxes can run long.
 # 2h -> 5h on 2026-08-08: a bulk re-acquisition (Vanderpump S5-S12, ~190
