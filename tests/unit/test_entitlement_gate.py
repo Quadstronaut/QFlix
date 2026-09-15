@@ -253,7 +253,10 @@ def test_entitled_restores_the_members_own_prior_permissions(tmp_path):
     p = plan(answer=answer(ENT.YES),
              state=state_with(tmp_path, prior_perms=custom),
              share=share(sections=MINIMUM), seerr_user=seerr_user(perms=0))
-    assert p.seerr_target == custom
+    # 2026-09-15 ruling: a remembered value is restored MINUS the watchlist
+    # auto-request bits, which are never written again from any source.
+    assert p.seerr_target == custom & ~SU.PERMISSIONS_NEVER
+    assert p.seerr_target & SU.PERMISSIONS_NEVER == 0
 
 
 def test_stale_yes_still_grants(tmp_path):
