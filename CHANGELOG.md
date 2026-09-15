@@ -71,6 +71,33 @@ from the webhook's handler threads and the pusher at once - now locked.
 Live proof: The Simpsons S37 requested through Seerr at 00:40Z had 13/15
 episodes in Plex by 00:55Z; Akira (1988) was in Plex by 00:52Z.
 
+### 5. Same night, after the operator's phone (PRs #31-#35)
+
+- **Seerr has no base-path support.** Reproduced with Playwright at a 390px
+  viewport: under `/seerr/` the app pushes `/search?query=...` and `/` WITHOUT
+  the prefix (Ultra.cc's stock nginx `sub_filter` shim patches ~30 strings in
+  the bundle and misses those plus `/sw.js`), so any phone reload or PWA
+  update lands on the QFlix 404 page. `/seerr/…` now 301s to Seerr's own vhost
+  where everything is at `/`; the FAQ links there directly.
+- **The FAQ document had never been deployed** (`~/www/qflix-faq/index.html`
+  dated Jul 25). `60-www-images.sh` now deploys it with the real host
+  substituted and smoke-asserts the Seerr link, with a retry for the edge cache.
+- **Plex-watchlist auto-request is off for everyone.** Seerr's Watchlist Sync
+  retried a 23-season show against a 4-season quota every 3 minutes, forever.
+  The three auto-request permission bits are `PERMISSIONS_NEVER` in
+  `lib/seerrusers.py`, masked out of every value the entitlement gate writes
+  (baseline, remembered prior, override); the exempt/unknown accounts the gate
+  never touches were stripped once by hand. `qflix-permanent.py` is finally
+  staged by the installer (a `cp` step referenced a file the tarball never
+  carried, which aborted a deploy).
+- **A stuck-season clear preserves live requests.** The Seerr media-row DELETE
+  that clears DELETED seasons cascades every request on the row; a member's
+  fresh S4 request on a show whose S1-3 had expired would have vanished. The
+  reaper now reads `mediaInfo.requests` from the same response, re-creates
+  every PENDING/APPROVED request whose seasons are not all stuck on the
+  member's behalf (once per member/seasons across duplicate media rows), and
+  withholds the delete when the request list cannot be read.
+
 ## 2026-09-02 - 78 pings from one fault, and the 4% signal rate underneath it
 
 Plex went down at 07:45Z. Over the following 24h the stack sent **78 Discord
