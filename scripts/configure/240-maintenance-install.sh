@@ -942,10 +942,12 @@ systemctl --user enable --now manitoba-maint-canary-tdarr-transcode-error.timer
 systemctl --user enable --now manitoba-maint-canary-tdarr-transcode-stall.timer
 systemctl --user enable --now manitoba-maint-canary-arr-plex-parity.timer
 # Seerr/*arr cross-system parity — hourly, REPORT ONLY. reconcile_seerr()
-# pages filter=available only, so a Seerr season/media row that lands in
-# DELETED (status 7) is never reconciled — measured live 2026-09-12 as 66
-# status-7 seasons across 28 shows, 763 season_request rows still pointing
-# at them. Asserts every SETTLED Seerr row ends in a re-requestable state
+# (ancestor commit eefcffd) now pages ALL statuses and DELETE-cascades stuck
+# status-7 seasons, so this canary asserts the RESIDUAL: reconciliation stops
+# running, or a strand shape the fix doesn't reach (the 66 status-7 seasons
+# across 28 shows / 763 season_request rows measured live 2026-09-12 predate
+# that fix and are unverified against the current reaper). Asserts every
+# SETTLED Seerr row ends in a re-requestable state
 # (spec: docs/superpowers/specs/2026-09-12-reaper-d-per-file-retention-spec.md
 # section 4, S-1..S-3). Never mutates Seerr or any *arr.
 systemctl --user enable --now manitoba-maint-canary-seerr-arr-parity.timer

@@ -82,6 +82,19 @@
 # duplicate series seen) and `tvdbid-untrusted-row-excluded` (at predicate
 # time, once per settled Seerr row that resolves to an untrusted id).
 #
+# TVDBID COLLISION PERSISTENCE ESCALATION (round 2, 2026-09-13 council
+# finding #3, MAJOR): "withhold rather than guess" is correct for one run,
+# but applied forever to a tvdbId that never stops colliding it becomes "this
+# show can never be asserted about again" — a show genuinely living in both
+# sonarr instances is itself operator drift (a mis-added series, or a split
+# that was never cleaned up) and deserves a page, not permanent silence.
+# state.json now tracks CONSECUTIVE per-tvdbId collision counts across runs;
+# 3 consecutive collisions for the SAME id escalates to CANNOT-ASSERT
+# (`seerr-arr-parity-tvdbid-collision-persistent`, exit 2), naming the
+# id(s). A run where the id does not collide drops it from the counter
+# entirely (no decay toward the threshold, same contract as the tv-detail
+# counter below).
+#
 # ============================================================================
 # NOISE CONTROL (same two mechanisms as arr-plex-parity.sh, same reasoning:
 # the operator directive that false positives render the alert channel
@@ -122,7 +135,27 @@
 #      named, counted skip (`state-file-corrupt-or-unreadable`) with its own
 #      trail line, and per OPERATOR RULING the gate still arms-this-run (same
 #      behaviour as a first run) rather than being treated as a false clean
-#      pass — it just no longer happens invisibly.
+#      pass — it just no longer happens invisibly. Round 2 (2026-09-13
+#      council finding #2, MAJOR): a state file that parses as valid JSON but
+#      is the WRONG SHAPE (a list, `null`, or a dict whose findings/
+#      tv_detail_failures/tvdbid_collisions are not themselves dicts) used to
+#      slip straight past this guard — `_state_shape_ok()` now folds that
+#      case into the identical corrupt-or-unreadable path.
+#
+#      STATE-FILE INTEGRITY PERSISTENCE ESCALATION (round 2, 2026-09-13
+#      council finding #1, MAJOR): "arm this run" is the right call for a
+#      ONE-OFF corruption, but a state file that fails EVERY run forever
+#      (read-only disk, a bad file dropped in place and never fixed) used to
+#      be forgiven identically every single time — the two-run confirmation
+#      gate can never fire again once prev_findings is wiped on every run.
+#      Because state.json is precisely the file in question, the counter
+#      lives in the TRAIL instead (a `state-streak=N` token riding on the one
+#      trail line each run already writes — see `_prior_state_corrupt_streak`
+#      and `_streak_suffix`); 3 consecutive corrupt/unreadable/wrong-shape
+#      reads escalate to CANNOT-ASSERT
+#      (`seerr-arr-parity-state-corrupt-persistent`, exit 2) naming the
+#      consecutive count. The first two are still just the existing named,
+#      counted skip plus a `STATE-CORRUPT` trail line, per rule 4.
 #
 #      PERSISTENT PER-TITLE FAILURE ESCALATION (2026-09-13 council finding,
 #      MAJOR): a `tv-detail-fetch-failed` skip on its own only withholds that
@@ -135,6 +168,19 @@
 #      (`seerr-arr-parity-tv-detail-persistent-failure`, exit 2), naming the
 #      stuck id(s) rather than a silent, forever-skipped row. Recovering even
 #      once resets that id's counter to 0.
+#
+#      ESCALATION-VS-CONFIRMED-FINDING ORDERING (round 2, 2026-09-13 council
+#      finding #4, MAJOR): all three escalations above are decided AFTER
+#      confirmed orphan/stranded findings are computed, and a confirmed
+#      finding always wins — die() with the real finding (exit 1), not
+#      cannot() with a masking CANNOT-ASSERT (exit 2). The suppressed
+#      escalation is still logged via a named, counted skip
+#      (`<stage>-suppressed-by-confirmed-finding`) plus its own
+#      `ESCALATION-SUPPRESSED-BY-FINDING` trail line — never silently
+#      dropped, just outranked. Previously the tv-detail escalation checked
+#      and exited before `confirmed` was even computed, so it could mask an
+#      unrelated, already-doubly-confirmed orphan on a completely different
+#      row.
 #
 # Every intentional exclusion (not-settled status, within-grace, unresolvable
 # id, season *arr does not know about, tvdbId collision, state-file
@@ -161,9 +207,15 @@
 #      consecutive runs.
 #   2  CANNOT-ASSERT — Seerr unreachable, ANY of the four *arrs unreachable,
 #      an empty *arr list, an empty Seerr list, a bad numeric override, a
-#      genuine pagination overflow, or a tmdbId whose tv-detail lookup has
-#      failed 3 consecutive runs. Empty-because-broken must never read as
-#      empty-because-clean.
+#      genuine pagination overflow, a tmdbId whose tv-detail lookup has
+#      failed 3 consecutive runs, a tvdbId reported by both sonarr instances
+#      3 consecutive runs, or a state file that has been corrupt/unreadable
+#      3 consecutive runs. Empty-because-broken must never read as
+#      empty-because-clean. EXCEPTION (round 2, finding #4): if a confirmed
+#      orphan/stranded finding also exists THIS run, the finding always wins
+#      — exit 1, not 2 — and the would-be escalation is instead logged via a
+#      named, counted skip + trail line. A CANNOT-ASSERT must never be the
+#      mechanism that hides a finding already proven true.
 #
 # STAGE labels (stderr -> Kuma msg=):
 #   seerr-arr-parity-bad-config       a numeric override is not a positive
@@ -182,6 +234,18 @@
 #   seerr-arr-parity-tv-detail-persistent-failure  a tmdbId's /api/v1/tv
 #                                     detail call has failed 3 consecutive
 #                                     runs — cannot rule out a masked STRANDED
+#   seerr-arr-parity-tvdbid-collision-persistent  (round 2, finding #3) a
+#                                     tvdbId has been reported by BOTH sonarr
+#                                     instances for 3 consecutive runs — a
+#                                     show living in both instances is
+#                                     operator drift that must be surfaced,
+#                                     not withheld forever behind the
+#                                     untrusted-id exclusion
+#   seerr-arr-parity-state-corrupt-persistent  (round 2, finding #1) the
+#                                     state file has failed to open/parse/
+#                                     shape-validate for 3 consecutive runs —
+#                                     "arm this run" stops covering for a
+#                                     permanently broken state file
 #   seerr-arr-parity                  >=1 orphan/stranded confirmed (exit 1)
 #
 # ============================================================================
@@ -293,6 +357,7 @@ exec python3 - "$@" <<'PY'
 import calendar
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -335,35 +400,92 @@ def skip_str():
     )
 
 
-def note(line):
+def note(line, trail_suffix=""):
+    """Appends to the durable trail. `trail_suffix` lands in the FILE ONLY --
+    never in stdout/stderr -- so bookkeeping (the state-file corruption
+    streak, round-2 council finding #1) can ride along on the one line every
+    run already writes without perturbing any STAGE=/PASS: text a human or
+    Kuma reads."""
     try:
         os.makedirs(os.path.dirname(TRAIL), exist_ok=True)
         with open(TRAIL, "a", encoding="utf-8") as fh:
-            fh.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW)) + " " + line + "\n")
+            fh.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW)) + " "
+                     + line + trail_suffix + "\n")
     except OSError:
         pass
 
 
-def cannot(stage, msg):
+def _streak_suffix(state_streak):
+    """state_streak is None on every exit path that never reached the
+    state-file read (bad-config, seerr/arr unreachable, pagination overflow,
+    config-missing) -- those runs have no opinion on state-file health, so
+    they leave the trail's last-known streak marker untouched rather than
+    resetting it to 0, which would silently forgive an in-progress
+    corruption run every time an unrelated outage happened to land on the
+    same tick."""
+    return "" if state_streak is None else " state-streak=%d" % state_streak
+
+
+def cannot(stage, msg, state_streak=None):
     line = "STAGE=%s msg=%s %s" % (stage, msg, skip_str())
     sys.stderr.write(line + "\n")
-    note(line)
+    note(line, _streak_suffix(state_streak))
     sys.exit(EXIT_BROKEN)
 
 
-def die(stage, msg):
+def die(stage, msg, state_streak=None):
     line = "STAGE=%s msg=%s %s" % (stage, msg, skip_str())
     sys.stderr.write(line + "\n")
-    note(line)
+    note(line, _streak_suffix(state_streak))
     sys.exit(EXIT_FINDING)
 
 
-def finish(msg, warn=False):
+def finish(msg, warn=False, state_streak=None):
     prefix = "PASS-WARN" if warn else "PASS"
     line = "%s: seerr-arr-parity - %s %s" % (prefix, msg, skip_str())
     print(line)
-    note(line)
+    note(line, _streak_suffix(state_streak))
     sys.exit(EXIT_OK)
+
+
+_STATE_STREAK_RE = re.compile(r"state-streak=(\d+)")
+
+
+def _prior_state_corrupt_streak():
+    """Round-2 council finding #1: state.json is the UNRELIABLE thing here,
+    so the consecutive-corrupt-reads counter cannot live inside it -- a
+    corrupt file could never durably remember its own corruption. It rides
+    instead on the one trail line every run already writes (see
+    _streak_suffix above), scanned from the end so the most recent run's
+    value always wins regardless of how many intermediate lines a single
+    corrupt run appends (STATE-CORRUPT, then its own final line)."""
+    try:
+        with open(TRAIL, encoding="utf-8", errors="ignore") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return 0
+    for line in reversed(lines):
+        m = _STATE_STREAK_RE.search(line)
+        if m:
+            return int(m.group(1))
+    return 0
+
+
+def _state_shape_ok(loaded):
+    """Round-2 council finding #2: a state file that is valid JSON but the
+    WRONG SHAPE (a list, `null`, or a dict whose findings/tv_detail_failures/
+    tvdbid_collisions are not themselves dicts) used to sail straight past
+    `json.load` and into `.get()` calls downstream -- bypassing the
+    corruption path entirely instead of being treated as the same
+    "cannot trust this file" event. This is the one gate both a parse
+    failure and a well-formed-but-malformed payload must pass through."""
+    if not isinstance(loaded, dict):
+        return False
+    for key in ("findings", "tv_detail_failures", "tvdbid_collisions"):
+        val = loaded.get(key)
+        if val is not None and not isinstance(val, dict):
+            return False
+    return True
 
 
 def read_secret(name):
@@ -704,11 +826,17 @@ except ImportError:
 _lock()
 prev_findings = {}
 prev_tv_failures = {}
+prev_tvdb_collisions = {}
+state_corrupt_this_run = False
 try:
     with open(STATE_PATH, encoding="utf-8") as fh:
-        loaded = json.load(fh) or {}
+        loaded = json.load(fh)
+    if not _state_shape_ok(loaded):
+        raise ValueError("state-file-wrong-shape")
+    loaded = loaded or {}
     prev_findings = loaded.get("findings") or {}
     prev_tv_failures = loaded.get("tv_detail_failures") or {}
+    prev_tvdb_collisions = loaded.get("tvdbid_collisions") or {}
 except FileNotFoundError:
     # Expected shape on the very first run ever (fresh deploy, or a state
     # dir a human cleared) -- nothing to compare against, and NOT a
@@ -720,16 +848,57 @@ except (OSError, ValueError):
     # "no file yet", with zero trace anywhere -- silently resetting the
     # two-run confirmation gate every time it happened, contradicting rule 4
     # ("a suppression or skip must be counted and logged, never silent").
+    # ROUND 2 (2026-09-13, MAJOR, finding #2): a wrong-SHAPE file (a list,
+    # `null`, or a dict whose findings/tv_detail_failures/tvdbid_collisions
+    # weren't themselves dicts) used to bypass this branch entirely -- it
+    # parses as perfectly valid JSON, so it sailed past `json.load` into
+    # `.get()` calls downstream instead of being treated as untrustworthy.
+    # `_state_shape_ok()` now raises ValueError for that case too, so it
+    # lands here and is handled identically to a parse failure.
     # OPERATOR RULING: corruption still arms-this-run (same behaviour as a
     # true first run -- there is genuinely nothing trustworthy to compare
     # against), but it is now a NAMED, COUNTED skip with its own trail line
     # instead of an invisible reset.
     skip("state-file-corrupt-or-unreadable")
-    note("STATE-CORRUPT state=%s unreadable-or-invalid-json -- treating as "
-         "arm-this-run (no prior findings trusted), gate not silently reset"
-         % STATE_PATH)
+    note("STATE-CORRUPT state=%s unreadable-or-invalid-json-or-wrong-shape -- "
+         "treating as arm-this-run (no prior findings trusted), gate not "
+         "silently reset" % STATE_PATH)
     prev_findings = {}
     prev_tv_failures = {}
+    prev_tvdb_collisions = {}
+    state_corrupt_this_run = True
+
+# ROUND 2 (2026-09-13, MAJOR, finding #1): a state file corrupt/unreadable
+# on EVERY run forever (a permissions regression, a disk gone read-only, a
+# human dropping a bad file in place) used to be forgiven identically every
+# single time -- "arms this run" is the right call for a ONE-OFF corruption,
+# but applied forever it is a silent, permanent "trust nothing, page
+# nothing" hole: prev_findings is wiped every run, so the two-run
+# confirmation gate can never fire again. Tracked via the trail, not
+# state.json (see _prior_state_corrupt_streak's docstring) -- 3 consecutive
+# corrupt reads escalate to CANNOT-ASSERT instead of silently re-arming for
+# the fourth, fifth, hundredth time running.
+state_corrupt_streak = (
+    _prior_state_corrupt_streak() + 1 if state_corrupt_this_run else 0
+)
+
+# ROUND 2 (2026-09-13, MAJOR, finding #3): a tvdbId reported by BOTH sonarr
+# instances is UNTRUSTED and excluded from every per-row assertion (see the
+# collision-handling comment above `sonarr_tvdb.pop(...)`), but that
+# exclusion used to last exactly as long as the collision did, with no
+# escalation of its own -- a show living in both instances forever would be
+# silently unassertable forever. That is operator drift that must be
+# surfaced, not skipped indefinitely. Tracked per-tvdbId across runs in
+# state.json itself (unlike finding #1: it is the underlying DATA that keeps
+# colliding here, not the state file's own readability that is in doubt).
+new_tvdb_collisions = {}
+tvdb_escalate = []
+for _tvdb in untrusted_tvdb:
+    _key = str(_tvdb)
+    _count = prev_tvdb_collisions.get(_key, 0) + 1
+    new_tvdb_collisions[_key] = _count
+    if _count >= 3:
+        tvdb_escalate.append((_tvdb, _count))
 
 # PERSISTENT PER-TITLE FAILURE ESCALATION (operator ruling 2, MAJOR): a
 # tmdbId whose /api/v1/tv detail call fails on THIS run AND failed on the
@@ -740,46 +909,97 @@ except (OSError, ValueError):
 # runs running -- long enough that "transient 500" no longer covers it, and
 # a real STRANDED season behind that id could be masked indefinitely.
 new_tv_failures = {}
-escalate_ids = []
+tv_escalate = []
 for _tmdb in tv_detail_failed_ids:
     _key = str(_tmdb)
     _count = prev_tv_failures.get(_key, 0) + 1
     new_tv_failures[_key] = _count
     if _count >= 3:
-        escalate_ids.append((_tmdb, _count))
+        tv_escalate.append((_tmdb, _count))
+
+# ROUND 2 (2026-09-13, MAJOR, finding #4): confirmed findings are computed
+# HERE -- against prev_findings, BEFORE any of the three escalations above
+# get to decide the exit code -- precisely so an already-confirmed
+# orphan/stranded (a REAL, proven finding) can never be masked by a
+# CANNOT-ASSERT escalation surfacing in the very same run. The original
+# ordering checked tv_escalate and exited 2 on the spot before `confirmed`
+# was ever computed, so a tv-detail-persistent-failure on one tmdbId could
+# hide an unrelated, already-doubly-confirmed orphan on a completely
+# different row -- exactly the "escalation masks a confirmed finding"
+# failure mode rule 4 exists to prevent. Applied uniformly to all three
+# escalations below.
+confirmed = {k: v for k, v in current.items() if k in prev_findings}
+c_orphan = {k: v for k, v in confirmed.items() if k.startswith("orphan:")}
+c_stranded = {k: v for k, v in confirmed.items() if k.startswith("stranded:")}
+c_under = {k: v for k, v in confirmed.items() if k.startswith("underreported:")}
+has_confirmed_finding = bool(c_orphan or c_stranded)
 
 tmp_path = STATE_PATH + ".tmp"
 with open(tmp_path, "w", encoding="utf-8") as fh:
     json.dump({"checked": NOW, "findings": {k: True for k in current},
-               "tv_detail_failures": new_tv_failures}, fh)
+               "tv_detail_failures": new_tv_failures,
+               "tvdbid_collisions": new_tvdb_collisions}, fh)
 os.replace(tmp_path, STATE_PATH)
 _unlock()
 if lock_fh is not None:
     lock_fh.close()
 
-if escalate_ids:
-    escalate_ids.sort(key=lambda pair: -pair[1])
-    named = ",".join("tmdb=%s(consecutive=%d)" % (t, c) for t, c in escalate_ids[:10])
-    cannot("seerr-arr-parity-tv-detail-persistent-failure",
-           "tv-detail-lookup-failed-3-plus-consecutive-runs=%s" % named)
-
-confirmed = {k: v for k, v in current.items() if k in prev_findings}
-c_orphan = {k: v for k, v in confirmed.items() if k.startswith("orphan:")}
-c_stranded = {k: v for k, v in confirmed.items() if k.startswith("stranded:")}
-c_under = {k: v for k, v in confirmed.items() if k.startswith("underreported:")}
-
 counts = "orphan=%d stranded=%d underreported=%d" % (len(orphans), len(stranded), len(underreported))
 confirmed_counts = ("confirmed_orphan=%d confirmed_stranded=%d confirmed_underreported=%d"
                      % (len(c_orphan), len(c_stranded), len(c_under)))
 
-if c_orphan or c_stranded:
+# Priority among the three escalations when NONE co-occurs with a confirmed
+# finding: tv-detail (round 1) keeps its original priority, then the two
+# round-2 additions. NAMED HERE rather than left implicit: a state-corrupt
+# read this run resets prev_tv_failures/prev_tvdb_collisions to {} (see the
+# except block above), so neither of those two counters can already be
+# sitting at >=2 and cross 3 on the very run state itself is unreadable --
+# state-corrupt-persistent is therefore the only one of the three that can
+# EVER fire on a run where state was corrupt, and by that same reset it can
+# never co-occur with a confirmed finding either (prev_findings is wiped
+# too). That is a structural fact of the code above, not a coincidence of
+# these tests -- called out so a later refactor cannot quietly break it
+# without any test failing loudly.
+escalations = []
+if tv_escalate:
+    tv_escalate.sort(key=lambda pair: -pair[1])
+    named = ",".join("tmdb=%s(consecutive=%d)" % (t, c) for t, c in tv_escalate[:10])
+    escalations.append((
+        "seerr-arr-parity-tv-detail-persistent-failure",
+        "tv-detail-lookup-failed-3-plus-consecutive-runs=%s" % named))
+if tvdb_escalate:
+    tvdb_escalate.sort(key=lambda pair: -pair[1])
+    named = ",".join("tvdb=%s(consecutive=%d)" % (t, c) for t, c in tvdb_escalate[:10])
+    escalations.append((
+        "seerr-arr-parity-tvdbid-collision-persistent",
+        "tvdbid-collision-persisted-3-plus-consecutive-runs=%s" % named))
+if state_corrupt_streak >= 3:
+    escalations.append((
+        "seerr-arr-parity-state-corrupt-persistent",
+        "state-file-corrupt-or-unreadable-3-plus-consecutive-runs consecutive=%d state=%s"
+        % (state_corrupt_streak, STATE_PATH)))
+
+if has_confirmed_finding:
+    # A confirmed orphan/stranded outranks every escalation above -- each
+    # suppressed escalation is still named and counted (rule 4: never a
+    # silent drop), just via skip()+trail instead of taking over the exit
+    # code.
+    for _stage, _msg in escalations:
+        skip("%s-suppressed-by-confirmed-finding" % _stage)
+        note("ESCALATION-SUPPRESSED-BY-FINDING stage=%s msg=%s" % (_stage, _msg))
     names = list(c_orphan.values())[:5] + list(c_stranded.values())[:5]
     detail = "; ".join(names)
     if len(c_orphan) + len(c_stranded) > len(names):
         detail += "; +%d more" % (len(c_orphan) + len(c_stranded) - len(names))
     die("seerr-arr-parity",
         "%d-orphan+%d-stranded-confirmed-across-2-consecutive-runs(rows=%d %s %s): %s"
-        % (len(c_orphan), len(c_stranded), len(rows), counts, confirmed_counts, detail[:400]))
+        % (len(c_orphan), len(c_stranded), len(rows), counts, confirmed_counts, detail[:400]),
+        state_streak=state_corrupt_streak)
 
-finish("rows=%d %s %s" % (len(rows), counts, confirmed_counts), warn=bool(c_under))
+if escalations:
+    _stage, _msg = escalations[0]
+    cannot(_stage, _msg, state_streak=state_corrupt_streak)
+
+finish("rows=%d %s %s" % (len(rows), counts, confirmed_counts),
+       warn=bool(c_under), state_streak=state_corrupt_streak)
 PY

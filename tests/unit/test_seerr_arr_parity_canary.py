@@ -893,3 +893,271 @@ def test_pagination_genuine_overflow_beyond_max_pages_is_labelled_correctly(tmp_
     assert r1.returncode == 2, (r1.returncode, r1.stdout, r1.stderr)
     assert "STAGE=seerr-arr-parity-pagination-overflow" in r1.stderr
     assert "seerr-arr-parity-seerr-unreachable" not in r1.stderr
+
+
+# ---------------------------------------------------------------------------
+# 15. ROUND 2 (2026-09-13 council, MAJOR, finding #1) -- persistent state-file
+# corruption escalates rather than being forgiven forever.
+# ---------------------------------------------------------------------------
+
+
+def test_state_file_corruption_persistent_3_runs_escalates_to_cannot_assert(tmp_path, stack):
+    """'Arm this run' is correct for a ONE-OFF state-file corruption, but a
+    file that fails EVERY run forever (permissions regression, disk gone
+    read-only, a bad file dropped in place and never fixed) used to be
+    forgiven identically every single time -- prev_findings is wiped on
+    every corrupt read, so the two-run confirmation gate could never fire
+    again. This test re-corrupts state.json before each invocation to
+    simulate a persistent EXTERNAL cause: the script itself always tries to
+    write a fresh, valid file at the end of a run, so only an external actor
+    re-breaking it produces a genuine streak."""
+    s = stack()
+    rows = [media_row(1, "movie", 999, 5)]   # irrelevant to this escalation
+    _wire_default(s, media_rows=rows)
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    trail = tmp_path / "trail.log"
+
+    state.write_text("{not json", encoding="utf-8")
+    r1 = _run(secrets, state=state, trail=trail)
+    assert r1.returncode == 0, (r1.returncode, r1.stdout, r1.stderr)
+
+    state.write_text("{not json", encoding="utf-8")
+    r2 = _run(secrets, state=state, trail=trail)
+    assert r2.returncode == 0, (r2.returncode, r2.stdout, r2.stderr)
+
+    state.write_text("{not json", encoding="utf-8")
+    r3 = _run(secrets, state=state, trail=trail)
+    assert r3.returncode == 2, (r3.returncode, r3.stdout, r3.stderr)
+    assert "STAGE=seerr-arr-parity-state-corrupt-persistent" in r3.stderr
+    assert "consecutive=3" in r3.stderr
+
+    # Stays escalated on a 4th consecutive corrupt run too -- the cause is
+    # still live.
+    state.write_text("{not json", encoding="utf-8")
+    r4 = _run(secrets, state=state, trail=trail)
+    assert r4.returncode == 2, (r4.returncode, r4.stdout, r4.stderr)
+    assert "consecutive=4" in r4.stderr
+
+
+def test_state_corrupt_streak_resets_after_one_valid_read(tmp_path, stack):
+    """A single successful state-file read must reset the corrupt-streak to
+    zero -- two more corruptions right after must NOT immediately
+    escalate."""
+    s = stack()
+    rows = [media_row(1, "movie", 999, 5)]
+    _wire_default(s, media_rows=rows)
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    trail = tmp_path / "trail.log"
+
+    state.write_text("{not json", encoding="utf-8")
+    r1 = _run(secrets, state=state, trail=trail)          # corrupt streak 1
+    state.write_text("{not json", encoding="utf-8")
+    r2 = _run(secrets, state=state, trail=trail)          # corrupt streak 2
+    # No re-corruption before r3: the valid file the script itself wrote at
+    # the end of r2 is read cleanly, resetting the streak.
+    r3 = _run(secrets, state=state, trail=trail)          # valid read -- resets
+    state.write_text("{not json", encoding="utf-8")
+    r4 = _run(secrets, state=state, trail=trail)          # corrupt streak 1 (again)
+    state.write_text("{not json", encoding="utf-8")
+    r5 = _run(secrets, state=state, trail=trail)          # corrupt streak 2 (again)
+
+    assert r1.returncode == 0, (r1.returncode, r1.stdout, r1.stderr)
+    assert r2.returncode == 0, (r2.returncode, r2.stdout, r2.stderr)
+    # The orphan is now confirmed against the valid state r2 left behind --
+    # a real finding, not an escalation, and proof the streak did not carry
+    # over to accidentally hit 3 on the very next (valid) read.
+    assert r3.returncode == 1, (r3.returncode, r3.stdout, r3.stderr)
+    assert r4.returncode == 0, (r4.returncode, r4.stdout, r4.stderr)
+    assert r5.returncode == 0, (r5.returncode, r5.stdout, r5.stderr)
+
+
+# ---------------------------------------------------------------------------
+# 16. ROUND 2 (2026-09-13 council, MAJOR, finding #2) -- wrong-shaped state
+# JSON must not bypass the corruption path.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_shape", [
+    "[]",
+    "null",
+    '{"findings": [1, 2], "tv_detail_failures": {}}',
+    '{"findings": {}, "tv_detail_failures": "not-a-dict"}',
+    '{"findings": {}, "tv_detail_failures": {}, "tvdbid_collisions": [1]}',
+])
+def test_state_file_wrong_shape_is_treated_as_corrupt_not_bypassed(tmp_path, stack, bad_shape):
+    """A state file that is valid JSON but the WRONG SHAPE -- a list,
+    `null`, or a dict whose findings/tv_detail_failures/tvdbid_collisions
+    are not themselves dicts -- used to parse clean through `json.load` and
+    sail straight past the corruption guard into `.get()` calls downstream.
+    Every one of these shapes must route through the identical
+    skip('state-file-corrupt-or-unreadable') + STATE-CORRUPT trail path as a
+    genuine parse failure, and the run must still arm rather than misbehave
+    or crash."""
+    s = stack()
+    rows = [media_row(1, "movie", 999, 5)]   # 999 is in no radarr -- an orphan
+    _wire_default(s, media_rows=rows)
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    trail = tmp_path / "trail.log"
+    state.write_text(bad_shape, encoding="utf-8")
+
+    r1 = _run(secrets, state=state, trail=trail)
+    assert r1.returncode == 0, (bad_shape, r1.returncode, r1.stdout, r1.stderr)
+    assert "state-file-corrupt-or-unreadable" in r1.stdout
+    assert "orphan=1" in r1.stdout
+    trail_text = trail.read_text(encoding="utf-8")
+    assert "STATE-CORRUPT" in trail_text
+
+    # The gate was not silently reset to a permanent clean pass -- the same
+    # orphan confirms on the next run against the now-VALID state the
+    # script itself wrote at the end of r1.
+    r2 = _run(secrets, state=state, trail=trail)
+    assert r2.returncode == 1, (bad_shape, r2.returncode, r2.stdout, r2.stderr)
+
+
+# ---------------------------------------------------------------------------
+# 17. ROUND 2 (2026-09-13 council, MAJOR, finding #3) -- persistent tvdbId
+# collision escalates rather than being withheld forever.
+# ---------------------------------------------------------------------------
+
+
+def test_tvdbid_collision_persistent_3_runs_escalates_to_cannot_assert(tmp_path, stack):
+    """A tvdbId reported by BOTH sonarr instances is UNTRUSTED and withheld
+    from every per-row assertion, but that withholding used to last exactly
+    as long as the collision did with no escalation of its own -- a show
+    genuinely living in both instances forever would be silently
+    unassertable forever, which is operator drift that must be surfaced."""
+    s = stack()
+    rows = [media_row(1, "tv", 5550, 5, tvdb=555)]
+    _wire_default(s, media_rows=rows,
+                  tv_details={5550: tv_detail(555, {1: 5})},
+                  sonarr=[series(555, {1: 0})],
+                  sonarr2=[series(555, {1: 5})])
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    trail = tmp_path / "trail.log"
+
+    r1 = _run(secrets, state=state, trail=trail)
+    r2 = _run(secrets, state=state, trail=trail)
+    r3 = _run(secrets, state=state, trail=trail)
+    r4 = _run(secrets, state=state, trail=trail)
+
+    assert r1.returncode == 0 and "tvdbid-collision-across-sonarr-instances" in r1.stdout
+    assert r2.returncode == 0 and "tvdbid-collision-across-sonarr-instances" in r2.stdout
+    assert r3.returncode == 2, (r3.returncode, r3.stdout, r3.stderr)
+    assert "STAGE=seerr-arr-parity-tvdbid-collision-persistent" in r3.stderr
+    assert "tvdb=555" in r3.stderr
+    assert "consecutive=3" in r3.stderr
+    # Stays escalated on a 4th run too -- the collision is still live.
+    assert r4.returncode == 2, (r4.returncode, r4.stdout, r4.stderr)
+
+
+def test_tvdbid_collision_counter_resets_when_collision_stops(tmp_path, stack):
+    """A run where the collision does not reproduce must reset the counter
+    to zero -- two more collisions right after must NOT immediately
+    escalate."""
+    s = stack()
+    rows = [media_row(1, "tv", 5560, 5, tvdb=556)]
+    colliding = {"on": True}
+
+    def _sonarr2(_path, _qs):
+        return [series(556, {1: 5})] if colliding["on"] else [series(90099, {1: 1})]
+
+    _wire_default(s, media_rows=rows, tv_details={5560: tv_detail(556, {1: 5})},
+                  sonarr=[series(556, {1: 5})])
+    s.route("/sonarr2/api/v3/series", _sonarr2, key=ARR_KEYS["sonarr2"])
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    trail = tmp_path / "trail.log"
+
+    r1 = _run(secrets, state=state, trail=trail)          # collision streak 1
+    r2 = _run(secrets, state=state, trail=trail)          # collision streak 2
+    colliding["on"] = False
+    r3 = _run(secrets, state=state, trail=trail)          # no collision -- resets
+    colliding["on"] = True
+    r4 = _run(secrets, state=state, trail=trail)          # collision streak 1 (again)
+    r5 = _run(secrets, state=state, trail=trail)          # collision streak 2 (again)
+
+    for r in (r1, r2, r3, r4, r5):
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+
+
+# ---------------------------------------------------------------------------
+# 18. ROUND 2 (2026-09-13 council, MAJOR, finding #4) -- a confirmed
+# orphan/stranded finding must never be masked by an escalation firing in
+# the same run.
+# ---------------------------------------------------------------------------
+
+
+def test_tv_detail_persistent_failure_does_not_mask_a_confirmed_finding(tmp_path, stack):
+    """Confirmed findings must be computed BEFORE any escalation gets to
+    decide the exit code. An orphan movie confirmed across two runs,
+    alongside an UNRELATED tmdbId whose tv-detail lookup has failed 3
+    consecutive runs, must still exit 1 naming the orphan -- not 2, which
+    would silently hide a finding already proven true behind a
+    CANNOT-ASSERT. The escalation itself must still be logged (named skip +
+    trail line), just outranked."""
+    s = stack()
+    rows = [
+        media_row(1, "movie", 9001, 5),            # becomes a confirmed orphan
+        media_row(2, "tv", 1600, 7, tvdb=16600),    # detail lookup always 500s
+    ]
+    _wire_default(s, media_rows=rows, tv_details={}, sonarr=[series(16600, {1: 0})])
+    s.route("/api/v1/tv/1600", {}, key=SEERR_KEY, status=500)
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    trail = tmp_path / "trail.log"
+
+    r1 = _run(secrets, state=state, trail=trail)
+    r2 = _run(secrets, state=state, trail=trail)
+    r3 = _run(secrets, state=state, trail=trail)
+
+    assert r1.returncode == 0 and "orphan=1" in r1.stdout
+    assert r2.returncode == 1, (r2.returncode, r2.stdout, r2.stderr)
+
+    # r3: the tv-detail failure has now hit its 3rd consecutive run --
+    # escalation-worthy on its own -- but the orphan is STILL confirmed, so
+    # the finding must win (exit 1, not 2).
+    assert r3.returncode == 1, (r3.returncode, r3.stdout, r3.stderr)
+    assert "STAGE=seerr-arr-parity msg=" in r3.stderr
+    assert "tmdb=9001" in r3.stderr
+    assert "tv-detail-persistent-failure-suppressed-by-confirmed-finding" in r3.stderr
+    trail_text = trail.read_text(encoding="utf-8")
+    assert "ESCALATION-SUPPRESSED-BY-FINDING" in trail_text
+    assert "seerr-arr-parity-tv-detail-persistent-failure" in trail_text
+
+
+def test_tvdbid_collision_persistent_does_not_mask_a_confirmed_finding(tmp_path, stack):
+    """Same as above for the tvdbid-collision-persistent escalation: an
+    unrelated confirmed orphan must still win the exit code over a
+    colliding tvdbId reaching its 3rd consecutive run."""
+    s = stack()
+    rows = [media_row(1, "movie", 9002, 5)]   # confirmed orphan by run 2
+    _wire_default(s, media_rows=rows,
+                  sonarr=[series(557, {1: 5})],
+                  sonarr2=[series(557, {1: 5})])   # colliding tvdbId, unrelated to the row
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    trail = tmp_path / "trail.log"
+
+    r1 = _run(secrets, state=state, trail=trail)
+    r2 = _run(secrets, state=state, trail=trail)
+    r3 = _run(secrets, state=state, trail=trail)
+
+    assert r1.returncode == 0 and "orphan=1" in r1.stdout
+    assert r2.returncode == 1, (r2.returncode, r2.stdout, r2.stderr)
+    assert r3.returncode == 1, (r3.returncode, r3.stdout, r3.stderr)
+    assert "tmdb=9002" in r3.stderr
+    assert "tvdbid-collision-persistent-suppressed-by-confirmed-finding" in r3.stderr
+    trail_text = trail.read_text(encoding="utf-8")
+    assert "ESCALATION-SUPPRESSED-BY-FINDING" in trail_text
+    assert "seerr-arr-parity-tvdbid-collision-persistent" in trail_text
