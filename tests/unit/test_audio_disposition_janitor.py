@@ -932,3 +932,45 @@ def test_run_counts_refusals_and_hardlink_detach(tmp_path, monkeypatch):
     assert res["hardlink_detached"] == [str(fixable)]
     assert (seeds / "seed-copy.mkv").stat().st_nlink == 1    # seed copy kept its own inode
     assert res["refused"] == [{"file": str(refused), "reason": "dual_default:every-compat-default-is-foreign"}]
+
+
+def _al(codec, ch, default, lang, title=None, comment=0):
+    s = _a(codec, ch, default); s["tags"] = {"language": lang}
+    if title: s["tags"]["title"] = title
+    if comment: s["disposition"]["comment"] = 1
+    return s
+
+
+def test_mixed_defaults_keep_english_clear_foreign_akira_shape():
+    """Akira (1988) e2e import 2026-09-15: opus/2ch jpn default AND opus/2ch
+    eng default. Neither is aac so CLASS 1 cannot claim it, and the old CLASS
+    2 rule saw 'an eng default exists' and did nothing — while Plex broke the
+    tie to the LOWER index and played Japanese. Policy: English is the
+    default. Keep the eng default, clear the jpn one."""
+    plan = adj.classify_streams([_v(), _al("opus", 2, 1, "jpn"), _al("opus", 2, 1, "eng")])
+    assert plan == {"target": 1, "clear": [0], "audio_count": 2, "kind": "foreign_default"}
+    after = [_v(), _al("opus", 2, 0, "jpn"), _al("opus", 2, 1, "eng")]
+    assert adj.verify_fixed(after, 3, "foreign_default")
+
+
+def test_mixed_defaults_all_english_is_a_no_op():
+    assert adj.classify_streams([_v(), _al("opus", 2, 1, "eng"), _al("eac3", 6, 1, "en")]) is None
+
+
+def test_mixed_defaults_with_an_untagged_default_is_refused():
+    reasons = []
+    und = _a("opus", 2, 1)                      # default, no language tag
+    assert adj.classify_streams([_v(), _al("opus", 2, 1, "jpn"), und, _al("opus", 2, 0, "eng")], refusals=reasons) is None
+    assert "foreign_default:untagged-default" in reasons
+
+
+def test_mixed_defaults_never_keep_a_commentary_english_default():
+    reasons = []
+    plan = adj.classify_streams([_v(), _al("opus", 2, 1, "jpn"), _al("opus", 2, 1, "eng", "Director Commentary", comment=1)], refusals=reasons)
+    assert plan is None
+    assert "foreign_default:only-english-is-commentary" in reasons
+
+
+def test_mixed_defaults_prefer_the_compat_english_default():
+    plan = adj.classify_streams([_v(), _al("eac3", 6, 1, "eng"), _al("dts", 6, 1, "fre"), _al("aac", 2, 1, "eng")])
+    assert plan["target"] == 2 and sorted(plan["clear"]) == [0, 1]

@@ -343,8 +343,10 @@ def _classify_foreign_default(audio: list, defaults: list, refusals=None):
         — one untagged default and we refuse the WHOLE file, no partial
         credit, because "untagged" means we cannot prove it isn't already
         English or something we shouldn't touch, AND
-      - none of those tagged defaults is itself eng/en (nothing foreign to
-        fix — English is already winning).
+      - not EVERY tagged default is eng/en (all-English defaults means
+        nothing foreign to fix). Mixed defaults (some eng, some foreign, all
+        tagged) ARE claimed: the foreign defaults are cleared and an English
+        default survives — see the MIXED block below (Akira, 2026-09-15).
     Target = an eng track that is aac<=2ch (compat) if one exists, else the
     first eng track by index. Clear = every current default (all proven
     non-eng by the checks above).
@@ -361,6 +363,10 @@ def _classify_foreign_default(audio: list, defaults: list, refusals=None):
     eng_indices = [i for i, s in enumerate(audio)
                    if _is_eng(_lang(s)) and not _is_commentary(s)]
     if not eng_indices:
+        if any(_is_eng(_lang(s)) for s in audio):
+            # English exists but ONLY as commentary: a named refusal, not a
+            # healthy no-op (telemetry must tell the two apart).
+            return _refuse(refusals, "foreign_default:only-english-is-commentary")
         return None
     default_langs = []
     for i in defaults:
@@ -368,8 +374,25 @@ def _classify_foreign_default(audio: list, defaults: list, refusals=None):
         if lang is None:
             return _refuse(refusals, "foreign_default:untagged-default")
         default_langs.append(lang)
+    if all(_is_eng(lang) for lang in default_langs):
+        return None                # every default is already English — no-op
     if any(_is_eng(lang) for lang in default_langs):
-        return None                # already eng-default somewhere — no-op
+        # MIXED defaults (2026-09-15, Akira e2e test: opus/2ch jpn default=1 AND
+        # opus/2ch eng default=1, neither aac so CLASS 1 cannot claim it).
+        # Plex breaks a default tie by the LOWER index, so the member gets the
+        # foreign track even though an English default is flagged right
+        # beside it. Policy is "English is the default": keep an English
+        # default, clear the foreign ones. Every default is tagged (checked
+        # above); the survivor must be a non-commentary eng track, preferring
+        # one that is already default, then aac<=2ch, then lowest index.
+        eng_defaults = [i for i in defaults if i in eng_indices]
+        if not eng_defaults:
+            return _refuse(refusals, "foreign_default:mixed-defaults-only-commentary-english")
+        compat_eng = [i for i in eng_defaults if _is_compat_track(audio[i])]
+        target = compat_eng[0] if compat_eng else eng_defaults[0]
+        clear = [i for i in defaults if i != target]
+        return {"target": target, "clear": clear, "audio_count": len(audio),
+                "kind": "foreign_default"}
     compat_eng = [i for i in eng_indices if _is_compat_track(audio[i])]
     target = compat_eng[0] if compat_eng else eng_indices[0]
     return {"target": target, "clear": list(defaults), "audio_count": len(audio),
