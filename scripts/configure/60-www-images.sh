@@ -40,6 +40,21 @@ log_info "deploying nginx fragments"
 scpm_to "$REPO_ROOT/scripts/data/qflix-images.conf" "~/.apps/nginx/proxy.d/qflix-images.conf"
 scpm_to "$REPO_ROOT/scripts/data/qflix-faq.conf"    "~/.apps/nginx/proxy.d/qflix-faq.conf"
 
+# ── Step 2b: the FAQ document itself ────────────────────────────────────────
+# Found 2026-09-15: ~/www/qflix-faq/index.html was dated Jul 25 while the repo
+# copy had been edited by a dozen PRs since (doc counts, retention answer) -
+# NOTHING deployed it, so every FAQ fix died silently on the workstation. The
+# tracked file carries the sanitized host; the real one is substituted here
+# (the same PUB_HOST the smoke tests use). "seerr-<host>" links survive the
+# substring replace, which is how the Seerr links point at its own vhost.
+log_info "deploying FAQ document"
+FAQ_HOST=$(cat "$REPO_ROOT/secrets/seedbox.host" 2>/dev/null || echo "quadstronaut.seedbox.example.com")
+FAQ_TMP=$(mktemp)
+sed "s/quadstronaut\.seedbox\.example\.com/$FAQ_HOST/g" "$REPO_ROOT/scripts/data/qflix-faq.html" > "$FAQ_TMP"
+sshm 'mkdir -p ~/www/qflix-faq'
+scpm_to "$FAQ_TMP" "~/www/qflix-faq/index.html"
+rm -f "$FAQ_TMP"
+
 # ── Step 3: ensure server_tokens off in nginx.conf (idempotent) ─────────────
 log_info "patching nginx.conf for server_tokens off"
 sshm 'bash -s' <<'REMOTE'
@@ -72,6 +87,12 @@ sleep 5
 # ── Step 5: smoke tests ─────────────────────────────────────────────────────
 log_info "smoke tests"
 PUB_HOST=$(cat "$REPO_ROOT/secrets/seedbox.host" 2>/dev/null || echo "quadstronaut.seedbox.example.com")
+
+# FAQ: deployed document carries the real host and the Seerr vhost link.
+if ! curl -s "https://$PUB_HOST/faq/" | grep -q "https://seerr-$PUB_HOST/"; then
+  echo "FAIL: /faq/ does not carry the Seerr vhost link (FAQ deploy or substitution broke)" >&2
+  exit 1
+fi
 
 # Positive: Q.png returns 200.
 HTTP=$(curl -s -o /dev/null -w '%{http_code}' "https://$PUB_HOST/images/Q.png")
