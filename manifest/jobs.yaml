@@ -299,6 +299,19 @@ jobs:
   manitoba-maint-canary-plex-decision-stable-file:
     timer: scripts/maint/systemd/manitoba-maint-canary-plex-decision-stable-file.timer
     kuma_monitor: "Canary Plex Decision Stable File"
+  # Added 2026-09-13, spec section 4 (S-1..S-3) of the reaper-D per-file
+  # retention spec. reconcile_seerr() (ancestor commit eefcffd) now pages ALL
+  # statuses and DELETE-cascades stuck status-7 seasons, so this canary
+  # asserts the RESIDUAL: reconciliation stops running, or a strand shape the
+  # fix doesn't reach (the 66 status-7 seasons across 28 shows measured live
+  # 2026-09-12 predate that fix and are unverified against the current
+  # reaper). This is the continuous cross-system assertion the spec calls
+  # for; report-only, own timer, own Kuma check, per operator design law.
+  # Dead-man: its own Kuma push monitor, so a stopped timer reds on heartbeat
+  # silence.
+  manitoba-maint-canary-seerr-arr-parity:
+    timer: scripts/maint/systemd/manitoba-maint-canary-seerr-arr-parity.timer
+    kuma_monitor: "Canary Seerr Arr Parity"
   manitoba-maint-canary-hardlink-integrity:
     timer: scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer
     kuma_monitor: "Canary Hardlink Integrity"
