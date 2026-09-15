@@ -974,3 +974,18 @@ def test_mixed_defaults_never_keep_a_commentary_english_default():
 def test_mixed_defaults_prefer_the_compat_english_default():
     plan = adj.classify_streams([_v(), _al("eac3", 6, 1, "eng"), _al("dts", 6, 1, "fre"), _al("aac", 2, 1, "eng")])
     assert plan["target"] == 2 and sorted(plan["clear"]) == [0, 1]
+
+
+def test_dual_default_never_installs_an_untagged_compat_beside_a_foreign_default():
+    """PR #29 review: CLASS 1 fired first and installed an untagged aac/2ch
+    default while the other default was explicitly jpn -- the untagged aac is
+    Tdarr's re-encode of that jpn source. Refuse, named; and if an eng-tagged
+    compat track exists it wins instead."""
+    reasons = []
+    und_compat = _a("aac", 2, 1)                   # no language tag
+    assert adj.classify_streams([_v(), _al("eac3", 6, 1, "jpn"), und_compat], refusals=reasons) is None
+    assert "dual_default:untagged-compat-beside-foreign-default" in reasons
+    plan = adj.classify_streams([_v(), _al("eac3", 6, 1, "jpn"), und_compat, _al("aac", 2, 1, "eng")])
+    assert plan["kind"] == "dual_default" and plan["target"] == 2 and sorted(plan["clear"]) == [0, 1]
+    # The original Tdarr shape (no language tags anywhere) is untouched.
+    assert adj.classify_streams([_v(), _a("eac3", 6, 1), _a("aac", 2, 1)])["target"] == 1

@@ -325,6 +325,15 @@ def _classify_dual_default(audio: list, defaults: list, refusals=None):
         return None
     compat = [i for i in compat_all
               if _lang(audio[i]) is None or _is_eng(_lang(audio[i]))]
+    # PR #29 review (2026-09-15): an UNTAGGED compat track sitting beside a
+    # default that is explicitly tagged foreign is not "probably English" --
+    # Tdarr's ensure-AAC copies the SOURCE default's audio, so if the source
+    # default is jpn the untagged aac is a Japanese encode. Only an eng-tagged
+    # compat track may win when any default is provably foreign.
+    if any(_lang(audio[i]) is not None and not _is_eng(_lang(audio[i])) for i in defaults):
+        compat = [i for i in compat if _lang(audio[i]) is not None]
+        if not compat:
+            return _refuse(refusals, "dual_default:untagged-compat-beside-foreign-default")
     if not compat:
         return _refuse(refusals, "dual_default:every-compat-default-is-foreign")
     target = compat[-1]                      # Tdarr appends: last compat wins
