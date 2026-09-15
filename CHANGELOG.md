@@ -1,5 +1,76 @@
 # Changelog
 
+## 2026-09-15 - Per-file retention, English-default audio, and the pings that were not alerts
+
+Three deliverables, each built, adversarially reviewed for three rounds (every
+finding fixed with a regression test, never argued away), merged through
+green CI and promoted to the box the same night. Plus the noise the operator
+had been paged with while they waited.
+
+### 1. The reaper grades FILES now (PRs #24, #27)
+
+`qflix-reaper` deleted Futurama seventy minutes after it was requested
+(2026-09-12) because it graded the Plex *container* `addedAt` - a clock the
+metadata agent can back-date - and on 2026-09-14 it did the same to Mob
+Psycho 100 and two anime films. The unit of retention is now the **episode
+file / movie file**: 45 days from the Plex **leaf** `addedAt`, corroborated by
+the *arr's `dateAdded` (the newer wins; container clock and mtime are rejected).
+Deleting a file unmonitors every episode on it in the same step (a monitored
+episode with no file is in `wanted/missing` and gets re-grabbed within the
+hour - proven live, not assumed). A series *record* is removed only when the
+show has ended AND holds zero files AND is not `permanent`-tagged, sharing the
+`--max-items` budget with file deletes and recorded in the manifest's
+`series_removals[]`; the Plex show item is then deleted directly, because a
+folder Sonarr removed is never re-scanned and refresh+emptyTrash left a ghost
+with five leaves. Any `/tag` doubt refuses every record removal for that
+instance (fail closed, loud, partial). `MIN_FILE_AGE_FLOOR_DAYS = 45` is a
+raise-only clamp - the exact defect the previous attempt shipped with a test
+that only pinned `0.0`. Seerr reconciliation now sweeps every status and clears
+stuck DELETED seasons, which is why Law & Order S3/S4 became requestable
+again. `qflix-permanent.py` manages the tag (`--auto` = every continuing
+series) and is finally staged by the installer.
+
+### 2. English is the default audio (PRs #25, #29)
+
+`audio-disposition-janitor` gained the `foreign_default` class (every default
+tagged non-English while an English track exists - Futurama S1 shipped
+German-first) and a mixed-defaults leg (English and foreign both flagged, as
+Akira imported tonight; Plex tie-breaks to the lower index and played
+Japanese). Anime and Anime Movies are excluded structurally, untagged defaults
+and commentary tracks are never chosen, `dual_default` became language-aware,
+and `-disposition` is rebuilt from each stream's existing flags because ffmpeg
+replaces the whole bitmask - the old bare `default`/`0` literal silently
+stripped `original`/`comment` on every touched stream. Refusals are named in
+the JSON and log; hardlink detaches are counted. No track stripping (deferred).
+
+### 3. A canary that asserts what the reaper acts on (PR #26)
+
+`seerr-arr-parity` (hourly, `:46`, report-only): a Seerr season at
+AVAILABLE/DELETED while Sonarr holds zero files is STRANDED, an id absent from
+every *arr is ORPHAN; two-run gate, 26 h grace, every skip counted and named,
+CANNOT-ASSERT on unreachable sources, persistent per-title lookup failures,
+persistent tvdbId collisions or an untrackable corrupt state - but a confirmed
+finding always outranks an escalation. Its live run found sonarr2 legitimately
+empty, so one empty instance is a counted skip, not a page. A new wiring test
+ratchets OnCalendar minute collisions across the fleet.
+
+### 4. Only actual alerts (PRs #23, #28)
+
+Three REA noise classes for lines censused across every retained PMS rotation
+(the `downloadContainer ... found html` vanished-item burst paged six times in
+a day under three signatures). The cross-run page ledger now merges a
+differently-trimmed excerpt of an already-paged line, but only when the
+shorter key is most of the longer one - a different fault that quotes an old
+one still pages - and a multi-line excerpt is noise only if every line is
+claimed. The hourly `Snapshot NN.json ... 0 actions` Discord message is gone;
+Discord hears a cycle that acted or a fired SAB breaker. REA's task limit is
+30 min (runs measured at ~22). And the flaky `test_webhook_in_flight_cap`
+was a real race: `state.record()` is a whole-file read-modify-write called
+from the webhook's handler threads and the pusher at once - now locked.
+
+Live proof: The Simpsons S37 requested through Seerr at 00:40Z had 13/15
+episodes in Plex by 00:55Z; Akira (1988) was in Plex by 00:52Z.
+
 ## 2026-09-02 - 78 pings from one fault, and the 4% signal rate underneath it
 
 Plex went down at 07:45Z. Over the following 24h the stack sent **78 Discord
