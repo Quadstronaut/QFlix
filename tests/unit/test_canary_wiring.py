@@ -280,6 +280,174 @@ def _local_lib_modules():
     return {f[:-3] for f in os.listdir(d) if f.endswith(".py")}
 
 
+# --- OnCalendar minute-of-hour collision -----------------------------------
+#
+# 2026-09-13 council finding (MAJOR, wiring): seerr-arr-parity.timer shipped
+# claiming "minute 41 was free" while colliding, every single hour, with
+# manitoba-maint-canary-ucc-gate-stuck.timer's *:11/15 (fires :11/:26/:41/
+# :56) -- reproducing, one day later, the EXACT incident ucc-gate-stuck's own
+# header documents: 19 canary timers firing in the same minute exhausted
+# Kuma's SQLite connection pool and produced ~80 Discord messages
+# (2026-09-12). The scoped 133-test gate that shipped alongside it could not
+# have caught this -- it checks presence in five installer lists, never
+# scheduling correctness. This closes that gap mechanically.
+#
+# Scope is deliberately narrower than "every timer": only timers that fire
+# EVERY HOUR (a bare `*` in the OnCalendar's hour field -- includes both
+# fixed-minute forms like `*:41:00` and step forms like `*:11/15`) are
+# checked against each other. A once-or-few-times-daily timer with a fixed
+# hour (e.g. `Sun 04:00`, `02,08,14,20:15:00`) shares a minute with an hourly
+# timer at most once or a handful of times a day, not every hour -- a
+# materially different (and, per the fleet's own history, not yet
+# incident-causing) risk shape, and out of scope for THIS ratchet.
+#
+# 19 collisions among the 35 hourly timers already exist in the fleet
+# (verified 2026-09-13) and are pre-existing, allowlisted debt -- this test
+# only ratchets: it fails the build on any NEW collision, and separately
+# pins the allowlist itself so a fix landing for one of these can't silently
+# vanish from tracking (it must be removed from the allowlist, not just stop
+# tripping the forward check).
+_PRE_EXISTING_HOURLY_MINUTE_COLLISIONS = {
+    frozenset({"manitoba-maint-canary-bazarr-ingest.timer",
+               "manitoba-maint-canary-dash-asset-integrity.timer"}),
+    frozenset({"manitoba-maint-canary-cron-liveness.timer",
+               "manitoba-maint-entitlement.timer"}),
+    frozenset({"manitoba-maint-canary-dash-asset-integrity.timer",
+               "manitoba-maint-canary-plex-decision-stable-file.timer"}),
+    frozenset({"manitoba-maint-canary-hardlink-integrity.timer",
+               "manitoba-maint-canary-plex-unmatched.timer"}),
+    frozenset({"manitoba-maint-canary-hardlink-integrity.timer",
+               "manitoba-maint-entitlement.timer"}),
+    frozenset({"manitoba-maint-canary-kometa-libraries.timer",
+               "manitoba-maint-canary-stream-cap-liveness.timer"}),
+    frozenset({"manitoba-maint-canary-mobile-ux.timer",
+               "manitoba-maint-canary-plex-playback.timer"}),
+    frozenset({"manitoba-maint-canary-plex-transcoder.timer",
+               "manitoba-maint-canary-quota.timer"}),
+    frozenset({"manitoba-maint-canary-plex-transcoder.timer",
+               "qflix-collect.timer"}),
+    frozenset({"manitoba-maint-canary-plex-unmatched.timer",
+               "manitoba-maint-entitlement.timer"}),
+    frozenset({"manitoba-maint-canary-prowlarr-app-sync.timer",
+               "manitoba-maint-canary-qbit-stall.timer"}),
+    frozenset({"manitoba-maint-canary-prowlarr-indexer-health.timer",
+               "manitoba-maint-canary-stale-log-watchdog.timer"}),
+    frozenset({"manitoba-maint-canary-prowlarr-proxy-link-fatal.timer",
+               "manitoba-maint-canary-thread-ceiling.timer"}),
+    frozenset({"manitoba-maint-canary-qbit-stall.timer",
+               "manitoba-maint-canary-tdarr-throttle-integrity.timer"}),
+    frozenset({"manitoba-maint-canary-rea-liveness.timer",
+               "manitoba-maint-canary-thread-ceiling.timer"}),
+    frozenset({"manitoba-maint-canary-sab-stall.timer",
+               "manitoba-maint-canary-tdarr-scanner.timer"}),
+    frozenset({"manitoba-maint-canary-stream-cap-liveness.timer",
+               "manitoba-maint-canary-unstick-rate.timer"}),
+    frozenset({"manitoba-maint-canary-tautulli-plex-link.timer",
+               "manitoba-maint-canary-tdarr-transcode-error.timer"}),
+    frozenset({"manitoba-maint-canary-tdarr-transcode-stall.timer",
+               "manitoba-maint-canary-ucc-gate-stuck.timer"}),
+}
+
+
+def _oncalendar_lines(text):
+    return [ln.split("=", 1)[1].strip()
+            for ln in (l.strip() for l in text.splitlines())
+            if ln.startswith("OnCalendar=")]
+
+
+def _time_hour_field(cal):
+    """The hour component of an OnCalendar's time token -- the token
+    containing ':'. Returns None if the calendar has no time-of-day
+    component at all (should not happen for any timer in this fleet)."""
+    for tok in cal.split():
+        if ":" in tok:
+            return tok.split(":")[0]
+    return None
+
+
+def _time_minute_field(cal):
+    for tok in cal.split():
+        if ":" in tok:
+            fields = tok.split(":")
+            return fields[1] if len(fields) > 1 else None
+    return None
+
+
+def _expand_minutes(minfield):
+    """'41' -> {41}; '7,22,37,52' -> {7,22,37,52}; '11/15' -> {11,26,41,56}."""
+    mins = set()
+    if not minfield:
+        return mins
+    if "/" in minfield:
+        start, step = minfield.split("/")
+        m = int(start)
+        step = int(step)
+        while m < 60:
+            mins.add(m)
+            m += step
+    elif "," in minfield:
+        mins.update(int(x) for x in minfield.split(","))
+    else:
+        mins.add(int(minfield))
+    return mins
+
+
+def _hourly_timer_minutes():
+    """{timer filename -> set of minutes-of-hour it fires at}, restricted to
+    timers whose OnCalendar hour field is a bare '*' (fires every hour)."""
+    out = {}
+    for fname in sorted(os.listdir(SYSTEMD_DIR)):
+        if not fname.endswith(".timer"):
+            continue
+        text = _read(os.path.join(SYSTEMD_DIR, fname))
+        mins = set()
+        for cal in _oncalendar_lines(text):
+            if _time_hour_field(cal) == "*":
+                mins |= _expand_minutes(_time_minute_field(cal))
+        if mins:
+            out[fname] = mins
+    return out
+
+
+def test_no_new_oncalendar_minute_collision_between_hourly_timers():
+    """The mechanical ratchet: parse every *.timer's OnCalendar and fail on
+    any minute-of-hour overlap between two hourly-or-faster timers that is
+    NOT already in the pinned pre-existing allowlist above."""
+    hourly = _hourly_timer_minutes()
+    names = sorted(hourly)
+    new_collisions = []
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            a, b = names[i], names[j]
+            shared = hourly[a] & hourly[b]
+            if shared and frozenset({a, b}) not in _PRE_EXISTING_HOURLY_MINUTE_COLLISIONS:
+                new_collisions.append((a, b, sorted(shared)))
+    assert not new_collisions, (
+        "NEW OnCalendar minute-of-hour collision(s) between hourly timers -- "
+        "this is the exact 2026-09-12/13 Kuma connection-pool-exhaustion "
+        "incident class. Pick a genuinely free minute (cross-checked against "
+        "every OnCalendar in scripts/maint/systemd/, including N/15 and N/30 "
+        "step patterns) or, if this collision is accepted, add it to "
+        "_PRE_EXISTING_HOURLY_MINUTE_COLLISIONS with a comment explaining "
+        "why: %s" % new_collisions)
+
+
+def test_pre_existing_hourly_collision_allowlist_has_no_stale_entries():
+    """The reverse direction: an allowlisted pair that no longer collides
+    (fixed, retired, or renamed) must be removed from the allowlist, not
+    left to silently stop being checked. This is what makes the ratchet
+    actually ratchet instead of just accumulating debt forever."""
+    hourly = _hourly_timer_minutes()
+    stale = []
+    for pair in _PRE_EXISTING_HOURLY_MINUTE_COLLISIONS:
+        a, b = tuple(pair)
+        if a not in hourly or b not in hourly or not (hourly[a] & hourly[b]):
+            stale.append(sorted(pair))
+    assert not stale, (
+        "allowlisted OnCalendar collision(s) no longer reproduce -- remove "
+        "them from _PRE_EXISTING_HOURLY_MINUTE_COLLISIONS: %s" % stale)
+
+
 def test_every_lib_module_a_deployed_script_imports_is_tar_staged():
     """Units are not the only thing the installer can under-stage.
 
