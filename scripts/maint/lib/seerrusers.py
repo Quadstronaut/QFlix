@@ -90,7 +90,20 @@ PERMISSIONS_DISABLED = 0
 # self-provisioning race described in the module docstring, so reading it at
 # runtime would grant nothing at all. Override per-run with
 # --member-permissions if the membership baseline ever moves.
-MEMBER_PERMISSIONS = 1155539104
+# OPERATOR RULING 2026-09-15: Plex-watchlist auto-request is DISABLED for every
+# member, forever. Seerr's Watchlist Sync (every 3 min) re-tried a 23-season
+# show against a 4-season quota indefinitely and a 4-season show against 3
+# remaining, filling the log with "Series Quota exceeded" and confusing members
+# about what they had actually asked for. These are the three permission bits
+# that enable it (AUTO_REQUEST | AUTO_REQUEST_MOVIE | AUTO_REQUEST_TV). They
+# are masked out of EVERY permission value this system writes - the baseline
+# below, a remembered prior value, and a --member-permissions override alike -
+# so a member can never get them back by restore.
+PERMISSIONS_NEVER = 1048576 | 2097152 | 4194304
+
+# 1155539104 minus the two watchlist bits it carried (2097152 | 4194304).
+MEMBER_PERMISSIONS = 1155539104 & ~PERMISSIONS_NEVER
+assert MEMBER_PERMISSIONS == 1149247648
 
 USER_TYPE_PLEX = 1
 
