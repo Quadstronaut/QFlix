@@ -186,6 +186,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/qflix-anime-janitor.exclude \
     scripts/maint/qflix-reaper.py \
     scripts/maint/qflix-reaper.exclude \
+    scripts/maint/qflix-permanent.py \
     scripts/maint/audio-disposition-janitor.py \
     scripts/maint/unknown-codec-stream-janitor.py \
     scripts/maint/arr-housekeeping.py \
