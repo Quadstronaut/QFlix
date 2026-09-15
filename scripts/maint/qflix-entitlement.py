@@ -584,6 +584,9 @@ def plan_for_share(
         want_perms = (SU.PERMISSIONS_DISABLED if tagalong
                       else acct.seerr_perms_prior if acct and acct.seerr_perms_prior
                       else member_permissions)
+        # Never re-grant watchlist auto-request, whichever source won above
+        # (a remembered prior value predates the 2026-09-15 ruling).
+        want_perms &= ~SU.PERMISSIONS_NEVER
         plex_target = (sorted(full_ids)
                        if set(share.section_ids) != set(full_ids) else None)
 
