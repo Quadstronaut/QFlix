@@ -1397,6 +1397,26 @@ def plex_empty_trash(port: str, token: str, section_key: str) -> bool:
     return 200 <= status < 300
 
 
+def plex_delete_item(port: str, token: str, rating_key: str) -> bool:
+    """DELETE /library/metadata/{rk} and PROVE it by re-reading (404 = gone).
+
+    WHY THIS EXISTS (2026-09-15, Mob Psycho 100): a P-4 series-record removal
+    tells Sonarr to delete the show WITH its files, which removes the whole
+    show folder. Plex's scanner only trashes an item when it re-scans the
+    folder the item lives in -- a folder that no longer exists is never
+    re-scanned, so refresh + emptyTrash left a GHOST show with 5 leaves
+    pointing at files that were not there. Members saw an unplayable show;
+    the next reaper run graded it a "newly-stranded orphan" and paged. The
+    ghost only went away when the item was deleted through the API directly,
+    which is what this does -- after the *arr delete, never before, and never
+    on a dry run."""
+    status, _ = _plex_delete(port, token, "/library/metadata/" + str(rating_key))
+    if not (200 <= status < 300 or status == 404):
+        return False
+    status, _ = _plex_get(port, token, "/library/metadata/" + str(rating_key))
+    return status == 404
+
+
 # ===========================================================================
 # Seerr reconciliation (stdlib urllib; secrets seerr.* — NEVER jellyseerr.*).
 # ===========================================================================
@@ -2278,6 +2298,9 @@ def run(args) -> int:
                 # first when the shared --max-items budget is tight this run"
                 # (see the P-4/max-items cap-sharing block below).
                 "container_added_at": it.get("addedAt") or 0,
+                # The Plex show item to remove AFTER the *arr record goes
+                # (see plex_delete_item -- a deleted folder is never re-scanned).
+                "ratingKey": str(it.get("ratingKey") or ""),
                 # Filled in below by the shared-budget capping pass.
                 "p4_eligible": False,
                 "p4_scheduled": False,
@@ -2596,6 +2619,7 @@ def run(args) -> int:
     # the prediction used in the dry-run preview above — a partial per-file
     # delete failure earlier in this same run must not be papered over. ----
     records_removed = 0
+    plex_ghosts_removed = 0
     for (slug, arr_id), st in series_removal_state.items():
         if not st.get("p4_scheduled"):
             continue
@@ -2614,6 +2638,18 @@ def run(args) -> int:
                 log("P-4: removed series record " + repr(st["title"]) +
                     " (arrId=" + str(arr_id) + ", ended, zero files, "
                     "not permanent-tagged)")
+                # The show folder is gone with the record; Plex will never
+                # re-scan a folder that does not exist, so remove the item
+                # explicitly and prove it (Mob Psycho 100 ghost, 2026-09-15).
+                if st.get("ratingKey") and plex_delete_item(port, token, st["ratingKey"]):
+                    plex_ghosts_removed += 1
+                    log("P-4: removed Plex item rk=" + str(st["ratingKey"]) +
+                        " for " + repr(st["title"]))
+                else:
+                    partial = True
+                    warn("P-4: Plex item rk=" + str(st.get("ratingKey")) + " for " +
+                         repr(st["title"]) + " could not be removed -- it will "
+                         "read as a ghost/orphan until it is")
             else:
                 partial = True
                 warn("P-4: record removal FAILED for " + repr(st["title"]) +
@@ -2637,6 +2673,8 @@ def run(args) -> int:
         summary += ", " + str(collections_pruned) + " empty collection(s) pruned"
     if records_removed:
         summary += ", " + str(records_removed) + " series record(s) removed (P-4)"
+    if plex_ghosts_removed:
+        summary += ", " + str(plex_ghosts_removed) + " Plex show item(s) removed"
     if withheld_files:
         # Never silent (spec section 5): the summary that reaches Discord must
         # say a file could not be graded, not just the durable log line above.
