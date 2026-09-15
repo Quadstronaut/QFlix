@@ -1427,15 +1427,18 @@ def _seerr_creds():
     return read_secret("seerr.port"), read_secret("seerr.key")
 
 
-def _seerr_req(method: str, port: str, key: str, path: str, query: str = "", timeout: int = 30):
+def _seerr_req(method: str, port: str, key: str, path: str, query: str = "", timeout: int = 30,
+               body=None):
     """Request against Seerr at 127.0.0.1:{port}, X-Api-Key header. Returns
-    (status, body_text_or_parsed). Never raises (mirror arr_client._req)."""
+    (status, body_text_or_parsed). Never raises (mirror arr_client._req).
+    `body` (a dict) is sent as JSON -- used to re-create live requests."""
     qs = ("?" + query) if query else ""
     url = "http://127.0.0.1:" + str(port) + path + qs
-    req = urllib.request.Request(url, method=method, headers={
-        "X-Api-Key": key,
-        "Accept": "application/json",
-    })
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {"X-Api-Key": key, "Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, method=method, headers=headers, data=data)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
@@ -1452,7 +1455,75 @@ def _seerr_req(method: str, port: str, key: str, path: str, query: str = "", tim
         return code, raw
 
 
-def _seerr_stuck_seasons(port, key, row):
+def _seerr_tv_info(port, key, row):
+    """mediaInfo dict for a TV row via GET /api/v1/tv/<tmdb>, or None on ANY
+    doubt (no tmdbId, non-200, unparseable). Shared by the stuck-season probe
+    and the live-request snapshot so both read the SAME response."""
+    tmdb = row.get("tmdbId")
+    if tmdb is None:
+        return None
+    status, body = _seerr_req("GET", port, key, "/api/v1/tv/" + str(int(tmdb)))
+    if status != 200 or not isinstance(body, dict):
+        return None
+    info = body.get("mediaInfo")
+    return info if isinstance(info, dict) else None
+
+
+# Seerr MediaRequest.status: 1 PENDING, 2 APPROVED, 3 DECLINED, 4 FAILED,
+# 5 COMPLETED. Only 1/2 are in flight -- a member is still waiting on them.
+_SEERR_REQUEST_LIVE = (1, 2)
+
+
+def _seerr_requests_to_preserve(info, stuck):
+    """(requests_to_recreate, ok). The media-row DELETE that clears stuck
+    seasons CASCADES every MediaRequest on that row (Seerr FK, verified
+    2026-09-13 on Futurama: 0 request rows survive). On a MIXED row -- some
+    seasons at DELETED, another season freshly requested -- that erased the
+    member's live request (Yellowjackets 2026-09-15: S1-3 expired, S4 just
+    requested; the S4 row would have gone with the clear). Sonarr still
+    monitored S4 so the content would have arrived, but Seerr would say
+    "not requested" and the member could not see or cancel what they asked
+    for.
+
+    Returns the in-flight requests (status 1/2) whose seasons are not ALL
+    stuck, each reduced to the seasons that are not stuck, as
+    {"userId", "seasons", "is4k"} -- exactly what POST /api/v1/request needs
+    to re-create them on the member's behalf after the delete.
+
+    ok=False when the requests list is missing, not a list, or any entry is
+    malformed: the caller must then WITHHOLD the delete. "I could not read
+    who is waiting" is never "nobody is waiting".
+    """
+    reqs = info.get("requests")
+    if not isinstance(reqs, list):
+        return [], False
+    stuck_set = set(stuck)
+    keep = []
+    for r in reqs:
+        if not isinstance(r, dict):
+            return [], False
+        try:
+            status = int(r.get("status"))
+            uid = int((r.get("requestedBy") or {}).get("id"))
+            seasons = [int(x.get("seasonNumber")) for x in (r.get("seasons") or [])]
+        except (TypeError, ValueError, AttributeError):
+            return [], False
+        if status not in _SEERR_REQUEST_LIVE:
+            continue
+        if not seasons:
+            # A live TV request with NO season rows is a shape Seerr does not
+            # produce (it expands "all" into season rows before the request
+            # exists). If it ever appears we cannot know what the member asked
+            # for -- withhold rather than silently drop (PR #35 review, MAJOR).
+            return [], False
+        live = sorted(n for n in seasons if n not in stuck_set)
+        if not live:
+            continue
+        keep.append({"userId": uid, "seasons": live, "is4k": bool(r.get("is4k"))})
+    return keep, True
+
+
+def _seerr_stuck_seasons(port, key, row, info=None):
     """Season numbers this Seerr row reports as DELETED(7) or BLOCKLISTED-free
     stale, for a series that IS still present in its *arr.
 
@@ -1464,14 +1535,9 @@ def _seerr_stuck_seasons(port, key, row):
     Only status 7 counts as stuck. A season at 1 was never requested, 4/5 are
     real availability, and 2/3 are in-flight and already excluded upstream.
     """
-    tmdb = row.get("tmdbId")
-    if tmdb is None:
-        return []
-    status, body = _seerr_req("GET", port, key, "/api/v1/tv/" + str(int(tmdb)))
-    if status != 200 or not isinstance(body, dict):
-        return []
-    info = body.get("mediaInfo")
-    if not isinstance(info, dict):
+    if info is None:
+        info = _seerr_tv_info(port, key, row)
+    if info is None:
         return []
     seasons = info.get("seasons")
     if not isinstance(seasons, list) or not seasons:
@@ -1501,6 +1567,10 @@ def reconcile_seerr(execute: bool):
     in_flight = 0
     blocklisted = 0
     would = 0
+    would_recreate = 0
+    recreated = 0
+    withheld_rows = 0
+    recreated_keys = set()        # (tmdb, userId, seasons, is4k) already re-POSTed this run
     try:
         port, key = _seerr_creds()
     except FileNotFoundError:
@@ -1645,6 +1715,13 @@ def reconcile_seerr(execute: bool):
             blocklisted += 1
             continue
 
+        recreate = []              # live requests to re-create after a stuck-season clear
+        # DELIBERATE ASYMMETRY: the ORPHAN path (title absent from every *arr)
+        # never re-creates requests. A request for content no *arr holds could
+        # only be re-created as a dangling PENDING row nothing will ever
+        # fulfil; the member re-requests and the normal pipeline takes over.
+        # Only the stuck-season path, where the series IS still in Sonarr and
+        # the request can still be served, preserves them.
         gone = False
         reason = "orphan"
         if media_type == "movie":
@@ -1684,10 +1761,26 @@ def reconcile_seerr(execute: bool):
                 #
                 # COST, stated plainly: the media row's request history goes with
                 # it. For a title whose seasons are stuck that is the point.
-                stuck = _seerr_stuck_seasons(port, key, row)
+                info = _seerr_tv_info(port, key, row)
+                stuck = _seerr_stuck_seasons(port, key, row, info=info) if info else []
                 if stuck:
+                    # The cascade erases live requests on this row too. Read
+                    # who is still waiting BEFORE the delete; withhold the
+                    # delete if that cannot be read (see
+                    # _seerr_requests_to_preserve).
+                    recreate, ok = _seerr_requests_to_preserve(info, stuck)
+                    if not ok:
+                        failed += 1
+                        withheld_rows += 1
+                        warn("Seerr: media " + str(media_id) + " has stuck seasons "
+                             + ",".join(str(n) for n in stuck[:8]) + " but its request "
+                             "list could not be read -- WITHHELD (a delete would erase "
+                             "requests we cannot see)")
+                        continue
                     gone = True
                     reason = "stuck-seasons=" + ",".join(str(n) for n in stuck[:8])
+                    if recreate:
+                        reason += " live-requests-to-recreate=" + str(len(recreate))
         if not gone:
             continue
         log("Seerr: media " + str(media_id) + " (" + str(media_type) +
@@ -1697,6 +1790,7 @@ def reconcile_seerr(execute: bool):
             # the execute-path summary stays honest. The dry-run blast radius is
             # reported separately below instead of being folded into it.
             would += 1
+            would_recreate += len(recreate)
             continue
         st, _ = _seerr_req("DELETE", port, key, "/api/v1/media/" + str(media_id))
         if 200 <= st < 300:
@@ -1704,16 +1798,52 @@ def reconcile_seerr(execute: bool):
         else:
             failed += 1
             warn("Seerr delete media " + str(media_id) + " failed: HTTP " + str(st))
+            continue
+        # Re-create every live request the cascade just took, on the member's
+        # behalf (the admin API accepts userId). Loud on failure: the member
+        # is now waiting on a request Seerr no longer shows.
+        for rq in recreate:
+            # Seerr's Media.tmdbId is indexed, not unique: two media rows can
+            # share one tmdbId (a known Overseerr duplicate-row class) and both
+            # would compute the SAME recreate list from the same /tv/<tmdb>
+            # response. One member, one request -- never two (PR #35 review).
+            rkey = (int(row.get("tmdbId")), rq["userId"], tuple(rq["seasons"]), rq["is4k"])
+            if rkey in recreated_keys:
+                log("Seerr: request for user " + str(rq["userId"]) + " on tmdb " +
+                    str(row.get("tmdbId")) + " already re-created this run (duplicate media row)")
+                continue
+            recreated_keys.add(rkey)
+            payload = {"mediaType": "tv", "mediaId": int(row.get("tmdbId")),
+                       "seasons": rq["seasons"], "userId": rq["userId"],
+                       "is4k": rq["is4k"]}
+            st2, _ = _seerr_req("POST", port, key, "/api/v1/request", body=payload)
+            if 200 <= st2 < 300:
+                recreated += 1
+                log("Seerr: re-created request for user " + str(rq["userId"]) +
+                    " seasons " + ",".join(str(n) for n in rq["seasons"]) +
+                    " on tmdb " + str(row.get("tmdbId")))
+            else:
+                failed += 1
+                warn("Seerr: could NOT re-create request for user " + str(rq["userId"]) +
+                     " seasons " + ",".join(str(n) for n in rq["seasons"]) +
+                     " on tmdb " + str(row.get("tmdbId")) + " (HTTP " + str(st2) +
+                     ") -- the member's request is gone; they must re-request")
     if in_flight:
         log("Seerr: skipped " + str(in_flight) +
             " in-flight row(s) (pending/processing — a member is waiting on them)")
     if blocklisted:
         log("Seerr: skipped " + str(blocklisted) +
             " blocklisted row(s) (an admin blocked these on purpose)")
+    if recreated:
+        log("Seerr: re-created " + str(recreated) + " live request(s) the clear would have erased")
+    if withheld_rows:
+        log("Seerr: WITHHELD " + str(withheld_rows) + " stuck row(s) whose requests could not be read")
     if would:
         # A dry run that logs 42 "would delete" lines and then reports nothing
         # tells the operator the change is a no-op. Say the number out loud.
-        log("Seerr: DRY RUN — " + str(would) + " stale row(s) would be cleared")
+        log("Seerr: DRY RUN — " + str(would) + " stale row(s) would be cleared"
+            + ("; " + str(would_recreate) + " live request(s) would be re-created"
+               if would_recreate else ""))
     return deleted, failed
 
 
