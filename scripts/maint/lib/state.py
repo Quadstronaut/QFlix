@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,7 +54,22 @@ def write(path: str | Path, data: dict) -> None:
         raise
 
 
+# record() is a read-modify-write of the WHOLE file. The daemon runs the
+# Kuma webhook server on ThreadingHTTPServer alongside the pusher thread, so
+# two concurrent record() calls for different apps could interleave and the
+# later write clobber the earlier app's entry (surfaced 2026-09-15 as the
+# flaky CI test test_webhook_in_flight_cap_drops_excess: the listmonk
+# "dropped_cap_exceeded" entry vanished under sonarr's concurrent write).
+# One process-wide lock serialises the RMW; write() stays atomic on disk.
+_RECORD_LOCK = threading.RLock()
+
+
 def record(path: str | Path, app: str, **fields) -> None:
+    with _RECORD_LOCK:
+        _record_locked(path, app, **fields)
+
+
+def _record_locked(path: str | Path, app: str, **fields) -> None:
     data = read(path)
     if "apps" not in data or not isinstance(data["apps"], dict):
         data["apps"] = {}
