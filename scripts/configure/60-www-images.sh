@@ -88,19 +88,19 @@ sleep 5
 log_info "smoke tests"
 PUB_HOST=$(cat "$REPO_ROOT/secrets/seedbox.host" 2>/dev/null || echo "quadstronaut.seedbox.example.com")
 
-# FAQ: deployed document carries the real host and the Seerr vhost link.
-# Retried: the first fetch right after the copy came back stale on 2026-09-15
-# (an edge/proxy cache in front of the slot) while the file on disk was right.
-FAQ_OK=0
-for _try in 1 2 3 4 5 6; do
-  if curl -s -H "Cache-Control: no-cache" "https://$PUB_HOST/faq/" | grep -q "https://seerr-$PUB_HOST/"; then
-    FAQ_OK=1; break
-  fi
-  sleep 5
-done
-if [ "$FAQ_OK" != "1" ]; then
-  echo "FAIL: /faq/ does not carry the Seerr vhost link after 30s (FAQ deploy or substitution broke)" >&2
+# FAQ: the deployed document carries the real host and the Seerr vhost link.
+# Checked at the ORIGIN (the file nginx serves), not through the public URL:
+# the edge cache in front of the slot kept serving the previous copy for
+# minutes after the copy landed (2026-09-15, twice), which is a cache fact,
+# not a deploy failure. The public fetch below is informational only.
+if ! sshm "grep -q 'https://seerr-$PUB_HOST/' ~/www/qflix-faq/index.html"; then
+  echo "FAIL: ~/www/qflix-faq/index.html does not carry the Seerr vhost link (FAQ deploy or substitution broke)" >&2
   exit 1
+fi
+if curl -s -H "Cache-Control: no-cache" "https://$PUB_HOST/faq/" | grep -q "https://seerr-$PUB_HOST/"; then
+  log_info "  /faq/ serves the new document"
+else
+  log_warn "  /faq/ still serves a cached copy at the edge (origin is correct; clears on its own)"
 fi
 
 # Positive: Q.png returns 200.
