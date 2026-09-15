@@ -64,10 +64,18 @@ class CaptureArr:
     every call is recorded verbatim so tests can assert the exact request
     shape hit the *arr API, not just that "a delete happened"."""
 
-    def __init__(self, slug, movies=None, series=None):
+    def __init__(self, slug, movies=None, series=None, tags=None):
         self.slug = slug
         self.movies = movies or []
         self.series = series or []
+        # Default: NO permanent tag configured on this fake instance. Must
+        # answer 200 (not the fallback 404 below) — a bare 404 here reads as
+        # "the /tag lookup FAILED" post-2026-09-13 (resolve_permanent_tag_id's
+        # tri-state fix), which correctly fails P-4 closed and marks the run
+        # partial. Tests that don't care about permanent-tag semantics need
+        # this endpoint to behave like a real, healthy Sonarr with no tag
+        # named 'permanent' yet -- an empty 200 list, not a transport error.
+        self.tags = tags or []
         self.calls = []   # [("GET", path, query) | ("DELETE", path, query)]
 
     def get(self, path, query="", timeout=None):
@@ -76,6 +84,8 @@ class CaptureArr:
             return 200, self.movies
         if path == "/series":
             return 200, self.series
+        if path == "/tag":
+            return 200, self.tags
         # Single-record read. do_delete_* re-reads here after a non-2xx delete
         # and treats 404 as proof the delete landed anyway, so this fake must
         # answer from its own state rather than blanket-404. A blanket 404 made
@@ -164,6 +174,7 @@ def _install_full_fakes(reaper, monkeypatch, items_by_lib, ids_by_rk, arr_seed=N
             cls = seed.get("cls", CaptureArr)
             calls["arr"][slug] = cls(
                 slug, movies=seed.get("movies"), series=seed.get("series"),
+                tags=seed.get("tags"),
                 **({"fail_delete": seed["fail_delete"]} if "fail_delete" in seed else {}),
             )
         return calls["arr"][slug]
@@ -364,6 +375,11 @@ def test_dry_run_reports_same_candidates_zero_deletes_execute_matches_exact_call
     assert exec_summary["deleted"] == 1
     assert calls["arr"]["radarr"].calls == [
         ("GET", "/movie", ""),
+        # R-2 corroboration: after resolving, the reaper reads the movie's own
+        # record for movieFile.dateAdded (CaptureArr answers a single-record
+        # GET with a None body, so this always falls back to the Plex clock —
+        # see grade_file_clock's "arr_ts is None" branch).
+        ("GET", "/movie/42", ""),
         ("DELETE", "/movie/42", "deleteFiles=true&addImportExclusion=false"),
     ]
     assert len(calls["plex_refresh"]) == 1 and len(calls["plex_trash"]) == 1
@@ -417,6 +433,10 @@ def test_manifest_contents_match_candidate_exactly(reaper, tmp_path, monkeypatch
         "title": "Manifest Movie", "year": 2000, "type": "movie",
         "library": "QFlix - Movies", "ratingKey": "77", "tmdbId": 603,
         "tvdbId": None, "arrId": 555, "sizeGB": 9.75, "addedAt": old_ts,
+        # gradeSource is "plex-leaf": CaptureArr's single-record GET answers a
+        # None body, so radarr_movie_row() finds no movieFile to corroborate
+        # with and the Plex addedAt stands alone as the graded clock.
+        "gradedAt": old_ts, "gradeSource": "plex-leaf", "clockDisagreementSec": None,
     }]
 
 
