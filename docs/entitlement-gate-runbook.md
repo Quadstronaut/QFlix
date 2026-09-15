@@ -65,7 +65,7 @@ on `holder`, applied to every address in `accounts`.
 | State | Plex | Seerr |
 |---|---|---|
 | accepted, not entitled | `QFlix - Welcome` **only** | permissions `0` |
-| entitled | the content libraries, **without** `QFlix - Welcome` | permissions restored |
+| entitled | the content libraries, **without** `QFlix - Welcome` | permissions restored — minus the Plex-watchlist auto-request bits (`PERMISSIONS_NEVER`, operator ruling 2026-09-15), which are stripped from every value the gate writes |
 | revoked, past grace | `QFlix - Welcome` **only** | permissions `0` |
 
 Revoked is deliberately identical to stage 1. The **share object is kept** — a
