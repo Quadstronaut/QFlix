@@ -174,9 +174,14 @@ def test_member_permission_default_is_the_value_the_membership_actually_holds():
     because the log says "restored" and the person never reports losing a
     feature they rarely use.
     """
-    assert SU.MEMBER_PERMISSIONS == 1155539104
-    assert SU.MEMBER_PERMISSIONS > 1153433760
-    assert SU.MEMBER_PERMISSIONS & 1153433760 == 1153433760, \
+    # 2026-09-15 operator ruling: the watchlist auto-request bits are stripped
+    # from the baseline (PERMISSIONS_NEVER); everything else 1155539104 granted
+    # is kept, and the superset rule holds over the narrower setting minus
+    # those same bits.
+    assert SU.MEMBER_PERMISSIONS == 1155539104 & ~SU.PERMISSIONS_NEVER
+    narrower = 1153433760 & ~SU.PERMISSIONS_NEVER
+    assert SU.MEMBER_PERMISSIONS > narrower
+    assert SU.MEMBER_PERMISSIONS & narrower == narrower, \
         "the default must be a superset of the narrower setting, never a subset"
 
 
