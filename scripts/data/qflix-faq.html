@@ -697,15 +697,15 @@
       <h2><span class="num">6</span>Why things disappear</h2>
       <p class="deck-sub">QFlix is a self-pruning library &mdash; here's the rules.</p>
 
-      <article class="card user" id="q-why-deleted" data-tags="maintainerr deletion retention 60 days watched reaper">
+      <article class="card user" id="q-why-deleted" data-tags="deletion retention 45 days reaper expired re-request">
         <h3>Something I watched is gone &mdash; what gives? <a class="qhash" href="#q-why-deleted">#</a></h3>
         <p>
-          QFlix runs <strong>qflix-reaper</strong> on a daily timer. The rule on movies is roughly: <em>if you watched it &ge; 60 days ago and nobody else has watched it</em>, it gets removed (from Plex and from disk). This keeps the disk usable on a shared seedbox. The reaper runs with caps (max 50 items / 30% per library) and writes an audit manifest before every deletion run.
+          Everything on QFlix is deliberately temporary. <strong>Each episode or movie file stays for 45 days from the moment it lands in Plex</strong> &mdash; the clock starts at import, not when you asked for it, and it does not care whether you watched it or whether the show is still airing. When a file passes 45 days, <strong>qflix-reaper</strong> (a daily job) removes it from Plex and from disk so the disk stays usable for everyone. It runs with caps (at most 50 removals per run) and writes an audit record before every deletion.
         </p>
         <p>
-          Re-request via Seerr and it'll be re-grabbed. The 60-day clock restarts.
+          <strong>Just request it again in Seerr</strong> and it will be re-grabbed with a fresh 45-day clock. Shows that are still running keep their place in the pipeline, so new episodes keep arriving even after older ones have expired.
         </p>
-        <div class="callout tip"><strong>Want a title preserved?</strong> The operator can pin items to skip the reaper rule. Just ask.</div>
+        <div class="callout tip"><strong>Want a title kept longer?</strong> The operator can mark a show <em>permanent</em> so it is never dropped from the pipeline. Just ask.</div>
       </article>
 
       <article class="card user" id="q-text-prune" data-tags="ebook audiobook comic deleted text-libraries prune retired">
