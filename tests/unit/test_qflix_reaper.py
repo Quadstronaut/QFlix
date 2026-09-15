@@ -1543,9 +1543,17 @@ def test_seerr_reconcile_never_unblocks_a_blocklisted_title(reaper, monkeypatch)
 # ---------------------------------------------------------------------------
 # Season granularity — the actual reported bug (Law & Order S3/S4).
 # ---------------------------------------------------------------------------
-def _tv_detail(seasons):
-    return {"mediaInfo": {"seasons": [{"seasonNumber": n, "status": st}
-                                      for n, st in seasons]}}
+def _tv_detail(seasons, requests=()):
+    """`requests` mirrors Seerr's mediaInfo.requests[]: (id, status, user_id,
+    [season numbers]). Present-but-empty by default -- a MISSING list is the
+    fail-closed case and is built explicitly where a test wants it."""
+    return {"mediaInfo": {
+        "seasons": [{"seasonNumber": n, "status": st} for n, st in seasons],
+        "requests": [{"id": rid, "status": rst, "is4k": False,
+                      "requestedBy": {"id": uid},
+                      "seasons": [{"seasonNumber": n} for n in ss]}
+                     for rid, rst, uid, ss in requests],
+    }}
 
 
 def test_partially_reaped_series_with_stuck_seasons_is_reconciled(reaper, monkeypatch):
@@ -2419,3 +2427,100 @@ def test_p4_removes_every_plex_item_that_mapped_to_the_one_record(reaper, tmpdir
     assert rc == reaper.EXIT_OK
     assert [d[0] for d in fake.deletes if d[0].startswith("/series/")] == ["/series/810"]
     assert sorted(reaper._test_item_deletes) == ["9030", "9031"]
+
+
+# ---------------------------------------------------------------------------
+# Live requests must survive a stuck-season clear (Yellowjackets 2026-09-15).
+# ---------------------------------------------------------------------------
+def _stuck_row_harness(reaper, monkeypatch, detail, delete_status=200, post_status=201):
+    monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    rows = {"results": [{"id": 344, "mediaType": "tv", "tmdbId": 117488, "tvdbId": 399731, "status": 7}]}
+    calls = {"deletes": [], "posts": []}
+
+    def fake_req(method, port, key, path, query="", timeout=30, body=None):
+        if method == "GET" and path == "/api/v1/media":
+            return 200, rows
+        if method == "GET" and path.startswith("/api/v1/tv/"):
+            return 200, detail
+        if method == "DELETE":
+            calls["deletes"].append(path)
+            return delete_status, ""
+        if method == "POST" and path == "/api/v1/request":
+            calls["posts"].append(body)
+            return post_status, {"id": 9000 + len(calls["posts"])}
+        return 404, None
+
+    monkeypatch.setattr(reaper, "_seerr_req", fake_req)
+    monkeypatch.setattr(reaper, "_arr_client",
+                        lambda slug: FakeArr(slug, series=[{"id": 279, "tvdbId": 399731}]))
+    return calls
+
+
+def test_stuck_season_clear_recreates_the_members_live_request(reaper, monkeypatch):
+    """S1-3 at DELETED, S4 freshly requested by user 4 (status 2 approved).
+    The media-row DELETE cascades the S4 request; it must come back on the
+    member's behalf, reduced to the non-stuck seasons, AFTER the delete."""
+    detail = _tv_detail([(1, 7), (2, 7), (3, 7), (4, 1)],
+                        requests=[(3278, 2, 4, [4])])
+    calls = _stuck_row_harness(reaper, monkeypatch, detail)
+    deleted, failed = reaper.reconcile_seerr(execute=True)
+    assert (deleted, failed) == (1, 0)
+    assert calls["deletes"] == ["/api/v1/media/344"]
+    assert calls["posts"] == [{"mediaType": "tv", "mediaId": 117488, "seasons": [4],
+                               "userId": 4, "is4k": False}]
+
+
+def test_recreation_drops_stuck_seasons_and_completed_requests(reaper, monkeypatch):
+    """A request spanning stuck + live seasons comes back with only the live
+    ones; a COMPLETED (5) request and a DECLINED (3) one are not re-created."""
+    detail = _tv_detail([(1, 7), (2, 7), (3, 5), (4, 1)],
+                        requests=[(1, 2, 7, [1, 2, 3, 4]),   # approved, mixed
+                                  (2, 5, 8, [3]),            # completed
+                                  (3, 3, 9, [4]),            # declined
+                                  (4, 1, 10, [1, 2])])       # pending but ALL stuck
+    calls = _stuck_row_harness(reaper, monkeypatch, detail)
+    deleted, failed = reaper.reconcile_seerr(execute=True)
+    assert (deleted, failed) == (1, 0)
+    assert calls["posts"] == [{"mediaType": "tv", "mediaId": 117488, "seasons": [3, 4],
+                               "userId": 7, "is4k": False}]
+
+
+def test_stuck_row_is_withheld_when_the_request_list_cannot_be_read(reaper, monkeypatch):
+    """No `requests` key (or junk in it) = we cannot see who is waiting: the
+    delete is WITHHELD and the run is loud (failed+1), never a silent clear."""
+    for detail in ({"mediaInfo": {"seasons": [{"seasonNumber": 1, "status": 7}]}},
+                   {"mediaInfo": {"seasons": [{"seasonNumber": 1, "status": 7}], "requests": "junk"}},
+                   {"mediaInfo": {"seasons": [{"seasonNumber": 1, "status": 7}],
+                                  "requests": [{"status": 2, "requestedBy": None, "seasons": []}]}}):
+        calls = _stuck_row_harness(reaper, monkeypatch, detail)
+        deleted, failed = reaper.reconcile_seerr(execute=True)
+        assert calls["deletes"] == [], detail
+        assert (deleted, failed) == (0, 1), detail
+
+
+def test_recreation_failure_is_loud_not_silent(reaper, monkeypatch):
+    detail = _tv_detail([(1, 7), (4, 1)], requests=[(3278, 2, 4, [4])])
+    calls = _stuck_row_harness(reaper, monkeypatch, detail, post_status=500)
+    deleted, failed = reaper.reconcile_seerr(execute=True)
+    assert calls["deletes"] == ["/api/v1/media/344"]
+    assert (deleted, failed) == (1, 1), "a lost request must mark the run partial"
+
+
+def test_dry_run_never_recreates_and_reports_the_count(reaper, monkeypatch, capsys):
+    detail = _tv_detail([(1, 7), (4, 1)], requests=[(3278, 2, 4, [4])])
+    calls = _stuck_row_harness(reaper, monkeypatch, detail)
+    deleted, failed = reaper.reconcile_seerr(execute=False)
+    assert calls["deletes"] == [] and calls["posts"] == []
+    assert (deleted, failed) == (0, 0)
+    out = capsys.readouterr()
+    assert "1 live request(s) would be re-created" in (out.out + out.err)
+
+
+def test_delete_failure_never_recreates(reaper, monkeypatch):
+    """If the DELETE did not land, the original request still exists --
+    re-posting it would duplicate the member's request."""
+    detail = _tv_detail([(1, 7), (4, 1)], requests=[(3278, 2, 4, [4])])
+    calls = _stuck_row_harness(reaper, monkeypatch, detail, delete_status=500)
+    deleted, failed = reaper.reconcile_seerr(execute=True)
+    assert calls["posts"] == []
+    assert (deleted, failed) == (0, 1)
