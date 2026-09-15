@@ -1161,3 +1161,38 @@ def test_tvdbid_collision_persistent_does_not_mask_a_confirmed_finding(tmp_path,
     trail_text = trail.read_text(encoding="utf-8")
     assert "ESCALATION-SUPPRESSED-BY-FINDING" in trail_text
     assert "seerr-arr-parity-tvdbid-collision-persistent" in trail_text
+
+
+def test_state_corrupt_with_untrackable_trail_escalates_immediately(tmp_path, stack):
+    """ROUND 3 (false-green/BLOCKER): the corruption streak rides on the
+    trail; with the trail unreadable/unwritable (parent is a plain file --
+    the read-only-disk shape) every run used to re-derive streak=1 and the
+    persistent-corruption escalation never fired. Now a corrupt state whose
+    streak cannot be tracked is fail-closed on the FIRST run."""
+    s = stack()
+    _wire_default(s, media_rows=[media_row(1, "movie", 999, 5)])
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    state = tmp_path / "state.json"
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    trail = blocker / "trail.log"            # parent is a file: unreadable AND unwritable
+    for _ in range(2):
+        state.write_text("{not json", encoding="utf-8")
+        r = _run(secrets, state=state, trail=trail)
+        assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+        assert "STAGE=seerr-arr-parity-state-corrupt-persistent" in r.stderr
+        assert "streak-untrackable" in r.stderr
+
+
+def test_healthy_state_with_unwritable_trail_is_not_widened_into_a_page(tmp_path, stack):
+    """The round-3 fail-closed leg is scoped to CORRUPT state: a healthy
+    state file with a broken trail loses bookkeeping, not correctness."""
+    s = stack()
+    _wire_default(s, media_rows=[media_row(1, "movie", 999, 5)])
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    r = _run(secrets, state=tmp_path / "state.json", trail=blocker / "trail.log")
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)

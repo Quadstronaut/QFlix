@@ -462,13 +462,33 @@ def _prior_state_corrupt_streak():
     try:
         with open(TRAIL, encoding="utf-8", errors="ignore") as fh:
             lines = fh.readlines()
+    except FileNotFoundError:
+        return 0            # a genuinely fresh install: no history, streak 0
     except OSError:
-        return 0
+        return None         # ROUND 3: unreadable is NOT "zero" -- see below
     for line in reversed(lines):
         m = _STATE_STREAK_RE.search(line)
         if m:
             return int(m.group(1))
     return 0
+
+
+def _trail_writable():
+    """ROUND 3 (2026-09-14, false-green/BLOCKER): the streak counter lives
+    in the trail because state.json is the unreliable file -- but if the
+    trail itself cannot be read or appended (the disk-gone-read-only case
+    the round-2 comment names as the archetype), note() swallows the OSError
+    and every run re-derives streak=1 forever: the persistent-corruption
+    escalation could never fire in exactly the scenario it was built for.
+    A corrupt state whose streak cannot be tracked is treated as ALREADY
+    persistent (fail closed), never as a fresh one-off."""
+    try:
+        os.makedirs(os.path.dirname(TRAIL), exist_ok=True)
+        with open(TRAIL, "a", encoding="utf-8"):
+            pass
+        return True
+    except OSError:
+        return False
 
 
 def _state_shape_ok(loaded):
@@ -878,9 +898,19 @@ except (OSError, ValueError):
 # state.json (see _prior_state_corrupt_streak's docstring) -- 3 consecutive
 # corrupt reads escalate to CANNOT-ASSERT instead of silently re-arming for
 # the fourth, fifth, hundredth time running.
-state_corrupt_streak = (
-    _prior_state_corrupt_streak() + 1 if state_corrupt_this_run else 0
-)
+state_streak_untrackable = False
+if state_corrupt_this_run:
+    _prior = _prior_state_corrupt_streak()
+    if _prior is None or not _trail_writable():
+        # ROUND 3: cannot read or cannot persist the streak while state is
+        # corrupt -> the counter would silently reset to 1 every run. Fail
+        # closed: escalate NOW rather than never.
+        state_streak_untrackable = True
+        state_corrupt_streak = 3
+    else:
+        state_corrupt_streak = _prior + 1
+else:
+    state_corrupt_streak = 0
 
 # ROUND 2 (2026-09-13, MAJOR, finding #3): a tvdbId reported by BOTH sonarr
 # instances is UNTRUSTED and excluded from every per-row assertion (see the
@@ -974,10 +1004,13 @@ if tvdb_escalate:
         "seerr-arr-parity-tvdbid-collision-persistent",
         "tvdbid-collision-persisted-3-plus-consecutive-runs=%s" % named))
 if state_corrupt_streak >= 3:
-    escalations.append((
-        "seerr-arr-parity-state-corrupt-persistent",
-        "state-file-corrupt-or-unreadable-3-plus-consecutive-runs consecutive=%d state=%s"
-        % (state_corrupt_streak, STATE_PATH)))
+    if state_streak_untrackable:
+        _why = ("state-file-corrupt-AND-streak-untrackable(trail-unreadable-or-unwritable)"
+                " state=%s trail=%s" % (STATE_PATH, TRAIL))
+    else:
+        _why = ("state-file-corrupt-or-unreadable-3-plus-consecutive-runs consecutive=%d state=%s"
+                % (state_corrupt_streak, STATE_PATH))
+    escalations.append(("seerr-arr-parity-state-corrupt-persistent", _why))
 
 if has_confirmed_finding:
     # A confirmed orphan/stranded outranks every escalation above -- each
