@@ -89,8 +89,17 @@ log_info "smoke tests"
 PUB_HOST=$(cat "$REPO_ROOT/secrets/seedbox.host" 2>/dev/null || echo "quadstronaut.seedbox.example.com")
 
 # FAQ: deployed document carries the real host and the Seerr vhost link.
-if ! curl -s "https://$PUB_HOST/faq/" | grep -q "https://seerr-$PUB_HOST/"; then
-  echo "FAIL: /faq/ does not carry the Seerr vhost link (FAQ deploy or substitution broke)" >&2
+# Retried: the first fetch right after the copy came back stale on 2026-09-15
+# (an edge/proxy cache in front of the slot) while the file on disk was right.
+FAQ_OK=0
+for _try in 1 2 3 4 5 6; do
+  if curl -s -H "Cache-Control: no-cache" "https://$PUB_HOST/faq/" | grep -q "https://seerr-$PUB_HOST/"; then
+    FAQ_OK=1; break
+  fi
+  sleep 5
+done
+if [ "$FAQ_OK" != "1" ]; then
+  echo "FAIL: /faq/ does not carry the Seerr vhost link after 30s (FAQ deploy or substitution broke)" >&2
   exit 1
 fi
 
