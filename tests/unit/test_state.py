@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import os
 import sys
 from datetime import datetime
@@ -85,3 +86,26 @@ def test_state_record_preserves_other_apps(tmp_path):
     assert "radarr" in data["apps"]
     assert data["apps"]["sonarr"]["event"] == "recovered"
     assert data["apps"]["radarr"]["event"] == "failed"
+
+
+def test_record_is_safe_under_concurrent_threads(tmp_path):
+    """Two threads recording DIFFERENT apps must never clobber each other:
+    record() is a whole-file read-modify-write and the daemon calls it from
+    the webhook server's handler threads and the pusher thread at once."""
+    path = tmp_path / "state.json"
+    errors = []
+
+    def spin(app):
+        try:
+            for i in range(150):
+                record(path, app, event="e%d" % i)
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [threading.Thread(target=spin, args=(a,)) for a in ("sonarr", "listmonk", "radarr")]
+    for th in threads: th.start()
+    for th in threads: th.join(timeout=30)
+    assert not errors
+    apps = read(path)["apps"]
+    assert set(apps) == {"sonarr", "listmonk", "radarr"}, apps
+    assert all(v["event"] == "e149" for v in apps.values()), apps
