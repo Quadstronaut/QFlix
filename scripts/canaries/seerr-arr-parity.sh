@@ -230,7 +230,9 @@
 #                                     "unreachable", it is "there is more data
 #                                     than the cap allows for"
 #   seerr-arr-parity-arr-unreachable  one of the four *arrs failed
-#   seerr-arr-parity-arr-empty        one of the four *arrs returned 0 items
+#   seerr-arr-parity-arr-empty        ALL FOUR *arrs returned 0 items (one empty
+#                                      instance is a counted skip: a single-library
+#                                      instance can legitimately be empty)
 #   seerr-arr-parity-tv-detail-persistent-failure  a tmdbId's /api/v1/tv
 #                                     detail call has failed 3 consecutive
 #                                     runs — cannot rule out a masked STRANDED
@@ -636,6 +638,7 @@ if not rows:
 sonarr_tvdb = {}     # tvdbId -> {seasonNumber: episodeFileCount}
 untrusted_tvdb = set()  # tvdbId seen in >1 sonarr instance -- see below
 radarr_tmdb = set()
+empty_arrs = []      # instances that answered 200 with zero items
 
 for slug, spec in arrs.items():
     base = "http://127.0.0.1:%s/%s/api/v3" % (spec["port"], spec["urlbase"])
@@ -646,8 +649,16 @@ for slug, spec in arrs.items():
     if not isinstance(data, list):
         cannot("seerr-arr-parity-arr-unreachable", "%s-api-not-a-list" % slug)
     if not data:
-        cannot("seerr-arr-parity-arr-empty",
-               "%s-returned-zero-items-cannot-be-real-on-a-live-box" % slug)
+        # ROUND 3 live run (2026-09-14): sonarr2 (Anime) legitimately held
+        # ZERO series -- its only show had been reaped that morning -- and
+        # "one empty *arr = CANNOT-ASSERT" would have paged every hour until
+        # someone requested an anime. A single-library instance being empty
+        # is a real state, not an outage: counted and named, rows that
+        # would need it are still gradable against the other instance.
+        # Only ALL FOUR empty is unassertable (below).
+        skip("arr-empty:%s" % slug)
+        empty_arrs.append(slug)
+        continue
 
     if spec["kind"] == "tv":
         for s in data:
@@ -687,6 +698,9 @@ for slug, spec in arrs.items():
                 skip("radarr-movie-no-tmdbid")
 
 # --- the predicate, per settled Seerr row --------------------------------
+if len(empty_arrs) == len(arrs):
+    cannot("seerr-arr-parity-arr-empty",
+           "all-four-arrs-returned-zero-items-cannot-be-real-on-a-live-box")
 GRACE_S = GRACE_H * 3600
 orphans = {}
 stranded = {}

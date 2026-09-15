@@ -347,6 +347,11 @@ cp -f "$STG"/scripts/maint/qflix-anime-janitor.exclude ~/scripts/maint/qflix-ani
 cp -f "$STG"/scripts/maint/qflix-reaper.py ~/scripts/maint/qflix-reaper.py
 chmod +x ~/scripts/maint/qflix-reaper.py
 cp -f "$STG"/scripts/maint/qflix-reaper.exclude ~/scripts/maint/qflix-reaper.exclude 2>/dev/null || true
+# qflix-permanent.py: the operator tool behind the reaper's `permanent` tag
+# (P-3 --auto/--set/--prune-ended). Read-only by default; it was on master but
+# never staged, so the box had no way to run it (found 2026-09-14).
+cp -f "$STG"/scripts/maint/qflix-permanent.py ~/scripts/maint/qflix-permanent.py
+chmod +x ~/scripts/maint/qflix-permanent.py
 cp -f "$STG"/scripts/maint/audio-disposition-janitor.py ~/scripts/maint/audio-disposition-janitor.py
 chmod +x ~/scripts/maint/audio-disposition-janitor.py
 # Second time this exact hole was found (2026-08-23). The unknown-codec janitor

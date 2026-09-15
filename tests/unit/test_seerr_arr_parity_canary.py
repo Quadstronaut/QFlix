@@ -605,15 +605,28 @@ def test_one_arr_unreachable_is_broken(tmp_path, stack):
     assert "radarr2" in r.stderr
 
 
-def test_one_arr_empty_is_broken(tmp_path, stack):
+def test_one_arr_empty_is_a_counted_skip_not_a_page(tmp_path, stack):
+    """Round-3 live run: sonarr2 (Anime) legitimately had zero series after
+    its only show was reaped; one empty single-library instance must not
+    red the canary every hour."""
     s = stack()
     _wire_default(s, media_rows=[media_row(1, "movie", 1, 5)], sonarr2=[])
     secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
                                           "radarr": s.port, "radarr2": s.port})
     r = _run(secrets, state=tmp_path / "s.json", trail=tmp_path / "t.log")
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert "arr-empty:sonarr2" in r.stdout
+
+
+def test_all_arrs_empty_is_broken(tmp_path, stack):
+    s = stack()
+    _wire_default(s, media_rows=[media_row(1, "movie", 1, 5)],
+                  sonarr=[], sonarr2=[], radarr=[], radarr2=[])
+    secrets = _secrets(tmp_path, s.port, {"sonarr": s.port, "sonarr2": s.port,
+                                          "radarr": s.port, "radarr2": s.port})
+    r = _run(secrets, state=tmp_path / "s.json", trail=tmp_path / "t.log")
     assert r.returncode == 2
     assert "STAGE=seerr-arr-parity-arr-empty" in r.stderr
-    assert "sonarr2" in r.stderr
 
 
 def test_tv_detail_fetch_failure_is_a_named_skip_not_a_broken_run(tmp_path, stack):
