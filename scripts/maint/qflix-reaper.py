@@ -2281,6 +2281,15 @@ def run(args) -> int:
                 withheld_files.append(dict(w, title=it.get("title"), library=title))
             cands.extend(grade["candidates"])
 
+            # Two Plex items can resolve to ONE Sonarr record (the 2026-08-16
+            # sonarr2 rename-off collision shape). The record is removed once;
+            # EVERY Plex item that pointed at it must be removed with it, so
+            # ratingKeys accumulates instead of last-write-wins (PR #27 review).
+            _dup = series_removal_state.get((entry["slug"], arr_id))
+            if _dup is not None:
+                _dup["ratingKeys"].append(str(it.get("ratingKey") or ""))
+                _dup["candidate_file_count"] += len(grade["candidates"])
+                continue
             series_removal_state[(entry["slug"], arr_id)] = {
                 "client": client,
                 "row": sonarr_series_row(client, arr_id),
@@ -2298,9 +2307,9 @@ def run(args) -> int:
                 # first when the shared --max-items budget is tight this run"
                 # (see the P-4/max-items cap-sharing block below).
                 "container_added_at": it.get("addedAt") or 0,
-                # The Plex show item to remove AFTER the *arr record goes
+                # EVERY Plex show item to remove AFTER the *arr record goes
                 # (see plex_delete_item -- a deleted folder is never re-scanned).
-                "ratingKey": str(it.get("ratingKey") or ""),
+                "ratingKeys": [str(it.get("ratingKey") or "")],
                 # Filled in below by the shared-budget capping pass.
                 "p4_eligible": False,
                 "p4_scheduled": False,
@@ -2641,15 +2650,18 @@ def run(args) -> int:
                 # The show folder is gone with the record; Plex will never
                 # re-scan a folder that does not exist, so remove the item
                 # explicitly and prove it (Mob Psycho 100 ghost, 2026-09-15).
-                if st.get("ratingKey") and plex_delete_item(port, token, st["ratingKey"]):
-                    plex_ghosts_removed += 1
-                    log("P-4: removed Plex item rk=" + str(st["ratingKey"]) +
-                        " for " + repr(st["title"]))
-                else:
+                for _rk in [k for k in st.get("ratingKeys") or [] if k]:
+                    if plex_delete_item(port, token, _rk):
+                        plex_ghosts_removed += 1
+                        log("P-4: removed Plex item rk=" + _rk + " for " + repr(st["title"]))
+                    else:
+                        partial = True
+                        warn("P-4: Plex item rk=" + _rk + " for " + repr(st["title"]) +
+                             " could not be removed -- it will read as a ghost/orphan until it is")
+                if not [k for k in st.get("ratingKeys") or [] if k]:
                     partial = True
-                    warn("P-4: Plex item rk=" + str(st.get("ratingKey")) + " for " +
-                         repr(st["title"]) + " could not be removed -- it will "
-                         "read as a ghost/orphan until it is")
+                    warn("P-4: no Plex ratingKey recorded for " + repr(st["title"]) +
+                         " -- its Plex item(s) may linger as ghosts")
             else:
                 partial = True
                 warn("P-4: record removal FAILED for " + repr(st["title"]) +

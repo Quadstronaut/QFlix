@@ -2400,3 +2400,22 @@ def test_plex_delete_item_proves_removal_by_reread(reaper, monkeypatch):
     # A 403 (media deletion disabled in Plex settings) is a clean False.
     monkeypatch.setattr(reaper, "_plex_delete", lambda p, t, path: (403, ""))
     assert reaper.plex_delete_item("1", "t", "8017") is False
+
+
+def test_p4_removes_every_plex_item_that_mapped_to_the_one_record(reaper, tmpdir, monkeypatch):
+    """PR #27 review (blast-radius/MAJOR): two Plex show items resolving to the
+    same Sonarr record (the 2026-08-16 sonarr2 rename-off collision shape)
+    used to collapse to one ratingKey -- the record went, one ghost stayed,
+    the run said SUCCESS. Every mapped item must be removed."""
+    shows = [{"ratingKey": "9030", "title": "Dup Show", "year": 2016, "addedAt": 1000000000, "sizeGB": 0.0},
+             {"ratingKey": "9031", "title": "Dup Show", "year": 2016, "addedAt": 1000000000, "sizeGB": 0.0}]
+    ids = {"9030": {"tmdbId": None, "tvdbId": 40010}, "9031": {"tmdbId": None, "tvdbId": 40010}}
+    _install_plex(reaper, monkeypatch, {"QFlix - TV": shows}, ids)
+    _silence_side_effects(reaper, monkeypatch)
+    fake = FakeArr("sonarr", series=[{"id": 810, "tvdbId": 40010, "ended": True, "tags": []}],
+                   episodefiles={810: []}, episodes={810: []})
+    monkeypatch.setattr(reaper, "_arr_client", lambda slug: fake)
+    rc = reaper.run(_args(reaper, execute=True, manifest_dir=str(tmpdir)))
+    assert rc == reaper.EXIT_OK
+    assert [d[0] for d in fake.deletes if d[0].startswith("/series/")] == ["/series/810"]
+    assert sorted(reaper._test_item_deletes) == ["9030", "9031"]
