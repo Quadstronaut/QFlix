@@ -69,17 +69,40 @@ SHAPE ON DISK  (~/.opt/maint/arr-regrab-ledger.json)
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
-# Same state dir every maint module uses; ARR-side scripts override
-# MANITOBA_STATE_DIR in tests.
-STATE_DIR: Path = Path(os.environ.get("MANITOBA_STATE_DIR",
-                                      str(Path.home() / ".opt" / "maint")))
-LEDGER_PATH: Path = STATE_DIR / "arr-regrab-ledger.json"
+# Same state dir every maint module uses. Resolved on EVERY call, never
+# captured at import: tests/unit/conftest.py sets MANITOBA_STATE_DIR from an
+# autouse fixture that necessarily runs AFTER this module is imported, so an
+# import-time constant silently ignored it and wrote fixture rows into the
+# developer's real ~/.opt/maint (observed 2026-09-17 during the council round
+# that produced this module). A module-level default is a test-isolation hole
+# whenever the env var it reads is set by a fixture.
+def state_dir() -> Path:
+    return Path(os.environ.get("MANITOBA_STATE_DIR",
+                               str(Path.home() / ".opt" / "maint")))
+
+
+def ledger_path() -> Path:
+    return state_dir() / "arr-regrab-ledger.json"
+
+
+def lock_path() -> Path:
+    return state_dir() / "arr-regrab-ledger.lock"
+
+
+def __getattr__(name: str):  # PEP 562 — module-level lazy attribute
+    if name == "LEDGER_PATH":
+        return ledger_path()
+    if name == "STATE_DIR":
+        return state_dir()
+    raise AttributeError(name)
 
 
 def _int_env(name: str, default: int) -> int:
@@ -205,7 +228,7 @@ def read(path: Path | None = None) -> dict:
     repair for the whole stack. Entries that are not objects are dropped on
     the way in so no consumer below has to re-check.
     """
-    p = Path(path) if path is not None else LEDGER_PATH
+    p = Path(path) if path is not None else ledger_path()
     try:
         with p.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -246,18 +269,31 @@ def write(ledger: dict, path: Path | None = None) -> bool:
     unwritable state dir must cost the guard its memory, not cost the stack
     its stuck-download repair.
     """
-    p = Path(path) if path is not None else LEDGER_PATH
+    p = Path(path) if path is not None else ledger_path()
+    tmp_name = None
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".json.tmp")
-        with tmp.open("w", encoding="utf-8") as fh:
+        # UNIQUE temp name, not a fixed "<name>.json.tmp": two writers sharing
+        # one fixed temp path interleave their partial writes and os.replace
+        # publishes whichever half won. mkstemp in the SAME directory keeps
+        # os.replace atomic (same filesystem).
+        fd, tmp_name = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp",
+                                        dir=str(p.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(ledger, fh, indent=2, sort_keys=True)
-        os.replace(tmp, p)
+        os.replace(tmp_name, p)
+        tmp_name = None
         return True
     except Exception as exc:
         _warn("could not write ledger at " + str(p) + " (" + repr(exc)
               + ") — this sweep is not remembered")
         return False
+    finally:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -408,3 +444,67 @@ def prune(ledger: dict, now: float) -> dict:
     except Exception as exc:
         _warn("prune failed (" + repr(exc) + ") — ledger left as-is")
     return ledger
+
+
+@contextlib.contextmanager
+def run_lock(path: Path | None = None):
+    """Exclusive, non-blocking flock guarding the whole read-modify-write.
+
+    Yields True when this process owns the ledger for the duration, False when
+    another sweep already holds it.
+
+    Why the lock spans the WHOLE sweep and not just write(): the sweep reads
+    the ledger once, mutates it across every queue item, and writes once at the
+    end. Two overlapping sweeps (the hourly timer plus an operator running
+    --unstick by hand) both read the same snapshot and the second write wins
+    outright -- the first sweep's blocklist adds vanish, and a `notified` flag
+    cleared by the loser re-pages a park that was already announced. Locking
+    write() alone cannot fix that; the race lives in the gap between read and
+    write, which is minutes wide.
+
+    Refusing to run is the correct response to contention, not waiting for it:
+    the losing sweep would act on a stale snapshot and issue duplicate
+    DELETE+blocklist calls. The next hourly run picks the work up.
+
+    FAILS OPEN. Where fcntl is unavailable (Windows workstation, and the unit
+    tests that run there) or the lock file cannot be created, this yields True
+    with a stderr note rather than blocking the stuck-download repair. The
+    unique-temp write in write() keeps that degraded path from publishing a
+    torn file; what is lost is only last-writer-wins protection.
+    """
+    p = Path(path) if path is not None else lock_path()
+    handle = None
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        handle = p.open("a+")
+    except Exception as exc:
+        _warn("could not open ledger lock at " + str(p) + " (" + repr(exc)
+              + ") - proceeding unlocked")
+        yield True
+        return
+
+    try:
+        import fcntl
+    except ImportError:
+        # No fcntl (Windows). Documented fail-open; see docstring.
+        try:
+            yield True
+        finally:
+            handle.close()
+        return
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
