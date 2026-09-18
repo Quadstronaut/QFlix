@@ -5,7 +5,6 @@ Never raises — all failure modes collapse into the result dict + a notify.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import threading
@@ -13,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from lib import health, kuma, lifecycle, notify, state, suppression
+from lib import health, kuma, lifecycle, notify, page_ledger, state, suppression
 from lib.manifest import App, Manifest
 
 # ---------------------------------------------------------------------------
@@ -140,16 +139,16 @@ _ESCALATION_PAGE_COOLDOWN_S: float = float(
 )
 
 
-def _read_escalation_ledger() -> dict:
-    """Ledger as {app_name: unix_ts_of_last_page}. Corrupt/missing reads as
-    empty — see _escalation_page_due for why that direction is the safe one."""
-    try:
-        with _ESCALATION_PAGE_LEDGER.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
+# ---------------------------------------------------------------------------
+# 2026-09-17 (Cluster C, alert-dedup): the cooldown implementation above this
+# comment used to live entirely in this file. It is now lib/page_ledger.py —
+# arr-housekeeping.py's --unstick sweep needed the exact same wall-clock-in-
+# a-file mechanism and a second copy-pasted implementation was the wrong
+# move. These two functions are now thin delegates; the public names, the
+# ledger file path (_ESCALATION_PAGE_LEDGER, still monkeypatchable by tests
+# and still resolved fresh on every call via module-global lookup), the env
+# var, and the fail-open semantics are byte-identical to before the split.
+# ---------------------------------------------------------------------------
 
 def _escalation_page_due(app_name: str) -> bool:
     """True if `app_name`'s terminal escalation should actually ping the
@@ -160,29 +159,10 @@ def _escalation_page_due(app_name: str) -> bool:
     dir, garbage JSON — returns True and pages. A bug in the noise suppressor
     must never be able to swallow "your media server is down"; the worst case
     of failing open is the storm we already had, the worst case of failing
-    closed is silence nobody notices."""
-    try:
-        now = time.time()
-        ledger = _read_escalation_ledger()
-        last = ledger.get(app_name)
-        if isinstance(last, (int, float)) and 0 < (now - last) < _ESCALATION_PAGE_COOLDOWN_S:
-            return False
-        ledger[app_name] = now
-        _write_escalation_ledger(ledger)
-        return True
-    except Exception as _exc:
-        sys.stderr.write(
-            "recovery.py: escalation-page cooldown check failed, paging anyway: "
-            + repr(_exc) + "\n")
-        return True
-
-
-def _write_escalation_ledger(ledger: dict) -> None:
-    _ESCALATION_PAGE_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _ESCALATION_PAGE_LEDGER.with_suffix(".json.tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(ledger, fh, indent=2)
-    os.replace(tmp, _ESCALATION_PAGE_LEDGER)
+    closed is silence nobody notices. (Enforced by page_ledger.page_due now —
+    see that module's docstring for the same reasoning, kept in one place.)"""
+    return page_ledger.page_due(_ESCALATION_PAGE_LEDGER, app_name,
+                                 _ESCALATION_PAGE_COOLDOWN_S)
 
 
 def clear_escalation_page(app_name: str) -> None:
@@ -191,12 +171,7 @@ def clear_escalation_page(app_name: str) -> None:
     The cooldown is per-OUTAGE, not per-wall-clock-day: an app that fails,
     recovers, and fails again an hour later is news both times. Called by the
     pusher on every successful probe, alongside clear_permanent_failure."""
-    try:
-        ledger = _read_escalation_ledger()
-        if ledger.pop(app_name, None) is not None:
-            _write_escalation_ledger(ledger)
-    except Exception:
-        pass
+    page_ledger.clear_page(_ESCALATION_PAGE_LEDGER, app_name)
 
 
 # Events in state.json whose presence means the app's last recorded outcome was

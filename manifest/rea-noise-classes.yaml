@@ -1178,6 +1178,33 @@ classes:
       EAE that is genuinely broken fails those, not this rule.
     added: 2026-09-14
 
+  - id: canary-finding-exit-owned-by-kuma
+    title: 'systemd "Failed to start" for a canary that RAN and reported a finding'
+    rx: '(?im)^(?=.*\bmanitoba-maint-canary-[a-z0-9-]+\.service\b)(?=.*\bFailed to start\b)(?=.*canary-verdict=finding\b)(?!.*canary-verdict=broken\b).*$'
+    field: excerpt
+    prompt_clause: 'systemd "Failed to start manitoba-maint-canary-*.service" lines that carry canary-verdict=finding'
+    why: >-
+      The 2026-09-17 deploy-drift page: manitoba-maint-canary-deploy-drift.service
+      exits non-zero BY DESIGN when it detects drift, systemd logs "Failed to
+      start" as a mechanical consequence of that exit code, and the canary's
+      own Kuma push monitor already owns the signal. REA reads history,
+      canaries read live state, so this line is a duplicate in both
+      directions.
+      SIBLING SHAPE THAT MUST STILL PAGE: canary-verdict=broken (the canary
+      could not RUN at all -- script missing, interpreter/ssh failure,
+      timeout, wrapper error -- a real outage) and any line carrying NO
+      verdict marker at all, because the rule requires the literal
+      "canary-verdict=finding" marker to suppress; an unmarked line -- every
+      canary run before the wrapper that emits the marker lands, or a
+      truncated/garbled log -- does not match and still pages. That is the
+      deliberate fail-open direction: a suppressor that guessed "probably a
+      finding" in the marker's absence would convert the whole canary fleet
+      into a blind spot. Non-canary units (manitoba-maint-pusher.service,
+      manitoba-maint.service, app units) never match this rule even carrying
+      a verdict token, because the unit-name lookahead is scoped to
+      manitoba-maint-canary-*.service.
+    added: 2026-09-17
+
 
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
@@ -1305,6 +1332,9 @@ prompt_segments:
   - index: 39
     marker: 'Plex "Error iterating EAE watchfolder directory: No such file or directory" transcoder lines'
     classes: [plex-eae-watchfolder-missing]
+  - index: 40
+    marker: 'systemd "Failed to start manitoba-maint-canary-*.service" lines that carry canary-verdict=finding'
+    classes: [canary-finding-exit-owned-by-kuma]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
