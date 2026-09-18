@@ -28,6 +28,16 @@ Stall modes:
 Caps: ARR_MAX_ACTIONS_PER_RUN (default 10), ARR_MAX_ACTIONS_PER_SLUG
 (default 5). Cap-hit escalates Discord notification to error level.
 
+PAGING POLICY (2026-09-17): the sweep runs hourly and a re-grab loop gives it
+something to do every hour, so notifying on every action taken produced 12 of
+the 13 Discord messages in a measured 24h window for ONE ongoing condition.
+Actions are now deduped for NOTIFICATION purposes only, on content identity
+(movieId / seriesId+episodeIds, stable across re-grabs) + slug + mode, via
+lib/page_ledger.py (ARR_UNSTICK_PAGE_COOLDOWN_S, default 24h). The cap-hit
+escalation keeps its own key and its own clock so it can never be muted by
+routine chatter. EVERY action and every suppression decision is still written
+to ~/.opt/maint/arr-housekeeping.log and to stdout on every run.
+
 State for stuck-tracking is keyed by qBit downloadId (hash) so it's stable
 across queue-id renumberings. Stored at ~/.opt/maint/stuck-queue-state.json.
 New fields ('mode', 'sizeleft_history') are backward-compatible — pre-
@@ -41,15 +51,34 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import timezone
 from pathlib import Path
 from typing import Optional
+
+# lib/ lives next to this script both in the repo checkout (scripts/maint/lib)
+# and on the seedbox (~/scripts/maint/lib). Resolve it the same way _notify
+# does, but at import time, because the page-dedup ledger is needed by
+# cmd_unstick's notification policy.
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+try:
+    from lib import page_ledger as _page_ledger  # type: ignore
+except Exception as _exc:  # pragma: no cover - layout drift only
+    # FAIL OPEN, loudly: no ledger means no suppression, i.e. the pre-2026-09-17
+    # behaviour. Never a crash, and never silent suppression.
+    _page_ledger = None
+    sys.stderr.write("arr-housekeeping: page_ledger unavailable, page dedup "
+                     "DISABLED (failing open): " + repr(_exc) + "\n")
 
 # Public host comes from secrets/seedbox.host (gitignored) — die loudly
 # rather than silently hitting the sanitized placeholder if it's missing.
@@ -304,11 +333,157 @@ def _state_key(slug: str, download_id: str) -> str:
     return f"{slug}:{(download_id or 'no-hash').lower()}"
 
 
+# ---------------------------------------------------------------------------
+# Page-dedup policy for the hourly sweep
+# ---------------------------------------------------------------------------
+# MEASURED 2026-09-17: 12 of the 13 Discord messages in a 24h window came from
+# THIS function. cmd_unstick notified on every run that took any action, and a
+# re-grab loop takes an action every hour, forever, about the same title. The
+# one message that carried escalation value - the cap-hit @ping, "systemic
+# issue likely" - was buried among eleven look-alike warnings, which is how a
+# channel gets muted and how the NEXT real alert goes unread.
+#
+# The re-grab loop is not the bug here and is not touched: deleting a stuck
+# grab hourly is what this job is FOR. The bug is the PAGING POLICY. So the
+# sweep keeps its cadence and the page gets its own clock, in the repo's one
+# page-dedup mechanism (lib/page_ledger.py, the code extracted from
+# recovery.py's 2026-09-02 escalation cooldown).
+UNSTICK_PAGE_LEDGER = "arr-unstick-pages.json"
+
+# Per-item cooldown. A day: an ongoing stuck title is ONE line in the channel,
+# and a title still stuck tomorrow is re-surfaced rather than forgotten.
+ARR_UNSTICK_PAGE_COOLDOWN_S = float(
+    os.environ.get("ARR_UNSTICK_PAGE_COOLDOWN_S", str(24 * 3600)))
+# Cap-hit gets its OWN key and its OWN clock, so a run full of muted per-item
+# keys can never mute the systemic signal.
+ARR_UNSTICK_CAP_PAGE_COOLDOWN_S = float(
+    os.environ.get("ARR_UNSTICK_CAP_PAGE_COOLDOWN_S", str(24 * 3600)))
+
+CAP_PAGE_KEY = "unstick:cap-hit"
+# Fixed first line so the escalation is glanceable in a channel of sweeps.
+CAP_BANNER = "⚠ SYSTEMIC — arr-unstick CAP HIT"
+
+UNSTICK_LOG_FILE = "arr-housekeeping.log"
+_UNSTICK_LOG_MAX_LINES = 5000
+
+# A trailing release-group token: "-NTb", "-RARBG", "[GROUP]". Cosmetic
+# variation between re-grabs of the same release must not mint a new key.
+_RELEASE_GROUP_TAIL = re.compile(r"(?:[-\[]\s*[A-Za-z0-9._]{2,20}\]?)\s*$")
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read at CALL time, not import time - the hourly unit can be re-tuned by
+    a drop-in without a redeploy, and tests set these with monkeypatch."""
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _page_ledger_path() -> Path:
+    # STATE_DIR is read through the module global on purpose: tests monkeypatch
+    # it, and a drop-in can move the state dir.
+    return STATE_DIR / UNSTICK_PAGE_LEDGER
+
+
+def _normalize_title(title: str) -> str:
+    """Casefold, collapse whitespace, drop a trailing release-group token."""
+    t = " ".join((title or "").split()).casefold()
+    t = _RELEASE_GROUP_TAIL.sub("", t).strip()
+    return t
+
+
+def _content_key(slug: str, item: dict) -> str:
+    """Stable identity of WHAT was swept, ACROSS re-grabs.
+
+    NOT downloadId. A re-grab loop obtains a new downloadId/infohash on every
+    grab - that is definitionally what the loop does - so a downloadId-keyed
+    ledger would mint a fresh key every hour and dedup NOTHING, reproducing
+    the exact storm being fixed. movieId / seriesId+episodeIds come straight
+    off the *arr queue record and are stable across re-grabs of the same
+    content, while still being distinct for DIFFERENT content, so a genuinely
+    new stuck title pages on the very next hourly run.
+
+    The title hash is the fallback for queue rows that carry neither id - the
+    includeUnknownSeriesItems=true rows. It is normalized so release-name
+    cosmetics do not defeat it.
+    """
+    movie_id = item.get("movieId")
+    if movie_id:
+        return f"{slug}:m{movie_id}"
+    series_id = item.get("seriesId")
+    if series_id:
+        eps = item.get("episodeIds")
+        if not eps:
+            single = item.get("episodeId")
+            eps = [single] if single else []
+        joined = "+".join(sorted(str(e) for e in eps))
+        return f"{slug}:s{series_id}e{joined}"
+    digest = hashlib.sha1(
+        _normalize_title(item.get("title") or "").encode("utf-8")).hexdigest()
+    return f"{slug}:t{digest[:12]}"
+
+
+def _page_key(slug: str, item: dict, mode: str) -> str:
+    """Content identity + slug + mode.
+
+    `mode` is in the key because a title that moves from stalled-no-peers to
+    slow-cluster is a materially different fault about the same content, and
+    that transition is worth exactly one page.
+    """
+    return f"unstick:{_content_key(slug, item)}:{mode}"
+
+
+def _append_unstick_log(lines: list[str], suppressed: list[str]) -> None:
+    """Durable, NEVER-suppressed record of what the sweep did and what it
+    decided not to say.
+
+    Suppression is a NOTIFICATION policy, not a logging policy: the operator
+    must always be able to reconstruct a quiet run. Tab-delimited, rotation
+    capped, best-effort - exactly like lib/notify.py's _append_audit_log.
+    """
+    if not lines and not suppressed:
+        return
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path = STATE_DIR / UNSTICK_LOG_FILE
+        now = datetime.datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        rows = [f"{now}\taction\t{ln}\n" for ln in lines]
+        rows += [f"{now}\tdecision\t{sp}\n" for sp in suppressed]
+        with path.open("a", encoding="utf-8") as fh:
+            fh.writelines(rows)
+        if (hash(now) & 0xFF) == 0:
+            try:
+                existing = path.read_text(encoding="utf-8").splitlines(keepends=True)
+                if len(existing) > _UNSTICK_LOG_MAX_LINES:
+                    path.write_text("".join(existing[-_UNSTICK_LOG_MAX_LINES:]),
+                                    encoding="utf-8")
+            except Exception as exc:
+                sys.stderr.write("arr-housekeeping: log rotation failed "
+                                 "(best-effort, continuing): " + repr(exc) + "\n")
+    except Exception as exc:
+        print(f"WARNING: could not write {UNSTICK_LOG_FILE}: {exc}", file=sys.stderr)
+
+
+def _partition_due(keys: list[str], cooldown_s: float) -> tuple[list[str], list[str]]:
+    """partition_due with the no-ledger case folded in. Fails open both ways."""
+    if _page_ledger is None:
+        uniq, seen = [], set()
+        for k in keys:
+            if k not in seen:
+                seen.add(k)
+                uniq.append(k)
+        return uniq, []
+    return _page_ledger.partition_due(_page_ledger_path(), keys, cooldown_s)
+
+
 def cmd_unstick(dry_run: bool) -> int:
     print(f"--- unstick-queue sweep ({'DRY-RUN' if dry_run else 'LIVE'}) ---")
     state = _load_state()
     now = time.time()
-    actions: list[str] = []
+    # (page_key, action_line) pairs, not bare strings: the page key decides
+    # whether this line reaches Discord; the line is logged either way.
+    actions: list[tuple[str, str]] = []
     new_state: dict = {}
 
     max_per_run  = int(os.environ.get("ARR_MAX_ACTIONS_PER_RUN",  "10"))
@@ -409,7 +584,8 @@ def cmd_unstick(dry_run: bool) -> int:
                 actions_by_slug[slug] += 1
                 msg = f"  [dry-run] {slug}: would unstick (id={qid}, age={age_hours:.1f}h, mode={mode}) -> {title}"
                 print(msg)
-                actions.append(f"DRY {slug}: {title} ({age_hours:.1f}h, {mode})")
+                actions.append((_page_key(slug, item, mode),
+                                f"DRY {slug}: {title} ({age_hours:.1f}h, {mode})"))
                 # Carry-forward in dry-run too so the second pass doesn't double-count
                 new_state[sk] = prev
                 continue
@@ -420,7 +596,10 @@ def cmd_unstick(dry_run: bool) -> int:
                 actions_by_slug[slug] += 1
                 msg = f"  ✓ {slug}: unstuck id={qid} age={age_hours:.1f}h mode={mode} — {title}"
                 print(msg)
-                actions.append(f"{slug}: {title} ({age_hours:.1f}h, {mode}) → blocklisted+research")
+                actions.append((
+                    _page_key(slug, item, mode),
+                    f"{slug}: {title} ({age_hours:.1f}h, {mode})"
+                    f" → blocklisted+research"))
                 # Don't carry-forward — once removed, this hash is gone.
             else:
                 print(f"  ! {slug}: DELETE id={qid} HTTP {dcode}: {dbody[:200]}")
@@ -433,11 +612,93 @@ def cmd_unstick(dry_run: bool) -> int:
         f"\nstuck items still tracked (carrying forward): {len(new_state)}, "
         f"actions taken: {len(actions)}"
     )
-    if actions or cap_hit:
-        body = "arr-unstick swept:\n" + "\n".join(actions) if actions else "arr-unstick: cap hit with zero successful actions"
-        if cap_hit:
-            body += f"\n⚠ cap hit (run≥{max_per_run} or slug≥{max_per_slug}) — systemic issue likely"
-        _notify(body, level="error" if cap_hit else "warning")
+    # -----------------------------------------------------------------
+    # NOTIFICATION POLICY (see the page-dedup block above for the measured
+    # storm this exists to stop). Three rules, in this order:
+    #   1. LOG EVERYTHING, ALWAYS. Suppression is a notification policy.
+    #   2. Routine sweep lines are deduped per content+mode, 24h.
+    #   3. The cap-hit escalation has its own key and its own clock, so a
+    #      run of entirely-muted items can never mute the systemic signal.
+    # Every step is wrapped: a bug in the suppressor must never take down
+    # the sweep or swallow a page.
+    # -----------------------------------------------------------------
+    item_cooldown = _env_float("ARR_UNSTICK_PAGE_COOLDOWN_S",
+                               ARR_UNSTICK_PAGE_COOLDOWN_S)
+    cap_cooldown = _env_float("ARR_UNSTICK_CAP_PAGE_COOLDOWN_S",
+                              ARR_UNSTICK_CAP_PAGE_COOLDOWN_S)
+
+    # Keep the ledger bounded: content keys are minted per title, so without a
+    # prune the file is an append-only list of everything ever swept. Prune at
+    # the widest cooldown in play so nothing still-live is dropped.
+    if _page_ledger is not None:
+        pruned = _page_ledger.prune(_page_ledger_path(),
+                                    max(item_cooldown, cap_cooldown))
+        if pruned:
+            print(f"  [page-ledger] pruned {pruned} expired stamp(s)")
+
+    keys = [k for k, _ in actions]
+    try:
+        due_keys, muted_keys = _partition_due(keys, item_cooldown)
+    except Exception as exc:
+        # Belt and braces: _partition_due already fails open internally.
+        print(f"  ! page-ledger partition failed, paging everything: {exc}",
+              file=sys.stderr)
+        due_keys, muted_keys = keys, []
+    due_set = set(due_keys)
+    due_lines = [line for k, line in actions if k in due_set]
+
+    # Durable trail first, unconditionally - including on runs that say nothing.
+    _append_unstick_log(
+        [f"{k}\t{line}" for k, line in actions],
+        [f"{k}\tdue" for k in due_keys] + [f"{k}\tmuted" for k in muted_keys],
+    )
+    for k in due_keys:
+        print(f"  [page-ledger] due   {k}")
+    for k in muted_keys:
+        print(f"  [page-ledger] muted {k}  (already paged within "
+              f"{item_cooldown:.0f}s; see {UNSTICK_LOG_FILE})")
+
+    # Cap-hit: own key, own cooldown, per-OUTAGE (a clean run clears it).
+    cap_due = False
+    if cap_hit:
+        if _page_ledger is None:
+            cap_due = True
+        else:
+            cap_due = _page_ledger.page_due(_page_ledger_path(), CAP_PAGE_KEY,
+                                            cap_cooldown)
+    elif actions and _page_ledger is not None:
+        # Actions taken and the cap NOT hit: the systemic condition is over,
+        # so the next cap-hit is news again.
+        _page_ledger.clear_page(_page_ledger_path(), CAP_PAGE_KEY)
+
+    if due_lines:
+        body = "arr-unstick swept:\n" + "\n".join(due_lines)
+        if muted_keys:
+            body += (f"\n(+{len(muted_keys)} ongoing condition(s) already paged "
+                     f"in the last 24h — full detail in "
+                     f"~/.opt/maint/{UNSTICK_LOG_FILE})")
+        if cap_hit and not cap_due:
+            # The escalation is muted but STILL ACTIVE - never let that be
+            # invisible while a routine message is going out anyway.
+            body += (f"\ncap still hit (run≥{max_per_run} or "
+                     f"slug≥{max_per_slug}) — escalation already paged")
+        _notify(body, level="warning")
+
+    if cap_due:
+        # SEPARATE message, level=error, so lib/notify.py adds the operator
+        # @ping and the banner is the first thing read. Never concatenated
+        # onto the sweep body - that is how the 2026-09-17 escalation got
+        # buried among eleven look-alike warnings in the first place.
+        detail = (f"{len(actions)} action(s) completed this run"
+                  if actions else "cap hit with zero successful actions")
+        _notify(
+            CAP_BANNER
+            + f"\n{detail}"
+            + f"\ncap: run≥{max_per_run} or slug≥{max_per_slug}"
+              f" — systemic issue likely"
+            + "\nper-slug: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(actions_by_slug.items())),
+            level="error")
     return 0
 
 
