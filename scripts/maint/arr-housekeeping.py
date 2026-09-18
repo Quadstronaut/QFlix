@@ -131,6 +131,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import datetime
 import json
 import os
@@ -238,9 +239,17 @@ except Exception as _regrab_exc:  # pragma: no cover
 
 
 def _ledger_path() -> Path:
-    """Resolved at CALL time, not import time, so STATE_DIR monkeypatching in
-    tests redirects the ledger with it. A test that wrote to the operator's
-    real ~/.opt/maint would be a bug in the test harness, not a detail."""
+    """Resolved at CALL time against the module-level STATE_DIR.
+
+    STATE_DIR is bound at import, which is correct for this script: in
+    production the env is set before the process starts, and the unit tests
+    redirect the ledger by monkeypatching STATE_DIR itself. Reading the env
+    var here instead would silently ignore that patch.
+
+    The import-time hazard that DID bite (2026-09-17: fixture rows written
+    into the developer's real ~/.opt/maint) lives in lib/regrab_ledger.py,
+    whose module-level default path was captured before conftest's autouse
+    fixture could set MANITOBA_STATE_DIR. That module resolves lazily now."""
     return STATE_DIR / "arr-regrab-ledger.json"
 
 
@@ -647,6 +656,17 @@ def _park_cleared(slug: str, ver: str, key_api: str,
 
 
 def cmd_unstick(dry_run: bool) -> int:
+    """Thin wrapper owning the lock scope; the sweep itself is below.
+
+    The ExitStack lives here so the ledger lock is released on EVERY exit path
+    out of the sweep -- early return on contention, an exception mid-sweep, or
+    the normal end -- without threading a try/finally through a 200-line body.
+    """
+    with contextlib.ExitStack() as stack:
+        return _cmd_unstick_locked(dry_run, stack)
+
+
+def _cmd_unstick_locked(dry_run: bool, _lock_stack: "contextlib.ExitStack") -> int:
     print(f"--- unstick-queue sweep ({'DRY-RUN' if dry_run else 'LIVE'}) ---")
     state = _load_state()
     now = time.time()
@@ -665,6 +685,20 @@ def cmd_unstick(dry_run: bool) -> int:
     ledger: dict = {}
     guard_on = False
     if _regrab is not None:
+        # The lock spans read -> mutate -> write, which is the whole sweep. Two
+        # overlapping sweeps (hourly timer + an operator running --unstick by
+        # hand) otherwise both read one snapshot and the second write wins
+        # outright: the loser's blocklist adds vanish and a cleared `notified`
+        # flag re-pages a park that was already announced. Locking only the
+        # write cannot close that -- the race lives in the minutes-wide gap.
+        # Contention means we SKIP, not wait: the losing sweep would act on a
+        # stale snapshot and issue duplicate DELETE+blocklist calls. The next
+        # hourly run picks the work up.
+        _held = _lock_stack.enter_context(_regrab.run_lock())
+        if not _held:
+            print("another --unstick sweep holds the ledger lock — "
+                  "skipping this sweep (the next hourly run retries)")
+            return 0
         try:
             ledger = _regrab.read(_ledger_path())
             guard_on = True
