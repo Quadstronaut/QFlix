@@ -1,0 +1,78 @@
+{
+  "_comment": [
+    "The re-grab loop, as the queue shows it. All titles INVENTED (INV-15).",
+    "Rows 1+2 are ONE season pack behind ONE downloadId covering TWO episodes",
+    "        - they must collapse to a single ledger key (sonarr|1234|5678,5679),",
+    "          otherwise a pack would need MAX_ADDS re-grabs per episode.",
+    "Row 3   is a different episode of the SAME series behind a different hash",
+    "        - INV-10: its adds must never count toward the pack's.",
+    "Row 4   is a Radarr row (movieId keyed).",
+    "Row 5   is the UNKEYABLE case: includeUnknownSeriesItems=true gives a row",
+    "        with no seriesId and no episodeId. The guard must decline to act",
+    "        on it and the sweep must behave exactly as it did before (INV-7)."
+  ],
+  "records": [
+    {
+      "id": 822001,
+      "seriesId": 1234,
+      "episodeId": 5678,
+      "title": "Invented.Series.Gamma.S01.COMPLETE.1080p.WEB-DL",
+      "status": "warning",
+      "trackedDownloadStatus": "warning",
+      "trackedDownloadState": "downloading",
+      "errorMessage": "The download is stalled with no connections",
+      "downloadId": "FEED0001FEED0001FEED0001FEED0001FEED0001",
+      "size": 4000000000,
+      "sizeleft": 4000000000
+    },
+    {
+      "id": 822002,
+      "seriesId": 1234,
+      "episodeId": 5679,
+      "title": "Invented.Series.Gamma.S01.COMPLETE.1080p.WEB-DL",
+      "status": "warning",
+      "trackedDownloadStatus": "warning",
+      "trackedDownloadState": "downloading",
+      "errorMessage": "The download is stalled with no connections",
+      "downloadId": "FEED0001FEED0001FEED0001FEED0001FEED0001",
+      "size": 4000000000,
+      "sizeleft": 4000000000
+    },
+    {
+      "id": 822003,
+      "seriesId": 1234,
+      "episodeId": 5680,
+      "title": "Invented.Series.Gamma.S01E03.1080p.WEB-DL",
+      "status": "warning",
+      "trackedDownloadStatus": "warning",
+      "trackedDownloadState": "downloading",
+      "errorMessage": "The download is stalled with no connections",
+      "downloadId": "FEED0002FEED0002FEED0002FEED0002FEED0002",
+      "size": 1000000000,
+      "sizeleft": 1000000000
+    },
+    {
+      "id": 822004,
+      "movieId": 441,
+      "title": "An Invented Motion Picture (2019) 1080p WEB-DL",
+      "status": "warning",
+      "trackedDownloadStatus": "warning",
+      "trackedDownloadState": "downloading",
+      "errorMessage": "The download is stalled with no connections",
+      "downloadId": "FEED0003FEED0003FEED0003FEED0003FEED0003",
+      "size": 8000000000,
+      "sizeleft": 8000000000
+    },
+    {
+      "id": 822005,
+      "title": "Unknown.Release.From.An.Unmapped.Folder",
+      "status": "warning",
+      "trackedDownloadStatus": "warning",
+      "trackedDownloadState": "downloading",
+      "errorMessage": "The download is stalled with no connections",
+      "downloadId": "FEED0004FEED0004FEED0004FEED0004FEED0004",
+      "size": 500000000,
+      "sizeleft": 500000000
+    }
+  ]
+}
