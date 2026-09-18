@@ -138,12 +138,66 @@ def _state_dir() -> Path:
 _NOTIFY_FAIL_LOG_MAX_LINES = 5000
 
 
+def _flatten_field(value: object) -> str:
+    """Make a value safe for a TAB-DELIMITED, ONE-LINE-PER-RECORD log.
+
+    CWE-117. Both audit logs here are hand-formatted as
+    ``ts <TAB> level <TAB> outcome <TAB> message``, and much of what reaches
+    ``message`` is UNTRUSTED: *arr release titles are chosen by whoever
+    uploaded the release to a public indexer and are authenticated nowhere.
+    A title carrying a newline plus its own tab-separated fields writes EXTRA
+    physical lines indistinguishable from genuine records -- a forged
+    "critical / sent" row for a page that never fired, in the one file an
+    operator would use to reconstruct what the automation actually did.
+    Demonstrated against this exact code by the Stage-2 security lens on
+    2026-09-17, reachable through the newly destructive --unstick park path.
+
+    Newlines and tabs become their visible escapes rather than being dropped,
+    so an injection attempt stays legible in the log instead of silently
+    losing the attacker's text. Other C0/C1 control characters (which can
+    reposition a terminal cursor or truncate a line in a pager) become
+    U+FFFD. The result is always exactly one physical line.
+    """
+    out = []
+    for ch in str(value):
+        if ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F:
+            out.append("�")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _clip_flat(text: str, limit: int) -> str:
+    """Truncate flattened text without splitting an escape in half.
+
+    Escaping turns one character into two, so a plain ``[:limit]`` can cut
+    ``\\n`` between the backslash and the ``n`` and leave a dangling backslash
+    that a log parser may read as escaping the delimiter that follows. Drop a
+    trailing ODD run of backslashes; an even run is intact escaped backslashes
+    and is left alone.
+    """
+    clipped = text[:limit]
+    trailing = len(clipped) - len(clipped.rstrip("\\"))
+    if trailing % 2:
+        clipped = clipped[:-1]
+    return clipped
+
+
 def _append_fail_log(level: str, message: str, error: str) -> None:
     state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
     log_path = state_dir / "notify-fail.log"
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    line = f"{now}\t{level}\t{message}\t{error}\n"
+    # Every field flattened: the delimiter and the record separator must come
+    # from HERE, never from the payload.
+    line = (f"{_flatten_field(now)}\t{_flatten_field(level)}\t"
+            f"{_flatten_field(message)}\t{_flatten_field(error)}\n")
     try:
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(line)
@@ -184,7 +238,11 @@ def _append_audit_log(level: str, message: str, outcome: str) -> None:
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         # Single tab-delimited line; message truncated so an alert flood can't
         # bloat any one row.
-        line = f"{now}\t{level}\t{outcome}\t{message[:300]}\n"
+        # Flatten every field, then truncate, so an escape sequence added by
+        # the flattener can never be cut in half by the length cap.
+        line = (f"{_flatten_field(now)}\t{_flatten_field(level)}\t"
+                f"{_flatten_field(outcome)}\t"
+                f"{_clip_flat(_flatten_field(message), 300)}\n")
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(line)
         # Cheap, imprecise rotation — same approach as _append_fail_log.
