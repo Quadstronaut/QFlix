@@ -23,6 +23,17 @@ from typing import Optional
 import requests
 
 # ---------------------------------------------------------------------------
+# Canary exit-code contract (2026-09-17)
+# ---------------------------------------------------------------------------
+# A canary SCRIPT exits 0 (pass), CANARY_RC_FINDING (it ran, its assertion
+# failed), or any other non-zero (it could not run / could not read the truth).
+# The distinction is "do I trust my own measurement", not severity: both
+# non-pass classes push status=down to Kuma with the same msg. What changes is
+# what systemd records (ExecMainStatus) and what REA reads — see
+# _cmd_canary_push and scripts/canaries/deploy-drift.sh.
+CANARY_RC_FINDING = 20
+
+# ---------------------------------------------------------------------------
 # Manifest path resolution
 # ---------------------------------------------------------------------------
 
@@ -522,9 +533,20 @@ def _cmd_canary_push(args: argparse.Namespace, manifest) -> int:
     """`manitoba-maint canary push <name>` — run canary script and push to Kuma.
 
     Exit codes:
-      0 — canary passed and push succeeded (or no token → still 0)
-      1 — unknown canary name or missing tokens config
-      2 — canary script failed (status=down pushed to Kuma)
+      0  — canary passed and push succeeded (or no token → still 0)
+      1  — unknown canary name or missing tokens config
+      20 — FINDING: the canary ran and its assertion failed (status=down)
+      2  — HARNESS ERROR: the canary could not run (status=down)
+
+    WHY 20 EXISTS (2026-09-17). Every non-zero script rc used to collapse to
+    exit 2 — including 127/bash-not-found — so systemd recorded the identical
+    `Result=exit-code` whether the canary FOUND something or could not run at
+    all. REA's journal_errors collector keeps `Failed to start <unit>` lines
+    whose unit is still failed, so a by-design drift red paged the operator as
+    a critical service outage. The source now says which it is, in two places:
+    this exit code, and one `QFLIX_CANARY_VERDICT …` line on stderr that REA
+    parses. Kuma semantics are unchanged — both verdicts push status=down with
+    the same msg, and a red stays red.
     """
     try:
         canary = manifest.canary(args.name)
@@ -609,7 +631,14 @@ def _cmd_canary_push(args: argparse.Namespace, manifest) -> int:
         status = "down"
         # Prefer stderr for failure detail (canaries write FAIL: to stderr)
         msg = (result.stderr or result.stdout or "FAIL").strip()[:200]
-        exit_code = 2
+        # rc 20 is the canary exit contract's FINDING code: the script RAN and
+        # its assertion failed. Anything else non-zero (including 127 /
+        # bash-not-found, which is synthesised above) means the canary could
+        # not run or could not read the truth it grades — a harness error.
+        if result.returncode == CANARY_RC_FINDING:
+            verdict, exit_code = "finding", CANARY_RC_FINDING
+        else:
+            verdict, exit_code = "harness-error", 2
         # Mirror the failure into journald. capture_output swallows the script's
         # own stdout/stderr, so until 2026-08-20 a red canary left only
         # "status=2/INVALIDARGUMENT" in the journal and the WHY lived solely in
@@ -617,6 +646,21 @@ def _cmd_canary_push(args: argparse.Namespace, manifest) -> int:
         # journal could not say what drifted).
         print(f"canary '{args.name}' FAILED (rc={result.returncode}): {msg}",
               file=sys.stderr)
+        # …and one MACHINE-parseable line next to it, stable prefix, exactly
+        # one per non-pass run. This is what REA's journal_errors collector
+        # joins against the "Failed to start <unit>" line to tell "a monitor is
+        # red and owns this" from "a service is broken". Newlines are flattened
+        # so the contract "one line" holds even for a multi-line canary msg;
+        # the Kuma msg itself is left byte-identical.
+        print(
+            "QFLIX_CANARY_VERDICT"
+            f" name={args.name}"
+            f" unit=manitoba-maint-canary-{args.name}.service"
+            f" verdict={verdict}"
+            f" rc={result.returncode}"
+            f" msg={' '.join(msg.split())}",
+            file=sys.stderr,
+        )
 
     # Load tokens and push to Kuma
     try:

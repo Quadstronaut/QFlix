@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """scripts/mcp/logs.py — tail named app logs in structured form.
 
-Modes: --emit-json | --cron
+Modes: --emit-json | --cron | --self-test | --verify-routes | --list-apps
 Args:  --app <slug>|all  --since <duration>  --tail <n>
+
+--verify-routes asserts every file-kind route resolves to a file that exists (or
+is declared in EXPECTED_ABSENT with a reason) and exits 1 naming the misses. It
+is the workstation half of the guard; the box half is collect_for's
+"route-missing:" error, which the hourly collector already grades as a
+source_error red. A mistyped route must never read as an app going dark.
 
 Routes per app class:
   - UCC apps with ~/.apps/<slug>/logs/  → tail canonical log file
@@ -36,7 +42,13 @@ _FILE_LOGS = {
     "radarr2":         str(HOME / ".apps/radarr2/logs/radarr.txt"),
     "prowlarr":        str(HOME / ".apps/prowlarr/logs/prowlarr.txt"),
     "bazarr":          str(HOME / ".apps/bazarr/log/bazarr.log"),
-    "bazarr2":         str(HOME / ".apps/bazarr2/logs/bazarr2.log"),
+    # bazarr2 is the SECOND, non-container instance and its layout genuinely
+    # differs from bazarr-1 (see the bazarr-two-instances-differ note): db at
+    # ~/.apps/bazarr2/data/db/, log at ~/.apps/bazarr2/data/log/bazarr.log --
+    # NOT .../logs/bazarr2.log, which never existed. The mistyped route made
+    # the collector report "bazarr2 590h>26h dark" while the real file was two
+    # minutes old. Verified on the box 2026-09-17 (mtime 20:43:59).
+    "bazarr2":         str(HOME / ".apps/bazarr2/data/log/bazarr.log"),
     "tautulli":        str(HOME / ".apps/tautulli/logs/tautulli.log"),
     "seerr":           str(HOME / ".apps/seerr/logs/seerr.log"),
     "kometa":          str(HOME / ".apps/kometa/config/logs/meta.log"),
@@ -85,6 +97,61 @@ _SYSTEMD_LOGS = {
     "maint-webhook": "manitoba-maint-webhook.service",
     "maint-window":  "manitoba-maint-window.service",
 }
+
+# slug -> reason. A file route whose target is LEGITIMATELY absent on the box.
+#
+# WHY THIS TABLE IS A DECLARATION AND NOT A CONVENIENCE. Before 2026-09-17 a
+# mistyped path and a silent app were byte-identical downstream: _tail_file
+# returned [] for a nonexistent path and _file_is_dormant returned False on
+# OSError, so collect_for handed the coverage ledger "zero lines" either way and
+# the ledger graded it `dark` -- a fabricated darkness that reads as a REAL
+# observation about a RUNNING app. collect_for now emits error="route-missing:"
+# for an undeclared absent path (which grades as source_error and REDS), and
+# this table is the only way to opt a route back into the dark path.
+#
+# Rules, deliberately strict because an exemption is how a real break hides:
+#   * the reason is MANDATORY and must be non-empty (test-enforced);
+#   * it must name WHY the file is absent (app not installed, rotates to a new
+#     name each day, writes only on first use, ...);
+#   * it may only be added after probing the LIVE path -- never to silence a
+#     route you did not verify;
+#   * it never expires on its own. An auto-expiring exemption is a hiding place
+#     (same law as deploy-drift.sh's is_generated and qflix-collect's
+#     EXPECTED_DARK).
+#
+# EMPTY on purpose as of 2026-09-17: every file route above was verified to
+# exist on the box, so there is nothing legitimately absent to declare.
+EXPECTED_ABSENT: dict[str, str] = {}
+
+
+def file_routes() -> dict[str, str]:
+    """{slug: absolute path} for every file-kind route (_FILE_LOGS plus the
+    resolved _GLOB_LOGS). A COPY -- mutating the result must never mutate the
+    routing tables, because verify_routes() and the tests both hand it around."""
+    out = dict(_FILE_LOGS)
+    for slug, pattern in _GLOB_LOGS.items():
+        out[slug] = _resolve_glob(pattern) or str(HOME / pattern)
+    return out
+
+
+def verify_routes(*, exists=os.path.exists) -> list[dict]:
+    """[{app, path, status}] with status in {'ok','missing','expected-absent'}.
+
+    `exists` is injected so the unit test can enumerate the real routing table
+    against a synthetic filesystem -- the routes are absolute paths under the
+    seedbox $HOME and will never exist on the workstation, so a test that
+    touched the real filesystem could only ever be vacuous or red."""
+    rows = []
+    for app, path in sorted(file_routes().items()):
+        if exists(path):
+            status = "ok"
+        elif app in EXPECTED_ABSENT:
+            status = "expected-absent"
+        else:
+            status = "missing"
+        rows.append({"app": app, "path": path, "status": status})
+    return rows
+
 
 # Order matters: most-specific patterns first. Each pattern must define named
 # groups `ts` (optional), `lvl` (optional), and `msg` (rest of line).
@@ -317,6 +384,20 @@ def _journalctl(unit: str, since: str, n: int) -> list[str]:
 def collect_for(app: str, *, since: str, tail: int) -> dict:
     plan = route(app)
     if plan["kind"] == "file":
+        # ROUTE INTEGRITY FIRST (2026-09-17). "the path does not exist" and "the
+        # app is silent" used to be byte-identical downstream, so a typo in
+        # _FILE_LOGS rendered as a confident `dark` verdict about a running app
+        # (bazarr2: "590h>26h" while its real log was two minutes old). A route
+        # that does not resolve is an OBSERVER fault, not an observation, and it
+        # is reported as one. `route-missing:` is a STABLE CONTRACT TOKEN:
+        # qflix-collect.classify_log_coverage grades any `error` as source_error,
+        # which already reds the hourly heartbeat -- so this rides an existing
+        # rail with no new monitor, timer or canary, and a mistyped route can
+        # never again be graded as darkness. A slug DECLARED in EXPECTED_ABSENT
+        # keeps today's behaviour (no error, zero lines -> the dark path).
+        if not os.path.exists(plan["path"]) and app not in EXPECTED_ABSENT:
+            return {"app": app, "source": plan["path"],
+                    "error": "route-missing:" + plan["path"], "lines": []}
         # Honour --since here so the file branch answers the same question the
         # journalctl branch does. Without it a dormant append-only log reads as
         # live forever. See _file_is_dormant.
@@ -445,20 +526,52 @@ def _self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    g = ap.add_mutually_exclusive_group(required=True)
+    # required=False plus the explicit check below: --verify-routes and
+    # --list-apps are MODES that take --emit-json as an output MODIFIER (the
+    # --list-apps precedent), so they cannot sit inside the exclusive group,
+    # but exactly one mode must still be named. Mutual exclusion against
+    # --cron / --self-test is enforced by hand, just below.
+    g = ap.add_mutually_exclusive_group(required=False)
     g.add_argument("--emit-json", action="store_true")
     g.add_argument("--cron", action="store_true")
     g.add_argument("--self-test", action="store_true",
                    help="run inline regex coverage tests and exit")
     ap.add_argument("--list-apps", action="store_true",
                     help="print routing tables and exit")
+    ap.add_argument("--verify-routes", action="store_true",
+                    help="assert every file route exists (or is declared in "
+                         "EXPECTED_ABSENT); exit 1 listing the misses")
     ap.add_argument("--app", help="slug or 'all'")
     ap.add_argument("--since", default="24h")
     ap.add_argument("--tail", type=int, default=5000)
     args = ap.parse_args()
 
+    if args.verify_routes and (args.cron or args.self_test):
+        ap.error("--verify-routes is mutually exclusive with --cron/--self-test")
+    if not (args.emit_json or args.cron or args.self_test
+            or args.list_apps or args.verify_routes):
+        ap.error("one of --emit-json / --cron / --self-test / --verify-routes "
+                 "/ --list-apps is required")
+
     if args.self_test:
         return _self_test()
+
+    # --verify-routes is the WORKSTATION-side half of the guard and deliberately
+    # not the only half: the box-side assertion is the hourly collector itself,
+    # which now grades a `route-missing:` entry as source_error and reds the
+    # heartbeat. No new timer, no new monitor (YAGNI fence, spec 2026-09-17).
+    if args.verify_routes:
+        rows = verify_routes()
+        missing = [r for r in rows if r["status"] == "missing"]
+        if args.emit_json:
+            json.dump(rows, sys.stdout, default=str)
+            sys.stdout.write("\n")
+        else:
+            for r in rows:
+                print("{status:15s} {app:14s} {path}".format(**r))
+        for r in missing:
+            print("route-missing={app}:{path}".format(**r), file=sys.stderr)
+        return 1 if missing else 0
 
     if args.list_apps:
         out = {
