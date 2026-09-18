@@ -85,6 +85,17 @@ proxy, so this source reads dark by design and will keep doing so. Do not "fix"
 it by re-pointing the route, and do not exempt it either -- `dark` never reds,
 and a truthful footnote is worth more than a silent exemption.
 
+AMENDED 2026-09-17: both bans above still stand, and neither was used. What was
+wrong is narrower and was not visible in 2026-08-24's framing: the footnote was
+being re-stated in the `logs-dark=` fragment of EVERY hourly snapshot, forever.
+A permanently-true, fully-understood condition emitted on a repeating rail is
+not a footnote, it is wallpaper, and wallpaper is what a REAL dark app would
+have hidden behind. nginx is therefore DECLARED in EXPECTED_DARK (below, with
+its evidence) and its verdict moves to report['dark_expected']: still measured,
+still graded, still serialised unabridged into last-collect.json, still fully
+eligible for roster-drop and source-error -- just no longer occupying the
+one-line Kuma msg with a fact that cannot change.
+
 So listmonk was healthy. That is exactly what makes it dangerous: the
 collector rendered "healthy and silent" and "gone" as the same thing --
 byte-identical absence. A renamed systemd unit, a rotated-away log path,
@@ -233,6 +244,35 @@ LOG_DARK_GAP_MULT = _env_int("QFLIX_COLLECT_LOG_DARK_GAP_MULT", 2)
 # thing we sampled was one `--since 1h` window.
 LOG_DARK_MIN_CYCLES = _env_int("QFLIX_COLLECT_LOG_DARK_MIN_CYCLES", 3)
 LOG_COVERAGE_FILE = "log-coverage.json"
+
+# slug -> reason. Sources that are dark BY DESIGN and KNOWN-CORRECT.
+#
+# WHY THIS IS NOT AN EXEMPTION. The docstring above forbids, by name, both of
+# the usual ways out for nginx: re-pointing the route (it is not broken) and
+# naming it in QFLIX_COLLECT_LOG_ROSTER_IGNORE (that DELETES it from the ledger,
+# so a genuine roster drop would stop being detected). Both are still forbidden.
+# What was wrong is narrower: a permanently-true, already-understood, already-
+# written-down condition was being re-emitted in the `logs-dark=` fragment of
+# every hourly snapshot, forever. Permanent expected output is not a signal, it
+# is wallpaper -- and wallpaper is what a real dark app would have been hidden
+# behind. So the source stays FULLY GRADED (roster-drop and source-error still
+# fire for it, and it is still measured and still reported) -- only the Kuma
+# msg fragment changes, and the verdict moves to `dark_expected`, which lands
+# unabridged in last-collect.json.
+#
+# The reason is MANDATORY, must be non-empty, and must cite the EVIDENCE. It
+# never expires on its own -- an auto-expiring exemption is a hiding place.
+EXPECTED_DARK: dict[str, str] = {
+    "nginx": (
+        "Dark by design, measured on the box 2026-08-24: "
+        "~/.apps/nginx/logs/error.log is 0 bytes and access.log has been 0 "
+        "bytes since 2026-05-08 (access logging is off on this panel-managed "
+        "slot). The route is PROVEN good -- error.log.1 holds 593 B from the "
+        "2026-08-20 rotation, so this is the file nginx writes and rotation "
+        "works. An empty error log is the healthy state for a reverse proxy, "
+        "so this source will read dark for as long as nginx has no errors."
+    ),
+}
 
 
 # --- Logging (systemd routes stdout/stderr to journald) -------------------
@@ -432,8 +472,20 @@ def classify_log_coverage(ledger: dict, payload: dict | None, now: datetime,
 
     Returns (new_ledger, report). report keys:
       roster_drop  [app]        -- ledger app absent from the payload (pages)
-      source_error ["app:err"]  -- payload entry carries an error (pages)
+      source_error ["app:err"]  -- payload entry carries an error (pages).
+                                   logs.py's "route-missing:<path>" lands here,
+                                   which is how a mistyped route can no longer
+                                   masquerade as darkness.
       dark         ["app:Nh>Th"] -- silent past its own tolerance (reported)
+      dark_expected ["app:Nh>Th"] -- same, for an EXPECTED_DARK member. Split out
+                                   of `dark` so permanent expected output stops
+                                   riding the Kuma msg. LOSSLESS: a source that
+                                   trips the threshold lands in exactly one of
+                                   dark / dark_expected, never both, never
+                                   neither.
+      expected_dark_spoke [app] -- an EXPECTED_DARK member that DID produce
+                                   lines: the declaration above is now falsified
+                                   and the reason needs re-reading.
       live/quiet   int          -- apps with / without lines this cycle
       skipped      str          -- set when the payload carried no evidence
     """
@@ -446,6 +498,7 @@ def classify_log_coverage(ledger: dict, payload: dict | None, now: datetime,
     apps = {k: dict(v) for k, v in (raw_apps or {}).items()
             if isinstance(v, dict)} if isinstance(raw_apps, dict) else {}
     report: dict = {"roster_drop": [], "source_error": [], "dark": [],
+                    "dark_expected": [], "expected_dark_spoke": [],
                     "live": 0, "quiet": 0}
 
     if payload is None:
@@ -488,6 +541,20 @@ def classify_log_coverage(ledger: dict, payload: dict | None, now: datetime,
         rec["last_seen_at"] = iso(now)
         if entry.get("error"):
             report["source_error"].append(app + ":" + str(entry["error"])[:40])
+            # AN ERRORED SOURCE IS NOT EVIDENCE OF SILENCE. Until 2026-09-17 an
+            # entry carrying an error ALSO fell through to the quiet/dark
+            # grading below, so one app could be reported as both source_error
+            # AND dark from the same cycle -- and the dark half is a claim we
+            # have no basis for: the collector did not observe the app, it
+            # failed to observe it. That double-grading is what let logs.py's
+            # new "route-missing:" entries still surface as darkness. Record the
+            # error, leave last_seen_at stamped (the app IS still in the routing
+            # table, which is all roster_drop claims to know), and grade nothing
+            # else. quiet_cycles is deliberately NOT incremented: a cycle we
+            # could not sample is not an observed quiet cycle, and inflating it
+            # would desensitise the app's own dark tolerance off an OBSERVER
+            # fault -- the same reasoning as the quiet_cycles bound above.
+            continue
         count = len(entry.get("lines") or [])
         if count:
             # Widen this app's tolerance by the gap it just CLOSED. Only a
@@ -517,6 +584,13 @@ def classify_log_coverage(ledger: dict, payload: dict | None, now: datetime,
             rec["last_line_count"] = count
             rec["quiet_cycles"] = 0
             report["live"] += 1
+            if app in EXPECTED_DARK:
+                # A declared-dark source SPOKE. The declaration is a factual
+                # claim about the box ("nginx has no errors and access logging
+                # is off"), and it has just been falsified. That is the one
+                # event that can make an EXPECTED_DARK entry rot, so it is
+                # surfaced rather than silently absorbed.
+                report["expected_dark_spoke"].append(app)
             continue
         rec["quiet_cycles"] = int(rec.get("quiet_cycles") or 0) + 1
         report["quiet"] += 1
@@ -527,7 +601,14 @@ def classify_log_coverage(ledger: dict, payload: dict | None, now: datetime,
         tolerance = max(LOG_DARK_MIN_HOURS,
                         LOG_DARK_GAP_MULT * int(rec.get("max_quiet_gap_h") or 0))
         if silent_h >= tolerance and int(rec["quiet_cycles"]) >= LOG_DARK_MIN_CYCLES:
-            report["dark"].append("{}:{}h>{}h".format(app, int(silent_h), tolerance))
+            frag = "{}:{}h>{}h".format(app, int(silent_h), tolerance)
+            # Exactly one bucket, same fragment shape in both. The verdict is
+            # still MADE for an EXPECTED_DARK source (it is measured, graded and
+            # serialised); only its destination changes.
+            if app in EXPECTED_DARK:
+                report["dark_expected"].append(frag)
+            else:
+                report["dark"].append(frag)
 
     for app in sorted(apps):
         if app in ignore:
@@ -558,6 +639,7 @@ def update_log_coverage(payload: dict | None) -> dict:
     except Exception as exc:
         warn("log-coverage grading failed (non-fatal): " + str(exc))
         return {"roster_drop": [], "source_error": [], "dark": [],
+                "dark_expected": [], "expected_dark_spoke": [],
                 "live": 0, "quiet": 0, "skipped": "error:" + str(exc)[:80]}
 
 
@@ -569,6 +651,11 @@ def format_log_coverage(report: dict) -> str:
         parts.append("logs-roster-drop=" + ",".join(report["roster_drop"]))
     if report.get("source_error"):
         parts.append("logs-source-error=" + ",".join(report["source_error"]))
+    # UNEXPECTED dark only. `dark_expected` NEVER enters this fragment: nginx
+    # has been correctly and permanently dark since 2026-08-24, and re-stating
+    # a known-correct fact in every hourly message is how the fragment stopped
+    # being read. The unabridged dark_expected list still rides
+    # last-collect.json via the report serialisation, so nothing is lost.
     dark = report.get("dark") or []
     if dark:
         # _push_kuma slices msg to 200 chars. The paging classes are emitted
@@ -578,6 +665,23 @@ def format_log_coverage(report: dict) -> str:
         head = ",".join(dark[:3])
         parts.append("logs-dark=" + head +
                      ("+{} more".format(len(dark) - 3) if len(dark) > 3 else ""))
+    # DECISION (spec 4.2 leaves this open; this is the choice and the reason).
+    # expected_dark_spoke DOES enter the Kuma msg, in LAST position.
+    #   * Why include: EXPECTED_DARK is a falsifiable claim about the box. A
+    #     spoke is the only evidence that can falsify it, and an exemption whose
+    #     stated reason has quietly stopped being true is precisely the hiding
+    #     place this whole change exists to remove. It is also self-clearing --
+    #     it fires only while the source is talking, so it cannot become the
+    #     permanent wallpaper that `logs-dark=nginx` was.
+    #   * Why it is safe: it is appended AFTER the paging fragments and after
+    #     `dark`, so it can only ever be the thing the 130-char cap truncates,
+    #     never the thing that truncates a page. It does NOT feed cov_broken, so
+    #     it annotates the heartbeat and never reds it.
+    # Pinned by tests: test_expected_dark_spoke_enters_the_kuma_msg and
+    # test_spoke_fragment_never_displaces_a_paging_fragment.
+    spoke = report.get("expected_dark_spoke") or []
+    if spoke:
+        parts.append("logs-expected-dark-spoke=" + ",".join(spoke))
     if report.get("skipped"):
         parts.append("logs-ungraded=" + str(report["skipped"]))
     return "; ".join(parts)[:130]
