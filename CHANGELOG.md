@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-09-17 - The re-grab loop, and the second destructive actor nobody was counting
+
+**200 blocklist adds across 54 episodes in seven days. Worst single episode:
+13. Top eight episodes: 81 of the 200.** `arr-housekeeping.py --unstick` ran
+hourly, found a stuck release, deleted and blocklisted it, and the *arr grabbed
+the next one - which stalled the same way. The sweep could not see the loop
+because its only memory was keyed by the **qBittorrent download hash**, and
+every re-grab is a new hash. It was, by construction, incapable of noticing it
+had done this before.
+
+**`scripts/maint/lib/regrab_ledger.py`** is the missing memory, keyed on the
+thing that does *not* change across re-grabs: `(instance, series, episodes)` /
+`(instance, movie)`. At **3 blocklist adds in 24 h** (both env knobs) the item
+is **PARKED**.
+
+**A park is an UNMONITOR WRITE, not a query parameter.** The obvious fix -
+`skipRedownload=true` on the DELETE - was *measured not to work on this box*:
+`autoRedownloadFailed=true` is set on all four instances, and the 2026-08-20
+remediation recorded a replacement grab **sixteen seconds** after the failure
+event, with `skipRedownload=true` sent. So the park is `PUT /episode/monitor`
+or `PUT /movie/editor` with `monitored:false`, issued **before** the DELETE and
+**gated on its return code** - an unmonitored episode cannot be auto-searched
+by `autoRedownloadFailed`, by RSS, or by `MissingEpisodeSearch`. A failed
+unmonitor means no delete and no blocklist at all that sweep. Parks clear
+themselves when the episode/movie has a file or is monitored again, and each
+one pages **exactly once**.
+
+**New stall mode `poison-executable-payload`**, a *strict subset* of
+`completed-not-imported` with a **0 h** grace: a `statusMessages` line naming
+both an executable-file rejection and an executable extension, both **in the
+same string**. The release title is not an input, so a release literally named
+`*.exe.1080p` cannot match. The importer has already made a terminal decision;
+six more hours cannot change it. The notification names the mode, so the
+operator reads *why*.
+
+**And the canary that was named after the action was watching one actor.**
+`unstick-rate.sh` counted `qflix-collect.py -> unstick.py` via its events
+JSONL. `arr-housekeeping.py --unstick` makes the **identical** destructive call,
+**hourly**, up to ten per run, and writes no events file - completely invisible
+to it. Closed with an **additive sub-check on the same script, the same timer
+and the same "Canary Unstick Rate" monitor**: no new timer, no new canary, no
+new monitor, no `manifest/jobs.yaml` change. It counts the **parked
+population** and fails at 10; it is **deliberately not blended** into the
+existing WARN=3/FAIL=5 daily counters, which were calibrated for one
+daily-capped actor and would red permanently - and a permanently red monitor
+gets muted, which is worse than the blind spot. An **absent ledger passes**
+(cold start is the normal state, possibly for months); a ledger that **exists
+and will not parse** exits 2.
+
+The ledger **fails open** on every path - missing, empty, truncated, non-JSON,
+non-dict, unwritable state dir - each proven by its own test. A corrupt ledger
+degrades this build to exactly the pre-guard sweep; the only thing it can do is
+decline to park. `--dry-run` now issues zero PUTs, zero DELETEs, **zero Discord
+posts** (it used to post the "DRY ..." summary to the live channel) and never
+writes the ledger.
+
 ## 2026-09-15 - Per-file retention, English-default audio, and the pings that were not alerts
 
 Three deliverables, each built, adversarially reviewed for three rounds (every
