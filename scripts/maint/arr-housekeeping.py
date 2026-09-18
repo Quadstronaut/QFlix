@@ -71,6 +71,20 @@ SECRETS_DIR = Path(os.environ.get("MANITOBA_SECRETS", str(Path.home() / "secrets
 STATE_DIR = Path(os.environ.get("MANITOBA_STATE_DIR", str(Path.home() / ".opt" / "maint")))
 STUCK_STATE_FILE = STATE_DIR / "stuck-queue-state.json"
 
+# ---------------------------------------------------------------------------
+# Cross-run page dedup (council round 2, 2026-09-17). The re-grab/re-stick
+# loop re-titles the SAME stuck item on nearly every attempt (measured: one
+# Sonarr episode under up to eleven distinct release titles), so a title-hash
+# dedup key mutates on every re-grab and reproduces the exact storm this
+# closes. _page_key below uses the stable seriesId/movieId identity instead.
+# UNSTICK_LOG makes manifest/jobs.yaml's existing (false, until now) claim
+# that this job "Writes ~/.opt/maint/arr-unstick.log" true.
+# ---------------------------------------------------------------------------
+UNSTICK_PAGE_LEDGER = STATE_DIR / "arr-unstick-pages.json"
+UNSTICK_LOG = STATE_DIR / "arr-unstick.log"
+UNSTICK_PAGE_COOLDOWN_S = float(os.environ.get("ARR_UNSTICK_PAGE_COOLDOWN_S", str(24 * 3600)))
+UNSTICK_PAGE_LABEL = "arr-housekeeping: unstick page cooldown"
+
 STUCK_IMPORT_STATES = {"importPending", "importBlocked", "importFailed"}
 
 # Modes returned by _classify_stuck. Each mode has its own grace-period
@@ -180,6 +194,70 @@ def _notify(msg: str, level: str = "info") -> None:
         notify(msg, level)
     except Exception as exc:
         print(f"notify failed (non-fatal): {exc}", file=sys.stderr)
+
+
+def _load_page_dedup():
+    """Lazy import of lib.page_dedup, mirroring _notify()'s sys.path-insert
+    pattern so this works from a repo checkout (scripts/maint/lib) and a
+    seedbox deploy (~/scripts/maint/lib) alike. Raises on failure — callers
+    decide how to fail open; a deploy-time import error must degrade to
+    noise, never to silence and never to a crashed sweep."""
+    here = Path(__file__).resolve().parent
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    from lib import page_dedup  # type: ignore
+    return page_dedup
+
+
+def _sanitize(value, max_len: int = 200) -> str:
+    """Sanitize one field for the durable audit log / Discord body via
+    page_dedup.sanitize_log_field. Falls back to a minimal CR/LF/TAB
+    stripper (still never raises, still never lets a hostile *arr release
+    title forge a second log row) if the import itself fails."""
+    try:
+        return _load_page_dedup().sanitize_log_field(value, max_len=max_len)
+    except Exception as exc:
+        print(f"page_dedup import failed for sanitization (non-fatal, "
+              f"degraded): {exc}", file=sys.stderr)
+        s = "" if value is None else str(value)
+        s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+        return s[:max_len]
+
+
+def _page_key(slug: str, item: dict) -> str:
+    """Stable page-dedup identity for a stuck queue item. `is not None`,
+    NEVER truthiness (D3): seriesId==0 / movieId==0 are valid ids. bool is
+    explicitly excluded — isinstance(True, int) is True in Python, and a
+    malformed `seriesId: true` is not id 1. Id-less rows fold into ONE
+    bounded per-slug key so they can never storm (no title-hash fallback —
+    DELETED, see module docstring: one Sonarr episode was measured under up
+    to eleven distinct release titles for the SAME re-grab)."""
+    sid = item.get("seriesId")
+    if sid is not None and isinstance(sid, int) and not isinstance(sid, bool):
+        return f"unstick:{slug}:series:{sid}"
+    mid = item.get("movieId")
+    if mid is not None and isinstance(mid, int) and not isinstance(mid, bool):
+        return f"unstick:{slug}:movie:{mid}"
+    return f"unstick:unknown-items:{slug}"
+
+
+def _audit_log(decision: str, *, slug: str = "", mode: str = "", key: str = "",
+                age_h="", queue_id="", title: str = "") -> None:
+    """Append exactly ONE physical line to UNSTICK_LOG: tab-delimited, 8
+    fields, trailing newline. EVERY field passes through _sanitize() first —
+    not just title — because the *arr queue `title` is attacker-chosen
+    (whoever uploads a release to a public indexer, authenticated nowhere),
+    and this log is the only record of a suppressed run. Best-effort: never
+    raises, never aborts the sweep."""
+    ts = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    fields = [ts, decision, slug, mode, key, age_h, queue_id, title]
+    line = "\t".join(_sanitize(f) for f in fields) + "\n"
+    try:
+        UNSTICK_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with UNSTICK_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception as exc:
+        print(f"arr-unstick.log write failed (non-fatal): {exc}", file=sys.stderr)
 
 
 # ----- mode: --missing ----------------------------------------------------
@@ -308,7 +386,12 @@ def cmd_unstick(dry_run: bool) -> int:
     print(f"--- unstick-queue sweep ({'DRY-RUN' if dry_run else 'LIVE'}) ---")
     state = _load_state()
     now = time.time()
-    actions: list[str] = []
+    # Per-item action RECORDS (not strings — council round 2). Each record:
+    # {"key": page-dedup key, "line": rendered Discord line, "slug", "mode",
+    #  "age_h", "queue_id", "title"}. Grouped by `key` after the sweep so the
+    # SAME stuck item re-titled across runs (measured: up to eleven distinct
+    # release titles for one Sonarr episode) pages at most once per window.
+    actions: list[dict] = []
     new_state: dict = {}
 
     max_per_run  = int(os.environ.get("ARR_MAX_ACTIONS_PER_RUN",  "10"))
@@ -364,6 +447,7 @@ def cmd_unstick(dry_run: bool) -> int:
 
             qid = item.get("id")
             title = (item.get("title") or "?")[:80]
+            pkey = _page_key(slug, item)
 
             if not prev.get("first_seen_stuck"):
                 # First time seeing this stuck item — record + carry forward.
@@ -395,6 +479,8 @@ def cmd_unstick(dry_run: bool) -> int:
                 print(f"  [cap-hit] {slug}: would-delete id={qid} mode={mode} — "
                       f"skipped (per-run={actions_total}/{max_per_run}, "
                       f"per-slug[{slug}]={actions_by_slug[slug]}/{max_per_slug})")
+                _audit_log("cap-hit", slug=slug, mode=mode, key=pkey,
+                           age_h=f"{age_hours:.1f}", queue_id=qid, title=title)
                 prev["sizeleft_history"] = item["_sizeleft_history"]
                 prev["mode"] = mode
                 new_state[sk] = prev  # keep tracking so we retry next cycle
@@ -409,7 +495,12 @@ def cmd_unstick(dry_run: bool) -> int:
                 actions_by_slug[slug] += 1
                 msg = f"  [dry-run] {slug}: would unstick (id={qid}, age={age_hours:.1f}h, mode={mode}) -> {title}"
                 print(msg)
-                actions.append(f"DRY {slug}: {title} ({age_hours:.1f}h, {mode})")
+                safe_title = _sanitize(title, max_len=80)
+                line = f"DRY {slug}: {safe_title} ({age_hours:.1f}h, {mode})"
+                actions.append({"key": pkey, "line": line, "slug": slug, "mode": mode,
+                                 "age_h": age_hours, "queue_id": qid, "title": title})
+                _audit_log("dry-run", slug=slug, mode=mode, key=pkey,
+                           age_h=f"{age_hours:.1f}", queue_id=qid, title=title)
                 # Carry-forward in dry-run too so the second pass doesn't double-count
                 new_state[sk] = prev
                 continue
@@ -420,10 +511,17 @@ def cmd_unstick(dry_run: bool) -> int:
                 actions_by_slug[slug] += 1
                 msg = f"  ✓ {slug}: unstuck id={qid} age={age_hours:.1f}h mode={mode} — {title}"
                 print(msg)
-                actions.append(f"{slug}: {title} ({age_hours:.1f}h, {mode}) → blocklisted+research")
+                safe_title = _sanitize(title, max_len=80)
+                line = f"{slug}: {safe_title} ({age_hours:.1f}h, {mode}) → blocklisted+research"
+                actions.append({"key": pkey, "line": line, "slug": slug, "mode": mode,
+                                 "age_h": age_hours, "queue_id": qid, "title": title})
+                _audit_log("acted", slug=slug, mode=mode, key=pkey,
+                           age_h=f"{age_hours:.1f}", queue_id=qid, title=title)
                 # Don't carry-forward — once removed, this hash is gone.
             else:
                 print(f"  ! {slug}: DELETE id={qid} HTTP {dcode}: {dbody[:200]}")
+                _audit_log("delete-failed", slug=slug, mode=mode, key=pkey,
+                           age_h=f"{age_hours:.1f}", queue_id=qid, title=title)
                 # Keep in state so we'll retry next run.
                 new_state[sk] = prev
 
@@ -433,11 +531,107 @@ def cmd_unstick(dry_run: bool) -> int:
         f"\nstuck items still tracked (carrying forward): {len(new_state)}, "
         f"actions taken: {len(actions)}"
     )
-    if actions or cap_hit:
-        body = "arr-unstick swept:\n" + "\n".join(actions) if actions else "arr-unstick: cap hit with zero successful actions"
-        if cap_hit:
-            body += f"\n⚠ cap hit (run≥{max_per_run} or slug≥{max_per_slug}) — systemic issue likely"
-        _notify(body, level="error" if cap_hit else "warning")
+
+    # ---- notification assembly: cross-run page dedup ----------------------
+    # Suppression is a NOTIFICATION POLICY ONLY — every action and every
+    # suppression decision above is already durably logged via _audit_log,
+    # independent of what happens below. A run whose entire Discord output
+    # was suppressed is fully reconstructible from ~/.opt/maint/arr-unstick.log.
+    try:
+        page_dedup = _load_page_dedup()
+    except Exception as exc:
+        page_dedup = None
+        print(f"page_dedup import failed — paging without dedup (non-fatal, "
+              f"fail-open): {exc}", file=sys.stderr)
+
+    def _page_due(pkey: str) -> bool:
+        if page_dedup is None:
+            return True  # fail open: import failure pages exactly as before
+        return page_dedup.page_due(
+            pkey, ledger_path=UNSTICK_PAGE_LEDGER,
+            cooldown_s=UNSTICK_PAGE_COOLDOWN_S, label=UNSTICK_PAGE_LABEL,
+        )
+
+    # Group by page-dedup key, preserving first-seen order. NOT the same as
+    # the state-tracking key (_state_key, keyed by downloadId hash, which
+    # rotates on every re-grab — the exact storm this closes).
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for rec in actions:
+        if rec["key"] not in groups:
+            groups[rec["key"]] = []
+            order.append(rec["key"])
+        groups[rec["key"]].append(rec)
+
+    body_lines: list[str] = []
+    suppressed_count = 0
+    for pkey in order:
+        recs = groups[pkey]
+        slug0 = recs[0]["slug"]
+        mode0 = recs[0]["mode"]
+        if pkey.startswith("unstick:unknown-items:"):
+            # Id-less rows fold into ONE bounded line — never per-row. No
+            # per-item key is ever minted for an id-less row, so this group
+            # can only ever page once per window no matter how many rows.
+            example_titles = [_sanitize(r["title"], max_len=80) for r in recs[:3]]
+            rendered = (f"{slug0}: {len(recs)} id-less queue row(s) swept "
+                        f"(no seriesId/movieId) — e.g. " + "; ".join(example_titles))
+        else:
+            rendered = "\n".join(r["line"] for r in recs)
+
+        # The audit-log title here is a bounded COUNT, not the rendered text
+        # itself: the underlying title(s) already have their own physical
+        # "acted"/"dry-run" audit line each (with this same `key`, so an
+        # operator can grep-correlate). Re-embedding the raw title a second
+        # time here would let a hostile title's content land on MORE than
+        # one physical log line — the exact thing D4 forbids.
+        if _page_due(pkey):
+            body_lines.append(rendered)
+            _audit_log("paged", slug=slug0, mode=mode0, key=pkey,
+                       title=f"{len(recs)} record(s) paged")
+        else:
+            suppressed_count += 1
+            _audit_log("page-suppressed", slug=slug0, mode=mode0, key=pkey,
+                       title=f"{len(recs)} record(s) suppressed")
+
+    # Cap-hit carve-out: its OWN key, its OWN window, fires even when every
+    # per-item key above was suppressed. Never folded into a per-item digest.
+    cap_due = False
+    if cap_hit:
+        cap_due = _page_due("unstick:cap-hit")
+        _audit_log("paged" if cap_due else "page-suppressed",
+                   key="unstick:cap-hit",
+                   title=f"cap hit this run (run>={max_per_run} or slug>={max_per_slug})")
+
+    notify_lines: list[str] = []
+    if cap_hit and cap_due:
+        cap_line = f"⚠ cap hit (run≥{max_per_run} or slug≥{max_per_slug}) — systemic issue likely"
+        if suppressed_count:
+            cap_line += (f" ({suppressed_count} per-item line(s) suppressed by "
+                         f"the {int(UNSTICK_PAGE_COOLDOWN_S)}s page dedup)")
+        notify_lines.append(cap_line)
+    notify_lines.extend(body_lines)
+
+    if notify_lines:
+        # error iff the cap block is present in THIS message — the string
+        # "⚠ cap hit" never appears in a per-item-only digest. The cap block
+        # leads the body with nothing ahead of it (visually distinct); the
+        # per-item-only case keeps a friendly header.
+        cap_present = cap_hit and cap_due
+        level = "error" if cap_present else "warning"
+        if cap_present:
+            body = "\n".join(notify_lines)
+        else:
+            body = "arr-unstick swept:\n" + "\n".join(notify_lines)
+        _notify(body, level=level)
+    # else: nothing due this run — _notify is not called at all. Every
+    # action and every suppression is still in the durable log.
+
+    _audit_log("sweep-summary", title=(
+        f"actions_total={actions_total} cap_hit={cap_hit} cap_due={cap_due} "
+        f"tracked={len(new_state)} keys_due={len(body_lines)} "
+        f"keys_suppressed={suppressed_count}"))
+
     return 0
 
 
