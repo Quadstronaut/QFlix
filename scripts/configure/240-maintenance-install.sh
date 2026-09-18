@@ -85,9 +85,36 @@ log_info "syncing code + manifest to ~/scripts/maint/ and ~/.opt/maint/"
 # self-owned logfile is the only reliable audit trail of an autonomous restart.
 sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/maint ~/.opt/maint/window-log ~/.opt/maint/dash-asset-integrity/events ~/.opt/heartbeat ~/.opt/_maint_stage ~/bin'
 
+# --------------------------------------------------------------------------
+# CONFIGURE SCRIPTS RESIDENT ON THE BOX -- ONE LIST, TWO CONSUMERS.
+#
+# This array is the SINGLE source of truth for what lands in ~/scripts/configure/.
+# It is expanded into the tar file list below AND shipped to the remote staging
+# heredoc, which loops over it. There is no second place to edit, because the
+# second place is exactly how this broke: the staging was previously a
+# hand-maintained allowlist written out TWICE (once as a tar path, once as a
+# `cp -f` line). 60-www-images.sh was in NEITHER, while a copy of it sat
+# resident under ~/scripts/configure/ from some past manual scp -- so merged
+# PRs #32/#34/#36/#37 (the FAQ deploy and its smoke checks) never reached the
+# box, and running the installer could not fix it. Same class, and the same
+# reasoning, already written into the 240 comment block for ITSELF on
+# 2026-09-12: a file resident under ~/scripts with no stager is unfixable by
+# running the installer.
+#
+# Every entry needs a reason. Adding a name here is the ONLY way to make a
+# configure script deployable; deploy-drift.sh's `unstaged-deployed-file` stage
+# parses this exact array off the box copy and reds on any *.sh under
+# ~/scripts/configure/ that is missing from it.
+STAGED_CONFIGURE=(
+  55-kometa-install.sh        # kometa-deploy-drift canary reads its heredoc for the library names
+  240-maintenance-install.sh  # itself -- deploy-drift walks EVERY *.sh under ~/scripts (2026-09-12)
+  60-www-images.sh            # FAQ deploy + smoke checks (PRs #32/#34/#36/#37); resident since a hand-scp, unstaged until 2026-09-17
+)
+
 # Sync via tar to keep this single-roundtrip. --no-owner because the seedbox
 # uses different uid/gid than the local workstation.
 ( cd "$REPO_ROOT" && tar -cf - \
+    "${STAGED_CONFIGURE[@]/#/scripts/configure/}" \
     scripts/maint/manitoba-maint \
     scripts/maint/lib/manifest.py \
     scripts/maint/lib/state.py \
@@ -291,15 +318,20 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/plex-unmatched.sh \
     scripts/canaries/plex-intro-markers.sh \
     scripts/canaries/rea-liveness.sh \
-    scripts/configure/55-kometa-install.sh \
-    scripts/configure/240-maintenance-install.sh \
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
 
 # Move staged files into the right places (idempotent — overwrites).
-sshm 'bash -s' <<'STAGE'
+# The remote script is the SAME quoted heredoc as always (no local expansion
+# leaking into it), with ONE generated prologue line in front: the
+# STAGED_CONFIGURE array, so the cp consumer and the tar consumer read the
+# identical list. `${STAGED_CONFIGURE[*]}` is safe to splat unquoted because
+# every member is a bare basename (asserted by tests/unit/test_staged_configure.py).
+{
+printf 'STAGED_CONFIGURE=(%s)\n' "${STAGED_CONFIGURE[*]}"
+cat <<'STAGE'
 set -euo pipefail
 STG=~/.opt/_maint_stage
 mkdir -p "$STG"
@@ -429,20 +461,30 @@ mkdir -p ~/scripts/lib ~/scripts/canaries ~/scripts/configure
 cp -f   "$STG"/scripts/lib/ssh.sh                ~/scripts/lib/ssh.sh
 cp -f   "$STG"/scripts/canaries/*.sh             ~/scripts/canaries/
 chmod +x ~/scripts/canaries/*.sh
-# kometa-deploy-drift canary reads this install script's heredoc to know
-# what library names should be deployed — needs the file resident.
-cp -f   "$STG"/scripts/configure/55-kometa-install.sh ~/scripts/configure/55-kometa-install.sh
-# THIS SCRIPT, copied to the box on purpose. It is workstation-side and nothing
-# on the box ever runs it -- but a copy has been resident under ~/scripts since
-# some past manual scp, and deploy-drift.sh walks EVERY *.sh under ~/scripts and
-# compares it to origin/master. So the installer was the one deployed file that
-# could never be brought into agreement by running the installer: editing it
-# guaranteed a red on the very next deploy-drift tick, clearable only by a hand
-# scp. Caught 2026-09-12 immediately after this canary pair shipped
-# (`1-of-242-deployed-files-differ`). Staging it closes the loop; the honest
-# alternative was deleting the box copy, and adding a file is the reversible one.
-cp -f   "$STG"/scripts/configure/240-maintenance-install.sh ~/scripts/configure/240-maintenance-install.sh
-chmod +x ~/scripts/configure/240-maintenance-install.sh
+# CONFIGURE SCRIPTS: the SECOND consumer of the ONE list. The array was printed
+# into this script by the prologue above, from the same STAGED_CONFIGURE the tar
+# file list expanded -- so a name can no longer be in one consumer and not the
+# other, which is how PRs #32/#34/#36/#37 sat undeployed for a week.
+#
+# What each member is here FOR (the reasons, kept where the copy happens):
+#   55-kometa-install.sh        the kometa-deploy-drift canary reads its heredoc
+#                               to know which library names should be deployed.
+#   240-maintenance-install.sh  THIS SCRIPT, copied on purpose. Nothing on the
+#                               box runs it, but a copy has been resident since
+#                               some past manual scp and deploy-drift.sh walks
+#                               EVERY *.sh under ~/scripts. It was the one
+#                               deployed file that running the installer could
+#                               never bring into agreement; editing it
+#                               guaranteed a red on the next tick, clearable
+#                               only by hand (caught 2026-09-12,
+#                               `1-of-242-deployed-files-differ`).
+#   60-www-images.sh            FAQ deploy + its smoke checks. Same shape as the
+#                               installer above and found the same way, one week
+#                               later.
+for _cf in "${STAGED_CONFIGURE[@]}"; do
+  cp -f "$STG/scripts/configure/$_cf" ~/scripts/configure/"$_cf"
+  chmod +x ~/scripts/configure/"$_cf"
+done
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.
@@ -457,6 +499,7 @@ cp -f   "$STG"/manifest/jobs.yaml                 ~/.opt/maint/jobs.yaml
 cp -f   "$STG"/manifest/rea-noise-classes.yaml    ~/.opt/maint/rea-noise-classes.yaml
 rm -rf  "$STG"
 STAGE
+} | sshm 'bash -s'
 
 # Render the port file (used by both webhook server and heartbeat script).
 sshm "echo -n '$WEBHOOK_PORT' > ~/.opt/maint/maintenance.port && chmod 600 ~/.opt/maint/maintenance.port"

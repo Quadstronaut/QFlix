@@ -1361,3 +1361,55 @@ deadman_reasons:
   - ssh_fail
   - blob_parse
   - all_models_noop
+
+# COLLECTOR-SIDE gates, named here because "when a gate fails open the class
+# still needs a named rule". These are NOT `classes:` entries: a `classes:` rule
+# is a model-side regex bound by C-07 to a prompt clause, and runs AFTER the
+# model has already been shown the bytes. The gates below run in the COLLECTOR,
+# before the model sees anything, and they never delete evidence — they either
+# LABEL a line or they drop a line that systemd itself has declared resolved.
+# Either way the effect is COUNTED on the section's existing
+# `# collector-suppressed: section=<name> …` line, which is the file-wide law.
+# Listed in git so the class has a name, an owner and a stated fail-open
+# direction, the way every enforced noise class does.
+collector_suppressions:
+  - id: canary-finding-monitor-owned
+    section: journal_errors
+    action: label          # label | drop
+    counter: canary_finding_labelled
+    source_script: scripts/local-llm/qflix-rea.ps1
+    emitted_by: scripts/maint/lib/cli.py::_cmd_canary_push
+    marker: "QFLIX_CANARY_VERDICT name=<canary> unit=<unit> verdict=finding|harness-error rc=<n> msg=<…>"
+    added: 2026-09-17
+    why: >-
+      A canary that RAN and found something exits 20 on purpose, so systemd
+      holds its unit failed and journald carries "Failed to start
+      manitoba-maint-canary-<name>.service" for 24h. The resolved-failure gate
+      correctly keeps that line (the unit really is still failed), and the
+      models then paged it as a critical service outage — when in truth a Kuma
+      monitor is red and OWNS it, and REA must not page what a monitor owns.
+      The line is LABELLED as monitor-owned, never dropped, so the evidence
+      survives with its ownership stated.
+    fails_open: >-
+      A canary unit whose failed-to-start line has NO matching verdict=finding
+      line in the window — because the canary could not run at all
+      (verdict=harness-error), or died before emitting one — passes through
+      VERBATIM and keeps paging. That is the case this label must never eat,
+      and it is the direction the gate fails in when journalctl, grep or the
+      verdict line itself is unavailable.
+  - id: resolved-failed-to-start
+    section: journal_errors
+    action: drop
+    counter: n
+    source_script: scripts/local-llm/qflix-rea.ps1
+    emitted_by: systemd
+    marker: "Failed to start <unit>.service"
+    added: 2026-08-16
+    why: >-
+      A failed-to-start line persists in the 24h window long after the unit
+      recovered; the books-stack decommission left two for a canary that was
+      green again within the hour. A start failure is CURRENT only while
+      systemd still holds the unit failed.
+    fails_open: >-
+      Any line that does not carry the failed-to-start shape passes untouched,
+      and a unit that IS still failed keeps every one of its lines.

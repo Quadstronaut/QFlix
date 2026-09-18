@@ -2332,6 +2332,67 @@ Test-Case 'Invoke-Model asks Ollama to unload the model when done (keep_alive=0)
     Assert-Equal 0 $b.keep_alive 'keep_alive is 0 (unload immediately)'
 }
 
+# --- 2026-09-17: canary FINDING vs canary HARNESS-ERROR -------------------
+# A canary that RAN and found something exits 20 on purpose, so systemd holds
+# its unit failed and journald carries "Failed to start
+# manitoba-maint-canary-X.service" for 24h. The resolved-failure gate correctly
+# KEEPS that line (the unit really is still failed), and the models then paged a
+# by-design drift red as a critical service outage. REA must not page what a
+# monitor owns. The join is on lib/cli.py's QFLIX_CANARY_VERDICT line.
+# Behaviour (the bash actually running) is executed in
+# tests/unit/test_rea_canary_finding_label.py; these pin the SHAPE of what the
+# heredoc ships, which is what this suite can see.
+Test-Case 'journal_errors collects the canary verdict units before filtering' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h -match 'FINDING_UNITS=') 'the verdict-unit query exists'
+    Assert-True ($h -match 'QFLIX_CANARY_VERDICT') 'it greps the stable contract prefix'
+    Assert-True ($h -match 'verdict=finding') 'it selects ONLY verdict=finding'
+}
+
+Test-Case 'a canary FINDING is labelled, never dropped' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h -match '\[canary-finding unit=\$u\]') 'the label names the unit'
+    Assert-True ($h -match 'MONITOR-OWNED') 'the label says who owns it'
+    # The branch appends to KEPT - it must never `continue` without keeping.
+    $branch = [regex]::Match($h, 'NL=\$\(\(NL\+1\)\)(.|\n)*?continue').Value
+    Assert-True ($branch -match 'KEPT="\$KEPT\[canary-finding') 'the labelled line is APPENDED to KEPT'
+    Assert-True ($branch -match 'Original line: \$line') 'the original line survives verbatim inside the label'
+}
+
+Test-Case 'the resolved-failure drop still runs FIRST and is unchanged' {
+    $h = Get-RemoteHeredoc
+    $dropIdx  = $h.IndexOf('ND=$((ND+1)); continue')
+    $labelIdx = $h.IndexOf('NL=$((NL+1))')
+    Assert-True ($dropIdx -gt 0 -and $labelIdx -gt $dropIdx) 'recovered-unit drop precedes the finding label'
+    Assert-True ($h -match 'systemctl --user is-failed') 'systemd is still the authority on current-ness'
+}
+
+Test-Case 'the label is COUNTED on the existing collector-suppressed line' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h -match '# collector-suppressed: section=journal_errors n=\$ND') 'the established census line is intact'
+    Assert-True ($h -match 'canary_finding_labelled=\$NL') 'labels are counted on it'
+    # One census line, not two: the file law is one counted line per section.
+    $n = ([regex]::Matches($h, '# collector-suppressed: section=journal_errors')).Count
+    Assert-Equal 1 $n 'exactly one journal_errors census line'
+}
+
+Test-Case 'the gate fails OPEN: no verdict line means the fault still pages' {
+    $h = Get-RemoteHeredoc
+    # The label branch requires a NON-EMPTY FINDING_UNITS and an exact-line
+    # match. Both guards must be present, or an empty query would match
+    # everything (grep -q with an empty pattern file) or nothing silently.
+    Assert-True ($h -match '\[ -n "\$FINDING_UNITS" \]') 'empty verdict set short-circuits to pass-through'
+    Assert-True ($h -match 'grep -qxF "\$u"') 'unit match is whole-line exact, never a substring'
+}
+
+Test-Case 'the noise class is named in the single git source' {
+    $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $yaml = Get-Content -Raw (Join-Path $repoRoot 'manifest/rea-noise-classes.yaml')
+    Assert-True ($yaml -match 'collector_suppressions:') 'the collector-gate section exists'
+    Assert-True ($yaml -match 'id: canary-finding-monitor-owned') 'the class has a name'
+    Assert-True ($yaml -match 'counter: canary_finding_labelled') 'its counter is declared'
+}
+
 # Summary
 Write-Host "`n========================================" -F White
 Write-Host "  $Script:Pass passed, $Script:Fail failed" -F $(if($Script:Fail){'Red'}else{'Green'})

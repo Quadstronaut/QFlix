@@ -100,6 +100,13 @@ def test_collect_for_carries_ts_to_continuation_lines(monkeypatch):
     ]
     monkeypatch.setattr(logs, "route", lambda app: {"kind": "file", "path": "/x/sonarr.txt"})
     monkeypatch.setattr(logs, "_tail_file", lambda path, n: raw)
+    # /x/sonarr.txt is a FAKE path, and since 2026-09-17 collect_for refuses to
+    # grade a file route whose target does not exist (it returns
+    # error="route-missing:…" instead, so a mistyped route can never again be
+    # read as darkness — see test_detector_integrity.py). This test is about the
+    # ts carry-forward, not about route existence, so say the file is there.
+    monkeypatch.setattr(logs.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(logs, "_file_is_dormant", lambda path, *, max_age_s: False)
     lines = logs.collect_for("sonarr", since="5m", tail=100)["lines"]
     assert len(lines) == 4
     err_ts = lines[0]["ts"]

@@ -34,12 +34,44 @@
 # its generator were deleted when that stack was decommissioned. An exemption
 # outliving the file it excused is itself a hiding place, so it went too.
 #
-# Stage labels (stderr -> Kuma msg=):
-#   src-missing        the source checkout is absent or not a git repo
-#   fetch-failed       could not reach origin; comparison would be against a
-#                      possibly-stale ref, so it is reported, never silently passed
-#   deploy-drift       >=1 deployed file differs from origin/master
-#   deploy-orphan      >=1 deployed file has no counterpart in git
+# EXIT-CODE CONTRACT (added 2026-09-17; shared by every canary that adopts it)
+#
+#   rc   meaning                                                  Kuma
+#   0    PASS                                                     up
+#   20   FINDING - the canary RAN and its assertion failed         down
+#   *    HARNESS ERROR - the canary could not run, or could not    down
+#        read the truth it grades against
+#
+# The distinction is "do I trust my own measurement", NOT severity. Both
+# non-pass classes are red, with the same msg, and a red stays red.
+#
+# WHY IT EXISTS. "canary found drift" and "canary could not run" both collapsed
+# to exit 2 / Result=exit-code / journald "Failed to start
+# manitoba-maint-canary-deploy-drift.service". REA's journal_errors collector
+# keeps failed-to-start lines whose unit is still failed, so a BY-DESIGN drift
+# red -- a monitor doing exactly its job -- paged the operator as a critical
+# service outage. lib/cli.py:_cmd_canary_push maps rc 20 -> exit 20 +
+# verdict=finding and anything else non-zero -> exit 2 + verdict=harness-error,
+# and emits a machine-parseable QFLIX_CANARY_VERDICT line REA reads.
+#
+# Stage labels (stderr -> Kuma msg=), with their rc:
+#   src-missing            1   the source checkout is absent or not a git repo
+#   fetch-failed           1   could not reach origin; comparison would be
+#                              against a possibly-stale ref, so it is reported,
+#                              never silently passed
+#   installer-unreadable   1   the box copy of 240-maintenance-install.sh is
+#                              missing or its STAGED_CONFIGURE array will not
+#                              parse -- we cannot grade staging, so we say so
+#   deploy-drift          20   >=1 deployed file differs from origin/master
+#   deploy-mode-drift     20   >=1 deployed file lost the exec bit git declares
+#   deploy-orphan         20   >=1 deployed file has no counterpart in git
+#   unstaged-deployed-file 20  >=1 *.sh under ~/scripts/configure/ that NO
+#                              installer stages. Deployed-but-unstaged files
+#                              read perfectly green here until someone edits
+#                              them -- at which point the drift is real and no
+#                              installer can resolve it. This stage finds the
+#                              class BEFORE the edit (60-www-images.sh,
+#                              2026-09-17; PRs #32/#34/#36/#37 sat undeployed).
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -112,21 +144,55 @@ REFSHA=$(git -C "$SRC" rev-parse --short "$REF" 2>/dev/null || echo "?")
 if [ "$drift" -gt 0 ]; then
   printf "STAGE=deploy-drift msg=%d-of-%d-deployed-files-differ-from-%s(%s) files=%s\n" \
     "$drift" "$((drift+match))" "$REF" "$REFSHA" "$(echo $drift_list | cut -c1-160)" >&2
-  exit 1
+  exit 20
 fi
 if [ "$modedrift" -gt 0 ]; then
   printf "STAGE=deploy-mode-drift msg=%d-deployed-files-lost-the-exec-bit-git-says-755 files=%s\n" \
     "$modedrift" "$(echo $modedrift_list | cut -c1-160)" >&2
-  exit 1
+  exit 20
 fi
 if [ "$orphan" -gt 0 ]; then
   printf "STAGE=deploy-orphan msg=%d-deployed-files-absent-from-git files=%s\n" \
     "$orphan" "$(echo $orphan_list | cut -c1-160)" >&2
-  exit 1
+  exit 20
 fi
 
-printf "PASS: deploy-drift - %d deployed files match %s (%s); %d generated skipped\n" \
-  "$match" "$REF" "$REFSHA" "$skipped"
+# STAGE unstaged-deployed-file. Byte equality is only half of "deployed".
+# The other half is: can the installer PUT it there? A *.sh resident under
+# ~/scripts/configure/ that no installer stages is green here forever and
+# silently ignores every merged fix to it. Same technique kometa-deploy-drift.sh
+# already uses against 55-kometa-install.sh: read the box-resident installer and
+# parse its declared list.
+INSTALLER="$DEPLOYED/configure/240-maintenance-install.sh"
+if [ ! -f "$INSTALLER" ]; then
+  printf "STAGE=installer-unreadable msg=no-240-maintenance-install.sh-at-%s\n" "$INSTALLER" >&2
+  exit 1
+fi
+# One awk pass between the array open and its closing paren; strip comments,
+# split on whitespace. An empty parse is a HARNESS error, not a clean bill of
+# health -- "I could not read the list" must never render as "nothing unstaged".
+STAGED=$(awk "/^STAGED_CONFIGURE=\(/{f=1;next} f&&/^\)/{f=0} f{sub(/#.*/,\"\"); print}" "$INSTALLER" \
+         | tr -s " \t" "\n" | grep -v "^$" || true)
+if [ -z "$STAGED" ]; then
+  printf "STAGE=installer-unreadable msg=STAGED_CONFIGURE-array-parsed-empty-in-%s\n" "$INSTALLER" >&2
+  exit 1
+fi
+unstaged=0; unstaged_list=""
+for cf in "$DEPLOYED"/configure/*.sh; do
+  [ -e "$cf" ] || continue
+  b=$(basename "$cf")
+  if ! printf "%s\n" "$STAGED" | grep -qxF "$b"; then
+    unstaged=$((unstaged+1)); unstaged_list="$unstaged_list $b"
+  fi
+done
+if [ "$unstaged" -gt 0 ]; then
+  printf "STAGE=unstaged-deployed-file msg=%d-configure-scripts-deployed-with-no-stager-in-240 files=%s\n" \
+    "$unstaged" "$(echo $unstaged_list | cut -c1-160)" >&2
+  exit 20
+fi
+
+printf "PASS: deploy-drift - %d deployed files match %s (%s); %d generated skipped; %d configure scripts all staged\n" \
+  "$match" "$REF" "$REFSHA" "$skipped" "$(printf "%s\n" "$STAGED" | wc -l)"
 ') || RC=$?
 RC=${RC:-0}
 echo "$RES"
