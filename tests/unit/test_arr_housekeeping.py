@@ -106,6 +106,10 @@ def test_cmd_unstick_classifies_and_persists_mode(tmp_path, monkeypatch):
     state_file = tmp_path / "stuck.json"
     monkeypatch.setattr(arrhk, "STATE_DIR", tmp_path)
     monkeypatch.setattr(arrhk, "STUCK_STATE_FILE", state_file)
+    # cluster-C page-dedup ledger + durable log must never touch the real
+    # ~/.opt/maint on the machine running these tests.
+    monkeypatch.setattr(arrhk, "UNSTICK_PAGE_LEDGER", tmp_path / "unstick-pages.json")
+    monkeypatch.setattr(arrhk, "UNSTICK_LOG", tmp_path / "unstick.log")
 
     def fake_req(method, url, key, **kw):
         if method == "GET" and "/queue" in url and "sonarr/" in url and "sonarr2" not in url:
@@ -133,6 +137,10 @@ def test_cmd_unstick_respects_per_slug_cap(tmp_path, monkeypatch):
     state_file = tmp_path / "stuck.json"
     monkeypatch.setattr(arrhk, "STATE_DIR", tmp_path)
     monkeypatch.setattr(arrhk, "STUCK_STATE_FILE", state_file)
+    # cluster-C page-dedup ledger + durable log must never touch the real
+    # ~/.opt/maint on the machine running these tests.
+    monkeypatch.setattr(arrhk, "UNSTICK_PAGE_LEDGER", tmp_path / "unstick-pages.json")
+    monkeypatch.setattr(arrhk, "UNSTICK_LOG", tmp_path / "unstick.log")
     monkeypatch.setenv("ARR_MAX_ACTIONS_PER_SLUG", "2")
     monkeypatch.setenv("ARR_STUCK_HOURS_PEERS", "0")  # bypass grace period
 
@@ -182,6 +190,10 @@ def test_cmd_unstick_history_retains_full_no_progress_window(tmp_path, monkeypat
     state_file = tmp_path / "stuck.json"
     monkeypatch.setattr(arrhk, "STATE_DIR", tmp_path)
     monkeypatch.setattr(arrhk, "STUCK_STATE_FILE", state_file)
+    # cluster-C page-dedup ledger + durable log must never touch the real
+    # ~/.opt/maint on the machine running these tests.
+    monkeypatch.setattr(arrhk, "UNSTICK_PAGE_LEDGER", tmp_path / "unstick-pages.json")
+    monkeypatch.setattr(arrhk, "UNSTICK_LOG", tmp_path / "unstick.log")
 
     cluster_records = _with_future_eta(_load("cluster.json"))
 
@@ -243,6 +255,10 @@ def test_cmd_unstick_respects_per_run_cap(tmp_path, monkeypatch):
     state_file = tmp_path / "stuck.json"
     monkeypatch.setattr(arrhk, "STATE_DIR", tmp_path)
     monkeypatch.setattr(arrhk, "STUCK_STATE_FILE", state_file)
+    # cluster-C page-dedup ledger + durable log must never touch the real
+    # ~/.opt/maint on the machine running these tests.
+    monkeypatch.setattr(arrhk, "UNSTICK_PAGE_LEDGER", tmp_path / "unstick-pages.json")
+    monkeypatch.setattr(arrhk, "UNSTICK_LOG", tmp_path / "unstick.log")
     monkeypatch.setenv("ARR_MAX_ACTIONS_PER_RUN", "4")
     monkeypatch.setenv("ARR_MAX_ACTIONS_PER_SLUG", "10")  # high enough to not bind first
     monkeypatch.setenv("ARR_STUCK_HOURS_PEERS", "0")  # bypass grace period
