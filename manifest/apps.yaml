@@ -591,6 +591,20 @@ canaries:
     # runaway rule looks like. Cap-reached is tested separately from the numeric
     # threshold so raising the operator-tunable cap cannot silently raise the
     # alarm with it.
+    #
+    # Extended 2026-09-17 with a SECOND, independently-tuned sub-check for the
+    # arr-regrab loop guard. arr-housekeeping.py --unstick makes the identical
+    # DELETE+blocklist call hourly and wrote no events JSONL, so this monitor
+    # was blind to the busier of the two actors. The sub-check counts the
+    # guard's PARKED (unmonitored) population from
+    # ~/.opt/maint/arr-regrab-ledger.json and fails at 10. It deliberately does
+    # NOT feed those actions into the WARN=3/FAIL=5 daily counters - those were
+    # calibrated for one actor with a daily cap, and blending in an hourly
+    # actor that does up to 10 per run would red this monitor permanently,
+    # which gets it muted. No new timer, script or monitor: the signal rides
+    # this entry, unchanged. An ABSENT ledger passes (cold start is the normal
+    # state); a present-but-unparseable one exits 2.
+    # Overrides: QFLIX_CANARY_REGRAB_LEDGER, QFLIX_CANARY_REGRAB_PARK_FAIL.
     kuma_monitor: "Canary Unstick Rate"
     script: "scripts/canaries/unstick-rate.sh"
     schedule: "hourly"
