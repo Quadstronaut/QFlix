@@ -1179,6 +1179,37 @@ classes:
     added: 2026-09-14
 
 
+  - id: canary-finding-exit-owned-by-kuma
+    title: systemd "Failed to start" for a canary that RAN and reported a finding
+    rx: '(?im)^(?=.*\bmanitoba-maint-canary-[a-z0-9-]+\.service\b)(?=.*\bFailed to start\b)(?=.*canary-verdict=finding\b)(?!.*canary-verdict=broken\b).*$'
+    field: excerpt
+    prompt_clause: "systemd \"Failed to start manitoba-maint-canary-*.service\" lines that carry canary-verdict=finding"
+    why: >-
+      THE 2026-09-17 PAGE. manitoba-maint-canary-deploy-drift.service exits
+      NON-ZERO BY DESIGN when it finds drift - that non-zero exit IS the
+      finding - and systemd logs "Failed to start ..." as a mechanical
+      consequence. The canary's own Kuma push monitor already owns that
+      signal and had already gone red. REA reads history, canaries read live
+      state, so this page is a duplicate in BOTH directions: green monitor =
+      already resolved, red monitor = already paged. Established rule, applied
+      here: anything a monitor owns is not REA's residue.
+      SIBLING SHAPES THAT MUST STILL PAGE - and are asserted, not assumed:
+      (1) canary-verdict=broken, meaning the canary could not RUN at all
+      (script missing, interpreter or ssh failure, timeout, wrapper error).
+      That is a real outage of the detector itself and nothing else reports
+      it. (2) A line with NO verdict marker at all. The rx REQUIRES the
+      marker, so an unmarked line does not match and still pages. That is the
+      deliberate fail-open direction: the marker is emitted by the tracked
+      canary-push wrapper, and if the wrapper crashed before emitting, or the
+      log was truncated, or the emitter has not shipped yet, we must page. A
+      suppressor that guessed "probably a finding" would convert the whole
+      canary fleet into a blind spot.
+      FIELD SCOPE is excerpt because the excerpt is COLLECTOR-anchored;
+      signature and summary are model prose and must never be able to mute
+      a canary (established 2026-08-16).
+    added: 2026-09-17
+
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1305,6 +1336,9 @@ prompt_segments:
   - index: 39
     marker: 'Plex "Error iterating EAE watchfolder directory: No such file or directory" transcoder lines'
     classes: [plex-eae-watchfolder-missing]
+  - index: 40
+    marker: 'systemd "Failed to start manitoba-maint-canary-*.service" lines that carry canary-verdict=finding'
+    classes: [canary-finding-exit-owned-by-kuma]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
