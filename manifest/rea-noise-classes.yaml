@@ -1178,6 +1178,25 @@ classes:
       EAE that is genuinely broken fails those, not this rule.
     added: 2026-09-14
 
+  - id: canary-verdict-finding-echo
+    title: REA re-reporting a canary line the canary itself already graded a FINDING
+    rx: '(?i)\bcanary-verdict=finding\b'
+    field: excerpt
+    prompt_clause: 'canary output carrying the machine-readable marker `canary-verdict=finding`, which is the canary declaring it already detected and owns the condition — its Kuma monitor is already red, so REA reporting it again is one fault paged twice (a line marked `canary-verdict=broken`, or carrying NO marker at all, still pages)'
+    why: >-
+      A canary that grades its own output FINDING means a Kuma monitor
+      already holds the page for that exact condition — REA re-reporting it
+      is the same fault surfacing twice through two channels, one paged
+      twice. BROKEN is the opposite case: the detector itself failed, no
+      Kuma monitor owns that failure mode, and nobody else will catch it, so
+      it must still page. A line with no canary-verdict marker at all is
+      untouched by this rule and pages as usual — direction is fail-open by
+      default, suppression only on the explicit finding marker. Cluster C
+      ships this rule inert: no emitter in this repo writes
+      "canary-verdict=" yet (that is Cluster B's job); this class exists so
+      the day it lands, REA does not immediately start double-paging it.
+    added: 2026-09-17
+
 
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
@@ -1305,6 +1324,9 @@ prompt_segments:
   - index: 39
     marker: 'Plex "Error iterating EAE watchfolder directory: No such file or directory" transcoder lines'
     classes: [plex-eae-watchfolder-missing]
+  - index: 40
+    marker: 'canary output carrying the machine-readable marker `canary-verdict=finding`, which is the canary declaring it already detected and owns the condition — its Kuma monitor is already red, so REA reporting it again is one fault paged twice (a line marked `canary-verdict=broken`, or carrying NO marker at all, still pages)'
+    classes: [canary-verdict-finding-echo]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
