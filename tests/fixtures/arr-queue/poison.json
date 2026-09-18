@@ -1,0 +1,107 @@
+{
+  "_comment": [
+    "Sonarr queue rows whose import was refused for an executable payload.",
+    "Every title here is INVENTED (INV-15): nothing in this file may be",
+    "traceable to a member request, and the repo is public.",
+    "Row 1  - the positive case: phrase AND extension in ONE message string.",
+    "Row 2  - INV-2 negative control: the release TITLE contains .exe and the",
+    "         statusMessages are benign. Must classify as completed-not-imported,",
+    "         never as poison.",
+    "Row 3  - INV-3 negative control: the phrase is in one message and a bare",
+    "         .exe in a DIFFERENT one. Not a match.",
+    "Row 4  - extension-boundary control: .json must not match the .js token."
+  ],
+  "records": [
+    {
+      "id": 811001,
+      "seriesId": 1234,
+      "episodeId": 5678,
+      "title": "Invented.Series.Alpha.S01E01.1080p.WEB-DL",
+      "status": "completed",
+      "trackedDownloadStatus": "warning",
+      "trackedDownloadState": "importBlocked",
+      "errorMessage": null,
+      "statusMessages": [
+        {
+          "title": "Invented.Series.Alpha.S01E01.1080p.WEB-DL",
+          "messages": [
+            "Caution: Found executable file with extension: .exe"
+          ]
+        }
+      ],
+      "downloadId": "1111AAAA2222BBBB3333CCCC4444DDDD5555EEEE",
+      "size": 2000000000,
+      "sizeleft": 0
+    },
+    {
+      "id": 811002,
+      "seriesId": 1234,
+      "episodeId": 5679,
+      "title": "Invented.Series.Alpha.exe.S01E02.1080p.WEB-DL",
+      "status": "completed",
+      "trackedDownloadStatus": "warning",
+      "trackedDownloadState": "importPending",
+      "errorMessage": null,
+      "statusMessages": [
+        {
+          "title": "Invented.Series.Alpha.exe.S01E02.1080p.WEB-DL",
+          "messages": [
+            "Waiting to import. The download client is still copying files."
+          ]
+        }
+      ],
+      "downloadId": "6666AAAA7777BBBB8888CCCC9999DDDD0000EEEE",
+      "size": 2000000000,
+      "sizeleft": 0
+    },
+    {
+      "id": 811003,
+      "seriesId": 4321,
+      "episodeId": 9001,
+      "title": "Invented.Series.Beta.S02E05.1080p.WEB-DL",
+      "status": "completed",
+      "trackedDownloadStatus": "warning",
+      "trackedDownloadState": "importFailed",
+      "errorMessage": null,
+      "statusMessages": [
+        {
+          "title": "Invented.Series.Beta.S02E05.1080p.WEB-DL",
+          "messages": [
+            "One or more episodes expected in this release were not imported or missing"
+          ]
+        },
+        {
+          "title": "Sample check",
+          "messages": [
+            "Rejected an executable payload earlier in this season",
+            "setup.exe was seen in a previous release"
+          ]
+        }
+      ],
+      "downloadId": "ABCD1111ABCD2222ABCD3333ABCD4444ABCD5555",
+      "size": 1500000000,
+      "sizeleft": 0
+    },
+    {
+      "id": 811004,
+      "seriesId": 4321,
+      "episodeId": 9002,
+      "title": "Invented.Series.Beta.S02E06.1080p.WEB-DL",
+      "status": "completed",
+      "trackedDownloadStatus": "warning",
+      "trackedDownloadState": "importBlocked",
+      "errorMessage": null,
+      "statusMessages": [
+        {
+          "title": "Invented.Series.Beta.S02E06.1080p.WEB-DL",
+          "messages": [
+            "Found executable file with extension: .json"
+          ]
+        }
+      ],
+      "downloadId": "DCBA1111DCBA2222DCBA3333DCBA4444DCBA5555",
+      "size": 1500000000,
+      "sizeleft": 0
+    }
+  ]
+}
