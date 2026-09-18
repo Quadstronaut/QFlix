@@ -35,14 +35,31 @@ extension records still parse correctly.
 
 Reads creds from ~/secrets/{arr}.key + ~/secrets/{arr}.urlbase + the shared
 htpasswd password. Posts a Discord summary via lib.notify on completion.
+
+Cross-run PAGE dedup (2026-09-17, Cluster C: alert hygiene): a hostile 24h
+measurement showed 12/13 Discord messages from this function alone, hourly,
+one per run that took any action, with no dedup — a re-grab loop mints a new
+downloadId every time an item is deleted+blocklisted, so a naive "one message
+per action" policy pages once per hour forever for one unchanged fault. The
+fix reuses lib/page_ledger.py (the same wall-clock-in-a-file cooldown
+recovery.py's escalation page already uses) keyed on CONTENT identity
+(movieId / seriesId+episodeIds / a normalized-title hash for queue rows
+carrying neither) + mode — deliberately NOT downloadId, which changes on
+every re-grab by definition and would dedup nothing. See _content_key,
+_page_key and the module's Stage-0 spec (Cluster C) for the full rationale.
+Suppression is a NOTIFICATION policy only: every action and every
+due/muted verdict is still written to arr-housekeeping.log and stdout on
+every run, dedup or not.
 """
 from __future__ import annotations
 
 import argparse
 import base64
 import datetime
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -50,6 +67,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Optional
+
+# Resolve lib.* the same way as other scripts/maint/*.py entry points
+# (qflix-audit.py, bootstrap-kuma-monitors.py): works both from a repo
+# checkout (scripts/maint/lib) and a seedbox deploy (~/scripts/maint/lib).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import page_ledger  # noqa: E402
 
 # Public host comes from secrets/seedbox.host (gitignored) — die loudly
 # rather than silently hitting the sanitized placeholder if it's missing.
@@ -98,6 +121,20 @@ THRESHOLD_HOURS_BY_MODE = {
     # Setting this to 0 means "trigger immediately once predicate matches".
     MODE_CLUSTER:  0.0,
 }
+
+# ---------------------------------------------------------------------------
+# Cross-run page dedup (see module docstring). One ledger file, two kinds of
+# key sharing it: per-content-item keys ("unstick:<content>:<mode>") and the
+# single systemic CAP_PAGE_KEY — independent cooldowns, same JSON file.
+# ---------------------------------------------------------------------------
+UNSTICK_PAGE_LEDGER = "arr-unstick-pages.json"
+ARR_UNSTICK_PAGE_COOLDOWN_S = float(
+    os.environ.get("ARR_UNSTICK_PAGE_COOLDOWN_S", str(24 * 3600)))
+ARR_UNSTICK_CAP_PAGE_COOLDOWN_S = float(
+    os.environ.get("ARR_UNSTICK_CAP_PAGE_COOLDOWN_S", str(24 * 3600)))
+CAP_PAGE_KEY = "unstick:cap-hit"
+UNSTICK_LOG_FILE = "arr-housekeeping.log"
+_UNSTICK_LOG_MAX_LINES = 5000
 
 # (slug, api version, missing-search command name)
 # Readarr removed 2026-05-16 — app purged 2026-05-11; secret_read on its
@@ -304,11 +341,117 @@ def _state_key(slug: str, download_id: str) -> str:
     return f"{slug}:{(download_id or 'no-hash').lower()}"
 
 
+# ---------------------------------------------------------------------------
+# Page-dedup key: content identity, not download identity. See module
+# docstring — a re-grab always mints a fresh downloadId, so _state_key above
+# (which IS keyed on downloadId, and stays that way — it tracks the aging
+# clock of one physical download, untouched by this change) is the wrong key
+# for "have I already told the operator about this". This is a SEPARATE key.
+# ---------------------------------------------------------------------------
+
+_RELEASE_GROUP_SUFFIX_RE = re.compile(r"-[a-z0-9]+$")
+
+
+def _normalize_title(title: str) -> str:
+    """Cosmetic normalization for the title-hash fallback key (queue rows
+    with neither movieId nor seriesId+episodeIds — includeUnknownSeriesItems
+    rows). Casefold, collapse whitespace, strip a trailing release-group
+    token, so a re-grab that lands a different release of the SAME content
+    still collapses to the same key instead of minting a fresh one."""
+    t = " ".join(title.split()).casefold()
+    return _RELEASE_GROUP_SUFFIX_RE.sub("", t)
+
+
+def _episode_ids(item: dict) -> list:
+    """Sonarr queue records expose episode identity as either a plural
+    `episodeIds` list (the shape this module's interface is specified
+    against) or, on some API responses, a singular `episodeId` int. Normalize
+    to a list so _content_key has exactly one shape to hash."""
+    ids = item.get("episodeIds")
+    if isinstance(ids, list) and ids:
+        return list(ids)
+    single = item.get("episodeId")
+    return [single] if single is not None else []
+
+
+def _content_key(slug: str, item: dict) -> str:
+    """Stable identity of WHAT was swept, across re-grabs.
+
+      movie:   f"{slug}:m{movieId}"
+      tv:      f"{slug}:s{seriesId}e{'+'.join(sorted(episodeIds))}"
+      neither: f"{slug}:t{sha1(normalized_title)[:12]}"  (unknown-series rows)
+
+    NOT downloadId: a re-grab loop obtains a NEW downloadId/infohash on
+    every grab (that is definitionally what the loop does), so a
+    downloadId-keyed ledger would mint a fresh key every hour and dedup
+    nothing — reproducing the exact storm this module exists to fix.
+    movieId / seriesId+episodeIds come straight off the *arr queue record
+    and are stable across re-grabs of the same content.
+    """
+    movie_id = item.get("movieId")
+    if movie_id:
+        return f"{slug}:m{movie_id}"
+
+    series_id = item.get("seriesId")
+    eids = _episode_ids(item)
+    if series_id and eids:
+        joined = "+".join(str(e) for e in sorted(eids))
+        return f"{slug}:s{series_id}e{joined}"
+
+    digest = hashlib.sha1(
+        _normalize_title(item.get("title") or "").encode("utf-8")
+    ).hexdigest()[:12]
+    return f"{slug}:t{digest}"
+
+
+def _page_key(slug: str, item: dict, mode: str) -> str:
+    """`mode` is part of the key: the same content moving from
+    stalled-no-peers to slow-cluster is a materially different fault about
+    the same content and is worth its own page (AC-4)."""
+    return f"unstick:{_content_key(slug, item)}:{mode}"
+
+
+def _append_unstick_log(records: list) -> None:
+    """Append EVERY action + every suppression decision to
+    <state_dir>/arr-housekeeping.log, tab-delimited, rotation-capped at 5000
+    lines exactly like lib/notify.py's _append_audit_log.
+
+    `records` is a list of (page_key, verdict, action_line) tuples — verdict
+    is 'due' or 'muted' — for every stuck item acted on this run. Called on
+    EVERY cmd_unstick run, including fully-muted ones: suppression is a
+    NOTIFICATION policy only (spec C1b), never a logging policy, so this
+    file's fidelity must never depend on what Discord did. Best-effort;
+    never raises — a logging hiccup must never abort the sweep."""
+    if not records:
+        return
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = STATE_DIR / UNSTICK_LOG_FILE
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        text = "".join(f"{now}\t{verdict}\t{key}\t{line}\n" for key, verdict, line in records)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(text)
+        try:
+            existing = log_path.read_text(encoding="utf-8").splitlines(keepends=True)
+            if len(existing) > _UNSTICK_LOG_MAX_LINES:
+                log_path.write_text(
+                    "".join(existing[-_UNSTICK_LOG_MAX_LINES:]), encoding="utf-8")
+        except Exception as exc:
+            print(f"arr-housekeeping: log rotation failed (best-effort): {exc}",
+                  file=sys.stderr)
+    except Exception as exc:
+        print(f"arr-housekeeping: could not write {UNSTICK_LOG_FILE}: {exc}",
+              file=sys.stderr)
+
+
 def cmd_unstick(dry_run: bool) -> int:
     print(f"--- unstick-queue sweep ({'DRY-RUN' if dry_run else 'LIVE'}) ---")
     state = _load_state()
     now = time.time()
-    actions: list[str] = []
+    # (page_key, action_line) for every item actually acted on this run
+    # (live delete or dry-run "would unstick"). Cap-skipped items are NOT
+    # actions — nothing happened to them — and never enter this list.
+    action_pairs: list[tuple[str, str]] = []
     new_state: dict = {}
 
     max_per_run  = int(os.environ.get("ARR_MAX_ACTIONS_PER_RUN",  "10"))
@@ -364,6 +507,7 @@ def cmd_unstick(dry_run: bool) -> int:
 
             qid = item.get("id")
             title = (item.get("title") or "?")[:80]
+            pk = _page_key(slug, item, mode)
 
             if not prev.get("first_seen_stuck"):
                 # First time seeing this stuck item — record + carry forward.
@@ -409,7 +553,7 @@ def cmd_unstick(dry_run: bool) -> int:
                 actions_by_slug[slug] += 1
                 msg = f"  [dry-run] {slug}: would unstick (id={qid}, age={age_hours:.1f}h, mode={mode}) -> {title}"
                 print(msg)
-                actions.append(f"DRY {slug}: {title} ({age_hours:.1f}h, {mode})")
+                action_pairs.append((pk, f"DRY {slug}: {title} ({age_hours:.1f}h, {mode})"))
                 # Carry-forward in dry-run too so the second pass doesn't double-count
                 new_state[sk] = prev
                 continue
@@ -420,7 +564,7 @@ def cmd_unstick(dry_run: bool) -> int:
                 actions_by_slug[slug] += 1
                 msg = f"  ✓ {slug}: unstuck id={qid} age={age_hours:.1f}h mode={mode} — {title}"
                 print(msg)
-                actions.append(f"{slug}: {title} ({age_hours:.1f}h, {mode}) → blocklisted+research")
+                action_pairs.append((pk, f"{slug}: {title} ({age_hours:.1f}h, {mode}) → blocklisted+research"))
                 # Don't carry-forward — once removed, this hash is gone.
             else:
                 print(f"  ! {slug}: DELETE id={qid} HTTP {dcode}: {dbody[:200]}")
@@ -431,13 +575,78 @@ def cmd_unstick(dry_run: bool) -> int:
 
     print(
         f"\nstuck items still tracked (carrying forward): {len(new_state)}, "
-        f"actions taken: {len(actions)}"
+        f"actions taken: {len(action_pairs)}"
     )
-    if actions or cap_hit:
-        body = "arr-unstick swept:\n" + "\n".join(actions) if actions else "arr-unstick: cap hit with zero successful actions"
-        if cap_hit:
-            body += f"\n⚠ cap hit (run≥{max_per_run} or slug≥{max_per_slug}) — systemic issue likely"
-        _notify(body, level="error" if cap_hit else "warning")
+
+    # ---- cross-run page dedup (Cluster C, 2026-09-17) ---------------------
+    ledger_path = STATE_DIR / UNSTICK_PAGE_LEDGER
+    # Runs on EVERY invocation, dedup-hit or not, so the ledger stays bounded
+    # (AC-13) regardless of how quiet or noisy the queue has been.
+    page_ledger.prune(ledger_path, ARR_UNSTICK_PAGE_COOLDOWN_S, now=now)
+
+    keys = [pk for pk, _ in action_pairs]
+    due_keys, muted_keys = page_ledger.partition_due(
+        ledger_path, keys, ARR_UNSTICK_PAGE_COOLDOWN_S, now=now)
+    due_set = set(due_keys)
+
+    # C1b: suppression is a NOTIFICATION policy only. Every action line and
+    # every due/muted verdict is logged + printed on EVERY run, independent
+    # of whether anything reaches Discord.
+    log_records = [
+        (pk, "due" if pk in due_set else "muted", line)
+        for pk, line in action_pairs
+    ]
+    _append_unstick_log(log_records)
+    for pk, verdict, line in log_records:
+        print(f"  [{verdict}] {pk}: {line}")
+
+    due_lines = [line for pk, line in action_pairs if pk in due_set]
+
+    # C2: the cap escalation lives on its OWN key/cooldown — the per-item
+    # ledger above can never mute it, and it is never muted by (or merged
+    # into) the routine sweep body.
+    cap_due = False
+    if cap_hit:
+        cap_due = page_ledger.page_due(
+            ledger_path, CAP_PAGE_KEY, ARR_UNSTICK_CAP_PAGE_COOLDOWN_S, now=now)
+    elif actions_total > 0:
+        # A clean run (actions taken, cap not hit) clears the stamp: the
+        # cooldown is per-OUTAGE, so the next cap-hit — a NEW systemic
+        # episode — pages immediately rather than staying muted from a
+        # resolved one.
+        page_ledger.clear_page(ledger_path, CAP_PAGE_KEY)
+
+    if due_lines:
+        body_lines = ["arr-unstick swept:"] + due_lines
+        if cap_hit and not cap_due:
+            # The cap is still active but its own page already fired within
+            # the cooldown — keep it visible in the routine body rather than
+            # letting it go dark (AC-8).
+            body_lines.append("cap still hit")
+        if muted_keys:
+            body_lines.append(
+                f"(+{len(muted_keys)} ongoing condition(s) already paged in "
+                f"the last 24h — full detail in ~/.opt/maint/arr-housekeeping.log)"
+            )
+        _notify("\n".join(body_lines), level="warning")
+
+    if cap_hit and cap_due:
+        # Separate message, separate level — never concatenated onto the
+        # sweep body (AC-6). level="error" is what makes lib/notify.py add
+        # the operator @ping.
+        cap_lines = ["⚠ SYSTEMIC — arr-unstick CAP HIT"]
+        if actions_total == 0:
+            cap_lines.append("cap hit with zero successful actions")
+        else:
+            cap_lines.append(f"actions taken this run: {actions_total}")
+        cap_lines.append(
+            f"⚠ cap hit (run≥{max_per_run} or slug≥{max_per_slug}) — systemic issue likely"
+        )
+        cap_lines.append(
+            f"per-run={actions_total}/{max_per_run}  per-slug={actions_by_slug}"
+        )
+        _notify("\n".join(cap_lines), level="error")
+
     return 0
 
 
