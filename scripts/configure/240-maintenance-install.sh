@@ -95,6 +95,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/health.py \
     scripts/maint/lib/lifecycle.py \
     scripts/maint/lib/recovery.py \
+    scripts/maint/lib/page_dedup.py \
     scripts/maint/lib/kuma.py \
     scripts/maint/lib/listmonk.py \
     scripts/maint/lib/window.py \
