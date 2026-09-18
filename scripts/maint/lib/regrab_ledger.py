@@ -171,7 +171,14 @@ def episode_key(slug: str, series_id, episode_ids: Iterable) -> str | None:
                 val = int(raw)
             except (TypeError, ValueError):
                 continue
-            if val:
+            # `is not None`, never truthiness: episode id 0 is a VALID id, and
+            # dropping it silently collapses {0, 5} and {5} onto one key, so two
+            # different rows co-accumulate strikes toward one park threshold.
+            # The same truthiness bug was caught at the series_id level; this is
+            # it one level down, inside the id list (Stage-2 boundaries lens,
+            # 2026-09-17). *arr ids start at 1 in practice, so this is defensive
+            # rather than observed -- which is exactly when it is cheap to fix.
+            if val is not None:
                 ids.add(val)
         if not ids:
             return None
