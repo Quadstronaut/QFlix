@@ -5,7 +5,6 @@ Never raises — all failure modes collapse into the result dict + a notify.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import threading
@@ -13,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from lib import health, kuma, lifecycle, notify, state, suppression
+from lib import health, kuma, lifecycle, notify, page_dedup, state, suppression
 from lib.manifest import App, Manifest
 
 # ---------------------------------------------------------------------------
@@ -140,15 +139,26 @@ _ESCALATION_PAGE_COOLDOWN_S: float = float(
 )
 
 
+# The MECHANISM now lives in lib/page_dedup.py — one shared implementation,
+# hardened for thread and process contention. These four stay as named wrappers
+# that read their module globals ON EVERY CALL: the tests monkeypatch
+# _ESCALATION_PAGE_LEDGER and _ESCALATION_PAGE_COOLDOWN_S at runtime, and a
+# delegate that captured either at import time would silently ignore them.
+#
+# Two deliberate deltas from the pre-extraction code, neither of which changes
+# any page/no-page decision: the ledger file is now 0600 on POSIX (matching
+# state.py), and stamps older than their own window are pruned on write.
+_ESCALATION_PAGE_LABEL = "recovery.py: escalation-page cooldown"
+
+
 def _read_escalation_ledger() -> dict:
     """Ledger as {app_name: unix_ts_of_last_page}. Corrupt/missing reads as
     empty — see _escalation_page_due for why that direction is the safe one."""
-    try:
-        with _ESCALATION_PAGE_LEDGER.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    return page_dedup.read_ledger(_ESCALATION_PAGE_LEDGER)
+
+
+def _write_escalation_ledger(ledger: dict) -> None:
+    page_dedup.write_ledger(_ESCALATION_PAGE_LEDGER, ledger)
 
 
 def _escalation_page_due(app_name: str) -> bool:
@@ -156,33 +166,17 @@ def _escalation_page_due(app_name: str) -> bool:
     operator now. Stamps the ledger when it returns True, so the caller pages
     exactly once per cooldown.
 
-    FAILS OPEN. Every error path here — unreadable ledger, unwritable state
-    dir, garbage JSON — returns True and pages. A bug in the noise suppressor
-    must never be able to swallow "your media server is down"; the worst case
-    of failing open is the storm we already had, the worst case of failing
-    closed is silence nobody notices."""
-    try:
-        now = time.time()
-        ledger = _read_escalation_ledger()
-        last = ledger.get(app_name)
-        if isinstance(last, (int, float)) and 0 < (now - last) < _ESCALATION_PAGE_COOLDOWN_S:
-            return False
-        ledger[app_name] = now
-        _write_escalation_ledger(ledger)
-        return True
-    except Exception as _exc:
-        sys.stderr.write(
-            "recovery.py: escalation-page cooldown check failed, paging anyway: "
-            + repr(_exc) + "\n")
-        return True
-
-
-def _write_escalation_ledger(ledger: dict) -> None:
-    _ESCALATION_PAGE_LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _ESCALATION_PAGE_LEDGER.with_suffix(".json.tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(ledger, fh, indent=2)
-    os.replace(tmp, _ESCALATION_PAGE_LEDGER)
+    FAILS OPEN. Every error path — unreadable ledger, unwritable state dir,
+    garbage JSON, an unobtainable lock — returns True and pages. A bug in the
+    noise suppressor must never be able to swallow "your media server is down";
+    the worst case of failing open is the storm we already had, the worst case
+    of failing closed is silence nobody notices."""
+    return page_dedup.page_due(
+        app_name,
+        ledger_path=_ESCALATION_PAGE_LEDGER,
+        cooldown_s=_ESCALATION_PAGE_COOLDOWN_S,
+        label=_ESCALATION_PAGE_LABEL,
+    )
 
 
 def clear_escalation_page(app_name: str) -> None:
@@ -190,13 +184,11 @@ def clear_escalation_page(app_name: str) -> None:
 
     The cooldown is per-OUTAGE, not per-wall-clock-day: an app that fails,
     recovers, and fails again an hour later is news both times. Called by the
-    pusher on every successful probe, alongside clear_permanent_failure."""
-    try:
-        ledger = _read_escalation_ledger()
-        if ledger.pop(app_name, None) is not None:
-            _write_escalation_ledger(ledger)
-    except Exception:
-        pass
+    pusher on every successful probe, alongside clear_permanent_failure.
+
+    The unstick sweep in arr-housekeeping.py deliberately has NO equivalent —
+    see lib/page_dedup.py's docstring for why the asymmetry is correct."""
+    page_dedup.clear(app_name, ledger_path=_ESCALATION_PAGE_LEDGER)
 
 
 # Events in state.json whose presence means the app's last recorded outcome was

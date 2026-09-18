@@ -1178,6 +1178,31 @@ classes:
       EAE that is genuinely broken fails those, not this rule.
     added: 2026-09-14
 
+  - id: canary-verdict-finding-echo
+    title: REA re-reporting a canary line the canary itself already graded a FINDING
+    rx: '(?i)\bcanary-verdict=finding\b'
+    field: excerpt
+    prompt_clause: 'canary output carrying the machine-readable marker `canary-verdict=finding`, which is the canary declaring it already detected and owns the condition — its Kuma monitor is already red, so REA reporting it again is one fault paged twice (a line marked `canary-verdict=broken`, or carrying NO marker at all, still pages)'
+    why: >-
+      MONITOR-OWNED vs RESIDUE, the standing REA boundary: canaries read LIVE
+      state and page through Kuma, REA reads HISTORY and pages through Discord,
+      so anything a monitor already owns is a duplicate in both directions.
+      A canary that stamps its own output `canary-verdict=finding` has
+      DETECTED the condition, graded it, and pushed its monitor red — the
+      operator is already holding that page. REA finding the same line in the
+      same log and reporting it again is one fault paged twice, which is how
+      40+ pings a day happen and how the channel gets muted.
+      DIRECTION MATTERS AND IS DELIBERATE. `canary-verdict=broken` is the
+      opposite case: the DETECTOR itself failed, so nobody else owns the
+      condition and REA is the only surface that will say so — it still pages.
+      A line carrying NO marker at all also still pages: a canary that never
+      graded its output cannot have claimed ownership of anything, and an
+      unmarked line must never be suppressed by inference. Fail open on
+      absence, suppress only on an explicit self-declared FINDING.
+      Cluster C adds NO emitter — the marker is owned elsewhere, so this rule
+      ships inert and correct until that lands.
+    added: 2026-09-17
+
 
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
@@ -1305,6 +1330,9 @@ prompt_segments:
   - index: 39
     marker: 'Plex "Error iterating EAE watchfolder directory: No such file or directory" transcoder lines'
     classes: [plex-eae-watchfolder-missing]
+  - index: 40
+    marker: 'canary output carrying the machine-readable marker `canary-verdict=finding`, which is the canary declaring it already detected and owns the condition — its Kuma monitor is already red, so REA reporting it again is one fault paged twice (a line marked `canary-verdict=broken`, or carrying NO marker at all, still pages)'
+    classes: [canary-verdict-finding-echo]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
