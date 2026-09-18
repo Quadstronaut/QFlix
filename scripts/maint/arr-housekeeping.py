@@ -532,21 +532,30 @@ def _row_episode_ids(row: dict) -> list[int]:
     `episodes[]` form are accepted too so a resource-shape change makes the
     guard no WEAKER than it was (see RTFM (a) in the module docstring). An
     unrecognised shape yields [] → UNKEYABLE → the sweep proceeds as today.
+
+    Episode id 0 is KEPT. The type checks below deliberately do not also test
+    truthiness: dropping a 0 would silently shrink the identity set, so a row
+    really covering {0, 5} would key identically to a row covering {5} and the
+    two would co-accumulate strikes toward one park threshold. Contrast the
+    SERIES id, where 0 correctly yields UNKEYABLE -- with no series id there is
+    no key at all and the guard simply steps aside (INV-7), which is safe,
+    whereas a wrong key is a silent mis-park. (Stage-2 boundaries lens,
+    2026-09-17; *arr ids start at 1 in practice, so this is defensive.)
     """
     ids: list[int] = []
     single = row.get("episodeId")
-    if isinstance(single, int) and not isinstance(single, bool) and single:
+    if isinstance(single, int) and not isinstance(single, bool):
         ids.append(single)
     many = row.get("episodeIds")
     if isinstance(many, (list, tuple)):
         ids.extend(e for e in many
-                   if isinstance(e, int) and not isinstance(e, bool) and e)
+                   if isinstance(e, int) and not isinstance(e, bool))
     eps = row.get("episodes")
     if isinstance(eps, (list, tuple)):
         for ep in eps:
             if isinstance(ep, dict):
                 eid = ep.get("id")
-                if isinstance(eid, int) and not isinstance(eid, bool) and eid:
+                if isinstance(eid, int) and not isinstance(eid, bool):
                     ids.append(eid)
     return ids
 
