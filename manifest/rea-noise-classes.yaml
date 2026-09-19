@@ -1179,6 +1179,46 @@ classes:
     added: 2026-09-14
 
 
+  - id: plex-credits-job-scanner-failed
+    title: 'Plex CreditsDetectionManager "Job failed: Scanner job failed"'
+    rx: '(?i)\[creditsdetectionmanager\]\s*job failed:\s*scanner job failed'
+    field: excerpt
+    prompt_clause: 'Plex CreditsDetectionManager "Job failed: Scanner job failed" lines'
+    why: >-
+      Fourth member of the CreditsDetectionManager family, held back on
+      2026-08-03 as "a plausible real fault" until proven. Paged 2026-09-18
+      three times (02:27, 08:10, 10:10) at 2/3 models. CENSUS 2026-09-19, every
+      retained PMS rotation: 19 occurrences, all since 2026-09-09, none in the
+      five older rotations. Each lands beside a "Library section N will be
+      updated because of a change in <file>" INFO - the file was rewritten
+      (Tdarr h264 policy, audio-disposition janitor) under a credits scan in
+      flight, the same mechanism already proven for -job-video-missing and
+      -job-no-thumbnails. Plex retries a bounded number of times, then logs
+      "failed too many times, we will not retry again" (covered by -chatter)
+      and stops. The only member-visible effect is a missing Skip Credits
+      marker on that item. WHO OWNS THE REAL VERSION: a scanner that cannot
+      read media at all reds manitoba-maint-canary-plex-playback and
+      -plex-transcoder; both were green throughout. "Mis-matching media items
+      detected" is still NOT covered and still pages.
+    added: 2026-09-19
+
+  - id: sab-queue-finished-notification
+    title: 'SABnzbd "Sending notification: SABnzbd - Queue finished" INFO'
+    rx: '(?i)::info::\[notifier:\d+\]\s*sending notification:\s*sabnzbd - queue finished'
+    field: excerpt
+    prompt_clause: 'SABnzbd INFO "Sending notification: SABnzbd - Queue finished" lines'
+    why: >-
+      An INFO line SABnzbd writes every time its queue drains - the normal end
+      of every download batch. Paged 2026-09-18 08:10 as
+      "queue-finished-after-failure" at 2/3 models: the models inferred a
+      failure from proximity, but the line carries no failure and names none.
+      Anchored on the ::INFO:: level and the notifier module so a WARNING or
+      ERROR from SABnzbd still pages. WHO OWNS THE REAL VERSION: a stalled or
+      failing SAB queue reds manitoba-maint-canary-sab-stall (#103), and
+      per-job failures surface as *arr downloadFailed history and the
+      arr-unstick sweep.
+    added: 2026-09-19
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1305,6 +1345,12 @@ prompt_segments:
   - index: 39
     marker: 'Plex "Error iterating EAE watchfolder directory: No such file or directory" transcoder lines'
     classes: [plex-eae-watchfolder-missing]
+  - index: 40
+    marker: 'Plex CreditsDetectionManager "Job failed: Scanner job failed" lines'
+    classes: [plex-credits-job-scanner-failed]
+  - index: 41
+    marker: 'SABnzbd INFO "Sending notification: SABnzbd - Queue finished" lines'
+    classes: [sab-queue-finished-notification]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
