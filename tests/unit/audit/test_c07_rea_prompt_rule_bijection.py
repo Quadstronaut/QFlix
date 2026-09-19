@@ -215,6 +215,13 @@ def test_rules_match_their_canonical_log_lines(ledgers):
          "Sep 14, 2026 01:17:52.151 [139867951577912] ERROR - "
          "[Req#198bf1/Transcode] Error iterating EAE watchfolder directory: "
          "No such file or directory"),
+        # 2026-09-19. Paged four times on 2026-09-18; verbatim.
+        ("plex-credits-job-scanner-failed",
+         "Sep 18, 2026 02:27:09.295 [139867938671416] ERROR - "
+         "[CreditsDetectionManager] Job failed: Scanner job failed"),
+        ("sab-queue-finished-notification",
+         "2026-09-18 02:27:20,561::INFO::[notifier:169] Sending notification: "
+         "SABnzbd - Queue finished (type=queue_done, job_cat=None)"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -363,7 +370,16 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
              "ERROR - Error iterating EAE watchfolder directory: Permission "
              "denied"),
             ("plex-eae-watchfolder-missing",
-             "ERROR - EAE: failed to start EasyAudioEncoder")):
+             "ERROR - EAE: failed to start EasyAudioEncoder"),
+            ("plex-credits-job-scanner-failed",
+             "ERROR - [CreditsDetectionManager] Mis-matching media items "
+             "detected"),
+            ("sab-queue-finished-notification",
+             "2026-09-18 02:27:20,561::ERROR::[notifier:169] Sending "
+             "notification: SABnzbd - Queue finished"),
+            ("sab-queue-finished-notification",
+             "2026-09-18 02:27:20,561::WARNING::[downloader:300] Server "
+             "news.example.net will be ignored for 10 minutes")):
         assert not re.search(by[cid], still_pages), (
             cid + " must not suppress an uncensused neighbour: " + still_pages)
 

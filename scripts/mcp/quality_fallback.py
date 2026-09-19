@@ -63,6 +63,15 @@ PARK_DAYS = 15        # movies: restore + unmonitor + alert / TV: unmonitor + al
 MAX_IN_FALLBACK = 25  # per instance, stage >= 1, blast-radius cap (movies)
 MAX_TV_PARKS_PER_RUN = 10  # per instance, TV unmonitors per run; overflow defers
 SEARCH_FRESH_HOURS = 48  # a day only counts if the sweep actually searched
+# A TV park is a BACKOFF, never a permanent give-up (operator, 2026-09-17: "i
+# don't want permanent give up, just, try less frequently"). A parked episode
+# is re-monitored and searched after REARM_BASE_DAYS, doubling per repeat park,
+# capped at REARM_MAX_DAYS. Found 2026-09-19: American Dad S22 had been parked
+# as "unfindable" while clean releases sat on Usenet; once unmonitored it left
+# wanted/missing, plan_tv pruned its record, and nothing ever looked again.
+REARM_BASE_DAYS = 14
+REARM_MAX_DAYS = 112
+MAX_TV_REARMS_PER_RUN = 25  # per instance; overflow waits for the next run
 
 STATE_PATH = Path.home() / ".apps" / "qflix-fallback" / "state.json"
 
@@ -79,10 +88,11 @@ def load_state(path: Path) -> dict:
         if isinstance(s, dict):
             s.setdefault("movies", {})
             s.setdefault("tv", {})
+            s.setdefault("tv_parked", {})
             return s
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
-    return {"movies": {}, "tv": {}}
+    return {"movies": {}, "tv": {}, "tv_parked": {}}
 
 
 def save_state(path: Path, state: dict) -> None:
@@ -321,6 +331,42 @@ def plan_tv(slug: str, missing: list, state: dict, today: str,
     return {"digest": digest, "parks": parks}
 
 
+def rearm_delay_days(strikes: int) -> int:
+    """14, 28, 56, 112, 112, ... days for the 1st, 2nd, 3rd, 4th+ park."""
+    return min(REARM_BASE_DAYS * (2 ** max(strikes - 1, 0)), REARM_MAX_DAYS)
+
+
+def record_tv_park(parked: dict, key: str, entry: dict, today: str) -> None:
+    """Remember a successful park OUTSIDE state["tv"], which plan_tv prunes
+    the moment the episode leaves wanted/missing (i.e. the moment it is
+    unmonitored). Strikes accumulate across re-arms so the backoff grows."""
+    prev = parked.get(key, {})
+    parked[key] = {"parked_on": today, "strikes": int(prev.get("strikes", 0)) + 1,
+                   "active": True, "series_id": entry["series_id"],
+                   "season": entry["season"], "episode": entry["episode"]}
+
+
+def plan_tv_rearm(slug: str, parked: dict, today: str) -> list:
+    """Episode ids of this slug whose park backoff has elapsed. Pure.
+
+    A record whose date cannot be parsed is due immediately: a corrupt stamp
+    must fail toward searching again, never toward an eternal park."""
+    due = []
+    t = datetime.fromisoformat(today).date()
+    for key, rec in sorted(parked.items()):
+        if not key.startswith(f"{slug}:") or not rec.get("active"):
+            continue
+        try:
+            age = (t - datetime.fromisoformat(rec["parked_on"]).date()).days
+        except (KeyError, TypeError, ValueError):
+            age = 10 ** 6
+        if age >= rearm_delay_days(int(rec.get("strikes", 1) or 1)):
+            due.append(int(key.split(":", 1)[1]))
+        if len(due) >= MAX_TV_REARMS_PER_RUN:
+            break
+    return due
+
+
 # ---------------------------------------------------------------------------
 # API layer — the ONLY code that talks to *arr or the clock
 # ---------------------------------------------------------------------------
@@ -453,6 +499,19 @@ def _apply_tv_park(client, episode_id: int) -> bool:
     return code in (200, 202)
 
 
+def _apply_tv_rearm(client, episode_ids: list) -> bool:
+    """End a park: re-monitor and search. The monitor write is the one that
+    matters -- once monitored, the hourly MissingEpisodeSearch keeps trying
+    even if this explicit search command is refused."""
+    code, _ = client.put("/episode/monitor",
+                         body={"episodeIds": episode_ids, "monitored": True})
+    if code not in (200, 202):
+        return False
+    client.post("/command", body={"name": "EpisodeSearch",
+                                  "episodeIds": episode_ids})
+    return True
+
+
 def run(*, client_factory=None, state_path: Path = STATE_PATH,
         now: Optional[datetime] = None, dry_run: bool = False,
         slug: Optional[str] = None) -> dict:
@@ -514,6 +573,7 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
     # ---- TV: day-5 digest + day-15 park (unmonitor) ----------------------
     digest_all: list = []
     parks_all: list = []
+    rearmed_all: list = []
     # TV statuses live in their own dict rather than per_arr: per_arr is the
     # movie shape (status/actions/in_fallback) and consumers key off it. Both
     # are folded into _run_had_failures, so a TV fetch failure exits 1.
@@ -539,6 +599,11 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
             continue
         plan = plan_tv(s, missing, state["tv"], today, now)
         digest_all.extend(plan["digest"])
+        due = plan_tv_rearm(s, state["tv_parked"], today)
+        if due and _apply_tv_rearm(client, due):
+            for eid in due:
+                state["tv_parked"][f"{s}:{eid}"]["active"] = False
+            rearmed_all.extend(f"{s}:{eid}" for eid in due)
         for p in plan["parks"]:
             ok = _apply_tv_park(client, p["episode_id"])
             p["ok"] = ok
@@ -550,10 +615,15 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
                 rec = state["tv"].get(f"{p['slug']}:{p['episode_id']}")
                 if rec is not None:
                     rec["parked"] = False
+            else:
+                key = f"{p['slug']}:{p['episode_id']}"
+                record_tv_park(state["tv_parked"], key, p, today)
+                p["retry_days"] = rearm_delay_days(state["tv_parked"][key]["strikes"])
             parks_all.append(p)
     out["tv_digest"] = digest_all
     out["tv_parks"] = parks_all
     out["tv_per_arr"] = tv_per_arr
+    out["tv_rearmed"] = rearmed_all
 
     if (digest_all or parks_all) and not dry_run:
         # map (slug, series_id) -> series title, once per slug touched
@@ -574,10 +644,11 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
         ok_parks = [p for p in parks_all if p.get("ok")]
         bad_parks = [p for p in parks_all if not p.get("ok")]
         if ok_parks:
-            lines = [f"- {_label(p)} — unfindable after {p['days']}d, unmonitored"
+            lines = [f"- {_label(p)} — nothing grabbable after {p['days']}d; "
+                     f"retrying in {p.get('retry_days', REARM_BASE_DAYS)}d"
                      for p in ok_parks]
-            _notify("TV parked (unfindable — unmonitored, manual intervention "
-                    "needed):\n" + "\n".join(lines), "warning")
+            _notify("TV backing off (paused, will search again automatically):\n"
+                    + "\n".join(lines), "info")
         if bad_parks:
             lines = [f"- {_label(p)}" for p in bad_parks]
             _notify("TV park FAILED to unmonitor (still monitored):\n"
