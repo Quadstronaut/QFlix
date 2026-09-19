@@ -14,7 +14,7 @@ import quality_fallback as qf  # noqa: E402
 def test_state_roundtrip(tmp_path):
     p = tmp_path / "state.json"
     s = qf.load_state(p)
-    assert s == {"movies": {}, "tv": {}}
+    assert s == {"movies": {}, "tv": {}, "tv_parked": {}}
     s["movies"]["radarr:100"] = {"days": 1}
     qf.save_state(p, s)
     assert qf.load_state(p) == s
@@ -23,7 +23,7 @@ def test_state_roundtrip(tmp_path):
 def test_state_survives_corrupt_file(tmp_path):
     p = tmp_path / "state.json"
     p.write_text("{not json", encoding="utf-8")
-    assert qf.load_state(p) == {"movies": {}, "tv": {}}
+    assert qf.load_state(p) == {"movies": {}, "tv": {}, "tv_parked": {}}
 
 
 def test_parse_arr_ts_handles_z_suffix():
@@ -744,3 +744,93 @@ def test_emit_json_issues_no_arr_writes(tmp_path, monkeypatch):
         s: c.writes for s, c in clients.items()}
     # And the counters must not have advanced on disk either.
     assert qf.load_state(state_path)["movies"]["radarr:1001"]["days"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Park backoff (2026-09-19): a TV park is a pause, never a permanent give-up.
+# ---------------------------------------------------------------------------
+
+def test_rearm_delay_doubles_and_caps():
+    assert [qf.rearm_delay_days(n) for n in (1, 2, 3, 4, 5, 9)] == \
+        [14, 28, 56, 112, 112, 112]
+
+
+def test_rearm_due_only_after_backoff_and_only_active():
+    parked = {"sonarr:1": {"parked_on": "2026-06-01", "strikes": 1, "active": True},
+              "sonarr:2": {"parked_on": "2026-06-01", "strikes": 2, "active": True},
+              "sonarr:3": {"parked_on": "2026-05-01", "strikes": 1, "active": False},
+              "sonarr2:4": {"parked_on": "2026-05-01", "strikes": 1, "active": True}}
+    # 14 days after 2026-06-01: strike-1 is due, strike-2 (28d) is not,
+    # inactive never, other slug never.
+    assert qf.plan_tv_rearm("sonarr", parked, "2026-06-15") == [1]
+    assert qf.plan_tv_rearm("sonarr", parked, "2026-06-29") == [1, 2]
+
+
+def test_rearm_corrupt_stamp_fails_toward_searching():
+    parked = {"sonarr:7": {"parked_on": "garbage", "strikes": 1, "active": True}}
+    assert qf.plan_tv_rearm("sonarr", parked, "2026-06-15") == [7]
+
+
+def test_rearm_is_capped_per_run():
+    parked = {f"sonarr:{i}": {"parked_on": "2026-01-01", "strikes": 1,
+                              "active": True} for i in range(100)}
+    assert len(qf.plan_tv_rearm("sonarr", parked, "2026-06-15")) == \
+        qf.MAX_TV_REARMS_PER_RUN
+
+
+def test_record_tv_park_accumulates_strikes():
+    parked: dict = {}
+    entry = {"series_id": 10, "season": 1, "episode": 3}
+    qf.record_tv_park(parked, "sonarr:1", entry, "2026-06-01")
+    parked["sonarr:1"]["active"] = False          # re-armed in between
+    qf.record_tv_park(parked, "sonarr:1", entry, "2026-07-01")
+    assert parked["sonarr:1"]["strikes"] == 2
+    assert parked["sonarr:1"]["active"] is True
+
+
+def test_run_park_is_remembered_after_plan_tv_prunes_it(tmp_path, monkeypatch):
+    """The bug: once unmonitored the episode leaves wanted/missing and plan_tv
+    deletes its record, so nothing could ever look again."""
+    _isolate_notify(monkeypatch, tmp_path)
+    e = mk_episode(eid=1, series_id=10, season=1, ep=3, title="Ep3")
+    clients = {"radarr": FakeClient(_radarr_routes([], [])),
+               "radarr2": FakeClient(_radarr_routes([], [])),
+               "sonarr": FakeClient(_tv_routes([e], series=[{"id": 10,
+                                                             "title": "Show"}])),
+               "sonarr2": FakeClient(_empty_tv_routes())}
+    state_path = tmp_path / "state.json"
+    qf.save_state(state_path, {"movies": {}, "tv": {"sonarr:1": {
+        "days": 14, "last_counted": "2026-06-05", "alerted": True,
+        "parked": False}}})
+    qf.run(client_factory=lambda s: clients[s], state_path=state_path,
+           now=NOW, dry_run=False)
+    rec = qf.load_state(state_path)["tv_parked"]["sonarr:1"]
+    assert rec["active"] is True and rec["strikes"] == 1
+
+    # next run: the episode is gone from wanted/missing (unmonitored)
+    clients["sonarr"] = FakeClient({**_tv_routes([]),
+                                    ("POST", "/command"): (201, {"id": 1})})
+    later = NOW + qf.timedelta(days=qf.REARM_BASE_DAYS)
+    res = qf.run(client_factory=lambda s: clients[s], state_path=state_path,
+                 now=later, dry_run=False)
+    w = clients["sonarr"].writes
+    assert ("PUT", "/episode/monitor",
+            {"episodeIds": [1], "monitored": True}) in w
+    assert ("POST", "/command",
+            {"name": "EpisodeSearch", "episodeIds": [1]}) in w
+    assert res["tv_rearmed"] == ["sonarr:1"]
+    assert qf.load_state(state_path)["tv_parked"]["sonarr:1"]["active"] is False
+
+
+def test_run_dry_run_never_rearms(tmp_path, monkeypatch):
+    _isolate_notify(monkeypatch, tmp_path)
+    clients = {"radarr": FakeClient(_radarr_routes([], [])),
+               "radarr2": FakeClient(_radarr_routes([], [])),
+               "sonarr": FakeClient(_tv_routes([])),
+               "sonarr2": FakeClient(_empty_tv_routes())}
+    state_path = tmp_path / "state.json"
+    qf.save_state(state_path, {"movies": {}, "tv": {}, "tv_parked": {
+        "sonarr:1": {"parked_on": "2026-01-01", "strikes": 1, "active": True}}})
+    qf.run(client_factory=lambda s: clients[s], state_path=state_path,
+           now=NOW, dry_run=True)
+    assert not any(m == "PUT" for m, _, _ in clients["sonarr"].writes)
