@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary — Plex Skip Intro coverage and the marker settings that produce it
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push plex-intro-markers
+StandardOutput=journal
+StandardError=journal

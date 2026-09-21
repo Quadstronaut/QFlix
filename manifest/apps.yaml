@@ -1395,6 +1395,48 @@ canaries:
     script: "scripts/canaries/plex-unmatched.sh"
     schedule: "hourly"
 
+  plex-intro-markers:
+    # Skip Intro coverage, and the four hand-edited Plex settings that produce
+    # it. Added 2026-09-20 after a member reported "missing episodes" and the
+    # investigation found something else: 299 of 478 episodes (63%) had no
+    # intro marker, so Skip Intro simply was not there for a third of the TV
+    # library. Nothing in this repo looked at marker coverage.
+    #
+    # WHY A DETECTOR AND NOT JUST A FIX: intro markers cannot be generated on
+    # demand. Measured on Squid Game S1 -- a forced season analyze produced 9
+    # CREDITS markers and zero intro markers, because Plex builds intro markers
+    # by fingerprint-comparing a whole season and only inside the nightly
+    # butler window. So the coverage number is downstream of settings edited by
+    # hand in the Plex UI, with no git history and no other guard: flip
+    # enableIntroMarkerGeneration off and every future episode silently loses
+    # the button while existing markers keep the percentage looking healthy for
+    # weeks. The canary checks the CAUSE (settings) before the SYMPTOM
+    # (coverage) for exactly that reason.
+    #
+    # Floor is a percentage (default 55%, today's value 62.2%) rather than
+    # plex-unmatched's count-with-grace, because an episode without an intro
+    # marker is frequently not a defect -- reality, talk and documentary shows
+    # have no recurring title sequence and Plex cannot mark what does not
+    # exist. 100% is unreachable; the floor catches a COLLAPSE, it does not
+    # ratchet. Episodes younger than 48 h (two butler windows) are excluded
+    # from the denominator and reported separately, so an evening's imports
+    # never look like a regression.
+    #
+    # Coverage is read from the Plex DB read-only, settings over HTTP. Forced
+    # by Plex: includeMarkers=1 is silently ignored by every BULK endpoint
+    # (section/all, allLeaves, children) and honoured only per item, so an HTTP
+    # census would be 478 round trips. A first version trusted the bulk
+    # parameter and reported 0% on a healthy library. Guarded against the
+    # schema risk: zero markers of EITHER type in the whole DB is BROKEN
+    # (exit 2), never "coverage collapsed".
+    #
+    # Daily at 08:00 local, two hours after the butler window closes -- the
+    # number only moves once a night, so hourly would be 23 restatements and 23
+    # chances to page on one fault.
+    kuma_monitor: "Canary Plex Intro Markers"
+    script: "scripts/canaries/plex-intro-markers.sh"
+    schedule: "daily"
+
   rea-liveness:
     # The one QFlix component that does NOT run on the box: qflix-rea.ps1 (the
     # Random Error Audit) lives on the operator workstation, is gitignored, and
