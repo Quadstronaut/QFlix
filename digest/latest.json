@@ -1,6 +1,6 @@
 {
-  "week_of": "2026-09-14",
-  "generated_at": "2026-09-14T14:09:49Z",
-  "since": "2026-09-07T14:09:49Z",
-  "html": "<p>Behind the scenes this week, we focused on making requests actually stick.</p><ul><li>Fixed a snag where certain shows and seasons appeared unavailable and couldn't be re-requested — that's sorted now.</li><li>Added a way to flag your favorite ongoing shows as protected, so new episodes keep arriving automatically instead of needing a fresh request each time.</li><li>Closed a rare glitch where a newly requested title could vanish again almost immediately.</li></ul><p>Plus a few quieter reliability tune-ups behind the curtain. 🎬</p>"
+  "week_of": "2026-09-21",
+  "generated_at": "2026-09-21T14:10:22Z",
+  "since": "2026-09-14T14:10:22Z",
+  "html": "<p>A few good ones from this week:</p><ul><li>The \"Skip Intro\" button should show up far more often on TV episodes — we found and fixed a setting that was quietly limiting it.</li><li>Fixed an audio glitch where a few titles could default to the wrong language track; English wins by default now, like it should.</li><li>Cleared up a rare snag that could get some downloads stuck in a retry loop, so new arrivals show up faster.</li><li>Ironed out some broken links in the request system that popped up when browsing on a phone.</li></ul><p>Thanks for streaming with us! 🎬</p>"
 }
