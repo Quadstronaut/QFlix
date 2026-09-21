@@ -155,6 +155,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-plex-decision-stable-file.timer \
     scripts/maint/systemd/manitoba-maint-canary-plex-unmatched.service \
     scripts/maint/systemd/manitoba-maint-canary-plex-unmatched.timer \
+    scripts/maint/systemd/manitoba-maint-canary-plex-intro-markers.service \
+    scripts/maint/systemd/manitoba-maint-canary-plex-intro-markers.timer \
     scripts/maint/systemd/manitoba-maint-canary-rea-liveness.service \
     scripts/maint/systemd/manitoba-maint-canary-rea-liveness.timer \
     scripts/maint/systemd/manitoba-maint-flaresolverr-canary.service \
@@ -287,6 +289,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/prowlarr-proxy-link-fatal.sh \
     scripts/canaries/plex-decision-stable-file.sh \
     scripts/canaries/plex-unmatched.sh \
+    scripts/canaries/plex-intro-markers.sh \
     scripts/canaries/rea-liveness.sh \
     scripts/configure/55-kometa-install.sh \
     scripts/configure/240-maintenance-install.sh \
@@ -595,6 +598,8 @@ for unit in \
     manitoba-maint-canary-plex-decision-stable-file.timer \
     manitoba-maint-canary-plex-unmatched.service \
     manitoba-maint-canary-plex-unmatched.timer \
+    manitoba-maint-canary-plex-intro-markers.service \
+    manitoba-maint-canary-plex-intro-markers.timer \
     manitoba-maint-canary-rea-liveness.service \
     manitoba-maint-canary-rea-liveness.timer \
     manitoba-maint-flaresolverr-canary.service \
@@ -746,6 +751,10 @@ systemctl --user enable --now manitoba-maint-canary-plex-decision-stable-file.ti
 # decision. Expect ~30 aged findings on the first live run; that is the audit's
 # measured backlog, not a canary fault.
 systemctl --user enable --now manitoba-maint-canary-plex-unmatched.timer
+# plex-intro-markers: Skip Intro coverage + the four hand-edited Plex settings
+# that produce it. Daily at 08:00 local, after the butler window that is the
+# only thing able to create an intro marker.
+systemctl --user enable --now manitoba-maint-canary-plex-intro-markers.timer
 # rea-liveness: the dead-man for the operator workstation's Random Error Audit,
 # the one component that does not run on this box and has never been watched.
 # The judgement runs HERE so the alarm never depends on REA being healthy enough
@@ -1131,7 +1140,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity seerr-arr-parity; do
+for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched plex-intro-markers newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity seerr-arr-parity; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
