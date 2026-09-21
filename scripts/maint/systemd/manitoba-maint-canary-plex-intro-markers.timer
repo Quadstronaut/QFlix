@@ -1,0 +1,20 @@
+[Unit]
+Description=Manitoba canary — Plex Skip Intro coverage (daily)
+
+[Timer]
+# DAILY, and deliberately after the butler window closes. Intro markers are
+# produced only inside ButlerStartHour..ButlerEndHour (00:00-06:00 local), so
+# a run mid-window measures a library that is still being worked on and would
+# report a dip that fills itself in an hour. 08:00 local is two hours of slack
+# past the window's end.
+#
+# Hourly was rejected: the quantity moves once a night by construction, so 24
+# runs a day would be 23 restatements of the same number and 23 chances to
+# page on the same fault. The dead-man is the Kuma push monitor, which a daily
+# cadence serves as well as an hourly one.
+OnCalendar=*-*-* 08:00:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
