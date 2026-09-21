@@ -395,6 +395,14 @@ jobs:
   manitoba-maint-canary-plex-unmatched:
     timer: scripts/maint/systemd/manitoba-maint-canary-plex-unmatched.timer
     kuma_monitor: "Canary Plex Unmatched"
+  # Added 2026-09-20. Sibling of plex-unmatched and plex-decision-stable-file,
+  # and distinct from both: those ask whether an item is matched and whether it
+  # plays, this asks whether SKIP INTRO exists on it. Daily rather than hourly
+  # because intro markers are only created inside the nightly butler window.
+  # Dead-man: its own Kuma push monitor, so a stopped timer reds on silence.
+  manitoba-maint-canary-plex-intro-markers:
+    timer: scripts/maint/systemd/manitoba-maint-canary-plex-intro-markers.timer
+    kuma_monitor: "Canary Plex Intro Markers"
 
   # Added 2026-08-03. The dead-man for the ONE component that does not run on
   # this box: the operator workstation's Random Error Audit. Its own liveness is
