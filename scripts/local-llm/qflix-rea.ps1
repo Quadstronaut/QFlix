@@ -314,7 +314,24 @@ function Read-State {
         $obj = $raw | ConvertFrom-Json
         $result = @{}
         foreach ($k in $defaults.Keys) {
-            if ($obj.PSObject.Properties.Name -contains $k) { $result[$k] = [string]$obj.$k }
+            if ($obj.PSObject.Properties.Name -contains $k) {
+                # PowerShell 7's ConvertFrom-Json silently converts an
+                # ISO-8601-looking STRING into a [datetime]; Windows PowerShell
+                # 5.1 does not. `[string]` on the result then renders it in the
+                # CURRENT CULTURE ("07/29/2026 02:00:00"), and the dedup reader
+                # below parses it back with the current culture too — so on any
+                # non-US box the round trip either flips day/month or throws
+                # into the empty catch, `$shouldPing` stays true, and every
+                # deadman reason re-pages on EVERY run. That is the cross-run
+                # dedup failure this system has already been bitten by once.
+                # Found 2026-09-27, when the suite first ran under pwsh 7.
+                # Normalise back to round-trip 'o' format, which both editions
+                # and every culture read identically.
+                $v = $obj.$k
+                if ($v -is [datetime])            { $v = $v.ToString('o') }
+                elseif ($v -is [datetimeoffset])  { $v = $v.ToString('o') }
+                $result[$k] = [string]$v
+            }
             else { $result[$k] = $defaults[$k] }
         }
         return $result
@@ -2158,8 +2175,13 @@ function Send-DeadmanAlert {
     $shouldPing = $true
     if ($state[$key]) {
         try {
-            $last = [datetime]::Parse($state[$key])
-            if (((Get-Date) - $last).TotalHours -lt 24) { $shouldPing = $false }
+            # InvariantCulture + RoundtripKind, never the ambient culture: the
+            # stored value is ISO-8601 and a culture-sensitive Parse is how a
+            # dedup key silently becomes unreadable (see Read-State's note).
+            $last = [datetime]::Parse($state[$key],
+                        [System.Globalization.CultureInfo]::InvariantCulture,
+                        [System.Globalization.DateTimeStyles]::RoundtripKind)
+            if (((Get-Date) - $last.ToLocalTime()).TotalHours -lt 24) { $shouldPing = $false }
         } catch {}
     }
     if (-not ($shouldPing -and $Webhook -and $OpId)) {
@@ -2497,8 +2519,11 @@ function Invoke-Main {
             $shouldPing = $true
             if ($state.last_ollama_dead_ping) {
                 try {
-                    $last = [datetime]::Parse($state.last_ollama_dead_ping)
-                    if (((Get-Date) - $last).TotalHours -lt 24) { $shouldPing = $false }
+                    # Same invariant-culture rule as the per-reason dedup above.
+                    $last = [datetime]::Parse($state.last_ollama_dead_ping,
+                                [System.Globalization.CultureInfo]::InvariantCulture,
+                                [System.Globalization.DateTimeStyles]::RoundtripKind)
+                    if (((Get-Date) - $last.ToLocalTime()).TotalHours -lt 24) { $shouldPing = $false }
                 } catch {}
             }
             if ($shouldPing -and $webhook -and $opId) {

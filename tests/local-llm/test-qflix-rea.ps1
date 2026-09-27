@@ -1225,7 +1225,23 @@ Test-Case 'Write-State then Read-State roundtrips a dead_ping_<reason> key witho
     try {
         Write-State @{ last_heartbeat_date = ''; last_ollama_dead_ping = ''; dead_ping_ssh_fail = '2026-07-29T02:00:00Z' }
         $s = Read-State
-        Assert-Equal '2026-07-29T02:00:00Z' $s.dead_ping_ssh_fail 'persisted dead_ping_ssh_fail'
+        # Asserted as an INSTANT, not as a literal string. PowerShell 7's
+        # ConvertFrom-Json turns an ISO-8601 string into a [datetime], so the
+        # exact spelling that comes back differs by edition; what must hold is
+        # that it still denotes the same moment and is parseable the way the
+        # dedup reader parses it. Pinning the literal is what made this case
+        # fail the first time the suite ran under pwsh 7 (2026-09-27), and the
+        # underlying bug it exposed was real: see Read-State's note.
+        $styles = [System.Globalization.DateTimeStyles]::RoundtripKind
+        $inv    = [System.Globalization.CultureInfo]::InvariantCulture
+        $got    = [datetime]::Parse($s.dead_ping_ssh_fail, $inv, $styles).ToUniversalTime()
+        Assert-Equal ([datetime]::Parse('2026-07-29T02:00:00Z', $inv, $styles).ToUniversalTime()) `
+                     $got 'persisted dead_ping_ssh_fail (same instant)'
+        # ...and it must survive an INVARIANT parse specifically, because a
+        # culture-rendered "07/29/2026 02:00:00" throws here and the production
+        # reader swallows that in an empty catch, which re-pages every run.
+        Assert-True ($s.dead_ping_ssh_fail -match '^\d{4}-\d{2}-\d{2}T') `
+                    'stored form is ISO-8601, not a culture-rendered date'
         Assert-Equal '' $s.dead_ping_no_models 'unrelated reason still defaults to empty'
     } finally {
         if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
@@ -1551,13 +1567,23 @@ Test-Case 'remote heredoc is syntactically valid bash (bash -n)' {
     # Program Files pin silently skipped this test on the ONE machine the
     # ps1 actually runs on (caught 2026-08-16). Skips (counted) only when
     # no candidate exists.
-    $bashExe = @(
-        (Join-Path $env:USERPROFILE 'scoop\apps\git\current\bin\bash.exe'),
-        (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe')
-    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    # Off-Windows (the CI runner) the WSL hazard above does not exist and
+    # `bash` on PATH is the real thing, so USE it — this check is far more
+    # valuable actually running in CI than skipping there. The Windows branch
+    # keeps the explicit Git Bash candidate list for exactly the reason stated.
+    # The candidates are built only on Windows because $env:USERPROFILE and
+    # $env:ProgramFiles are NULL on Linux and Join-Path throws on a null Path.
+    $bashExe = if ($Script:OnWindows) {
+        @(
+            (Join-Path $env:USERPROFILE 'scoop\apps\git\current\bin\bash.exe'),
+            (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe')
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    } else {
+        (Get-Command bash -ErrorAction SilentlyContinue).Source
+    }
     if (-not $bashExe) {
-        Assert-True $true 'Git Bash not installed - syntax check skipped'
+        Skip-Case 'no bash available -- the heredoc syntax check did not run'
     } else {
         $h = Get-RemoteHeredoc
         $tmp = Join-Path $Script:TempRoot "rea-heredoc-$(Get-Random).sh"
@@ -2026,6 +2052,13 @@ function Get-GitBashExe {
     # workstation is WSL, whose /mnt view and line-ending handling produce
     # phantom failures (measured 2026-08-25, 245 of them); Git Bash is the
     # shell whose semantics actually match the seedbox.
+    # OFF-WINDOWS there is no WSL indirection and `bash` IS the seedbox's own
+    # shell, so use it: these four behavioural probes are worth far more
+    # actually running on the Linux runner than skipping there. The candidate
+    # list below is built only on Windows because $env:USERPROFILE and
+    # $env:ProgramFiles are null on Linux and Join-Path throws on a null Path —
+    # which is exactly how these threw on the suite's first CI run.
+    if (-not $Script:OnWindows) { return (Get-Command bash -ErrorAction SilentlyContinue).Source }
     @(
         (Join-Path $env:USERPROFILE 'scoop\apps\git\current\bin\bash.exe'),
         (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
@@ -2162,7 +2195,7 @@ Test-Case 'BEHAVIOURAL: freshtail scans the whole file but never emits ancient l
     # UNDATED traceback from the HEAD of the file, whose ~100-char lines then
     # ate the whole 3000-byte section budget and starved the current dated
     # warnings out of it. Scanning whole is right; emitting whole is not.
-    if (-not (Get-GitBashExe)) { Assert-True $true 'Git Bash not installed'; return }
+    if (-not (Get-GitBashExe)) { Skip-Case 'no bash available'; return }
     $r = Invoke-FreshtailProbe
     Assert-Equal '0' $r.AncientKept   'the ancient undated head, outside the window, is NOT emitted'
     Assert-Equal '1' $r.FreshKept     'the current dated line IS emitted'
@@ -2174,7 +2207,7 @@ Test-Case 'BEHAVIOURAL: freshtail still fails OPEN on a wholly undated file' {
     # bazarr2.log is supervisor echoes with no dates at all, and rides the
     # fail-open path whole BY DESIGN. Bounding the emit must not become a
     # fail-closed filter that silently drops every undated source.
-    if (-not (Get-GitBashExe)) { Assert-True $true 'Git Bash not installed'; return }
+    if (-not (Get-GitBashExe)) { Skip-Case 'no bash available'; return }
     Assert-Equal '60' (Invoke-FreshtailFailOpenProbe) 'a fully undated file emits its whole window'
 }
 
@@ -2184,14 +2217,14 @@ Test-Case 'BEHAVIOURAL: freshlines drops a traceback whose dated header is outsi
     # header, then >360 lines of undated filler, then the traceback. Under the
     # old `tail -n 360` pre-window awk opened mid-filler at keep=1 and shipped
     # the traceback as current. Reading the file whole, the header governs it.
-    if (-not (Get-GitBashExe)) { Assert-True $true 'Git Bash not installed - the shape pins above still cover this'; return }
+    if (-not (Get-GitBashExe)) { Skip-Case 'no bash available - the shape pins above still cover this'; return }
     Assert-Equal '0' (Invoke-FreshlinesProbe -HeaderDate '2026-08-18') 'stale traceback dropped, header 400+ lines up'
 }
 
 Test-Case 'BEHAVIOURAL: freshlines keeps the same traceback when its header is fresh' {
     # The mirror assertion. A filter that dropped everything would pass the test
     # above; this is what stops that from being the fix.
-    if (-not (Get-GitBashExe)) { Assert-True $true 'Git Bash not installed'; return }
+    if (-not (Get-GitBashExe)) { Skip-Case 'no bash available'; return }
     Assert-Equal '1' (Invoke-FreshlinesProbe -HeaderDate '2026-09-02') 'a CURRENT traceback still ships'
 }
 
