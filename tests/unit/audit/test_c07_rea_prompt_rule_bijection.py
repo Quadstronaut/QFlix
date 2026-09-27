@@ -517,19 +517,48 @@ def test_the_2026_08_20_classes_do_not_eat_real_faults(ledgers):
             cid + " swallows a live *arr Error")
 
 
-def test_missing_ps1_is_a_counted_skip_not_a_silent_pass(ctx, repo, report):
-    """CI has no ps1. The skip must be REPORTED — an audit that quietly narrows
-    its own boundary is the original defect. It is reported through
-    meta.s2_subjects rather than through a verdict detail, so that running the
-    audit from the other host does not perturb report_digest."""
+def test_the_ps1_cross_check_now_really_runs_in_ci(ctx, repo, report):
+    """This test used to be named for the opposite fact.
+
+    Until 2026-09-27 the ps1 was gitignored, so CI had no subject: the
+    cross-check below was collapsed into ONE verdict whose OK detail is
+    identical whether the subject matched or was simply absent, and the
+    presence itself was reported out-of-band through meta.s2_subjects (excluded
+    from report_digest) so that running the audit from the other host did not
+    change the hash. That design is still correct and still here — see the long
+    comment in the detector — but its motivating case is gone: the ps1 is
+    TRACKED now, so the cross-check has a real subject on every runner and an
+    actual policy drift is caught in CI rather than only on the workstation.
+
+    What is asserted: the collapsed verdict still exists and is still exactly
+    one, AND the subject is genuinely in git rather than merely present on this
+    machine, which is the difference between the old skip and real coverage."""
     result = det.detect(ctx)
     cross = [v for v in result.verdicts if v.instance_id.endswith(":cross-check")]
     assert len(cross) == 1
     assert cross[0].kind in ("ps1-cross-check", "ps1-drift")
+
+    ps1 = "scripts/local-llm/qflix-rea.ps1"
+    assert repo.is_tracked(ps1), (
+        ps1 + " went back to being untracked — the cross-check silently stops "
+        "checking anything in CI if that happens, so this is the assertion that "
+        "must fail first")
+    assert repo.exists(ps1)
+    # ...and it is therefore NOT an S2 subject any more. meta.s2_subjects is the
+    # skip-reporting channel; a tracked file appearing there would mean the
+    # manifest still calls it invisible to CI when it is not.
+    assert ps1 not in report["meta"]["s2_subjects"]
+
+
+def test_s2_presence_is_still_reported_for_whatever_remains_untracked(repo, report):
+    """The out-of-band skip channel must keep working for the members that are
+    still untracked, or the next S2 file silently becomes an unreported gap."""
     s2 = report["meta"]["s2_subjects"]
-    assert "scripts/local-llm/qflix-rea.ps1" in s2
-    assert s2["scripts/local-llm/qflix-rea.ps1"] == repo.exists(
-        "scripts/local-llm/qflix-rea.ps1")
+    assert s2, "no S2 subjects reported at all — the skip channel went dark"
+    for path, here in s2.items():
+        assert not repo.is_tracked(path), (
+            path + " is tracked but still listed as an S2 subject")
+        assert here == repo.exists(path)
 
 
 def test_the_cross_check_verdict_is_host_independent(ctx, repo, tmp_path):

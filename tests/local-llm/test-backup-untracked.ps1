@@ -145,10 +145,17 @@ Test-Case 'the member list comes from audit-scope.yaml, not a hand-list' {
     # The whole point of reading the manifest: enrolling an S2 member enrols it
     # in the backup. A hardcoded list here would be a second policy surface, and
     # the two would drift exactly like REA's prompt and rule table did.
+    # Count was `-ge 2` and named qflix-rea.ps1 until 2026-09-27. That file is
+    # TRACKED now, so it left S2 and git backs it up instead; asserting a
+    # minimum count here just encoded how many files happened to be ignored on
+    # the day this was written. What must hold is that the list is non-empty
+    # (an empty one backs up NOTHING and still reports success — the failure
+    # this whole script exists to end) and that it is the manifest's list.
     $paths = @(Get-S2MemberPath -ScopePath $scopePath)
-    Assert-True ($paths.Count -ge 2) "real audit-scope.yaml yields >= 2 S2 members (got $($paths.Count))"
-    Assert-True ($paths -contains 'scripts/local-llm/qflix-rea.ps1') 'qflix-rea.ps1 is enrolled'
+    Assert-True ($paths.Count -ge 1) "real audit-scope.yaml yields >= 1 S2 member (got $($paths.Count))"
     Assert-True ($paths -contains 'scripts/manitoba-tunnel.ps1') 'manitoba-tunnel.ps1 is enrolled'
+    Assert-True (-not ($paths -contains 'scripts/local-llm/qflix-rea.ps1')) `
+        'qflix-rea.ps1 is NOT enrolled — it is tracked, so git is its backup'
     # ...and nothing from a NEIGHBOURING surface leaks in. S4's note names
     # scripts/local-llm and B:\QFlix\data in prose; a sloppy parser scoops those.
     foreach ($p in $paths) {
@@ -475,7 +482,13 @@ Test-Case 'LIVE: the real S2 members are actually backed up right now' {
     foreach ($p in $r.receipt.problems) { Write-Host "        problem: $p" }
     foreach ($b in $r.receipt.blockers) { Write-Host "        blocker: $b" }
     Assert-Equal 0 $r.exit 'live verify of the real mirror + history store passes'
-    Assert-True ($r.receipt.members.Count -ge 2) 'at least two live S2 members verified'
+    # Was `-ge 2`; S2 is down to one member since qflix-rea.ps1 became tracked
+    # on 2026-09-27. The assertion that matters is that the live run verified
+    # every member the manifest declares, not that some fixed number exist.
+    $declared = @(Get-S2MemberPath -ScopePath $scopePath)
+    Assert-True ($r.receipt.members.Count -eq $declared.Count) `
+        "every declared S2 member was verified live ($($r.receipt.members.Count)/$($declared.Count))"
+    Assert-True ($r.receipt.members.Count -ge 1) 'at least one live S2 member verified'
 }
 
 Write-Host ""

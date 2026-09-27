@@ -23,8 +23,9 @@
 #   guard grows with the repo instead of naming a fixed list that rots.
 #
 # Runs on the hosted Linux runner: pure text analysis, no Task Scheduler calls
-# and no Windows paths resolved. scripts/local-llm/qflix-rea.ps1 is gitignored
-# (audit-scope S2) so it is simply absent in CI; that SKIP is loud, per R4.
+# and no Windows paths resolved. Every subject including qflix-rea.ps1 is
+# tracked as of 2026-09-27, so nothing here is expected to skip in CI; the skip
+# paths below are kept for a partial checkout and say so loudly when they fire.
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -180,7 +181,7 @@ Test-Case 'the definition functions RUN, and produce absolute paths with no WIND
             $path = Join-Path $scriptsDir (ConvertTo-NativeRel $s.Rel)
             if (-not (Test-Path -LiteralPath $path)) {
                 $Script:Skip++
-                Write-Host "  SKIP  $($s.Rel) absent (audit-scope S2 subjects are not in CI; residual R4)"
+                Write-Host "  SKIP  $($s.Rel) absent -- every subject is tracked, so this is a partial checkout, not by design"
                 continue
             }
             $cmd = Get-IsolatedFunction -Path $path -Name $s.Fn
@@ -223,12 +224,12 @@ Test-Case 'no installer hands a Windows drive qualifier to Join-Path' {
 Test-Case 'REA installs the task where the task actually lives' {
     # The installer said \Archangel\QFlix-LLM\ while the live task has always sat
     # at \QFlix-LLM\. Reinstalling would have created a SECOND hourly REA rather
-    # than replacing the first. Subject is S2 (gitignored) -> absent in CI.
+    # than replacing the first.
     $rea = Join-Path $scriptsDir (ConvertTo-NativeRel 'local-llm/qflix-rea.ps1')
     if (-not (Test-Path -LiteralPath $rea)) {
         $Script:Skip++
-        Write-Host '  SKIP  scripts/local-llm/qflix-rea.ps1 is untracked by design (audit-scope S2).'
-        Write-Host '        This block did NOT run on this runner. Residual R4.'
+        Write-Host '  SKIP  scripts/local-llm/qflix-rea.ps1 absent. It has been TRACKED since'
+        Write-Host '        2026-09-27, so this is a partial checkout, not the old R4 skip.'
         return
     }
     $text = Get-Content -LiteralPath $rea -Raw
