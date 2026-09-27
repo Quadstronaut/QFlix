@@ -141,20 +141,82 @@ Test-Case 'no installer launches the interpreter directly (console flash)' {
     }
 }
 
-Test-Case 'the definition functions survive an unset WINDIR' {
-    # The hosted runner has no $env:WINDIR. A definition function that emitted
-    # "\System32\conhost.exe" there would satisfy the substring check above and
-    # still register a broken action on any machine where WINDIR was unset.
-    foreach ($rel in @('local-llm/backup-untracked.ps1', 'local-llm/ollama-recover.ps1', 'local/install-qflix-collect.ps1')) {
-        $path = Join-Path $scriptsDir (ConvertTo-NativeRel $rel)
-        if (-not (Test-Path -LiteralPath $path)) {
-            $Script:Skip++
-            Write-Host "  SKIP  $rel absent"
-            continue
+function Get-IsolatedFunction {
+    <#
+      Lift one function out of an installer by AST and make it callable here,
+      WITHOUT dot-sourcing the file (these scripts run work at load time, and
+      one of them is 160KB). Only valid for the pure definition functions.
+    #>
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+    $fn = $ast.Find({
+        param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name
+    }, $true)
+    if (-not $fn) { return $null }
+    . ([scriptblock]::Create($fn.Extent.Text))
+    return (Get-Command $Name -CommandType Function -ErrorAction SilentlyContinue)
+}
+
+Test-Case 'the definition functions RUN, and produce absolute paths with no WINDIR' {
+    # This block is executable, not a pattern match, because a pattern match is
+    # what missed the bug it now guards: the first cut of this fix built paths
+    # with `Join-Path $win 'System32\conhost.exe'`, and pwsh on Linux throws
+    # "A drive with the name 'C' does not exist" the moment a Windows drive
+    # qualifier reaches Join-Path. Every regex here passed; CI failed.
+    #
+    # So: unset WINDIR, actually CALL each definition function, and assert the
+    # value it returns. The hosted runner is the hostile case and also the one
+    # that matters, since a function that cannot run there is not pure.
+    $subjects = @(
+        @{ Rel = 'local-llm/backup-untracked.ps1';  Fn = 'Get-BackupTaskDefinition';  Arg = @{ ScriptPath = '/x/s.ps1' } },
+        @{ Rel = 'local-llm/ollama-recover.ps1';    Fn = 'Get-RecoverTaskDefinition'; Arg = @{ ScriptPath = '/x/s.ps1' } },
+        @{ Rel = 'local-llm/qflix-rea.ps1';         Fn = 'Get-HeadlessPsAction';      Arg = @{ Arguments  = '-File "/x/s.ps1"' } }
+    )
+    $saved = $env:WINDIR
+    try {
+        $env:WINDIR = ''
+        foreach ($s in $subjects) {
+            $path = Join-Path $scriptsDir (ConvertTo-NativeRel $s.Rel)
+            if (-not (Test-Path -LiteralPath $path)) {
+                $Script:Skip++
+                Write-Host "  SKIP  $($s.Rel) absent (audit-scope S2 subjects are not in CI; residual R4)"
+                continue
+            }
+            $cmd = Get-IsolatedFunction -Path $path -Name $s.Fn
+            Assert-True ($null -ne $cmd) "$($s.Rel) : $($s.Fn) is present and parseable"
+            if (-not $cmd) { continue }
+
+            $splat = $s.Arg
+            $d = & $cmd @splat
+            Assert-True ($d.Execute -match '^[A-Za-z]:\\') `
+                "$($s.Rel) : Execute is an absolute Windows path with no WINDIR -- $($d.Execute)"
+            Assert-True ($d.Execute -like '*conhost.exe') "$($s.Rel) : Execute is conhost"
+            Assert-True ($d.Argument -match '^--headless "[A-Za-z]:\\.*powershell\.exe" ') `
+                "$($s.Rel) : Argument wraps an absolute powershell.exe -- $($d.Argument)"
         }
-        $text = Get-Content -LiteralPath $path -Raw
+    } finally { $env:WINDIR = $saved }
+
+    # install-qflix-collect.ps1 builds its action inline rather than in a pure
+    # function, so it cannot be called here. Hold it to the static rule and say
+    # so, rather than quietly covering two of three subjects.
+    $collect = Join-Path $scriptsDir (ConvertTo-NativeRel 'local/install-qflix-collect.ps1')
+    if (Test-Path -LiteralPath $collect) {
+        $text = Get-Content -LiteralPath $collect -Raw
         Assert-True ($text -match "\`$env:WINDIR\s*\}\s*else\s*\{\s*'C:\\WINDOWS'\s*\}") `
-            "$rel : falls back to a literal Windows root when WINDIR is unset"
+            'local/install-qflix-collect.ps1 : falls back to a literal Windows root (static check only)'
+    }
+}
+
+Test-Case 'no installer hands a Windows drive qualifier to Join-Path' {
+    # The defect class above, checked everywhere at once: Join-Path validates the
+    # drive qualifier against the CURRENT host's PSDrives, so any Windows path
+    # built with it is a landmine for the Linux runner.
+    foreach ($f in $installers) {
+        $rel  = $f.FullName.Substring($repoRoot.Length + 1)
+        $text = Get-Content -LiteralPath $f.FullName -Raw
+        Assert-True ($text -notmatch 'Join-Path\s+\$win\b') `
+            "$rel : the Windows root is concatenated, not Join-Path'd"
     }
 }
 

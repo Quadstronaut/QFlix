@@ -169,9 +169,12 @@ function Get-RecoverTaskDefinition {
     #>
     param([Parameter(Mandatory)][string]$ScriptPath)
     $win = if ($env:WINDIR) { $env:WINDIR } else { 'C:\WINDOWS' }
-    $ps  = Join-Path $win 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    # Concatenated, NOT Join-Path: pwsh on the Linux CI runner throws "A drive
+    # with the name 'C' does not exist" when Join-Path is handed a path with a
+    # Windows drive qualifier. These are always Windows paths.
+    $ps  = "$win\System32\WindowsPowerShell\v1.0\powershell.exe"
     @{
-        Execute  = (Join-Path $win 'System32\conhost.exe')
+        Execute  = "$win\System32\conhost.exe"
         Argument = ('--headless "{0}" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{1}" -Quiet' -f $ps, $ScriptPath)
     }
 }

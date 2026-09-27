@@ -464,11 +464,15 @@ function Get-BackupTaskDefinition {
     # $env:WINDIR is empty on the hosted Linux runner -- fall back to a literal so
     # this stays a pure, assertable function there.
     $win = if ($env:WINDIR) { $env:WINDIR } else { 'C:\WINDOWS' }
-    $ps  = Join-Path $win 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    # Concatenated, NOT Join-Path: pwsh on the Linux CI runner throws "A drive
+    # with the name 'C' does not exist" when Join-Path is handed a path with a
+    # Windows drive qualifier, which broke this very test. These are always
+    # Windows paths, so build them as strings and keep the function pure.
+    $ps  = "$win\System32\WindowsPowerShell\v1.0\powershell.exe"
     @{
         TaskPath = '\Archangel\Backups\'
         TaskName = 'QFlix-Untracked-Backup'
-        Execute  = (Join-Path $win 'System32\conhost.exe')
+        Execute  = "$win\System32\conhost.exe"
         Argument = '--headless "' + $ps + '" -NoProfile -NonInteractive -WindowStyle Hidden ' +
                    '-ExecutionPolicy Bypass -File "' + $ScriptPath + '"'
         RepeatMinutes = 60
