@@ -455,11 +455,22 @@ function Get-BackupTaskDefinition {
       so the cost of an hourly cadence is a hash of 87 KB.
     #>
     param([Parameter(Mandatory)][string]$ScriptPath)
+    # conhost --headless, not powershell.exe directly: an Interactive ("only when
+    # logged on") task gets its console window drawn -- and focus stolen -- BEFORE
+    # the process reads -WindowStyle Hidden, so it flashes every run, hourly,
+    # mid-game. Headless conhost never draws one.
+    # Cost: Task Scheduler's "Last Run Result" column then shows conhost's exit 0
+    # rather than this script's; backup-untracked.log is the truth about a run.
+    # $env:WINDIR is empty on the hosted Linux runner -- fall back to a literal so
+    # this stays a pure, assertable function there.
+    $win = if ($env:WINDIR) { $env:WINDIR } else { 'C:\WINDOWS' }
+    $ps  = Join-Path $win 'System32\WindowsPowerShell\v1.0\powershell.exe'
     @{
         TaskPath = '\Archangel\Backups\'
         TaskName = 'QFlix-Untracked-Backup'
-        Execute  = 'powershell.exe'
-        Argument = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $ScriptPath + '"'
+        Execute  = (Join-Path $win 'System32\conhost.exe')
+        Argument = '--headless "' + $ps + '" -NoProfile -NonInteractive -WindowStyle Hidden ' +
+                   '-ExecutionPolicy Bypass -File "' + $ScriptPath + '"'
         RepeatMinutes = 60
         Description = 'Backs up and SHA256-verifies the audit-scope S2 files (gitignored operator ' +
                       'tooling) into the Backup-Documents mirror plus a version history. Exit 1 = ' +

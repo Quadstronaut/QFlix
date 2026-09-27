@@ -153,10 +153,32 @@ function Invoke-Recovery {
 }
 
 # ---------- Task install / uninstall (manual trigger => no -Trigger) ----------
+function Get-RecoverTaskDefinition {
+    <#
+      .SYNOPSIS
+      The task's command line as data, so it can be asserted without registering.
+
+      .DESCRIPTION
+      conhost --headless wraps powershell.exe because an Interactive task has its
+      console window drawn -- and keyboard focus stolen -- before the process ever
+      parses -WindowStyle Hidden. That is a visible flash on every run. Headless
+      conhost allocates a console that is never drawn.
+
+      Cost: "Last Run Result" in Task Scheduler becomes conhost's exit 0 rather
+      than this script's. ollama-recover's own log file is the truth.
+    #>
+    param([Parameter(Mandatory)][string]$ScriptPath)
+    $win = if ($env:WINDIR) { $env:WINDIR } else { 'C:\WINDOWS' }
+    $ps  = Join-Path $win 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    @{
+        Execute  = (Join-Path $win 'System32\conhost.exe')
+        Argument = ('--headless "{0}" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{1}" -Quiet' -f $ps, $ScriptPath)
+    }
+}
+
 function Install-Task {
-    $ps = Join-Path $PSHOME 'powershell.exe'
-    $arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Quiet"
-    $action    = New-ScheduledTaskAction -Execute $ps -Argument $arg
+    $d = Get-RecoverTaskDefinition -ScriptPath $PSCommandPath
+    $action    = New-ScheduledTaskAction -Execute $d.Execute -Argument $d.Argument
     $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
