@@ -222,6 +222,15 @@ def test_rules_match_their_canonical_log_lines(ledgers):
         ("sab-queue-finished-notification",
          "2026-09-18 02:27:20,561::INFO::[notifier:169] Sending notification: "
          "SABnzbd - Queue finished (type=queue_done, job_cat=None)"),
+        # 2026-09-26. Paged twice on 2026-09-25; verbatim.
+        ("plex-season-skip-null-value",
+         "Sep 25, 2026 05:04:05.587 [139868007598904] ERROR - Exception "
+         "caught determining whether we could skip 'Star Trek - Strange New "
+         "Worlds/Season 3' ~ Null value not allowed for this type"),
+        ("plex-season-skip-null-value",
+         "Sep 25, 2026 05:03:51.918 [139868007598904] ERROR - Exception "
+         "caught determining whether we could skip 'Law & Order/Season 2' ~ "
+         "Null value not allowed for this type"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -379,7 +388,13 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
              "notification: SABnzbd - Queue finished"),
             ("sab-queue-finished-notification",
              "2026-09-18 02:27:20,561::WARNING::[downloader:300] Server "
-             "news.example.net will be ignored for 10 minutes")):
+             "news.example.net will be ignored for 10 minutes"),
+            ("plex-season-skip-null-value",
+             "ERROR - Exception caught determining whether we could skip "
+             "'Movies/Heat (1995)' ~ Null value not allowed for this type"),
+            ("plex-season-skip-null-value",
+             "ERROR - Exception caught determining whether we could skip "
+             "'Show/Season 1' ~ database disk image is malformed")):
         assert not re.search(by[cid], still_pages), (
             cid + " must not suppress an uncensused neighbour: " + still_pages)
 
