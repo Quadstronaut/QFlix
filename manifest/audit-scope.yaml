@@ -415,7 +415,11 @@ residuals:
     # Kuma #111 reds AND the required `audit` CI context blocks every merge to
     # master (protection is enforce_admins). A missed 30-day review is a
     # self-inflicted full-stop, found 2 days before it would have fired.
-    last_reviewed: 2026-08-27
+    # Reviewed 2026-09-26: still true, still bounded by cadence. audit-live
+    # timer ran Result=success 2026-09-26 20:18Z, next run scheduled; no change.
+    # This review lapsed at UTC midnight and blocked PR #43 - the full-stop
+    # described above is real.
+    last_reviewed: 2026-09-26
     residual: Live box drift between audit runs (L-01..L-07). Bounded only by cadence.
   - id: R3
     owner: operator
@@ -447,7 +451,9 @@ residuals:
     # contexts gate merges (branch protection 2026-08-27), a red CI is at least
     # LOUD at merge time, but a watcher for pushes nobody tries to merge is
     # still missing. Residual stays open.
-    last_reviewed: 2026-08-27
+    # Reviewed 2026-09-26: unchanged. Last master run success 2026-09-26
+    # 18:40Z; assertion still unbuilt; residual stays open.
+    last_reviewed: 2026-09-26
     residual: >-
       CI itself. The last-successful-run-age assertion is NOT implemented (it
       needs network + a token; this regime is offline by construction).

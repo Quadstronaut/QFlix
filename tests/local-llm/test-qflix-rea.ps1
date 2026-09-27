@@ -1752,14 +1752,20 @@ Test-Case 'Test-IsNoiseFinding suppresses "Job failed: Video does not exist" and
     }
     Assert-Equal 'plex-credits-job-video-missing' (Test-IsNoiseFinding $gone) 'video-does-not-exist variant suppressed'
 
-    # The UNPROVEN Job-failed variants must still page - the 2026-08-03
-    # carve-out stands for them.
+    # Scanner job failed was proven and enrolled 2026-09-19 (#41); Mis-matching
+    # is still unproven and must page - the 2026-08-03 carve-out stands for it.
     $scanner = @{
         signature = 'plex:credits-scanner-failed'
         summary   = 'credits scanner job failed'
         excerpt   = '[2026-08-27 05:08:21.965] ERROR - [CreditsDetectionManager] Job failed: Scanner job failed'
     }
-    Assert-Equal $null (Test-IsNoiseFinding $scanner) 'Scanner job failed still pages'
+    Assert-Equal 'plex-credits-job-scanner-failed' (Test-IsNoiseFinding $scanner) 'Scanner job failed suppressed since #41'
+    $skip = @{
+        signature = 'plex:scan-null-value'
+        summary   = 'null value during season scan'
+        excerpt   = "ERROR - Exception caught determining whether we could skip 'Star Trek - Strange New Worlds/Season 3' ~ Null value not allowed for this type"
+    }
+    Assert-Equal 'plex-season-skip-null-value' (Test-IsNoiseFinding $skip) 'reaper-window season skip null suppressed'
     $mism = @{
         signature = 'plex:credits-mismatch'
         summary   = 'mis-matching media items'

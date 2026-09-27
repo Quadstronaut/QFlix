@@ -1219,6 +1219,29 @@ classes:
       arr-unstick sweep.
     added: 2026-09-19
 
+  - id: plex-season-skip-null-value
+    title: 'Plex "Exception caught determining whether we could skip <Show/Season N> ~ Null value not allowed for this type"'
+    rx: '(?i)exception caught determining whether we could skip\s+''.+/season \d+''\s*~\s*null value not allowed for this type'
+    field: excerpt
+    prompt_clause: 'Plex "Exception caught determining whether we could skip ''<Show>/Season N'' ~ Null value not allowed for this type" scanner lines'
+    why: >-
+      Paged 2026-09-25 10:08 (Law & Order S1, 2/3) and 16:10 (Strange New
+      Worlds S3, 3/3) under two model-authored signatures. CENSUS 2026-09-26,
+      every retained PMS rotation: 61 occurrences, ALL inside a mass-delete
+      window - 26 at 2026-08-07 21:06 (Vanderpump Rules removal) and the rest
+      at 05:0x-05:1x UTC on reaper days (2026-08-08, 09-20, 09-22..26). Proven
+      2026-09-25: qflix-reaper deleted Law & Order S1 files at 05:03:28Z, Plex
+      logged this at 05:03:51 beside "Couldn't get size of file" / "Error
+      scanning directory ... No such file or directory" for the same season.
+      The scanner's skip-unchanged check reads mtime/size of a season dir the
+      reaper is emptying; the null is the missing file. Plex skips and
+      continues; the season is gone by design. WHO OWNS THE REAL VERSION: a
+      scanner that cannot read live media reds manitoba-maint-canary-plex-
+      playback and -plex-transcoder; a reaper that deletes the wrong thing is
+      its own audit manifest + Kuma monitor. Anchored on '/Season N' so a
+      non-season skip exception still pages.
+    added: 2026-09-26
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1351,6 +1374,9 @@ prompt_segments:
   - index: 41
     marker: 'SABnzbd INFO "Sending notification: SABnzbd - Queue finished" lines'
     classes: [sab-queue-finished-notification]
+  - index: 42
+    marker: 'Plex "Exception caught determining whether we could skip ''<Show>/Season N'' ~ Null value not allowed for this type" scanner lines'
+    classes: [plex-season-skip-null-value]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
