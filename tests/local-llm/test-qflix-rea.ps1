@@ -4,7 +4,33 @@ $ErrorActionPreference = 'Stop'
 
 $Script:Pass = 0
 $Script:Fail = 0
+$Script:Skip = 0
 $Script:Failures = @()
+
+# ---------------------------------------------------------------------------
+# Workstation-only coverage.
+#
+# This suite ran ONLY on the operator's workstation until 2026-09-27, because
+# the subject was gitignored and CI had nothing to dot-source. Now that it is
+# tracked the suite runs on the hosted Linux runner too, which exposed the
+# blocks that were quietly depending on Windows or on the real gitignored
+# secrets/ dir. Those are genuine coverage limits, so they SKIP and say so and
+# are counted in the summary -- they are never weakened into assertions that
+# pass everywhere by asserting less.
+# ---------------------------------------------------------------------------
+$Script:OnWindows = ($env:OS -eq 'Windows_NT') -or ($PSVersionTable.PSVersion.Major -le 5)
+# $Script:TempRoot is a Windows-ism and is NULL on the Linux runner, where it made
+# `Join-Path $Script:TempRoot ...` throw in 32 cases at once the first time this suite
+# ran there. [IO.Path]::GetTempPath() is the portable form and resolves to the
+# same place on Windows.
+$Script:TempRoot  = [IO.Path]::GetTempPath()
+$Script:HasSecrets = $false   # set once $repoRoot is known, below
+
+function Skip-Case {
+    param([string]$Why)
+    $Script:Skip++
+    Write-Host "  SKIP  $Why" -F Yellow
+}
 
 function Assert-Equal {
     param($Expected, $Actual, [string]$Name)
@@ -48,12 +74,15 @@ if (-not (Test-Path $scriptPath)) {
 }
 . $scriptPath
 
+# secrets/ is gitignored: present on the workstation, never on a runner.
+$Script:HasSecrets = Test-Path (Join-Path $repoRoot 'secrets')
+
 # --- Sentinel ---
 Test-Case 'script dot-sources without executing main' { Assert-True $true 'no-op sentinel' }
 
 # --- Task 2: state I/O ---
 Test-Case 'Get-StateDir returns APPDATA path and creates dir' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     try {
         $d = Get-StateDir
         Assert-Equal (Join-Path $env:APPDATA 'qflix-rea') $d 'path is APPDATA\qflix-rea'
@@ -64,7 +93,7 @@ Test-Case 'Get-StateDir returns APPDATA path and creates dir' {
 }
 
 Test-Case 'Read-State returns defaults when file absent' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     try {
         $s = Read-State
         Assert-Equal '' $s.last_heartbeat_date 'default last_heartbeat_date'
@@ -75,7 +104,7 @@ Test-Case 'Read-State returns defaults when file absent' {
 }
 
 Test-Case 'Write-State then Read-State roundtrips' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     try {
         Write-State @{ last_heartbeat_date = '2026-05-11'; last_ollama_dead_ping = '' }
         $s = Read-State
@@ -87,7 +116,7 @@ Test-Case 'Write-State then Read-State roundtrips' {
 
 # --- Task 3: lock + audit log ---
 Test-Case 'Acquire-Lock returns a stream then blocks second acquire' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     try {
         $a = Acquire-Lock
         Assert-True ($a -ne $null) 'first acquire returns stream'
@@ -469,10 +498,20 @@ Test-Case 'Get-FieldOrEmpty handles hashtables too' {
     Assert-Equal '' (Get-FieldOrEmpty $h 'b') 'hashtable missing'
 }
 
-Test-Case 'Get-RepoRoot resolves to actual repo root with secrets/' {
+Test-Case 'Get-RepoRoot resolves to actual repo root' {
     $r = Get-RepoRoot
-    Assert-True (Test-Path (Join-Path $r 'secrets')) 'secrets/ exists at returned root'
+    # This is the assertion that proves the "3 dirs up" arithmetic, and it works
+    # everywhere because the subject is tracked (since 2026-09-27).
     Assert-True (Test-Path (Join-Path $r 'scripts/local-llm/qflix-rea.ps1')) 'script path consistent'
+    # secrets/ is gitignored, so it exists on the workstation and never on a
+    # runner. Asserting it unconditionally made this case fail in CI for a
+    # reason that says nothing about Get-RepoRoot. Checked where it can be,
+    # stated out loud where it cannot.
+    if (Test-Path (Join-Path $r 'secrets')) {
+        Assert-True $true 'secrets/ exists at returned root'
+    } else {
+        Write-Host "  SKIP  secrets/ is gitignored and absent here (expected on a CI runner)."
+    }
 }
 
 Test-Case 'Build-UserPrompt embeds the blob' {
@@ -489,7 +528,7 @@ Test-Case 'Get-SystemPrompt mentions Manitoba and JSON schema' {
 }
 
 Test-Case 'Read-Secret returns null when file absent' {
-    $tmp = Join-Path $env:TEMP "qflix-rea-secrets-$(Get-Random)"
+    $tmp = Join-Path $Script:TempRoot "qflix-rea-secrets-$(Get-Random)"
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
     try {
         $r = Read-Secret -RepoRoot $tmp -Name 'nonexistent.url'
@@ -498,7 +537,7 @@ Test-Case 'Read-Secret returns null when file absent' {
 }
 
 Test-Case 'Read-Secret returns trimmed contents when present' {
-    $tmp = Join-Path $env:TEMP "qflix-rea-secrets-$(Get-Random)"
+    $tmp = Join-Path $Script:TempRoot "qflix-rea-secrets-$(Get-Random)"
     New-Item -ItemType Directory -Path (Join-Path $tmp 'secrets') -Force | Out-Null
     try {
         Set-Content -LiteralPath (Join-Path $tmp 'secrets/test.id') -Value "  abc123  `n" -Encoding UTF8 -NoNewline
@@ -508,7 +547,7 @@ Test-Case 'Read-Secret returns trimmed contents when present' {
 }
 
 Test-Case 'Write-AuditLog appends line and rotates at 10MB' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     try {
         Write-AuditLog 'first line'
         Write-AuditLog 'second line'
@@ -1170,7 +1209,7 @@ Test-Case 'New-DiscordDeadmanPayload accepts a reason-specific title and descrip
 }
 
 Test-Case 'Read-State returns empty dead_ping_<reason> defaults for all five reasons when file absent' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     try {
         $s = Read-State
         foreach ($r in $Script:DeadmanReasons) {
@@ -1182,7 +1221,7 @@ Test-Case 'Read-State returns empty dead_ping_<reason> defaults for all five rea
 }
 
 Test-Case 'Write-State then Read-State roundtrips a dead_ping_<reason> key without disturbing the others' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     try {
         Write-State @{ last_heartbeat_date = ''; last_ollama_dead_ping = ''; dead_ping_ssh_fail = '2026-07-29T02:00:00Z' }
         $s = Read-State
@@ -1194,7 +1233,7 @@ Test-Case 'Write-State then Read-State roundtrips a dead_ping_<reason> key witho
 }
 
 Test-Case 'Send-DeadmanAlert pages (dry-run) on first occurrence of a reason' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     $prevDry = $DryRun
     try {
         $DryRun = $true
@@ -1208,7 +1247,7 @@ Test-Case 'Send-DeadmanAlert pages (dry-run) on first occurrence of a reason' {
 }
 
 Test-Case 'Send-DeadmanAlert stays silent within the 24h dedup window for the same reason' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     try {
         Write-State @{ last_heartbeat_date = ''; last_ollama_dead_ping = ''; dead_ping_no_models = (Get-Date).ToString('o') }
         Send-DeadmanAlert -Reason 'no_models' -Title 't' -Description 'd' -Webhook 'http://example.invalid' -OpId '123'
@@ -1220,7 +1259,7 @@ Test-Case 'Send-DeadmanAlert stays silent within the 24h dedup window for the sa
 }
 
 Test-Case 'Send-DeadmanAlert dedup keys are independent per reason' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     $prevDry = $DryRun
     try {
         $DryRun = $true
@@ -1238,7 +1277,7 @@ Test-Case 'Send-DeadmanAlert dedup keys are independent per reason' {
 }
 
 Test-Case 'Send-DeadmanAlert is silent (never throws) when webhook/opid are missing' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     try {
         Send-DeadmanAlert -Reason 'blob_parse' -Title 't' -Description 'd' -Webhook '' -OpId ''
         $log = Get-Content -Raw -LiteralPath (Join-Path (Get-StateDir) 'audit.log')
@@ -1249,7 +1288,7 @@ Test-Case 'Send-DeadmanAlert is silent (never throws) when webhook/opid are miss
 }
 
 Test-Case 'Send-DeadmanAlert appends an optional Detail suffix to the audit line' {
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     $prevDry = $DryRun
     try {
         $DryRun = $true
@@ -1521,7 +1560,7 @@ Test-Case 'remote heredoc is syntactically valid bash (bash -n)' {
         Assert-True $true 'Git Bash not installed - syntax check skipped'
     } else {
         $h = Get-RemoteHeredoc
-        $tmp = Join-Path $env:TEMP "rea-heredoc-$(Get-Random).sh"
+        $tmp = Join-Path $Script:TempRoot "rea-heredoc-$(Get-Random).sh"
         # WriteAllText default is UTF-8 WITHOUT BOM - the same bytes
         # Invoke-RemoteFetch now streams.
         [System.IO.File]::WriteAllText($tmp, $h)
@@ -1796,7 +1835,7 @@ function New-TestGroup {
 function Use-TempReaState {
     param([scriptblock]$Block)
     $prev = $env:APPDATA
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-ledger-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-ledger-$(Get-Random)"
     try { & $Block } finally {
         try { Remove-Item -Recurse -Force $env:APPDATA -ErrorAction SilentlyContinue } catch {}
         $env:APPDATA = $prev
@@ -2006,8 +2045,8 @@ function Invoke-FreshlinesProbe {
     $bashExe = Get-GitBashExe
     if (-not $bashExe) { return $null }
 
-    $tmp = Join-Path $env:TEMP "rea-freshlines-$(Get-Random).log"
-    $sf  = Join-Path $env:TEMP "rea-freshlines-$(Get-Random).sh"
+    $tmp = Join-Path $Script:TempRoot "rea-freshlines-$(Get-Random).log"
+    $sf  = Join-Path $Script:TempRoot "rea-freshlines-$(Get-Random).sh"
     $sb  = New-Object System.Text.StringBuilder
     [void]$sb.Append("$HeaderDate 06:39:05,437 - root : ERROR (signalr_client:159) - BAZARR SignalR client connection lost`n")
     for ($i = 0; $i -lt 400; $i++) { [void]$sb.Append("    undated filler continuation line $i`n") }
@@ -2050,8 +2089,8 @@ function Invoke-FreshtailProbe {
     $bashExe = Get-GitBashExe
     if (-not $bashExe) { return $null }
 
-    $tmp = Join-Path $env:TEMP "rea-freshtail-$(Get-Random).log"
-    $sf  = Join-Path $env:TEMP "rea-freshtail-$(Get-Random).sh"
+    $tmp = Join-Path $Script:TempRoot "rea-freshtail-$(Get-Random).log"
+    $sf  = Join-Path $Script:TempRoot "rea-freshtail-$(Get-Random).sh"
     $sb  = New-Object System.Text.StringBuilder
     for ($i = 0; $i -lt 300; $i++) { [void]$sb.Append("  ANCIENTHEAD undated traceback frame $i`n") }
     [void]$sb.Append("2026-08-01 04:30:25,036 buildarr [WARNING] STALEDATED something old`n")
@@ -2094,8 +2133,8 @@ function Invoke-FreshtailFailOpenProbe {
     #>
     $bashExe = Get-GitBashExe
     if (-not $bashExe) { return $null }
-    $tmp = Join-Path $env:TEMP "rea-freshtail-fo-$(Get-Random).log"
-    $sf  = Join-Path $env:TEMP "rea-freshtail-fo-$(Get-Random).sh"
+    $tmp = Join-Path $Script:TempRoot "rea-freshtail-fo-$(Get-Random).log"
+    $sf  = Join-Path $Script:TempRoot "rea-freshtail-fo-$(Get-Random).sh"
     $sb  = New-Object System.Text.StringBuilder
     for ($i = 0; $i -lt 100; $i++) { [void]$sb.Append("  UNDATED supervisor echo line $i`n") }
     [System.IO.File]::WriteAllText($tmp, $sb.ToString())
@@ -2175,6 +2214,10 @@ function New-ConnFinding { param([string]$Excerpt, [string]$App = 'x')
 }
 
 Test-Case 'the port registry is read from secrets/*.port' {
+    if (-not $Script:HasSecrets) {
+        Skip-Case 'no secrets/ dir (gitignored) -- the real port registry cannot be read here'
+        return
+    }
     $map = Get-StackPortMap
     Assert-True ($map.Count -ge 10) 'registry populated from the real secrets dir'
     Assert-Equal 'plex'     $map['17025'] 'plex port mapped'
@@ -2190,6 +2233,10 @@ Test-Case 'Get-ConnectionTargetPort reads all three shapes this stack emits' {
 }
 
 Test-Case 'the four real 2026-09-02 connectivity families are all held' {
+    if (-not $Script:HasSecrets) {
+        Skip-Case 'Test-IsOwnedByAMonitor resolves ports through the gitignored secrets/ registry'
+        return
+    }
     # bazarr2 -> sonarr2
     Assert-Equal 'monitor-owns-target:sonarr2' (Test-IsOwnedByAMonitor (New-ConnFinding "urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='127.0.0.1', port=17003): Max retries exceeded with url: /sonarr2/signalr/messages/negotiate" 'bazarr2')) 'bazarr2 -> sonarr2 held'
     # tautulli -> plex
@@ -2309,7 +2356,7 @@ Test-Case 'Get-BusyVerdict: audio-plumbing processes never count as media' {
 
 Test-Case 'Get-UserBusyReason fails OPEN when a probe throws' {
     # A broken probe must never be the reason REA goes dark (2026-07-29 class).
-    $env:APPDATA = Join-Path $env:TEMP "qflix-rea-test-$(Get-Random)"
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
     try {
         function Get-InputIdleMinutes { throw 'probe exploded' }
         Assert-Equal '' (Get-UserBusyReason) 'probe failure reads as not busy'
@@ -2321,6 +2368,10 @@ Test-Case 'Get-UserBusyReason fails OPEN when a probe throws' {
 }
 
 Test-Case 'live probes run on this box without throwing' {
+    if (-not $Script:OnWindows) {
+        Skip-Case 'GetLastInputInfo (user32.dll) and the WASAPI meters are Windows-only'
+        return
+    }
     $idle = Get-InputIdleMinutes
     Assert-True ($idle -ge 0) "input idle minutes is non-negative ($idle)"
     $apps = @(Get-AudibleApps -Samples 3 -IntervalMs 50)
@@ -2340,7 +2391,10 @@ Test-Case 'Invoke-Model asks Ollama to unload the model when done (keep_alive=0)
 
 # Summary
 Write-Host "`n========================================" -F White
-Write-Host "  $Script:Pass passed, $Script:Fail failed" -F $(if($Script:Fail){'Red'}else{'Green'})
+Write-Host "  $Script:Pass passed, $Script:Fail failed, $Script:Skip skipped" -F $(if($Script:Fail){'Red'}else{'Green'})
+if ($Script:Skip -gt 0) {
+    Write-Host "  $Script:Skip block(s) did NOT run here. Read that as a limit, not a pass." -F Yellow
+}
 Write-Host "========================================" -F White
 if ($Script:Fail -gt 0) {
     foreach ($f in $Script:Failures) { Write-Host "  - $f" -F Red }

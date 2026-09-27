@@ -283,7 +283,18 @@ function Resolve-SshHost {
 }
 
 function Get-StateDir {
-    $d = Join-Path $env:APPDATA 'qflix-rea'
+    # $env:APPDATA is the real home for this and does not move. The fallbacks
+    # exist because this file became tracked on 2026-09-27 and its 519-case
+    # suite now runs on the hosted LINUX runner, where APPDATA is null and
+    # `Join-Path $null` throws — which took out 43 cases at once, none of them
+    # for a real defect. REA itself still only ever runs on the workstation, so
+    # on Windows this resolves exactly as it always has and the state directory
+    # does not move.
+    $base = $env:APPDATA
+    if (-not $base) { $base = $env:XDG_STATE_HOME }
+    if (-not $base) { $base = $env:HOME }
+    if (-not $base) { $base = [IO.Path]::GetTempPath() }
+    $d = Join-Path $base 'qflix-rea'
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
     return $d
 }
