@@ -35,32 +35,17 @@ surfaces:
     host: workstation
     enumerability: offline-PARTIAL
     note: >-
-      Files the system depends on that are NOT in git and never will be (public
-      repo, operator-local tooling). The FILE BODIES are permanently outside CI.
-      Mitigation: extract their POLICY into tracked data and guard the
-      extraction (C-07 + C-10). A body edit that does not touch policy is
+      Files the system depends on that are NOT in git. The FILE BODIES are
+      outside CI. Mitigation: extract their POLICY into tracked data and guard
+      the extraction (C-07 + C-10). A body edit that does not touch policy is
       invisible to CI — residual R4.
+      SHRANK 2026-09-27: scripts/local-llm/qflix-rea.ps1 left this surface by
+      being TRACKED (operator decision, for archival). Its body is now in S1
+      like anything else, and the 519-case suite that was skipped on every
+      hosted runner executes there. This surface is down to one member, and
+      "and never will be" is no longer true of it as a category — a member here
+      is one nobody has yet made publishable, not one that cannot be.
     members:
-      - path: scripts/local-llm/qflix-rea.ps1
-        owner: operator
-        residual: >-
-          The 56KB LLM log auditor. Gitignored at .gitignore:55 because it is
-          workstation-local tooling and the repo is public. It is the ALERTING
-          LAYER — the thing the operator specifically said nothing audits. Its
-          noise policy is extracted to manifest/rea-noise-classes.yaml and
-          guarded by C-07; its test file is put in CI by C-10. What remains
-          unguarded: any change to the script BODY that does not alter the
-          extracted policy. BACKUP (fixed 2026-08-03): scripts/local-llm/
-          backup-untracked.ps1 reads THIS members list, copies each entry into
-          the Backup-Documents mirror hourly, keeps a content-addressed version
-          history outside the /MIR purge scope, and SHA256-verifies all three.
-          So a bad edit is now recoverable; before that the only backup was the
-          daily /MIR, which is a mirror and was measured 22h and two edits stale
-          with nothing checking it.
-        policy_extract: manifest/rea-noise-classes.yaml
-        loader: scripts/local-llm/rea-noise-classes.ps1
-        review_cadence_days: 90
-        last_reviewed: 2026-07-29
       - path: scripts/manitoba-tunnel.ps1
         owner: operator
         residual: >-
@@ -433,11 +418,21 @@ residuals:
   - id: R4
     owner: operator
     review_cadence_days: 90
-    last_reviewed: 2026-08-03
+    # Reviewed 2026-09-27: the LARGER half of this residual is CLOSED. REA
+    # (scripts/local-llm/qflix-rea.ps1) is tracked, so its body is now ordinary
+    # S1 subject matter and its 519-case suite runs on every hosted runner
+    # instead of skipping. What is left is scripts/manitoba-tunnel.ps1 alone,
+    # which genuinely does carry the real FQDN and stays out of a public repo.
+    last_reviewed: 2026-09-27
     residual: >-
       S2 untracked file bodies — only their extracted policy is guarded by CI.
       A body edit that does not touch policy is still invisible to a detector.
-      What changed 2026-08-03: it is no longer also unrecoverable. Backup is
+      SCOPE NARROWED 2026-09-27 to scripts/manitoba-tunnel.ps1, the one
+      remaining member; REA left the surface by becoming tracked, which closed
+      this residual for the file it was mostly written about. The tunnel
+      launcher has no policy to extract and nothing in the repo depends on its
+      internals, so what is unguarded there is smaller than what REA left.
+      What changed 2026-08-03 and still holds: not also unrecoverable. Backup is
       scripts/local-llm/backup-untracked.ps1 (hourly, SHA256-verified, with a
       version history), so a bad edit can be rolled back even though CI cannot
       see it. Reviewing a body change remains a human act.

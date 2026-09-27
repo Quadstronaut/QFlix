@@ -3,6 +3,12 @@
 At HEAD 06d4226: 85 Test-Case blocks against the ALERTING LAYER, dot-sourcing a
 file .gitignore keeps out of git, executed by ZERO CI jobs. Both halves of that
 sentence are now assertions.
+
+2026-09-27: that file is tracked, so the gap it names is closed for REA — the
+suite (519 cases by now) executes on every runner instead of skipping. The
+detector did not change; the negatives that USED qflix-rea.ps1 as a stand-in
+for "an untracked subject" are synthetic now, so they keep testing the detector
+rather than the repo's current ignore policy.
 """
 from __future__ import annotations
 
@@ -83,34 +89,92 @@ def test_untracked_subject_must_be_registered_in_s2(ctx):
     hit = [v for v in result.verdicts
            if v.instance_id.endswith("->scripts/local-llm/qflix-rea.ps1")]
     assert len(hit) == 1
-    # Either it is tracked (it is not, by design) or S2-registered with an owner.
+    # Tracked since 2026-09-27, so this now resolves via `subject-tracked`; it
+    # resolved via `subject-s2-registered` before. Both are OK and the detector
+    # does not care which, which is exactly why the switch was a no-op here.
     assert hit[0].kind in ("subject-tracked", "subject-s2-registered")
     assert hit[0].status == OK
 
 
-def test_deleting_the_s2_entry_makes_the_check_fail(ctx):
-    """AC-6's negative. Without the S2 registration the alerting layer's
-    subject is invisible to CI and nothing says so."""
+# ---------------------------------------------------------------------------
+# The two negatives below used qflix-rea.ps1 as their fixture: the repo's one
+# reliably-untracked dot-sourced subject. Tracking it on 2026-09-27 broke them,
+# which is the tell that they were testing the REPO's policy and not the
+# DETECTOR's logic. They are synthetic now, so the next file that changes
+# tracking status cannot silently turn a negative test into a no-op.
+# ---------------------------------------------------------------------------
+
+def _synthetic_ctx(ctx, tmp_path, s2_members):
+    """A repo with one tracked test that dot-sources one UNTRACKED subject."""
+    from lib.audit.repo import Repo as _Repo
+
+    test_rel = "tests/local-llm/test-synthetic.ps1"
+    (tmp_path / "tests" / "local-llm").mkdir(parents=True, exist_ok=True)
+    (tmp_path / test_rel).write_text(
+        ". (Join-Path $repoRoot 'scripts/synthetic-subject.ps1')\n", encoding="utf-8")
+    # scripts/synthetic-subject.ps1 is deliberately never created and never
+    # listed in `tracked` — that absence is the whole fixture.
+    repo = _Repo(tmp_path, tracked=[test_rel])
+
     scope = copy.deepcopy(ctx.ledgers.scope)
-    scope["surfaces"]["S2"]["members"] = [
-        m for m in scope["surfaces"]["S2"]["members"]
-        if m["path"] != "scripts/local-llm/qflix-rea.ps1"
-    ]
-    result = det.detect(_ctx_with_scope(ctx, scope))
-    bad = [v for v in result.verdicts if v.kind == "subject-untracked"]
-    assert any("qflix-rea.ps1" in v.instance_id for v in bad)
+    scope["surfaces"]["S2"]["members"] = s2_members
+    c = _ctx_with_scope(ctx, scope)
+    c.repo = repo
+    return c
 
 
-def test_s2_entry_without_a_reason_does_not_count(ctx):
+SYNTH_SUBJECT = "scripts/synthetic-subject.ps1"
+
+
+def _synthetic_verdicts(ctx, tmp_path, s2_members):
+    return det.detect(_synthetic_ctx(ctx, tmp_path, s2_members)).verdicts
+
+
+def test_a_full_s2_entry_does_excuse_an_untracked_subject(ctx, tmp_path):
+    """The positive control. Without it the two negatives below would pass just
+    as happily against a detector that flagged everything unconditionally."""
+    verdicts = _synthetic_verdicts(ctx, tmp_path, [{
+        "path": SYNTH_SUBJECT, "owner": "operator",
+        "residual": "a reason a human wrote and can be held to",
+    }])
+    hit = [v for v in verdicts if v.instance_id.endswith("->" + SYNTH_SUBJECT)]
+    assert len(hit) == 1
+    assert hit[0].kind == "subject-s2-registered"
+    assert hit[0].status == OK
+
+
+def test_deleting_the_s2_entry_makes_the_check_fail(ctx, tmp_path):
+    """AC-6's negative. Without the S2 registration the subject is invisible to
+    CI and nothing says so."""
+    verdicts = _synthetic_verdicts(ctx, tmp_path, [])
+    bad = [v for v in verdicts if v.kind == "subject-untracked"]
+    assert any(SYNTH_SUBJECT in v.instance_id for v in bad)
+
+
+def test_s2_entry_without_a_reason_does_not_count(ctx, tmp_path):
     """An S2 registration is an adjudication. A bare path with no reason and no
     owner is a hole with a label on it."""
-    scope = copy.deepcopy(ctx.ledgers.scope)
-    for m in scope["surfaces"]["S2"]["members"]:
-        if m["path"] == "scripts/local-llm/qflix-rea.ps1":
-            m["residual"] = ""
-    result = det.detect(_ctx_with_scope(ctx, scope))
-    assert any(v.kind == "subject-untracked" and "qflix-rea" in v.instance_id
-               for v in result.verdicts)
+    for broken in ({"path": SYNTH_SUBJECT, "owner": "operator", "residual": ""},
+                   {"path": SYNTH_SUBJECT, "owner": "", "residual": "has a reason"}):
+        verdicts = _synthetic_verdicts(ctx, tmp_path, [broken])
+        assert any(v.kind == "subject-untracked" and SYNTH_SUBJECT in v.instance_id
+                   for v in verdicts), broken
+
+
+def test_no_s2_member_is_also_git_tracked(ctx):
+    """The drift this session created and had to clean up by hand.
+
+    A file can be enrolled in S2 (declared "untracked but load-bearing") and be
+    git-tracked at the same time; nothing objected when qflix-rea.ps1 became
+    tracked while still listed. The manifest then claims a CI blind spot that
+    does not exist, backup-untracked.ps1 keeps mirroring a file git already
+    holds, and residual R4 describes a gap that closed. Cheap to check, so it
+    is checked rather than remembered."""
+    members = (ctx.ledgers.scope["surfaces"]["S2"].get("members") or [])
+    tracked = [m["path"] for m in members if ctx.repo.is_tracked(m["path"])]
+    assert tracked == [], (
+        "S2 members that are actually in git — remove them from surface S2, "
+        "they are ordinary S1 subjects now: " + str(tracked))
 
 
 def test_python_subjects_resolve_to_tracked_files(ctx, ledgers):

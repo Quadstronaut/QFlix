@@ -97,23 +97,19 @@ jobs:
         # the S2 one (qflix-rea.ps1) only on the workstation, skipping loudly.
         run: ./tests/local-llm/test-task-installers-headless.ps1
 
-      - name: REA suite (subject is an audit-scope S2 member)
+      - name: REA suite (always run)
         shell: pwsh
+        # Unconditional since 2026-09-27. tests/local-llm/test-qflix-rea.ps1
+        # dot-sources scripts/local-llm/qflix-rea.ps1, which used to be
+        # gitignored — so on every hosted runner the subject was absent and the
+        # suite skipped, which was registered residual R4. The subject is now
+        # tracked, so the suite executes here like any other. A missing subject
+        # is therefore a REAL failure now, not an expected skip: fail loudly
+        # rather than reintroduce a silent pass.
         run: |
-          # tests/local-llm/test-qflix-rea.ps1 dot-sources
-          # scripts/local-llm/qflix-rea.ps1, which .gitignore:55 keeps out of
-          # git (operator-local tooling, public repo). On a hosted runner the
-          # subject is absent, so its 85 Test-Case blocks CANNOT run here.
-          #
-          # This is registered residual R4 — read it as a limit, not a pass.
-          # The skip is LOUD, and the job still executes the file wherever the
-          # subject exists (workstation / self-hosted runner), which is the
-          # only place those assertions mean anything.
           $subject = 'scripts/local-llm/qflix-rea.ps1'
-          if (Test-Path $subject) {
-            ./tests/local-llm/test-qflix-rea.ps1
-          } else {
-            Write-Host "SKIP tests/local-llm/test-qflix-rea.ps1"
-            Write-Host "     subject $subject is untracked by design (audit-scope S2)."
-            Write-Host "     85 Test-Case blocks did NOT run on this runner. Residual R4."
+          if (-not (Test-Path $subject)) {
+            Write-Host "::error::$subject is missing — it is tracked, so this is a broken checkout, not the old R4 skip"
+            exit 1
           }
+          ./tests/local-llm/test-qflix-rea.ps1

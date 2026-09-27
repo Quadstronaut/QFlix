@@ -41,24 +41,18 @@ scripts/qflix-newsletter/**/*.pyc
 # Workstation tunnel daemon hardcodes the real seedbox FQDN — treat as secret.
 scripts/manitoba-tunnel.ps1
 
-# Workstation-only audit script. NOT excluded for secrets — the old comment here
-# claimed it "hardcodes the real seedbox FQDN", which was copied from the tunnel
-# entry above and is false: Resolve-SshHost reads secrets/seedbox.ssh-host (or
-# $env:QFLIX_SSH_HOST) at runtime and throws rather than guess. Verified clean
-# 2026-07-29 — no FQDN, token, webhook or credential in the file.
-# It stays out of git because it is operator-local tooling that runs on the
-# workstation, not on the box, and the repo is public.
-# Backup: scripts/local-llm/backup-untracked.ps1, hourly via the scheduled task
-# \Archangel\Backups\QFlix-Untracked-Backup. It reads the file list from
-# manifest/audit-scope.yaml surface S2 (so enrolling a member there enrols it in
-# the backup), writes into the same B:\BAKS\Documents mirror the daily
-# Backup-Documents /MIR run uses, ALSO keeps a content-addressed version history
-# at B:\BAKS\qflix-untracked-history, and SHA256-verifies all three. It exits 1
-# on divergence and 2 when it cannot tell, and pages Discord either way.
-# Until 2026-08-03 the only backup was that daily /MIR — a mirror, not history,
-# with nothing verifying it. Measured that day: the mirror was 22 hours and two
-# edits behind this file and every surface reported success.
-scripts/local-llm/qflix-rea.ps1
+# scripts/local-llm/qflix-rea.ps1 was listed here until 2026-09-27. It is now
+# TRACKED, by operator decision, for archival: the repo should carry the history
+# of the alerting layer rather than a mirror of its latest bytes.
+# It was never excluded for secrets. Re-verified at the moment it was enrolled:
+# no FQDN (Resolve-SshHost reads secrets/seedbox.ssh-host at runtime and throws
+# rather than guess), no token, no credential, no member data. The only two
+# identifiers it carries — the slot nickname "manitoba" and the orphaned Plex
+# Discord webhook ID in the noise regex — were already in 332 tracked files and
+# in manifest/rea-noise-classes.yaml, so tracking it exposed nothing new.
+# Consequences, all landed in the same commit: it leaves audit-scope surface S2
+# (so backup-untracked.ps1 no longer enrols it — git does that now), and the
+# pwsh CI job runs its 519-case suite unconditionally instead of skipping it.
 
 # Staging dir for the 2026-05-11 inventory-driven cleanup; safe to delete once
 # the operator confirms nothing was accidentally swept.
