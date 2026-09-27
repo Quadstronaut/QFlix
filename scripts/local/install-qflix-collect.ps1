@@ -34,8 +34,18 @@ function Register-Task {
     if (-not (Test-Path $CollectPS1)) {
         throw "Collector not found at $CollectPS1"
     }
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$CollectPS1`""
+    # conhost --headless, not powershell.exe: this task is Interactive, so the OS
+    # draws its console window and hands it focus before the process starts. This
+    # one did not even pass -WindowStyle Hidden, so it flashed a full window every
+    # hour. Headless conhost never draws one.
+    # Cost: "Last Run Result" becomes conhost's 0, not the collector's -- read the
+    # collector's own log under B:\QFlix\data\logs instead.
+    $win = if ($env:WINDIR) { $env:WINDIR } else { 'C:\WINDOWS' }
+    # Concatenated, NOT Join-Path: Join-Path rejects a Windows drive qualifier
+    # when it runs under pwsh on Linux (the CI runner).
+    $psExe = "$win\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $action = New-ScheduledTaskAction -Execute "$win\System32\conhost.exe" `
+        -Argument "--headless `"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$CollectPS1`""
     # Anchor at the next top-of-hour and repeat every hour indefinitely.
     # -StartWhenAvailable catches up if PC was off at trigger time.
     $now = Get-Date

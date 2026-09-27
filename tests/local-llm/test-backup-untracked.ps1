@@ -404,6 +404,14 @@ Test-Case 'the scheduled task definition is code, and it is HOURLY' {
     Assert-Equal 60 $d.RepeatMinutes 'repeats hourly, not daily'
     Assert-True ($d.Argument -like '*-NoProfile*') 'runs with -NoProfile'
     Assert-True ($d.Argument -like '*-File "/x/backup-untracked.ps1"*') 'target path is quoted'
+    # The task is Interactive, so -Execute powershell.exe would get a console
+    # window drawn (and focus stolen) BEFORE -WindowStyle Hidden applies: an
+    # hourly flash mid-game, which is what the operator actually reported
+    # 2026-09-27. conhost --headless never draws one. Repo-wide equivalent:
+    # tests/local-llm/test-task-installers-headless.ps1.
+    Assert-True ($d.Execute -like '*conhost.exe') 'launches conhost, not the interpreter directly'
+    Assert-True ($d.Argument -like '--headless "*powershell.exe" *') 'conhost runs headless, wrapping powershell'
+    Assert-True ($d.Execute -notlike '\*') 'the conhost path is absolute even with no WINDIR'
     Assert-True ($d.Description.Length -ge 60) 'carries a description an operator can act on'
 }
 
