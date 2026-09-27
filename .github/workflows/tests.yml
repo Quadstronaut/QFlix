@@ -89,6 +89,14 @@ jobs:
         # Its one LIVE block (verify the real B:\BAKS mirror) skips loudly on a
         # runner with no such volume and says so in the output.
         run: ./tests/local-llm/test-backup-untracked.ps1
+
+      - name: Scheduled-task installers stay headless (always run)
+        shell: pwsh
+        # Pure text analysis over every installer under scripts/ — no Task
+        # Scheduler calls — so it adjudicates the tracked installers here and
+        # the S2 one (qflix-rea.ps1) only on the workstation, skipping loudly.
+        run: ./tests/local-llm/test-task-installers-headless.ps1
+
       - name: REA suite (subject is an audit-scope S2 member)
         shell: pwsh
         run: |
