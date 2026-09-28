@@ -1,6 +1,6 @@
 {
-  "week_of": "2026-09-21",
-  "generated_at": "2026-09-21T14:10:22Z",
-  "since": "2026-09-14T14:10:22Z",
-  "html": "<p>A few good ones from this week:</p><ul><li>The \"Skip Intro\" button should show up far more often on TV episodes — we found and fixed a setting that was quietly limiting it.</li><li>Fixed an audio glitch where a few titles could default to the wrong language track; English wins by default now, like it should.</li><li>Cleared up a rare snag that could get some downloads stuck in a retry loop, so new arrivals show up faster.</li><li>Ironed out some broken links in the request system that popped up when browsing on a phone.</li></ul><p>Thanks for streaming with us! 🎬</p>"
+  "week_of": "2026-09-28",
+  "generated_at": "2026-09-28T14:09:26Z",
+  "since": "2026-09-21T14:09:26Z",
+  "html": "<p>Quiet week behind the scenes — the team spent it on maintenance and testing rather than big changes, so there's nothing flashy to report. Your movies and shows kept streaming right along the whole time. 🙂</p>"
 }
