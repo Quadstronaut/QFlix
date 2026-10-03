@@ -169,6 +169,36 @@ class TestRecoveryFailure:
         notify_msg = mock_notify.call_args[0][0]
         assert "operator" in notify_msg.lower() or "✗" in notify_msg or "3" in notify_msg
 
+    def test_ucc_older_build_gate_pages_remedy_and_stops(self, tmp_path):
+        # 2026-10-01: UCC gated postgres start behind 'Upgrade & Repair'.
+        app = _make_app("postgres", kuma_monitor="Postgres")
+        app.raw["ucc_slug"] = "postgres"
+        manifest = _FakeManifest({"postgres": app})
+        gated = LifecycleResult(
+            ok=False, duration_s=0.1, stderr="", reason="exit 2",
+            stdout='{"data": {"message": "This app is running an older build. '
+                   "Please run 'Upgrade & Repair' from your UCP to restore the "
+                   '\'start\' action."}, "result": false}')
+
+        with patch("lib.recovery.lifecycle.restart", return_value=gated) as mock_restart, \
+             patch("lib.recovery.health.probe") as mock_probe, \
+             patch("lib.recovery._attempt_auto_downgrade") as mock_down, \
+             patch("lib.recovery.notify.notify") as mock_notify, \
+             patch("lib.recovery.state.record"), \
+             patch("lib.recovery.time.sleep"):
+            result = run("postgres", manifest=manifest)
+
+        assert result["event"] == "failed"
+        assert mock_restart.call_count == 1
+        mock_probe.assert_not_called()
+        mock_down.assert_not_called()
+        msg = mock_notify.call_args[0][0]
+        assert "Upgrade & Repair" in msg and "app-postgres upgrade" in msg
+
+    def test_plain_restart_failure_is_not_older_build(self, tmp_path):
+        assert not recovery_mod._is_ucc_older_build(_fail_lifecycle())
+        assert not recovery_mod._is_ucc_older_build(_ok_lifecycle())
+
     def test_recovery_healthy_locally_kuma_still_down(self, tmp_path):
         app = _make_app(kuma_monitor="Sonarr")
         manifest = _FakeManifest({"sonarr": app})
