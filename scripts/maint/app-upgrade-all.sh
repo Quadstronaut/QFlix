@@ -180,9 +180,11 @@ redact() {
         -e 's/"password"[[:space:]]*:[[:space:]]*"[^"]*$/"password":"<redacted>/I'
 }
 
+# UCC app-manager prints "Sub-commands:" (hyphen) since ~2026-08-18; matching
+# only "Subcommands:" silently emptied every sweep for six weeks.
 has_upgrade_verb() {
     "$1" --help 2>/dev/null \
-        | awk '/^Subcommands:/{f=1;next} f && /^[[:space:]]+upgrade[[:space:]]/{found=1} END{exit !found}'
+        | awk '/^Sub-?commands:/{f=1;next} f && /^[[:space:]]+upgrade[[:space:]]/{found=1} END{exit !found}'
 }
 
 # Best-effort Discord notify via the canonical lib.notify helper. Notifiarr
@@ -287,6 +289,12 @@ if (( ${#TARGETS[@]} == 0 )); then
     echo "no apps to upgrade"
     for s in "${SKIPPED[@]}"; do echo "  skip: $s"; done
     write_results_json
+    # Installed wrappers but nothing upgradeable, unfiltered, is a broken
+    # probe (UCC help-format drift), never a quiet week: say so and fail.
+    if (( ! DRY_RUN && ${#ONLY_FILTERS[@]} == 0 )); then
+        notify warning "app-upgrade-all (${mode}): 0 upgradeable apps of ${#INSTALLED[@]} installed - upgrade-verb probe likely broken (UCC help format?); NOTHING was upgraded"
+        exit 1
+    fi
     exit 0
 fi
 echo "  targets: ${TARGETS[*]}"
