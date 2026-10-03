@@ -89,7 +89,7 @@ alert. If the Patreon address later differs, edit `holder` + `payer_ref` only.
 Lifecycle after the invite: accepted → gate creates their Seerr row at perms 0 →
 `unknown-payer` (frozen at whatever the invite granted: Welcome + Test) →
 Patreon sees their address → `entitled` → full libraries, Welcome+Test removed,
-Seerr perms restored. Listmonk picks her up at the 04:00 nightly sync.
+Seerr perms restored. Listmonk picks them up at the 04:00 nightly sync.
 
 ## Part B — the test library
 
