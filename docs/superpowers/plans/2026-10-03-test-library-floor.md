@@ -18,7 +18,7 @@
 - No box operations Monday 11:00–15:00 UTC (`lib/window.py`).
 - Run pytest from the **Bash tool only** (PowerShell→WSL bash produces phantom failures): `bash tests/run.sh -q` (CI's command) or `python -m pytest <file> -q`.
 - Run the full suite and `python scripts/maint/qflix-audit.py` **after `git add`** (audit boundary is the git index).
-- Floor titles: Welcome = `"QFlix - Welcome"` (required), Test = `"QFlix - Test"` (optional). Folder `~/media/Test`. Agent `tv.plex.agents.none`, scanner `Plex Video Files Scanner` (verified live on PMS 1.43.3.10896, `/system/agents`, 2026-10-03).
+- Floor titles: Welcome = `"QFlix - Welcome"` (required), Test = `"QFlix - Test"` (optional). Folder `~/media/Test`. Agent `tv.plex.agents.none`, scanner `Plex Video Files` (verified live on PMS 1.43.3.10896, `/system/agents`, 2026-10-03).
 - Gate code must be deployed to the box BEFORE the library is created.
 - Session end: merged master == GitHub == box `~/scripts` (deploy-drift canary).
 
@@ -446,9 +446,9 @@ def test_defaults_still_create_the_welcome_movie_library():
 def test_flags_select_personal_media_for_the_test_library():
     a = M.build_parser().parse_args([
         "--title", "QFlix - Test", "--path", "/x/Test",
-        "--agent", "tv.plex.agents.none", "--scanner", "Plex Video Files Scanner"])
+        "--agent", "tv.plex.agents.none", "--scanner", "Plex Video Files"])
     assert (a.title, a.path, a.agent, a.scanner) == (
-        "QFlix - Test", "/x/Test", "tv.plex.agents.none", "Plex Video Files Scanner")
+        "QFlix - Test", "/x/Test", "tv.plex.agents.none", "Plex Video Files")
 ```
 
 - [ ] **Step 2: Run** `python -m pytest tests/unit/test_plex_welcome_library_args.py -q` → FAIL (`no attribute build_parser`).
@@ -475,7 +475,7 @@ In `main()`: `args = build_parser().parse_args()`; replace `AGENT`/`SCANNER` use
 ```
     ~/.apps/python-plexapi/venv/bin/python ~/scripts/configure/59b-plex-welcome-library.py \
         --title "QFlix - Test" --path ~/media/Test \
-        --agent tv.plex.agents.none --scanner "Plex Video Files Scanner"
+        --agent tv.plex.agents.none --scanner "Plex Video Files"
 ```
 
 - [ ] **Step 4: Run** the new test + `git add -A && bash tests/run.sh -q` → PASS.
@@ -535,8 +535,8 @@ Record the count: those shares get Test the instant it exists (entitled ones los
 
 ```bash
 sshm 'mkdir -p ~/media/Test; V=~/.apps/python-plexapi/venv/bin/python; S=~/scripts/configure/59b-plex-welcome-library.py
-$V $S --title "QFlix - Test" --path ~/media/Test --agent tv.plex.agents.none --scanner "Plex Video Files Scanner" --dry-run &&
-$V $S --title "QFlix - Test" --path ~/media/Test --agent tv.plex.agents.none --scanner "Plex Video Files Scanner"'
+$V $S --title "QFlix - Test" --path ~/media/Test --agent tv.plex.agents.none --scanner "Plex Video Files" --dry-run &&
+$V $S --title "QFlix - Test" --path ~/media/Test --agent tv.plex.agents.none --scanner "Plex Video Files"'
 ```
 Expected: `created section 'QFlix - Test' (key=..., type=movie, locations=[.../media/Test])`. Confirm agent via `/library/sections` shows `agent="tv.plex.agents.none"`.
 
