@@ -104,7 +104,10 @@ def test_module_never_passes_no_backup_or_xtrace():
 # Behavioural tier — fake box
 # ---------------------------------------------------------------------------
 
-HELP = 'printf "Usage: x\\nSubcommands:\\n  upgrade   Upgrade the app\\n  start     Start\\n"'
+# The REAL UCC app-manager format ("Sub-commands:", hyphenated, since ~2026-08-18).
+# The stub used to print "Subcommands:", which is why every test stayed green
+# while the live sweep matched nothing for six weeks.
+HELP = 'printf "Usage: x\n\nSub-commands:\n    upgrade            Upgrade the app\n    start              Start\n"'
 
 PG_STUB = r"""#!/usr/bin/env bash
 if [ "${1:-}" = "--help" ]; then %(help)s; exit 0; fi
@@ -538,6 +541,25 @@ def test_postgres_first_and_skip_list_honoured(multibox):
     assert multibox.read("order.log").splitlines() == ["postgres", "bazarr", "sonarr"]
     assert "skip: mariadb: in skip list" in cp.stdout
     assert "skip: nginx: in skip list" in cp.stdout
+
+
+@posix_only
+def test_zero_targets_live_is_loud(multibox):
+    # Every wrapper losing its upgrade verb at once = a broken probe, not a
+    # quiet week. 2026-08-24..10-03 the sweep upgraded nothing and exited 0.
+    for app in ("postgres", "bazarr", "sonarr"):
+        (multibox.bin / f"app-{app}").write_text(
+            '#!/usr/bin/env bash\nprintf "Usage: x\n"\n', encoding="utf-8")
+    cp = multibox.sweep()
+    assert cp.returncode == 1, cp.stdout
+    rec = multibox.read("notify.capture")
+    assert "warning" in rec and "0 upgradeable" in rec
+
+
+@posix_only
+def test_zero_targets_with_only_filter_stays_quiet(multibox):
+    cp = multibox.sweep("--only", "nosuchapp")
+    assert cp.returncode == 0, cp.stdout
 
 
 @posix_only
