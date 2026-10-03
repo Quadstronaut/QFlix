@@ -103,3 +103,64 @@ def test_welcome_match_is_case_and_whitespace_tolerant():
     secs = [PS.Section(id=100, key=1, title="Movies", type="movie"),
             PS.Section(id=101, key=2, title="  qflix - WELCOME  ", type="movie")]
     assert 101 not in PS.full_access_ids(secs, WELCOME)
+
+
+# ---------------------------------------------------------------------------
+# QFLX-4: the floor is a SET -- Welcome (required) + optional extras.
+# `QFlix - Test` holds playback test clips for prospects; operator 2026-10-03:
+# "for pre-subscription testing" -- unentitled see it, entitled never do.
+# ---------------------------------------------------------------------------
+TEST = "QFlix - Test"
+
+
+def test_extra_floor_title_joins_the_minimum_set():
+    secs = _sections("Movies", WELCOME, TEST)          # ids 100, 101, 102
+    assert PS.minimum_access_ids(secs, WELCOME, (TEST,)) == [101, 102]
+
+
+def test_extra_floor_title_is_absent_from_full_access():
+    secs = _sections("Movies", "TV", WELCOME, TEST)
+    assert PS.full_access_ids(secs, WELCOME, (TEST,)) == [100, 101]
+
+
+def test_floor_set_and_full_access_stay_disjoint():
+    secs = _sections("Movies", "TV", WELCOME, TEST, "Anime")
+    full = set(PS.full_access_ids(secs, WELCOME, (TEST,)))
+    floor = set(PS.minimum_access_ids(secs, WELCOME, (TEST,)))
+    assert not (full & floor)
+
+
+def test_missing_extra_floor_title_degrades_to_welcome_only():
+    """Test is optional: absent means the floor is Welcome alone -- never a raise,
+    because the anti-eviction rail is about Welcome, not about Test."""
+    secs = _sections("Movies", WELCOME)
+    assert PS.minimum_access_ids(secs, WELCOME, (TEST,)) == [101]
+    assert PS.missing_floor_titles(secs, (TEST,)) == [TEST]
+
+
+def test_missing_welcome_still_raises_even_when_test_exists():
+    """A Test-only floor would hand prospects the clips but drop the
+    go-subscribe video; worse, it hides that Welcome is gone. Refuse."""
+    secs = _sections("Movies", TEST)
+    with pytest.raises(PS.PlexShareError):
+        PS.minimum_access_ids(secs, WELCOME, (TEST,))
+
+
+def test_floor_only_server_raises_rather_than_evicting():
+    secs = _sections(WELCOME, TEST)
+    with pytest.raises(PS.PlexShareError):
+        PS.full_access_ids(secs, WELCOME, (TEST,))
+
+
+def test_extra_floor_match_is_case_and_whitespace_tolerant():
+    secs = [PS.Section(id=100, key=1, title="Movies", type="movie"),
+            PS.Section(id=101, key=2, title=WELCOME, type="movie"),
+            PS.Section(id=102, key=3, title="  qflix - TEST ", type="movie")]
+    assert PS.full_access_ids(secs, WELCOME, (TEST,)) == [100]
+    assert PS.missing_floor_titles(secs, (TEST,)) == []
+
+
+def test_default_extra_floor_is_empty_so_old_callers_are_unchanged():
+    secs = _sections("Movies", WELCOME, TEST)
+    assert PS.full_access_ids(secs, WELCOME) == [100, 102]
+    assert PS.minimum_access_ids(secs, WELCOME) == [101]
