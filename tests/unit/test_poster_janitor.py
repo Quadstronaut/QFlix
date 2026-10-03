@@ -548,3 +548,14 @@ def test_welcome_is_excluded_but_unknown_libraries_still_get_named(monkeypatch):
 
 def test_utility_sections_and_managed_sections_are_disjoint():
     assert not set(pj.UTILITY_SECTIONS) & set(pj.SECTION_NAMES)
+
+
+def test_test_library_is_a_utility_section_not_unmanaged(monkeypatch):
+    """QFLX-4: QFlix - Test is operator-placed static test clips on the
+    not-entitled floor -- never janitored, never named as unmanaged."""
+    xml = _sections_xml(
+        [(n, str(i)) for i, n in enumerate(pj.SECTION_NAMES, 1)]
+        + [("QFlix - Welcome", "7"), ("QFlix - Test", "8")])
+    monkeypatch.setattr(pj, "_plex_req", lambda *a, **k: (200, xml))
+    _, unmanaged = pj.resolve_sections("17025", "tok")
+    assert unmanaged == []
