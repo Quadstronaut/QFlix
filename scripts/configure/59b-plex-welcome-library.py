@@ -35,7 +35,7 @@ Run on the box, inside the plexapi venv:
 
 The same script creates `QFlix - Test` (QFLX-4), the second not-entitled floor
 library, with the Plex Personal Media pair so test clips keep their filenames:
-    ~/.apps/python-plexapi/venv/bin/python ~/scripts/configure/59b-plex-welcome-library.py         --title "QFlix - Test" --path ~/media/Test         --agent tv.plex.agents.none --scanner "Plex Video Files Scanner"
+    ~/.apps/python-plexapi/venv/bin/python ~/scripts/configure/59b-plex-welcome-library.py         --title "QFlix - Test" --path ~/media/Test         --agent tv.plex.agents.none --scanner "Plex Video Files"
 """
 from __future__ import annotations
 
@@ -67,8 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--title", default=DEFAULT_TITLE)
     ap.add_argument("--path", default=DEFAULT_DIR)
-    # QFLX-4: tv.plex.agents.none / "Plex Video Files Scanner" is the Personal
-    # Media pair, verified on the live PMS 1.43.3 /system/agents 2026-10-03.
+    # QFLX-4: tv.plex.agents.none / "Plex Video Files" is the Personal Media
+    # pair, verified by creating QFlix - Test on the live PMS 1.43.3
+    # (2026-10-03). NOT "Plex Video Files Scanner": that legacy scanner is
+    # refused with 400 "new scanner needs to be paired with new agent". The
+    # tv.plex.agents.* agents take the suffix-less scanners, like "Plex Movie".
     # Filenames become titles instead of being matched to real films.
     ap.add_argument("--agent", default=AGENT)
     ap.add_argument("--scanner", default=SCANNER)
