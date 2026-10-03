@@ -575,3 +575,42 @@ def test_digest_is_silent_when_nobody_is_counting_down(tmp_path):
 
 
 import json  # noqa: E402  (used by the masking test above)
+
+
+# ---------------------------------------------------------------------------
+# QFLX-4: Test joins Welcome on the floor.
+# ---------------------------------------------------------------------------
+TEST_ID = 998
+CONTENT = [132919827, 132920523, 143790062, 143790063]
+FLOOR = [TEST_ID, WELCOME_ID]
+
+
+def test_expired_at_welcome_only_is_raised_to_the_whole_floor(tmp_path):
+    after = dt.datetime(2026, 9, 2, tzinfo=dt.timezone.utc)
+    p = plan(answer=answer(ENT.NO), state=state_with(tmp_path),
+             share=share(sections=[WELCOME_ID]), seerr_user=seerr_user(perms=0),
+             full_ids=CONTENT, minimum_ids=FLOOR, now=after)
+    assert p.state == G.S_EXPIRED
+    assert p.plex_target == FLOOR
+
+
+def test_entitled_holding_content_plus_floor_drops_the_floor_without_alert(tmp_path):
+    """Lapsed-then-returned member: the grant must remove Welcome AND Test and
+    must not trip the short-catalogue rail (self-sealing bug class, 2026-08-17)."""
+    p = plan(answer=answer(ENT.YES), state=state_with(tmp_path),
+             share=share(sections=CONTENT + FLOOR),
+             full_ids=CONTENT, minimum_ids=FLOOR)
+    assert p.state == G.S_ENTITLED
+    assert p.plex_target == sorted(CONTENT)
+    assert p.alert is None
+
+
+def test_floor_note_names_a_missing_extra_floor_library():
+    secs = list(SECTIONS)                              # no Test section
+    assert G.floor_note(secs, ("QFlix - Test",)) == "; floor missing: QFlix - Test"
+    secs.append(PS.Section(id=TEST_ID, key=9, title="QFlix - Test", type="movie"))
+    assert G.floor_note(secs, ("QFlix - Test",)) == ""
+
+
+def test_default_floor_extra_is_the_test_library():
+    assert G.DEFAULT_FLOOR_EXTRA == ("QFlix - Test",)

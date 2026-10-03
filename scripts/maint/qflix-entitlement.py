@@ -93,6 +93,10 @@ TOOL = "qflix-entitlement"
 KUMA_PUSH_KEY = "qflix-entitlement"
 KUMA_BASE = "http://127.0.0.1"
 DEFAULT_WELCOME_SECTION = "QFlix - Welcome"
+# Extra libraries on the not-entitled floor beside Welcome (QFLX-4, operator
+# 2026-10-03: test clips "for pre-subscription testing"). Optional: a missing
+# one shrinks the floor and is named in the Kuma summary, it never stops a run.
+DEFAULT_FLOOR_EXTRA = ("QFlix - Test",)
 DEFAULT_MAX_MUTATIONS = 10
 LOG_RETENTION_DAYS = 30
 
@@ -869,6 +873,14 @@ def would_be_reduced(plans: Sequence[Plan]) -> List[str]:
 # ===========================================================================
 # Reporting
 # ===========================================================================
+def floor_note(sections, extra_floor_titles) -> str:
+    """Kuma-summary suffix naming absent extra floor libraries ('' if none).
+    Visible, not paged: a missing Test library is a standing fact, and a page
+    on a standing fact is how a channel gets muted."""
+    gone = PS.missing_floor_titles(sections, extra_floor_titles)
+    return ("; floor missing: %s" % ", ".join(gone)) if gone else ""
+
+
 def digest_lines(plans: Sequence[Plan], now: dt.datetime) -> List[str]:
     """The countdown digest. Masked -- this goes to Discord."""
     pending = [p for p in plans if p.state == S_PENDING and p.days_remaining is not None]
@@ -1134,6 +1146,9 @@ def build_args(argv=None):
     p.add_argument("--members", default=None, help="roster path (default: secrets/members.yaml)")
     p.add_argument("--state-dir", default=None, help="durable state directory")
     p.add_argument("--welcome-section", default=DEFAULT_WELCOME_SECTION)
+    p.add_argument("--floor-section", action="append", default=None,
+                   help="extra not-entitled floor library title (repeatable; "
+                        "default: %s)" % ", ".join(DEFAULT_FLOOR_EXTRA))
     p.add_argument("--max-mutations", type=int, default=DEFAULT_MAX_MUTATIONS,
                    help="per-run cap; overflow DEFERS to the next run")
     p.add_argument("--max-reduce-pct", type=int, default=DEFAULT_MAX_REDUCE_PCT,
@@ -1160,7 +1175,11 @@ def build_args(argv=None):
     p.add_argument("--settle-days", type=int, default=DEFAULT_SETTLE_DAYS,
                    help="payer_oracle settle window in days (default %d)"
                         % DEFAULT_SETTLE_DAYS)
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    # append + default=list would ADD to the default instead of replacing it.
+    if args.floor_section is None:
+        args.floor_section = list(DEFAULT_FLOOR_EXTRA)
+    return args
 
 
 def _plex_machine_id(explicit: Optional[str]) -> str:
@@ -1286,11 +1305,11 @@ def _arm_check(args, now: dt.datetime) -> int:
         return EXIT_MEDIA_STACK_UNAVAILABLE
 
     try:
-        minimum_ids = PS.minimum_access_ids(sections, args.welcome_section)
+        minimum_ids = PS.minimum_access_ids(sections, args.welcome_section, args.floor_section)
     except PS.PlexShareError as e:
         warn(str(e))
         return EXIT_CONFIG
-    full_ids = PS.full_access_ids(sections, args.welcome_section)
+    full_ids = PS.full_access_ids(sections, args.welcome_section, args.floor_section)
 
     try:
         seerr = SU.client_from_secrets()
@@ -1461,8 +1480,8 @@ def main(argv=None) -> int:
     # the non-entitled and is deliberately absent from full access, because its
     # only content tells the viewer to go and subscribe.
     try:
-        minimum_ids = PS.minimum_access_ids(sections, args.welcome_section)
-        full_ids = PS.full_access_ids(sections, args.welcome_section)
+        minimum_ids = PS.minimum_access_ids(sections, args.welcome_section, args.floor_section)
+        full_ids = PS.full_access_ids(sections, args.welcome_section, args.floor_section)
     except PS.PlexShareError as e:
         warn(str(e))
         if not args.no_kuma:
@@ -1709,8 +1728,9 @@ def main(argv=None) -> int:
     status = "up"
     rc = EXIT_OK
 
-    summary = "%d share(s); %s" % (
-        len(plans), " ".join("%s=%d" % kv for kv in sorted(counts.items())))
+    summary = "%d share(s); %s%s" % (
+        len(plans), " ".join("%s=%d" % kv for kv in sorted(counts.items())),
+        floor_note(sections, args.floor_section))
     if tripped:
         # RED, not a warning. A tripped blast-radius rail means the system
         # believes something is badly wrong with its own inputs, and it has
