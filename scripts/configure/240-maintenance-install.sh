@@ -250,6 +250,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/arr-audit.py \
     scripts/maint/arr-audit-run.sh \
     scripts/maint/app-upgrade-all.sh \
+    scripts/maint/ucc-postgres-upgrade.sh \
     scripts/ops/heartbeat-maint-webhook.sh \
     scripts/ops/boot-listeners-snapshot.sh \
     scripts/lib/ssh.sh \
@@ -309,6 +310,11 @@ cp -f "$STG"/scripts/maint/manitoba-maint        ~/scripts/maint/manitoba-maint
 chmod +x ~/scripts/maint/manitoba-maint
 cp -f "$STG"/scripts/maint/app-upgrade-all.sh ~/scripts/maint/app-upgrade-all.sh
 chmod +x ~/scripts/maint/app-upgrade-all.sh
+# Postgres upgrade child of app-upgrade-all.sh (2026-10-02). Staged AND copied
+# AND chmod'd: app-upgrade-all resolves it next to itself and reports
+# "error: postgres_module_missing" (loud) if it is absent or not executable.
+cp -f "$STG"/scripts/maint/ucc-postgres-upgrade.sh ~/scripts/maint/ucc-postgres-upgrade.sh
+chmod +x ~/scripts/maint/ucc-postgres-upgrade.sh
 cp -f "$STG"/scripts/maint/arr-audit.py       ~/scripts/maint/arr-audit.py
 chmod +x ~/scripts/maint/arr-audit.py
 cp -f "$STG"/scripts/maint/arr-audit-run.sh   ~/scripts/maint/arr-audit-run.sh

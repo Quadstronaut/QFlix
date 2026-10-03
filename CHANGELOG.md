@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-10-02 - Postgres was skipped until UCC locked it out
+
+**`app-upgrade-all.sh` had `postgres` in `DEFAULT_SKIP`, so the weekly
+in-window sweep never upgraded it.** It aged until UCC gated `app-postgres
+start/restart` behind "older build ... Upgrade & Repair" (exit 2). On
+2026-10-01 postgres stopped, could not be restarted, and listmonk crash-looped
+for two days. The skip list was the root gap; the recovery pager (#4) only
+made the symptom legible.
+
+**Postgres now upgrades every window, FIRST, through a dedicated child:
+`scripts/maint/ucc-postgres-upgrade.sh`.** It reads the password from
+listmonk's `config.toml` `[db]` table (pure bash; a single-line basic or
+literal string, nothing else), tarballs `~/.apps/postgres` to
+`~/.apps/backup/qflix-postgres-<UTC>.tar.gz` (0600, newest 2 kept, UCC `*.zip`
+untouched), runs `app-postgres upgrade -p <pw>` so the password is NOT rotated
+(never `-n`: UCC's own pre-upgrade backup is always kept, even under
+`--no-backup`), then proves health after every attempt: checkpointer process +
+TCP on the `[db]` port, then listmonk HTTP 200 with at most ONE
+`systemctl --user restart listmonk.service`. Postgres itself is never
+stopped or restarted - that is the verb UCC gates.
+
+**A skip is a failure.** An unreadable/ambiguous password or a failed backup
+fails closed (app-postgres is never invoked) and reports
+`postgres: skipped: fail-closed <reason>`, counts as failed, pages at warning
+and exits 1. A silent skip is exactly the gap being closed.
+
+**The password never leaves the child.** UCC's CLI echoes it in plaintext
+JSON; raw output is never printed, only an rc/older-build classifier leaves,
+and the last 20 redacted lines go to `~/.opt/maint/postgres-upgrade.log`
+(0600). `app-upgrade-all.sh` also redacts JSON `"password"` values from every
+app's failure line before stdout, notify and RESULTS. A dry-run sweep no
+longer pages Discord.
+
+**Known residual:** `app-postgres` accepts the password only as an argv flag,
+so it is visible in `/proc/<pid>/cmdline` (`ps`) to other tenants of the shared
+host for the upgrade's duration (<= `PG_UPGRADE_TIMEOUT`, 8m). UCC offers no
+stdin/env alternative. The QFlix tarball of a live data dir is not
+crash-atomic; UCC's own backup is the primary restore point. Restore is an
+operator step: stop nothing, untar over `~/.apps/postgres` per UCC docs.
+
 ## 2026-09-17 - The re-grab loop, and the second destructive actor nobody was counting
 
 **200 blocklist adds across 54 episodes in seven days. Worst single episode:
