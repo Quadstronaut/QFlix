@@ -30,15 +30,60 @@ and exits 1. A silent skip is exactly the gap being closed.
 JSON; raw output is never printed, only an rc/older-build classifier leaves,
 and the last 20 redacted lines go to `~/.opt/maint/postgres-upgrade.log`
 (0600). `app-upgrade-all.sh` also redacts JSON `"password"` values from every
-app's failure line before stdout, notify and RESULTS. A dry-run sweep no
-longer pages Discord.
+app's failure line before stdout, notify and RESULTS. The postgres child
+itself never notifies in dry-run.
+
+**One run at a time (round 2).** The child takes `flock -n` on fd 9 over
+`~/.opt/maint/ucc-postgres-upgrade.lock` (0600, never deleted) BEFORE it reads
+the password, live and dry-run, and holds it through the health checks. Held
+elsewhere is `skipped:locked`, no flock binary or unopenable lockfile is
+`skipped:no_lock`; both fail closed (exit 3, loud in the sweep). fd 9 is
+deliberately inherited by `app-postgres`, so an orphaned upgrade keeps the
+lock. Archives are `mktemp`-named
+(`qflix-postgres-<UTC>-<pid>-<rand>.tar.gz`, 0600 from creation) so two runs in
+the same second cannot clobber each other; retention runs only under the lock,
+only after this run's own backup succeeded, never touches the current archive
+or any file whose mtime is not older than the run's start (in-flight or
+clock-skewed), and keeps `PG_BACKUP_KEEP` (default 2) including the new one.
+
+**Budgets and kill semantics.** The tar runs under `timeout -k 10
+$PG_BACKUP_TIMEOUT` (default 10m; timeout or failure removes the run's own
+archive, `skipped:backup_failed`, no upgrade). The upgrade runs under
+`timeout -k 30 $PG_UPGRADE_TIMEOUT` (default 8m). The parent wraps the child in
+`timeout -k $PG_OUTER_KILL_GRACE_S` (default 90) of OUTER = backup + upgrade +
+`PG_HEALTH_TIMEOUT_S` + `LISTMONK_HEALTH_TIMEOUT_S` + 60 (about 24 min at
+defaults); `PG_OUTER_TIMEOUT_S` and `PG_OUTER_KILL_GRACE_S` are test seams. The
+child traps TERM/INT/HUP and runs tar and the upgrade as background jobs +
+`wait` so the trap fires promptly: it TERMs the inner `timeout` (forwarded to
+app-postgres's process group, KILL after 30 s), waits up to 35 s, probes
+postgres, sends an error notify naming its state, and ends with
+`RESULT=error:interrupted`. After any outer 124/137 the parent runs its OWN
+uid-scoped postgres probe (checkpointer + TCP on the `[db]` port parsed from
+config.toml, never the password) and prints `postgres probe after outer
+timeout: ok|down`; down forces `error: postgres_unhealthy_after_timeout` and an
+error-level summary. **Bounded residual:** a child SIGKILLed by the outer `-k`
+can leave `app-postgres` orphaned; it is in its own process group under the
+inner `timeout -k 30`, so it cannot outlive `PG_UPGRADE_TIMEOUT` + 30 s, and it
+holds the lock meanwhile.
+
+**Contracts hardened.** Every child invocation except `--help` ends with a
+`RESULT=` line (an EXIT trap emits `error:internal`; never exit 2, never
+`FATAL`); the parent only believes tokens on a strict whitelist, anything else
+is `error: postgres_no_result`. All env knobs (both scripts, including
+`MANITOBA_UPGRADE_BUDGET_S`) are regex-validated before any arithmetic and fall
+back to their defaults, so `a[$(cmd)]`-style values can never execute. `PW` is
+unset on entry and never exported (not in `app-postgres`'s environment).
+Redaction also masks the JSON-escaped and slash-escaped forms of the password.
+Health pgreps are scoped to our uid. The dry-run summary notify is unchanged
+from master.
 
 **Known residual:** `app-postgres` accepts the password only as an argv flag,
 so it is visible in `/proc/<pid>/cmdline` (`ps`) to other tenants of the shared
-host for the upgrade's duration (<= `PG_UPGRADE_TIMEOUT`, 8m). UCC offers no
+host for the upgrade's duration (<= `PG_UPGRADE_TIMEOUT` + 30 s). UCC offers no
 stdin/env alternative. The QFlix tarball of a live data dir is not
 crash-atomic; UCC's own backup is the primary restore point. Restore is an
-operator step: stop nothing, untar over `~/.apps/postgres` per UCC docs.
+operator step: stop nothing, untar over `~/.apps/postgres` per UCC docs
+(`tar -xzf ~/.apps/backup/qflix-postgres-<ts>-<pid>-<rand>.tar.gz -C ~/.apps`).
 
 ## 2026-09-17 - The re-grab loop, and the second destructive actor nobody was counting
 

@@ -121,6 +121,22 @@ case "$(cat "$CALLS/pg_mode")" in
   fail)  printf '{"data":{"password":"%%s"},"result":false}\n' "$3"
          echo "fatal: could not set password $3"
          exit 1 ;;
+  slow)  sleep 3
+         echo "upgrading postgres"
+         exit 0 ;;
+  slowkill) echo $$ > "$CALLS/stub.pid"
+         sleep 31.4159
+         echo late > "$CALLS/marker"
+         exit 0 ;;
+  rf)    echo '{"result": false}'
+         exit 0 ;;
+  leak)  pw="$3"; bs='\'
+         e=${pw//"$bs"/"$bs$bs"}; e=${e//\"/"$bs\""}; f=${e//\//"$bs/"}
+         printf '{"data":{"password":"%%s","PASSWORD":"%%s"},"result":true}\n' "$e" "$e"
+         echo "raw=$pw esc=$e slash=$f"
+         echo "dsn postgres://u:$pw@h/db postgres://u:$f@h/db"
+         env > "$CALLS/env.dump"
+         exit 0 ;;
 esac
 """ % {"help": HELP}
 
@@ -397,7 +413,8 @@ def test_failed_upgrade_output_is_redacted_everywhere(box):
     box.set(pg_mode="fail")
     cp = box.sweep()
     assert cp.returncode == 1
-    assert "postgres: error: error:upgrade_rc1" in cp.stdout
+    assert "postgres: error: upgrade_rc1" in cp.stdout
+    assert "error: error:" not in cp.stdout
     assert box.read("health.log") != ""
     _assert_no_secret(box, cp, FIXTURE_PW)
     assert "<redacted>" in (box.state / "postgres-upgrade.log").read_text()
@@ -502,7 +519,11 @@ def test_dry_run_plans_postgres_without_touching_anything(box):
     assert "postgres: would_upgrade" in cp.stdout
     assert "<redacted>" in cp.stdout
     assert box.pg_calls() == [] and box.tarballs() == []
-    assert box.read("systemctl.log") == "" and box.read("notify.capture") == ""
+    assert box.read("systemctl.log") == "" and box.read("health.log") == ""
+    # master behaviour: exactly ONE record, the parent summary (never the child's)
+    recs = [l for l in box.read("notify.capture").splitlines() if l]
+    assert len(recs) == 1, recs
+    assert "ucc-postgres-upgrade" not in recs[0] and FIXTURE_PW not in recs[0]
     _assert_no_secret(box, cp, FIXTURE_PW)
 
 
@@ -529,3 +550,367 @@ def test_missing_module_is_loud(tmp_path, box):
                         capture_output=True, text=True, timeout=60)
     assert "postgres: error: postgres_module_missing" in cp.stdout
     assert cp.returncode == 1
+
+
+# ===========================================================================
+# ROUND 2 — lock, budgets, kill semantics, env hardening, RESULT contract
+# ===========================================================================
+
+def _code(path: Path) -> str:
+    return "\n".join(l for l in path.read_text(encoding="utf-8").splitlines()
+                     if not l.lstrip().startswith("#"))
+
+
+# ---- structural (always runs) ----------------------------------------------
+
+def test_lock_taken_before_password_is_read():
+    code = _code(PG_MODULE)
+    assert code.index("flock -n 9") < code.index("read_listmonk_db_password ||")
+    assert code.index("flock -n 9") < code.index("read_listmonk_db_password()")
+    assert 'exec 9>>"$LOCK_FILE"' in code
+
+
+def test_every_checkpointer_pgrep_is_uid_scoped_and_lockfile_never_deleted():
+    for path in (PG_MODULE, UPGRADE_ALL):
+        code = _code(path)
+        for line in code.splitlines():
+            if "pgrep" in line and "checkpointer" in line:
+                assert 'pgrep -u "$(id -u)"' in line, line
+        assert not re.search(r"\brm\b[^\n]*(LOCK_FILE|\.lock)", code)
+
+
+def test_pw_never_exported_and_unset_first():
+    for path in (PG_MODULE, UPGRADE_ALL):
+        code = _code(path)
+        assert not re.search(r"\b(export|declare\s+-x|typeset\s+-x)\s+PW\b", code)
+        assert not re.search(r"\benv\b[^\n]*\bPW=", code)
+        assert "set -x" not in code
+        lines = [l for l in code.splitlines() if l.strip()]
+        assert lines[lines.index("set -u") + 1] == "unset PW"
+
+
+def test_budget_lines_and_unguarded_summary_notify():
+    code = _code(PG_MODULE)
+    assert re.search(r"timeout -k 10 \"\$PG_BACKUP_TIMEOUT\" tar ", code)
+    assert re.search(r"timeout -k 30 \"\$PG_UPGRADE_TIMEOUT\" app-postgres upgrade -p \"\$PW\"", code)
+    sweep = _code(UPGRADE_ALL)
+    assert re.search(r"^notify \"\$level\" \"\$\{summary\}\"", sweep, re.M)
+    assert "PG_BACKUP_TIMEOUT + PG_UPGRADE_TIMEOUT + PG_HEALTH_TIMEOUT_S + LISTMONK_HEALTH_TIMEOUT_S + 60" in sweep
+    assert "timeout -k \"$PG_OUTER_KILL_GRACE_S\"" in sweep
+
+
+def test_header_documents_round2_contracts():
+    text = PG_MODULE.read_text(encoding="utf-8")
+    head = text.split("\nset -u", 1)[0]
+    for needle in ("flock", "PG_BACKUP_TIMEOUT", "PG_OUTER_TIMEOUT_S", "KILL SEMANTICS",
+                   "BOUNDED RESIDUAL", "argv", "crash-atomic", "RESTORE"):
+        assert needle in head, needle
+    log = CHANGELOG.read_text(encoding="utf-8")
+    for needle in ("ucc-postgres-upgrade.lock", "PG_BACKUP_TIMEOUT", "PG_OUTER_TIMEOUT_S",
+                   "Bounded residual", "crash-atomic"):
+        assert needle in log, needle
+
+
+# ---- behavioural (POSIX) ---------------------------------------------------
+
+ARCHIVE_RE = re.compile(
+    r"^qflix-postgres-[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]+-[A-Za-z0-9]{6}\.tar\.gz$")
+
+
+def _alive_matching(needle: str) -> list[str]:
+    hits = []
+    for d in Path("/proc").glob("[0-9]*"):
+        try:
+            cmd = (d / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if needle in cmd and str(os.getpid()) != d.name:
+            hits.append(cmd)
+    return hits
+
+
+@posix_only
+def test_lock_held_elsewhere_is_skipped_locked(box):
+    import fcntl
+    lock = box.state / "ucc-postgres-upgrade.lock"
+    fd = os.open(lock, os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        cp = box.module()
+        assert _result(cp) == "RESULT=skipped:locked" and cp.returncode == 3
+        assert box.pg_calls() == [] and box.tarballs() == []
+        sw = box.sweep()
+        assert "postgres: skipped: fail-closed locked" in sw.stdout
+        assert sw.returncode == 1 and box.pg_calls() == []
+        assert "warning" in [l.split("\t")[0] for l in box.read("notify.capture").splitlines()]
+    finally:
+        os.close(fd)
+
+
+@posix_only
+def test_two_concurrent_runs_one_upgrade(box):
+    box.set(pg_mode="slow")
+    ps = [subprocess.Popen(["bash", str(PG_MODULE)], env=box.env(), stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True) for _ in range(2)]
+    outs = [p.communicate(timeout=60)[0] for p in ps]
+    results = sorted(o.rstrip("\n").splitlines()[-1] for o in outs)
+    assert results == ["RESULT=skipped:locked", "RESULT=upgraded"], outs
+    assert len(box.pg_calls()) == 1
+    assert len(box.tarballs()) == 1
+    assert sorted(p.returncode for p in ps) == [0, 3]
+
+
+@posix_only
+def test_lockfile_is_0600_after_any_run(box):
+    box.module("--dry-run")
+    lock = box.state / "ucc-postgres-upgrade.lock"
+    assert lock.exists() and stat.S_IMODE(lock.stat().st_mode) == 0o600
+
+
+@posix_only
+def test_same_second_runs_leave_distinct_0600_archives(box):
+    _exe(box.bin / "date", '#!/usr/bin/env bash\n'
+         'if [ "$*" = "-u +%Y-%m-%d_%H-%M-%S" ]; then echo 2026-01-01_00-00-00; '
+         'else exec /bin/date "$@"; fi\n')
+    for _ in range(2):
+        cp = box.module(PG_BACKUP_KEEP="5")
+        assert _result(cp) == "RESULT=upgraded", cp.stdout
+    names = [p.name for p in box.tarballs()]
+    assert len(names) == 2 and len(set(names)) == 2
+    assert all(ARCHIVE_RE.match(n) for n in names), names
+    assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in box.tarballs())
+
+
+@posix_only
+def test_retention_spares_future_mtime_and_zips(box):
+    box.backup.mkdir(parents=True)
+    now = time.time()
+    fut = box.backup / "qflix-postgres-2099-01-01_00-00-00-1-AAAAAA.tar.gz"
+    fut.write_bytes(b"x")
+    os.utime(fut, (now + 120, now + 120))
+    olds = []
+    for i, age in enumerate((500, 400, 300)):
+        p = box.backup / f"qflix-postgres-2026-09-0{i + 1}_00-00-00-1-BBBBB{i}.tar.gz"
+        p.write_bytes(b"x")
+        os.utime(p, (now - age, now - age))
+        olds.append(p)
+    z = box.backup / "postgres-2026-09-01_00-00_1.zip"
+    z.write_bytes(b"z")
+    os.utime(z, (now - 900, now - 900))
+    cp = box.module(PG_BACKUP_KEEP="1")
+    assert _result(cp) == "RESULT=upgraded", cp.stdout
+    assert fut.exists() and z.exists()
+    assert not any(p.exists() for p in olds)
+
+
+@posix_only
+def test_keep_08_parses_as_eight(box):
+    box.backup.mkdir(parents=True)
+    now = time.time()
+    for i in range(10):
+        p = box.backup / f"qflix-postgres-2026-08-{i + 10:02d}_00-00-00-1-CCCCC{i}.tar.gz"
+        p.write_bytes(b"x")
+        os.utime(p, (now - 1000 + i, now - 1000 + i))
+    cp = box.module(PG_BACKUP_KEEP="08")
+    assert _result(cp) == "RESULT=upgraded", cp.stdout
+    assert len(box.tarballs()) == 8
+
+
+@posix_only
+def test_tar_timeout_is_backup_failed_and_cleans_up(box):
+    _exe(box.bin / "tar", "#!/usr/bin/env bash\nsleep 60\n")
+    t0 = time.time()
+    cp = box.module(PG_BACKUP_TIMEOUT="2")
+    assert time.time() - t0 < 20
+    assert _result(cp) == "RESULT=skipped:backup_failed" and cp.returncode == 3
+    assert box.pg_calls() == [] and box.tarballs() == []
+
+
+@posix_only
+def test_zero_duration_falls_back_to_default(box):
+    _exe(box.bin / "timeout", '#!/usr/bin/env bash\necho "$*" >> "$CALLS/timeout.argv"\n'
+         'exec /usr/bin/timeout "$@"\n')
+    cp = box.module(PG_UPGRADE_TIMEOUT="0")
+    assert _result(cp) == "RESULT=upgraded", cp.stdout
+    assert any(l.startswith("-k 30 480s app-postgres") for l in box.read("timeout.argv").splitlines())
+
+
+BAD_VALUES = ['a[$(touch PWNED)]', "99999999999999999999", "1.5m", "-1", "abc", ""]
+CHILD_VARS = ["PG_UPGRADE_TIMEOUT", "PG_BACKUP_TIMEOUT", "PG_HEALTH_TIMEOUT_S",
+              "LISTMONK_HEALTH_TIMEOUT_S", "HEALTH_POLL_INTERVAL_S"]
+PARENT_VARS = CHILD_VARS + ["PG_OUTER_TIMEOUT_S", "PG_OUTER_KILL_GRACE_S", "MANITOBA_UPGRADE_BUDGET_S"]
+
+
+@posix_only
+@pytest.mark.parametrize("var", CHILD_VARS + ["PG_BACKUP_KEEP"])
+def test_child_bad_env_still_prints_would_upgrade(box, var):
+    values = BAD_VALUES + (["0", "abc", "9999999999999"] if var == "PG_BACKUP_KEEP" else [])
+    for val in values:
+        cp = subprocess.run(["bash", str(PG_MODULE), "--dry-run"], env=box.env(**{var: val}),
+                            capture_output=True, text=True, timeout=120, cwd=box.tmp)
+        assert _result(cp) == "RESULT=would_upgrade" and cp.returncode == 0, (var, val, cp.stdout)
+        assert "FATAL" not in cp.stdout + cp.stderr
+    assert not (box.tmp / "PWNED").exists()
+
+
+@posix_only
+@pytest.mark.parametrize("var", PARENT_VARS)
+def test_parent_bad_env_never_aborts_or_executes(tmp_path, var):
+    b = Box(tmp_path, apps=("postgres", "sonarr"))
+    try:
+        for val in BAD_VALUES:
+            cp = subprocess.run(["bash", str(UPGRADE_ALL), "--dry-run"], env=b.env(**{var: val}),
+                                capture_output=True, text=True, timeout=120, cwd=tmp_path)
+            assert cp.returncode == 0, (var, val, cp.stdout, cp.stderr)
+            assert "postgres: would_upgrade" in cp.stdout and "sonarr: would_upgrade" in cp.stdout
+            assert '"schema_version":1' in (b.state / "last-upgrade.json").read_text()
+        assert not (tmp_path / "PWNED").exists()
+    finally:
+        b.close()
+
+
+@posix_only
+def test_bad_usage_and_internal_error_always_print_result(box):
+    cp = box.module("--bogus")
+    assert _result(cp) == "RESULT=error:bad_usage" and cp.returncode == 1
+    # A `set -u` violation: BASH_ENV unsets HOME before the script runs (bash would
+    # otherwise re-derive HOME from passwd). The EXIT trap must still emit RESULT.
+    pre = box.tmp / "unset_home.sh"
+    pre.write_text("unset HOME LISTMONK_CONFIG PG_APP_DIR PG_BACKUP_DIR\n", encoding="utf-8")
+    env = box.env(BASH_ENV=str(pre))
+    cp = subprocess.run(["bash", str(PG_MODULE)], env=env, capture_output=True, text=True, timeout=60)
+    assert _result(cp) == "RESULT=error:internal" and cp.returncode == 1
+
+
+def _sweep_with_fake_child(box: Box, tmp_path: Path, child_body: str, **extra):
+    copy = tmp_path / "copy"
+    copy.mkdir(exist_ok=True)
+    shutil.copy(UPGRADE_ALL, copy / "app-upgrade-all.sh")
+    _exe(copy / "ucc-postgres-upgrade.sh", "#!/usr/bin/env bash\n" + child_body)
+    return subprocess.run(["bash", str(copy / "app-upgrade-all.sh")], env=box.env(**extra),
+                          capture_output=True, text=True, timeout=120)
+
+
+@posix_only
+@pytest.mark.parametrize("body", [
+    "echo 'RESULT=upgraded; x'\n",
+    "echo 'RESULT=error:$(id)'\n",
+    "echo hello\n",
+])
+def test_off_whitelist_or_missing_result_is_no_result(tmp_path, body):
+    b = Box(tmp_path / "b", apps=("postgres", "sonarr"))
+    try:
+        cp = _sweep_with_fake_child(b, tmp_path, body)
+        assert "postgres: error: postgres_no_result" in cp.stdout
+        assert cp.returncode == 1
+    finally:
+        b.close()
+
+
+@posix_only
+def test_rc0_result_false_and_older_build_single_prefix(box):
+    box.set(pg_mode="rf")
+    cp = box.module()
+    assert _result(cp) == "RESULT=error:upgrade_rc0"
+    assert "postgres: error: upgrade_rc0" in box.sweep().stdout
+    box.set(pg_mode="older")
+    sw = box.sweep()
+    assert "postgres: error: upgrade_rc2:older_build" in sw.stdout
+    assert "error: error:" not in sw.stdout
+
+
+@posix_only
+def test_child_interrupt_mid_upgrade(box):
+    box.set(pg_mode="slowkill")
+    p = subprocess.Popen(["bash", str(PG_MODULE)], env=box.env(PG_UPGRADE_TIMEOUT="120"),
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    deadline = time.time() + 20
+    while not (box.calls / "stub.pid").exists() and time.time() < deadline:
+        time.sleep(0.1)
+    assert (box.calls / "stub.pid").exists()
+    health_before = box.read("health.log")
+    p.send_signal(15)
+    out = p.communicate(timeout=45)[0]
+    assert out.rstrip("\n").splitlines()[-1] == "RESULT=error:interrupted" and p.returncode == 1
+    assert len(box.read("health.log")) > len(health_before)        # probed after the signal
+    assert any(l.startswith("error\t") and "postgres" in l
+               for l in box.read("notify.capture").splitlines())
+    assert _alive_matching("sleep 31.4159") == []
+    assert not (box.calls / "marker").exists()
+
+
+@posix_only
+def test_parent_outer_timeout_cooperative_child(tmp_path):
+    b = Box(tmp_path, apps=("postgres", "sonarr"))
+    try:
+        b.set(pg_mode="slowkill")
+        cp = b.sweep(PG_OUTER_TIMEOUT_S="3", PG_OUTER_KILL_GRACE_S="60", PG_UPGRADE_TIMEOUT="120")
+        assert "postgres probe after outer timeout: ok" in cp.stdout
+        assert "postgres: error: interrupted" in cp.stdout
+        assert '"postgres":"error"' in (b.state / "last-upgrade.json").read_text()
+        assert _alive_matching("sleep 31.4159") == []
+        assert "sonarr: upgraded" in cp.stdout          # the sweep carried on
+        assert cp.returncode == 1
+    finally:
+        b.close()
+
+
+@posix_only
+@pytest.mark.parametrize("checkpointer,probe,result,level", [
+    (False, "down", "error: postgres_unhealthy_after_timeout", "error"),
+    (True, "ok", "timeout", "warning"),
+])
+def test_parent_outer_timeout_uncooperative_child(tmp_path, checkpointer, probe, result, level):
+    b = Box(tmp_path / "b", apps=("postgres", "sonarr"))
+    try:
+        b.set(checkpointer=checkpointer)
+        cp = _sweep_with_fake_child(b, tmp_path, "trap '' TERM\nsleep 60\n",
+                                    PG_OUTER_TIMEOUT_S="2", PG_OUTER_KILL_GRACE_S="2")
+        assert f"postgres probe after outer timeout: {probe}" in cp.stdout
+        assert f"postgres: {result}" in cp.stdout
+        assert "error: error:" not in cp.stdout
+        assert "sonarr: upgraded" in cp.stdout and cp.returncode == 1
+        levels = [l.split("\t", 1)[0] for l in b.read("notify.capture").splitlines()]
+        assert levels[-1] == level
+    finally:
+        b.close()
+
+
+LEAK_PWS = ["Zx9kQ2mLpw", 'ab\\\\cd"ef/12', "a.b*c[d]e&f$g/h|i"]
+
+
+@posix_only
+@pytest.mark.parametrize("pw", LEAK_PWS)
+@pytest.mark.parametrize("exported", [None, "same", "decoy"])
+def test_password_never_in_env_or_outputs(box, pw, exported):
+    box.config.write_text(_config(box.port, f"password = '{pw}'"), encoding="utf-8")
+    box.set(pg_mode="leak")
+    extra = {}
+    if exported:
+        extra["PW"] = pw if exported == "same" else "DECOYdecoy99"
+    cp = subprocess.run(["bash", str(UPGRADE_ALL)], env=box.env(**extra),
+                        capture_output=True, text=True, timeout=120)
+    esc = pw.replace("\\", "\\\\").replace('"', '\\"')
+    forms = {pw, esc, esc.replace("/", "\\/")}
+    blobs = [cp.stdout, cp.stderr, box.read("notify.capture")]
+    blobs += [p.read_text(errors="replace") for p in box.state.rglob("*") if p.is_file()]
+    for form in forms:
+        for blob in blobs:
+            assert form not in blob, form
+    assert not any(l.startswith("PW=") for l in box.read("env.dump").splitlines())
+    assert box.pg_calls() == [f"upgrade -p {pw}"]
+
+
+@posix_only
+def test_every_recorded_pgrep_is_uid_scoped(box):
+    box.sweep()
+    lines = [l for l in box.read("health.log").splitlines() if l.startswith("pgrep")]
+    assert lines and all(f"-u {os.getuid()}" in l for l in lines)
+
+
+@posix_only
+def test_child_dry_run_skip_sends_no_notify(box):
+    box.config.unlink()
+    cp = box.module("--dry-run")
+    assert _result(cp) == "RESULT=skipped:no_config" and cp.returncode == 3
+    assert box.read("notify.capture") == ""
