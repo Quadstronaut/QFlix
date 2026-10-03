@@ -394,7 +394,22 @@ def _recovery_loop(app: App) -> dict:
         # wrongly escalated to permanently-failed. restart stop→starts it,
         # rebinding the port. For a genuinely-down app, restart == start.
         # (2026-07-08 qBittorrent WebUI incident.)
-        lifecycle.restart(app)
+        lr = lifecycle.restart(app)
+
+        # UCC retires old app builds by gating start/restart behind a CP
+        # "Upgrade & Repair". Retrying is pointless and the generic "operator
+        # needed" page hides the one-line remedy (postgres sat down 2 days,
+        # 2026-10-01, taking listmonk with it). Page the remedy and stop.
+        if _is_ucc_older_build(lr):
+            slug = app.raw.get("ucc_slug") or app_name
+            msg = (
+                f"✗ {app_name}: UCC retired this build, start/restart gated —"
+                f" run 'Upgrade & Repair' in UCP or `app-{slug} upgrade`"
+                f" (pass -p <current password> for DB apps or it rotates)"
+            )
+            _emit("failed", app_name, attempt, "down", "n/a", msg, "error",
+                  page_once=True)
+            return _result(app_name, "failed", attempt, "down", "n/a")
 
         # Backoff before probing
         sleep_s = backoff[attempt - 1] if attempt - 1 < len(backoff) else backoff[-1]
@@ -438,6 +453,20 @@ def _recovery_loop(app: App) -> dict:
     _emit("failed", app_name, attempts_max, "down", "n/a", msg, "error",
           page_once=True)
     return _result(app_name, "failed", attempts_max, "down", "n/a")
+
+
+_UCC_OLDER_BUILD_TELL = "older build"
+
+
+def _is_ucc_older_build(lr) -> bool:
+    """True when the UCC CLI refused the verb because the app build is retired.
+    UCC answers on stdout as JSON ({"result": false, "data": {"message":
+    "This app is running an older build. Please run 'Upgrade & Repair'..."}})
+    with a nonzero exit, so check both streams."""
+    if lr is None or getattr(lr, "ok", True):
+        return False
+    text = f"{getattr(lr, 'stdout', '')}\n{getattr(lr, 'stderr', '')}".lower()
+    return _UCC_OLDER_BUILD_TELL in text and "upgrade" in text
 
 
 def _attempt_auto_downgrade(app: App, attempts: int) -> Optional[dict]:
