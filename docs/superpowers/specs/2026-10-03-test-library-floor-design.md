@@ -47,7 +47,7 @@ Jira: QFLX-4. Branch: `feature/QFLX-4-test-library`.
   (`lib/plexshare.py:298`). Without a change, a new library reaches every
   entitled member within 15 minutes.
 - Live PMS **1.43.3.10896** `/system/agents` lists `tv.plex.agents.none`
-  = "Plex Personal Media"; scanners include "Plex Video Files Scanner". This is
+  = "Plex Personal Media"; scanners include "Plex Video Files". This is
   the Other Videos pair. (A web-research pass returned the legacy
   `com.plexapp.agents.none`; the live server is the authority.)
 - Plex share pickers allow choosing specific libraries at invite time
@@ -127,7 +127,7 @@ Invocation:
 ```
 ~/.apps/python-plexapi/venv/bin/python ~/scripts/configure/59b-plex-welcome-library.py \
   --title "QFlix - Test" --path ~/media/Test \
-  --agent tv.plex.agents.none --scanner "Plex Video Files Scanner"
+  --agent tv.plex.agents.none --scanner "Plex Video Files"
 ```
 
 Creation hands Test to every share still carrying `allLibraries="1"`
