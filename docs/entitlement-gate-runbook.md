@@ -29,11 +29,11 @@ never invited has no Plex share and therefore no access.
 | # | Who | What |
 |---|-----|------|
 | 1 | Them | Fills the form at `qflix.starhold.dev` → their email lands in Discord `1531809232259645480` |
-| 2 | **You** | Invite that email in Plex, sharing **`QFlix - Welcome` only** |
+| 2 | **You** | Invite that email in Plex, sharing **`QFlix - Welcome` + `QFlix - Test`** only |
 | 3 | Gate | Sees the share flip to accepted → creates a Seerr account with **permissions 0** |
 | 4 | **You** | Add them to `secrets/members.yaml` (see below). Until you do, the gate reports them as an *unnamed share* and never touches their Plex access |
 | 5 | Them | Watches the welcome video, joins the community, becomes a supporter |
-| 6 | Gate | Sees `entitled: true` → shares **all five libraries** + restores Seerr permissions |
+| 6 | Gate | Sees `entitled: true` → shares **the content libraries** (never the floor) + restores Seerr permissions |
 
 Steps 2 and 4 are yours on purpose. The gate cannot invite anyone and cannot
 decide who deserves access.
@@ -64,9 +64,9 @@ on `holder`, applied to every address in `accounts`.
 
 | State | Plex | Seerr |
 |---|---|---|
-| accepted, not entitled | `QFlix - Welcome` **only** | permissions `0` |
-| entitled | the content libraries, **without** `QFlix - Welcome` | permissions restored — minus the Plex-watchlist auto-request bits (`PERMISSIONS_NEVER`, operator ruling 2026-09-15), which are stripped from every value the gate writes |
-| revoked, past grace | `QFlix - Welcome` **only** | permissions `0` |
+| accepted, not entitled | the floor: `QFlix - Welcome` + `QFlix - Test` | permissions `0` |
+| entitled | the content libraries, **without** the floor (Welcome, Test) | permissions restored — minus the Plex-watchlist auto-request bits (`PERMISSIONS_NEVER`, operator ruling 2026-09-15), which are stripped from every value the gate writes |
+| revoked, past grace | the floor: `QFlix - Welcome` + `QFlix - Test` | permissions `0` |
 
 Revoked is deliberately identical to stage 1. The **share object is kept** — a
 revoked member is put back in front of the pitch, not evicted. Restoring them
@@ -80,6 +80,17 @@ construction, and a grant to an entitled member who still carries Welcome from a
 previous lapse **removes it**. That removal is not a reduction and does not
 alert; it is the disjointness rule being enforced. See *Safety properties* for
 the short-catalogue rail it has to coexist with.
+
+**The floor is a set (QFLX-4, 2026-10-03).** `QFlix - Test` holds a few
+operator-placed playback test clips so a prospect can check "does it work" on
+their device before subscribing. It sits on the floor beside Welcome: the
+non-entitled see both, entitled members see neither. Welcome is **required**
+(missing = the run refuses, the anti-eviction rail); Test is **optional** — if it
+is missing or renamed the floor shrinks to Welcome and the Kuma summary ends
+`floor missing: QFlix - Test`. Override with repeatable `--floor-section`.
+`pending` and `unknown-payer` shares are never written, so a new invitee only
+holds Test if **you tick it at invite time**. The library is static: Tdarr, the
+reaper and every janitor use hardcoded library lists that do not include it.
 
 ---
 
@@ -265,6 +276,7 @@ not reach the API" must never share an exit status.
 |---|---|
 | Seerr `defaultPermissions` `1153433760` → **0** | `newPlexLogin` is on, so a friend who signed in before the cron fired self-provisioned a **fully enabled** account. Polling faster does not fix a race; being born disabled does. Existing users unaffected. |
 | New Plex section `QFlix - Welcome` (key 7, id 145397557) | the floor the whole design rests on. All 14 shares received it automatically via `allLibraries=1`. |
+| New Plex section `QFlix - Test` (`~/media/Test`, Plex Personal Media agent) | QFLX-4, second floor library: playback test clips for prospects. Created by `59b-plex-welcome-library.py --title "QFlix - Test" --agent tv.plex.agents.none --scanner "Plex Video Files Scanner"`. |
 | `entitlement.key` on Starhold + box | QFlix-scoped, **lookup only** — bulk correctly 403s. |
 | `grace_days` 3 → 7 | operator, 2026-08-06 |
 | `never_seen` demoted from Discord alert to plan field | operator, 2026-08-17. Patreon now carries non-QFlix members and QFlix carries invisible rails, so never-seen is a steady state, not an anomaly. Still in `reason`, in `--json`, and still paging from the payer oracle when an *ever-entitled* payer goes never-seen. |
