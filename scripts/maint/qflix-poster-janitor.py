@@ -113,7 +113,11 @@ SECTION_NAMES = ["QFlix - Movies", "QFlix - Anime Movies",
 # entitlement gate's not-entitled surface (disjoint from full access, see
 # tests/unit/test_welcome_section_is_exclusive.py), not a media library. Any
 # OTHER unknown section still gets named every run.
-UTILITY_SECTIONS = ["QFlix - Welcome"]
+# QFlix - Test added 2026-10-03 (QFLX-4): operator-placed playback test clips
+# on the entitlement gate's not-entitled floor beside Welcome. Operator: a
+# "static library of me-placed assets - I do not want it processed by
+# anything". Same standing as Welcome: utility, not content.
+UTILITY_SECTIONS = ["QFlix - Welcome", "QFlix - Test"]
 
 # ORDERED. This tuple is BOTH the "is this an agent poster" membership test and
 # the preference order, on purpose: two constants would be two policy surfaces

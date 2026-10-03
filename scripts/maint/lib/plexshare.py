@@ -46,7 +46,9 @@ as "unshare this server", which deletes the share object and evicts the person
 they must accept out of their email.
 
 That is the exact outcome the whole design forbids, and it is one empty list
-away at all times: if the Welcome section is missing or renamed, the computed
+away at all times: if the Welcome section (the REQUIRED floor library; optional
+extras such as `QFlix - Test` only shrink the floor when missing) is missing or
+renamed, the computed
 "minimum access" set is `[]`, and the natural code path posts it. So
 `set_sections()` REFUSES an empty list, loudly, always. It is not a parameter,
 not a flag, and not overridable -- there is no legitimate caller in this system,
@@ -295,8 +297,9 @@ def find_section(sections: Sequence[Section], title: str) -> Optional[Section]:
     return None
 
 
-def full_access_ids(sections: Sequence[Section], welcome_title: str) -> List[int]:
-    """Every section that exists RIGHT NOW, EXCEPT Welcome.
+def full_access_ids(sections: Sequence[Section], welcome_title: str,
+                    extra_floor_titles: Sequence[str] = ()) -> List[int]:
+    """Every section that exists RIGHT NOW, EXCEPT the floor (Welcome + extras).
 
     Recomputed each run on purpose -- see the allLibraries note in the module
     docstring. This is what replaces the flag that writing an explicit list
@@ -328,27 +331,41 @@ def full_access_ids(sections: Sequence[Section], welcome_title: str) -> List[int
     it DELETES it. Evicting every entitled member because a library was renamed
     is the single worst thing this module can do, so the degenerate case is
     named and refused instead of written.
+
+    EXTRA FLOOR TITLES (QFLX-4, 2026-10-03)
+    ---------------------------------------
+    `QFlix - Test` holds playback test clips for prospects. It belongs to the
+    not-entitled surface exactly like Welcome, so it is subtracted here for the
+    same reason: subtracting at the point FULL is computed means no caller can
+    re-add it by forgetting a filter. Matching is per-section through
+    find_section(), so it is exactly as case/whitespace lenient as Welcome.
     """
-    ids = sorted(s.id for s in sections)
-    sec = find_section(sections, welcome_title)
-    if sec is not None:
-        ids = [i for i in ids if i != sec.id]
+    floor_titles = [welcome_title] + list(extra_floor_titles)
+    ids = sorted(s.id for s in sections
+                 if not any(find_section([s], t) is not None for t in floor_titles))
     if not ids:
         raise PlexShareError(
             "full access computes to an empty section list (sections=%d, "
-            "welcome=%r). An empty list unshares the server instead of granting "
-            "it, so this is refused. Either the Plex server has no libraries "
-            "besides Welcome, or the section list failed to load."
-            % (len(sections), welcome_title))
+            "welcome=%r, extra_floor=%r). An empty list unshares the server "
+            "instead of granting it, so this is refused. Either the Plex server "
+            "has no libraries besides the floor, or the section list failed to "
+            "load." % (len(sections), welcome_title, list(extra_floor_titles)))
     return ids
 
 
-def minimum_access_ids(sections: Sequence[Section], welcome_title: str) -> List[int]:
-    """The floor: the Welcome library and nothing else.
+def minimum_access_ids(sections: Sequence[Section], welcome_title: str,
+                       extra_floor_titles: Sequence[str] = ()) -> List[int]:
+    """The floor: Welcome (REQUIRED) plus any extra floor library that exists.
 
     Raises rather than returning `[]` when Welcome is absent. The empty list is
     the eviction bug; catching it here names the actual cause (a missing or
     renamed section) instead of letting set_sections() report the symptom.
+
+    Extras are OPTIONAL by design: a missing `QFlix - Test` shrinks the floor to
+    Welcome, it does not stop the gate. The anti-eviction guarantee rests on
+    Welcome alone, and halting every grant and revoke because a convenience
+    library was renamed would trade a cosmetic fault for a real one. The
+    absence is surfaced by missing_floor_titles() in the run summary instead.
     """
     sec = find_section(sections, welcome_title)
     if sec is None:
@@ -358,4 +375,15 @@ def minimum_access_ids(sections: Sequence[Section], welcome_title: str) -> List[
             "instead of restricting it. Create the section (see "
             "scripts/configure/59b-plex-welcome-library.py) or correct the "
             "--welcome-section argument." % welcome_title)
-    return [sec.id]
+    ids = {sec.id}
+    for t in extra_floor_titles:
+        extra = find_section(sections, t)
+        if extra is not None:
+            ids.add(extra.id)
+    return sorted(ids)
+
+
+def missing_floor_titles(sections: Sequence[Section],
+                         extra_floor_titles: Sequence[str]) -> List[str]:
+    """Extra floor titles with no matching section -- for the run summary."""
+    return [t for t in extra_floor_titles if find_section(sections, t) is None]

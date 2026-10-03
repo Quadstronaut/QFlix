@@ -60,6 +60,18 @@ SECRETS = HOME / "secrets"
 GATE = HOME / "scripts" / "maint" / "qflix-entitlement.py"
 MACHINE_ID = "53a83e840bd624da3a105b10ef265f2e676165ee"
 WELCOME_TITLE = "QFlix - Welcome"
+# Mirrors qflix-entitlement.py DEFAULT_FLOOR_EXTRA (QFLX-4); pinned against the
+# gate's lib by tests/unit/test_e2e_entitlement_floor_split.py.
+FLOOR_EXTRA = ("QFlix - Test",)
+
+
+def split_catalogue(catalogue):
+    """(floor_ids, content_ids) exactly as the gate computes them: the floor is
+    Welcome + any extra floor library present; content is everything else."""
+    want = {t.strip().lower() for t in (WELCOME_TITLE,) + FLOOR_EXTRA}
+    floor = sorted(i for i, t in catalogue.items()
+                   if (t or "").strip().lower() in want)
+    return floor, sorted(i for i in catalogue if i not in floor)
 
 # The crash-test account's address is MEMBER DATA and this repo is public, so it
 # is not written down here. It comes from the environment or from gitignored
@@ -240,6 +252,7 @@ def main() -> int:
     welcome_id = next((i for i, t in catalogue.items()
                        if (t or "").strip().lower() == WELCOME_TITLE.lower()), None)
     all_ids = sorted(catalogue)
+    floor_ids, content_ids = split_catalogue(catalogue)
     if welcome_id is None:
         print("FATAL: no %r section" % WELCOME_TITLE)
         return 2
@@ -311,8 +324,8 @@ def main() -> int:
 
         after = plex_state()
         after_s = seerr_state()
-        check("plex reduced to Welcome only",
-              after["sections"] == [welcome_id], "got %s" % after["sections"])
+        check("plex reduced to the floor (Welcome + any extra floor library)",
+              after["sections"] == floor_ids, "got %s want %s" % (after["sections"], floor_ids))
         check("plex share still EXISTS (not evicted)", after is not None)
         check("seerr permissions set to 0",
               after_s["permissions"] == 0, "got %s" % after_s["permissions"])
@@ -331,8 +344,8 @@ def main() -> int:
 
         after = plex_state()
         after_s = seerr_state()
-        check("plex expanded to every section",
-              after["sections"] == all_ids, "got %s want %s" % (after["sections"], all_ids))
+        check("plex expanded to every content section (floor excluded)",
+              after["sections"] == content_ids, "got %s want %s" % (after["sections"], content_ids))
         check("seerr permissions restored to the ORIGINAL value, not the default",
               after_s["permissions"] == before_seerr["permissions"],
               "got %s want %s" % (after_s["permissions"], before_seerr["permissions"]))
