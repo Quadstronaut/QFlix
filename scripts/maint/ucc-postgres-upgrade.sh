@@ -82,7 +82,10 @@
 #   its OWN process group, so a SIGKILLed child (outer -k escalation) can leave
 #   app-postgres orphaned. BOUNDED RESIDUAL: its lifetime is capped by the inner
 #   `timeout -k 30`, and it keeps fd 9 (the lock) while it lives. The parent
-#   always probes postgres itself after an outer 124/137.
+#   always probes postgres itself after an outer 124/137. Measured on Linux
+#   (council r3): an outer GROUP signal also kills the output reader, so the
+#   orphan usually dies of SIGPIPE at its next write (seconds, mid-upgrade)
+#   rather than at the inner bound, and the redacted log is not written.
 #
 # KNOWN RESIDUAL — password in argv. app-postgres accepts the password ONLY as
 #   an argv flag (`-p`); UCC's CLI offers no stdin or env alternative. While the
@@ -191,6 +194,11 @@ PG_LOG="$STATE_DIR/postgres-upgrade.log"
 LOCK_FILE="$STATE_DIR/ucc-postgres-upgrade.lock"
 START_EPOCH=$(printf '%(%s)T' -1)
 
+# Lockfile exists from the first line of every run (bad usage included), so
+# its presence never depends on argv. Locking itself happens in step 0.
+mkdir -p "$STATE_DIR" 2>/dev/null
+( : >> "$LOCK_FILE" ) 2>/dev/null
+
 case "${1:-}" in
     --dry-run) DRY_RUN=1 ;;
     "") ;;
@@ -210,7 +218,8 @@ notify() {
     local level="${1:-info}" msg="$2"
     local maint_dir="${MANITOBA_MAINT_DIR:-$HOME/scripts/maint}"
     [[ -f "$maint_dir/lib/notify.py" ]] || return 0
-    PYTHONPATH="$maint_dir" python3 - "$level" "$msg" <<'PYEOF' >/dev/null 2>&1 || true
+    # Bounded: the parent's outer kill grace (90s) must cover notify too.
+    PYTHONPATH="$maint_dir" timeout 20 python3 - "$level" "$msg" <<'PYEOF' >/dev/null 2>&1 || true
 import sys
 from lib.notify import notify as n
 n(sys.argv[2], level=sys.argv[1])
@@ -545,7 +554,7 @@ if poll "$PG_HEALTH_TIMEOUT_S" pg_healthy; then
         lm_state="ok"
     else
         echo "ucc-postgres-upgrade: listmonk not 200 — systemctl --user restart listmonk.service (once)"
-        systemctl --user restart listmonk.service >/dev/null 2>&1
+        timeout 60 systemctl --user restart listmonk.service >/dev/null 2>&1
         if poll "$LISTMONK_HEALTH_TIMEOUT_S" lm_healthy; then
             lm_state="ok (after restart)"
         else
