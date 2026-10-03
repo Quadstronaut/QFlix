@@ -32,6 +32,10 @@ script is safe to run before the gate exists.
 
 Run on the box, inside the plexapi venv:
     ~/.apps/python-plexapi/venv/bin/python ~/scripts/configure/59b-plex-welcome-library.py
+
+The same script creates `QFlix - Test` (QFLX-4), the second not-entitled floor
+library, with the Plex Personal Media pair so test clips keep their filenames:
+    ~/.apps/python-plexapi/venv/bin/python ~/scripts/configure/59b-plex-welcome-library.py         --title "QFlix - Test" --path ~/media/Test         --agent tv.plex.agents.none --scanner "Plex Video Files Scanner"
 """
 from __future__ import annotations
 
@@ -59,12 +63,21 @@ def _read(name: str) -> str:
         return ""
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--title", default=DEFAULT_TITLE)
     ap.add_argument("--path", default=DEFAULT_DIR)
+    # QFLX-4: tv.plex.agents.none / "Plex Video Files Scanner" is the Personal
+    # Media pair, verified on the live PMS 1.43.3 /system/agents 2026-10-03.
+    # Filenames become titles instead of being matched to real films.
+    ap.add_argument("--agent", default=AGENT)
+    ap.add_argument("--scanner", default=SCANNER)
     ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     try:
         from plexapi.server import PlexServer
@@ -93,7 +106,7 @@ def main() -> int:
     folder = Path(args.path)
     if args.dry_run:
         print("DRY RUN: would mkdir %s and create section %r (%s / %s)"
-              % (folder, args.title, AGENT, SCANNER))
+              % (folder, args.title, args.agent, args.scanner))
         return 0
 
     # The folder must exist first: Plex validates the location and refuses to
@@ -105,8 +118,8 @@ def main() -> int:
     plex.library.add(
         name=args.title,
         type="movie",
-        agent=AGENT,
-        scanner=SCANNER,
+        agent=args.agent,
+        scanner=args.scanner,
         language="en-US",
         location=str(folder),
     )
