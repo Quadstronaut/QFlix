@@ -20,6 +20,19 @@ def test_defaults_still_create_the_welcome_movie_library():
 def test_flags_select_personal_media_for_the_test_library():
     a = M.build_parser().parse_args([
         "--title", "QFlix - Test", "--path", "/x/Test",
-        "--agent", "tv.plex.agents.none", "--scanner", "Plex Video Files Scanner"])
+        "--agent", "tv.plex.agents.none", "--scanner", "Plex Video Files"])
     assert (a.title, a.path, a.agent, a.scanner) == (
-        "QFlix - Test", "/x/Test", "tv.plex.agents.none", "Plex Video Files Scanner")
+        "QFlix - Test", "/x/Test", "tv.plex.agents.none", "Plex Video Files")
+
+
+def test_documented_test_library_command_pairs_new_agent_with_new_scanner():
+    """Live PMS 1.43.3 refused `tv.plex.agents.none` + "Plex Video Files"
+    with 400 "new scanner needs to be paired with new agent" (2026-10-03). The
+    tv.plex.agents.* agents pair with the suffix-less scanners ("Plex Movie",
+    "Plex Video Files") -- exactly how the live movie libraries are built. The
+    docstring is the runbook for creating QFlix - Test, so it must be runnable."""
+    import re
+    doc = M.__doc__
+    assert '--agent tv.plex.agents.none --scanner "Plex Video Files"' in doc
+    for scanner in re.findall(r'--scanner "([^"]+)"', doc):
+        assert not scanner.endswith(" Scanner"), scanner

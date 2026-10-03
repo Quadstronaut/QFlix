@@ -276,7 +276,7 @@ not reach the API" must never share an exit status.
 |---|---|
 | Seerr `defaultPermissions` `1153433760` → **0** | `newPlexLogin` is on, so a friend who signed in before the cron fired self-provisioned a **fully enabled** account. Polling faster does not fix a race; being born disabled does. Existing users unaffected. |
 | New Plex section `QFlix - Welcome` (key 7, id 145397557) | the floor the whole design rests on. All 14 shares received it automatically via `allLibraries=1`. |
-| New Plex section `QFlix - Test` (`~/media/Test`, Plex Personal Media agent) | QFLX-4, second floor library: playback test clips for prospects. Created by `59b-plex-welcome-library.py --title "QFlix - Test" --agent tv.plex.agents.none --scanner "Plex Video Files Scanner"`. |
+| New Plex section `QFlix - Test` (`~/media/Test`, Plex Personal Media agent) | QFLX-4, second floor library: playback test clips for prospects. Created by `59b-plex-welcome-library.py --title "QFlix - Test" --agent tv.plex.agents.none --scanner "Plex Video Files"`. |
 | `entitlement.key` on Starhold + box | QFlix-scoped, **lookup only** — bulk correctly 403s. |
 | `grace_days` 3 → 7 | operator, 2026-08-06 |
 | `never_seen` demoted from Discord alert to plan field | operator, 2026-08-17. Patreon now carries non-QFlix members and QFlix carries invisible rails, so never-seen is a steady state, not an anomaly. Still in `reason`, in `--json`, and still paging from the payer oracle when an *ever-entitled* payer goes never-seen. |
