@@ -422,8 +422,9 @@ def test_blast_radius_tripwire_exists_and_gates_reductions_only():
     assert "--max-reduce-pct" in src
     block = src[src.index("# ---- blast-radius tripwire"):]
     block = block[:block.index("# ---- apply")]
-    # Only S_EXPIRED plans are filtered out; grants survive the trip.
-    assert "p.state != S_EXPIRED" in block
+    # Only reductions (expiries + QFLX-6 floor holds on a miss) are filtered
+    # out; grants survive the trip.
+    assert "not is_reduction(p)" in block
     assert "S_ENTITLED" in block, "grants must remain in the governed denominator"
 
 

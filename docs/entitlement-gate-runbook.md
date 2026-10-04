@@ -88,8 +88,9 @@ non-entitled see both, entitled members see neither. Welcome is **required**
 (missing = the run refuses, the anti-eviction rail); Test is **optional** — if it
 is missing or renamed the floor shrinks to Welcome and the Kuma summary ends
 `floor missing: QFlix - Test`. Override with repeatable `--floor-section`.
-`pending` and `unknown-payer` shares are never written, so a new invitee only
-holds Test if **you tick it at invite time**. The library is static: Tdarr, the
+`pending` shares and `unknown-payer` shares still inside their deadline are
+never written, so a new invitee only holds Test if **you tick it at invite
+time**. The library is static: Tdarr, the
 reaper and every janitor use hardcoded library lists that do not include it.
 
 ---
@@ -214,7 +215,7 @@ shares=14 exempt=4 pending=10
 | `exempt` | never gated, never provisioned | none |
 | `entitled` | full access | none |
 | `pending` | not entitled, clock running | fix a `never_seen` address, or wait |
-| `unknown-payer` | the service has **no record of the address at all** — a lookup MISS, not a verdict. Frozen in place: never revoked, never paged, listed under `unknown_payers` in the audit manifest and `--json`. Five of twelve shares sat here on 2026-08-20, all at 11.9 days | **reconcile the address** — either it is misspelled in the roster, or the payer is on a rail the service cannot see. Missing data is never an interlock, so the gate will hold them here indefinitely rather than guess |
+| `unknown-payer` | the service has **no record of the address at all** — a lookup MISS, not a verdict. No grace clock, never paged, listed under `unknown_payers` in the audit manifest and `--json`. **Inside its deadline** (amnesty / 30-day new arrival) it is frozen. **Past the deadline**, a never-entitled account is held at the floor (Welcome + Test, Seerr disabled) — QFLX-6, 2026-10-04, after five such shares were found still on every library a month past the amnesty. An ever-entitled account going never-seen stays frozen (sync projection death; the payer oracle pages). Floor writes count toward the 34% tripwire | **reconcile the address** — misspelled in the roster, or the payer is on a rail the service cannot see. A payment that shows up later grants full access on the next run |
 | `expired` | reduced to Welcome | none — working as designed |
 | `no-answer` | the API did not answer; **nothing moved** | check `entitlements.quadstronix.dev` |
 | `unnamed-share` | accepted share with no household | **add them to the roster** |
