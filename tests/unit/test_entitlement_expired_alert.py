@@ -136,42 +136,37 @@ def _plan(gate, libs, *, never_seen, days_past_deadline, tmp_path):
         grace_days=7, new_arrival_days=30, member_permissions=0, now=now)
 
 
-def test_a_miss_past_its_deadline_is_frozen_not_reduced_and_never_pages(gate, libs,
-                                                                       tmp_path):
-    """The strongest form of the statement: fourteen days PAST the deadline,
-    with an anchor old enough that every clock has run out, a household the
-    service has no record of is still not reduced.
+def test_a_miss_past_its_deadline_drops_to_the_floor_and_never_pages(gate, libs,
+                                                                      tmp_path):
+    """QFLX-6, operator directive 2026-10-04: no payment on record past the
+    deadline means the FLOOR, not a freeze.
 
-    The old assertion here was `state == EXPIRED, alert is None` -- the harm it
-    guarded (a silent reduction of a wrong address) is now impossible by
-    construction rather than merely unpaged, so the assertion moves up to the
-    property instead of the state name. The distinction the old test cared
-    about is still legible, and better than before: a miss is its own state
-    rather than a boolean buried in a reason string.
+    The 2026-08-19 freeze assumed a never-seen household "keeps exactly what it
+    already holds -- Welcome only". Live, five such shares held allLibraries=1,
+    so the freeze kept five non-payers on the whole catalogue a month after the
+    amnesty ended, and handed them every new library (Test) automatically.
 
-    Losing the reduction is the POINT, not a side effect. Nothing here grants
-    anything either -- the household keeps exactly what it already holds."""
+    The fact stays legible (own state, never_seen, the masked roll-up) and it
+    still never pages: the reduction is the remedy, a page would only repeat."""
     plan = _plan(gate, libs, never_seen=True, days_past_deadline=14,
                  tmp_path=tmp_path)
     assert plan.state == gate.S_UNKNOWN_PAYER
     assert plan.never_seen is True, "the fact must survive on the plan"
     assert plan.to_json()["never_seen"] is True, "and reach the --json surface"
-    assert plan.plex_target is None, "a miss may never take libraries away"
-    assert plan.seerr_target is None, "nor disable Seerr"
+    assert plan.plex_target == [7], "past the deadline a miss holds the floor"
     assert "billing.rail" in plan.reason, "and must name the operator's lever"
     assert not plan.alert, (
         "a lookup miss paged -- that is a permanent daily alert per household "
         "on a fact that does not change (operator directive 2026-08-17)")
+    assert gate.is_reduction(plan), "a floor write counts toward the tripwire"
 
 
-def test_the_freeze_is_not_a_grant(gate, libs, tmp_path):
-    """Freezing an UNKNOWN must not be mistaken for resolving it upward. The
-    household keeps what it holds; the only write allowed to ride along is the
-    stage-1 Seerr provisioning every accepted share gets."""
+def test_a_miss_is_never_a_grant(gate, libs, tmp_path):
+    """Resolving an UNKNOWN downward is allowed past the deadline; upward never."""
     plan = _plan(gate, libs, never_seen=True, days_past_deadline=14,
                  tmp_path=tmp_path)
-    assert plan.plex_target is None and plan.seerr_target is None
-    assert not plan.mutates or plan.provision_plex_id is not None
+    assert plan.plex_target is not None
+    assert set(plan.plex_target) <= {7}, "a miss may never add a content library"
 
 
 def test_expired_with_a_real_answer_records_nothing_extra(gate, libs, tmp_path):
