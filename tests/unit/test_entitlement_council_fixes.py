@@ -288,15 +288,54 @@ def test_a_lookup_miss_can_no_longer_reach_the_reduction_at_all(tmp_path):
     going never-seen, i.e. the sync projection dying -- is unaffected: it is fed
     from the ANSWER, not from the plan state, and still pages from
     payer_oracle.judge() row 3.
+
+    FOURTH REVISION 2026-10-04 (QFLX-6, operator directive): the freeze kept
+    five non-payers on allLibraries=1 a month past the amnesty. A miss past its
+    deadline on a NEVER-entitled account now drops to the floor; it still
+    never pages, and the ever-entitled variant (projection death) still
+    freezes -- see the next test.
     """
     m, p = _miss_plan(tmp_path, "qe_h5a")
     assert p.state == m.S_UNKNOWN_PAYER
-    assert p.plex_target is None, "a lookup miss planned a real reduction"
-    assert p.seerr_target is None
+    assert p.plex_target == [WELCOME], "past the deadline a miss holds the floor"
+    assert p.seerr_target == SU.PERMISSIONS_DISABLED
     assert p.alert is None, "and it must not page either"
     assert p.never_seen is True, "the fact still has to be legible"
     assert m.unknown_payers([p]) == [m.mask("member@example.com")], \
         "and it must surface in the masked roll-up, not just a reason string"
+
+
+def test_an_ever_entitled_miss_stays_frozen(tmp_path):
+    """The one never-seen that must NOT be reduced: an account that has been
+    entitled before and is now unknown is the sync projection dying, not a
+    non-payer. payer_oracle row 3 pages it; the gate must hold still."""
+    m = _gate("qe_h5c")
+    share = PS.Share(shared_server_id=1, user_id=7, email="member@example.com",
+                     username="u", section_ids={101, 102, 103},
+                     all_libraries=False, accepted_at=LONG_AGO)
+    st = ST.AccessState.load(tmp_path / "s.json")
+    st.first_run_at = NOW - dt.timedelta(days=400)
+    st.seed([("member@example.com", LONG_AGO)], now=NOW - dt.timedelta(days=300))
+    st.get("member@example.com").last_entitled_at = NOW - dt.timedelta(days=60)
+    p = m.plan_for_share(
+        share=share, household=_Household(),
+        answer=ENT.Answer(verdict=ENT.NO, email="payer@example.com",
+                          http_status=200, reason="unknown"),
+        seerr_user=None, state=st, full_ids=[101, 102, 103],
+        minimum_ids=[WELCOME], amnesty_until=None, grace_days=7,
+        new_arrival_days=30, member_permissions=SU.MEMBER_PERMISSIONS, now=NOW)
+    assert p.state == m.S_UNKNOWN_PAYER
+    assert p.plex_target is None and p.seerr_target is None
+    assert not m.is_reduction(p)
+
+
+def test_floor_writes_on_a_miss_count_toward_the_tripwire(tmp_path):
+    """A wave of misses is exactly what a dead sync projection looks like, so
+    their floor writes must spend the same 34% blast-radius budget as expiries
+    and show up in --arm-check's would-be-reduced list."""
+    m, p = _miss_plan(tmp_path, "qe_h5d")
+    assert m.is_reduction(p)
+    assert m.would_be_reduced([p]) == [m.mask("member@example.com")]
 
 
 def test_a_real_negative_verdict_is_untouched_by_that_freeze(tmp_path):

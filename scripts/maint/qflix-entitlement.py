@@ -711,18 +711,59 @@ def plan_for_share(
     #     payer_ref and they resume normal grading on the next run;
     #   * they are comped or hand-managed -> mark the household exempt.
     # Neither is a switch this file may throw on their behalf.
+    #
+    # PAST THE DEADLINE, A NEVER-ENTITLED MISS HOLDS THE FLOOR (QFLX-6,
+    # operator directive 2026-10-04). The freeze above rested on "these
+    # households keep exactly what they already hold -- Welcome only". That
+    # premise was false: five never-seen shares carried allLibraries=1, so the
+    # freeze kept five non-payers on the whole catalogue a month after the
+    # amnesty ended and handed them every new library as it was created. The
+    # floor is what an unpaid member gets; a miss is not evidence of payment,
+    # so it gets the floor too once its clock has run out. It is still NOT a
+    # verdict: no grace clock starts, nothing pages, and a payment that shows
+    # up later grants full access on the next run.
+    #
+    # Two exceptions stay frozen. Inside the deadline (amnesty, new arrival)
+    # nothing moves. And an EVER-entitled account going never-seen is the sync
+    # projection dying, not a lapse -- payer_oracle.judge() row 3 pages it and
+    # the gate must hold still. Floor writes here count toward the blast-
+    # radius tripwire (is_reduction), so a dead projection that turns everyone
+    # into a miss is refused, not obeyed.
     if answer.never_seen:
+        acct = state.accounts.get(email.lower())
+        ever = bool(acct is not None and acct.ever_entitled)
+        lever = ("Set billing.rail + payer_ref if they pay on a visible rail, "
+                 "or mark the household exempt")
+        if now >= deadline and not ever:
+            plex_target = (sorted(minimum_ids)
+                           if set(share.section_ids) != set(minimum_ids) else None)
+            seerr_target = None
+            if (seerr_user is not None
+                    and seerr_user.permissions != SU.PERMISSIONS_DISABLED):
+                seerr_target = SU.PERMISSIONS_DISABLED
+            return Plan(email=email, state=S_UNKNOWN_PAYER, household_id=hid,
+                        holder=holder, plex_target=plex_target,
+                        seerr_target=seerr_target, provision_plex_id=provision,
+                        deadline=deadline, days_remaining=remaining,
+                        never_seen=True,
+                        reason="the entitlement service has no record of %s and "
+                               "the deadline has passed with no payment on "
+                               "record; %s. %s"
+                               % (mask(holder or "?"),
+                                  "already at the floor"
+                                  if not (plex_target or seerr_target)
+                                  else "holding at the floor (Welcome + Test, "
+                                       "Seerr disabled)", lever))
         return Plan(email=email, state=S_UNKNOWN_PAYER, household_id=hid,
                     holder=holder, provision_plex_id=provision,
                     deadline=deadline, days_remaining=remaining,
                     never_seen=True,
                     reason="the entitlement service has no record of %s at all "
-                           "(unknown address, or a rail it cannot see); a lookup "
-                           "MISS is not a no, so nothing is granted, nothing is "
-                           "reduced and the lapse clock is frozen. Set "
-                           "billing.rail + payer_ref if they pay on a visible "
-                           "rail, or mark the household exempt"
-                           % mask(holder or "?"))
+                           "(unknown address, or a rail it cannot see); %s, so "
+                           "nothing is granted or reduced. %s"
+                           % (mask(holder or "?"),
+                              "it was entitled before (sync projection?)"
+                              if ever else "its deadline has not passed", lever))
 
     # --- not entitled: pending or expired ----------------------------------
     if now < deadline:
@@ -840,6 +881,17 @@ def oracle_verdict(
                         settle_days=settle_days)
 
 
+def is_reduction(p: Plan) -> bool:
+    """A plan that takes access AWAY: an expiry, or a never-entitled miss past
+    its deadline being held at the floor (QFLX-6). Both spend the blast-radius
+    budget and both show in --arm-check."""
+    if p.state == S_EXPIRED:
+        return p.mutates
+    if p.state == S_UNKNOWN_PAYER:
+        return p.plex_target is not None or p.seerr_target is not None
+    return False
+
+
 def arm_check_should_block(verdict: "ORACLE.Verdict", plans: Sequence[Plan]) -> bool:
     """True iff `--arm-check` must exit red (EXIT_ARM_CHECK_RED): either the
     oracle verdict itself is red, or the plan set contains at least one
@@ -848,7 +900,7 @@ def arm_check_should_block(verdict: "ORACLE.Verdict", plans: Sequence[Plan]) -> 
     pending reductions is still a reason to hold, and vice versa."""
     if verdict.is_red:
         return True
-    return any(p.state == S_EXPIRED and p.mutates for p in plans)
+    return any(is_reduction(p) for p in plans)
 
 
 def unknown_payers(plans: Sequence[Plan]) -> List[str]:
@@ -867,7 +919,7 @@ def would_be_reduced(plans: Sequence[Plan]) -> List[str]:
     """The masked set --arm-check prints: exactly the accounts EXPIRED-and-
     mutating would touch. Masked because this is diagnostic output that may
     be read over someone's shoulder or pasted into a ticket."""
-    return sorted(mask(p.email) for p in plans if p.state == S_EXPIRED and p.mutates)
+    return sorted(mask(p.email) for p in plans if is_reduction(p))
 
 
 # ===========================================================================
@@ -1628,12 +1680,12 @@ def main(argv=None) -> int:
     # that fires 96 times a day on a steady state gets muted (2026-08-17).
     unknown = unknown_payers(plans)
     if unknown:
-        log("unknown to the entitlement service (frozen, no clock, nothing "
-            "reduced): %s -- set billing.rail + payer_ref if they pay on a "
+        log("unknown to the entitlement service (no clock; held at the floor "
+            "once past the deadline): %s -- set billing.rail + payer_ref if they pay on a "
             "visible rail, or mark the household exempt" % ", ".join(unknown))
 
     # ---- blast-radius tripwire -------------------------------------------
-    reducing = [p for p in mutating if p.state == S_EXPIRED]
+    reducing = [p for p in mutating if is_reduction(p)]
     # S_UNKNOWN_PAYER counts as GOVERNED even though it is frozen, exactly as
     # S_NO_ANSWER does: the tripwire denominator is "households this gate is
     # responsible for", not "households it moved this run". Leaving the frozen
@@ -1656,7 +1708,7 @@ def main(argv=None) -> int:
                    % (len(reducing), len(governed), pct, args.max_reduce_pct))
             warn(msg)
             _notify("QFlix entitlement: " + msg, "warn")
-            mutating = [p for p in mutating if p.state != S_EXPIRED]
+            mutating = [p for p in mutating if not is_reduction(p)]
 
     # ---- apply -----------------------------------------------------------
     out = Outcome()
