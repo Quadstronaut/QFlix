@@ -83,6 +83,16 @@
 #   That is correct -- it is real elevation -- and WARN exits 0, so it colours
 #   the Kuma message without paging anyone.
 #
+# WHY THE TOP-5 OWNERS ON WARN/FAIL (QFLX-7, 2026-10-05)
+# The box sat at 1830-1841/2000 for hours and the ~800-thread producer could
+# not be named afterwards: the msg carried only the totals, and by the time a
+# human looked the process had exited. Every PASS-WARN and FAIL line now ends
+# with -top=comm:count,comm:count,... (top 5 thread owners by `ps -L -o comm=`,
+# spaces in comm folded to _ so the msg stays one hyphen-joined token string).
+# One extra ps call, computed ONLY at or above WARN, so the healthy path costs
+# nothing. Plain PASS stays unchanged. comm is the 15-char kernel name, so a
+# runaway shows as e.g. PMS or python3, enough to pick the unit to cap.
+#
 # Stage labels (printed to stderr on failure -> Kuma `msg=`):
 #   STAGE=thread-fail        -- 85%+ on 2 consecutive samples, DOWN
 #   STAGE=thread-parse-fail  -- could not read the count or the ulimit
@@ -150,6 +160,14 @@ TRIP_WARN=\$(( LIMIT * WARN_PCT / 100 ))
 PCT_T=\$(( THREADS * 1000 / LIMIT ))
 PCT=\$(( PCT_T / 10 )).\$(( PCT_T % 10 ))
 
+# Top-5 thread owners, called only at or above WARN (QFLX-7). comm spaces are
+# folded to _ so the msg has no spaces; output looks like python3:177,PMS:127.
+owners() {
+  local o
+  o=\$(ps --no-headers -L -u \"\$UID_N\" -o comm= 2>/dev/null | sed -e \"s/ /_/g\" | sort | uniq -c | sort -rn | head -5 | sed -E \"s/^ *([0-9]+) (.*)\$/\2:\1/\" | paste -sd, -)
+  echo \"\${o:-none}\"
+}
+
 NOW=\$(date +%s)
 PREV_N=0; PREV_T=0
 if [ -r \"\$STATE_FILE\" ]; then
@@ -166,10 +184,10 @@ if [ \"\$THREADS\" -ge \"\$TRIP_FAIL\" ]; then
   STREAK=\$(( PREV_N + 1 ))
   printf '%s %s\n' \"\$STREAK\" \"\$NOW\" > \"\$STATE_FILE\" 2>/dev/null || true
   if [ \"\$STREAK\" -ge \"\$STREAK_REQ\" ]; then
-    echo \"STAGE=thread-fail msg=threads-\${THREADS}/\${LIMIT}-\${PCT}pct-procs-\${PROCS}-at-or-over-trip-\${TRIP_FAIL}-for-\${STREAK}-consecutive-samples-runaway-needs-GOMAXPROCS-cap-or-restart\" >&2
+    echo \"STAGE=thread-fail msg=threads-\${THREADS}/\${LIMIT}-\${PCT}pct-procs-\${PROCS}-at-or-over-trip-\${TRIP_FAIL}-for-\${STREAK}-consecutive-samples-runaway-needs-GOMAXPROCS-cap-or-restart-top=\$(owners)\" >&2
     exit 1
   fi
-  echo \"PASS-WARN: threads=\${THREADS}/\${LIMIT}-\${PCT}pct-procs=\${PROCS}-over-fail-trip=\${TRIP_FAIL}-sample=\${STREAK}/\${STREAK_REQ}-not-yet-sustained\"
+  echo \"PASS-WARN: threads=\${THREADS}/\${LIMIT}-\${PCT}pct-procs=\${PROCS}-over-fail-trip=\${TRIP_FAIL}-sample=\${STREAK}/\${STREAK_REQ}-not-yet-sustained-top=\$(owners)\"
   exit 0
 fi
 
@@ -180,7 +198,7 @@ printf '0 %s\n' \"\$NOW\" > \"\$STATE_FILE\" 2>/dev/null || true
 
 # 65% WARN -- annotate but stay UP (Kuma green, msg communicates the warn).
 if [ \"\$THREADS\" -ge \"\$TRIP_WARN\" ]; then
-  echo \"PASS-WARN: threads=\${THREADS}/\${LIMIT}-\${PCT}pct-procs=\${PROCS}-warn-trip=\${TRIP_WARN}-fail-trip=\${TRIP_FAIL}\"
+  echo \"PASS-WARN: threads=\${THREADS}/\${LIMIT}-\${PCT}pct-procs=\${PROCS}-warn-trip=\${TRIP_WARN}-fail-trip=\${TRIP_FAIL}-top=\$(owners)\"
   exit 0
 fi
 echo \"PASS: threads=\${THREADS}/\${LIMIT}-\${PCT}pct-procs=\${PROCS}-warn-trip=\${TRIP_WARN}-fail-trip=\${TRIP_FAIL}\"
