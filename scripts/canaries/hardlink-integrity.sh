@@ -102,14 +102,36 @@
 #      NOTHING for MAX_VACUOUS_DAYS. Unrecognised-shape runs are counted there
 #      (reason=no-classifiable-torrents), not paged here.
 #
+# 2026-10-05 fix (QFLX-8) - the ACCUMULATOR ITSELF was sized wrong. Kuma went
+# red with STAGE=hardlink-blind msg=no-assertion-for-7.8d-max-7d
+# reason=below-min-sample observed=1/5 over 10d. The 2026-08-06 ledger fixed
+# "torrents must coexist" but kept a 7d blind budget and a 14d TTL, which
+# silently assumed >=5 distinct torrents pass through the pool per week. They
+# do not: the janitor and ratio cleanup hold the pool near-empty by design, and
+# the measured inflow is ~1 distinct torrent per 10 days. At that rate MIN_SAMPLE
+# is reached in ~50 days, so a 7d/14d window made the red PERMANENT over an
+# accepted, designed-in condition - the same "alarm the operator learns to
+# ignore" outcome that retired both earlier designs.
+# Chosen: stretch the windows to the real inflow, change nothing else.
+# OBSERVATION_TTL_DAYS 14 -> 60 and MAX_VACUOUS_DAYS 7 -> 60. TTL must be >= the
+# blind budget or entries age out before the sample can ever fill. Rejected:
+#   - lowering MIN_SAMPLE: the tiny-denominator flaw (see above), unchanged.
+#   - downgrading blindness to a WARN-only pass: would let the guard retire
+#     itself and stay green forever, which is council finding 8. The blind
+#     streak is still printed on every inconclusive pass ("blind Nd of 60d").
+#   - counting *arr import history as samples: a new data source and a new
+#     failure surface; not the smallest correct change. If 60d still proves
+#     too short, that is the next step, not another number.
+# Regression detection (thresholds, orphan exclusion, MIN_SAMPLE) is untouched.
+#
 # Thresholds (tunable via env on the seedbox systemd unit's
 # Environment= lines) — all evaluated over the orphan-EXCLUDED, ACCUMULATED
 # sample:
 #   QFLIX_CANARY_HARDLINK_MAX_DETACHED         default 2   (absolute floor — allows a lone copy-import in flight)
 #   QFLIX_CANARY_HARDLINK_MAX_DETACHED_PCT     default 5   (percentage floor — covers proportional regressions)
 #   QFLIX_CANARY_HARDLINK_MIN_SAMPLE           default 5   (min DISTINCT torrents observed, accumulated across runs, before asserting a regression)
-#   QFLIX_CANARY_HARDLINK_MAX_VACUOUS_DAYS     default 7   (max consecutive days the ACCUMULATOR stays below MIN_SAMPLE before that blindness itself fails)
-#   QFLIX_CANARY_HARDLINK_OBSERVATION_TTL_DAYS default 14  (rolling window — ledger entries not refreshed within this many days are pruned)
+#   QFLIX_CANARY_HARDLINK_MAX_VACUOUS_DAYS     default 60  (max consecutive days the ACCUMULATOR stays below MIN_SAMPLE before that blindness itself fails)
+#   QFLIX_CANARY_HARDLINK_OBSERVATION_TTL_DAYS default 60  (rolling window — ledger entries not refreshed within this many days are pruned)
 # MAX_DETACHED and MAX_DETACHED_PCT must BOTH be exceeded to fail, and the
 # accumulated distinct-torrent count must reach MIN_SAMPLE first — below that
 # the run is inconclusive (passes) rather than crying wolf on a handful of
@@ -147,10 +169,10 @@ MAX_DETACHED_PCT=${QFLIX_CANARY_HARDLINK_MAX_DETACHED_PCT:-5}
 MIN_SAMPLE=${QFLIX_CANARY_HARDLINK_MIN_SAMPLE:-5}
 # Council finding 8: how long this canary may pass WITHOUT asserting anything
 # before the blindness itself becomes the alert. See the vacuity clock below.
-MAX_VACUOUS_DAYS=${QFLIX_CANARY_HARDLINK_MAX_VACUOUS_DAYS:-7}
+MAX_VACUOUS_DAYS=${QFLIX_CANARY_HARDLINK_MAX_VACUOUS_DAYS:-60}
 # 2026-08-06: rolling window for the per-torrent observation ledger. Entries
 # not refreshed within this many days are pruned — see the ledger code below.
-OBSERVATION_TTL_DAYS=${QFLIX_CANARY_HARDLINK_OBSERVATION_TTL_DAYS:-14}
+OBSERVATION_TTL_DAYS=${QFLIX_CANARY_HARDLINK_OBSERVATION_TTL_DAYS:-60}
 
 # Auth — qBit WebUI form-login, same pattern as qbit-stall.sh. Referer
 # header is mandatory on Ultra.cc-flavored qBit or it returns 403.
@@ -193,7 +215,7 @@ import json, os, sys, time
 # pass or fail — what matters is that the assertion executed.
 STATE_DIR = os.path.expanduser("~/.opt/maint/hardlink-integrity")
 STATE_PATH = os.path.join(STATE_DIR, "vacuity.json")
-MAX_VACUOUS_DAYS = float(os.environ.get("MAX_VACUOUS_DAYS", "7"))
+MAX_VACUOUS_DAYS = float(os.environ.get("MAX_VACUOUS_DAYS", "60"))
 
 
 def _read_vacuity():
@@ -293,7 +315,7 @@ with open("/tmp/qfh-completed.json") as f:
 # after a verdict flip.
 OBS_STATE_DIR = os.path.expanduser("~/.opt/maint/hardlink-integrity")
 OBS_STATE_PATH = os.path.join(OBS_STATE_DIR, "observations.json")
-OBSERVATION_TTL_DAYS = float(os.environ.get("OBSERVATION_TTL_DAYS", "14"))
+OBSERVATION_TTL_DAYS = float(os.environ.get("OBSERVATION_TTL_DAYS", "60"))
 NOW = int(time.time())
 
 
