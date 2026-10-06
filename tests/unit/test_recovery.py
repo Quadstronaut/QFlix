@@ -199,6 +199,43 @@ class TestRecoveryFailure:
         assert not recovery_mod._is_ucc_older_build(_fail_lifecycle())
         assert not recovery_mod._is_ucc_older_build(_ok_lifecycle())
 
+    def test_wedged_container_pages_once_and_skips_retries(self, tmp_path):
+        # 2026-10-05: sonarr's Docker container wedged; appmanager's
+        # `docker inspect` timed out on every verb. Retrying is pointless.
+        app = _make_app("sonarr", kuma_monitor="Sonarr")
+        manifest = _FakeManifest({"sonarr": app})
+        wedged = LifecycleResult(
+            ok=False, duration_s=55.0, stdout="", reason="exit 1",
+            stderr="sh.TimeoutException: Process did not complete in 55 seconds")
+
+        with patch.object(recovery_mod, "_ESCALATION_PAGE_LEDGER", tmp_path / "esc.json"),              patch("lib.recovery.lifecycle.restart", return_value=wedged) as mock_restart,              patch("lib.recovery.health.probe") as mock_probe,              patch("lib.recovery._attempt_auto_downgrade") as mock_down,              patch("lib.recovery.notify.notify") as mock_notify,              patch("lib.recovery.state.record"),              patch("lib.recovery.time.sleep"):
+            r1 = run("sonarr", manifest=manifest)
+            r2 = run("sonarr", manifest=manifest)  # next deep-check cycle
+
+        assert r1["event"] == "failed"
+        assert mock_restart.call_count == 2  # one attempt per run, no retries
+        mock_probe.assert_not_called()
+        mock_down.assert_not_called()
+        # Paged exactly once across both cycles (24h ledger).
+        assert mock_notify.call_count == 1
+        msg = mock_notify.call_args[0][0]
+        assert "wedged" in msg and "Ultra.cc ticket" in msg and "retries skipped" in msg
+
+    def test_wedged_signature_detection(self, tmp_path):
+        def lr(stdout="", stderr=""):
+            return LifecycleResult(ok=False, duration_s=1, stdout=stdout,
+                                   stderr=stderr, reason="x")
+        det = recovery_mod._is_wedged_container
+        assert det(lr(stderr="sh.TimeoutException: Process did not complete"))
+        assert det(lr(stderr="ERROR | sonarr:304 | Sonarr stop command exited with error: 999"))
+        assert det(lr(stderr="File utils.py in guard_container_action"))
+        assert not det(lr(stderr="connection refused"))
+        assert not det(_fail_lifecycle())
+        assert not det(_ok_lifecycle())
+        ok_with_text = LifecycleResult(ok=True, duration_s=1, stdout="", reason="ok",
+                                       stderr="sh.TimeoutException")
+        assert not det(ok_with_text)
+
     def test_recovery_healthy_locally_kuma_still_down(self, tmp_path):
         app = _make_app(kuma_monitor="Sonarr")
         manifest = _FakeManifest({"sonarr": app})

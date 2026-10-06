@@ -411,6 +411,18 @@ def _recovery_loop(app: App) -> dict:
                   page_once=True)
             return _result(app_name, "failed", attempt, "down", "n/a")
 
+        # Ultra.cc appmanager's `docker inspect` hangs on a wedged container
+        # (2026-10-05 sonarr). Only Ultra.cc support can fix it; retries just
+        # burn minutes. Page the remedy once (24h ledger) and stop.
+        if _is_wedged_container(lr):
+            msg = (
+                f"✗ {app_name} container wedged (Ultra.cc appmanager docker"
+                f" inspect timeout) — open an Ultra.cc ticket; retries skipped"
+            )
+            _emit("failed", app_name, attempt, "down", "n/a", msg, "error",
+                  page_once=True)
+            return _result(app_name, "failed", attempt, "down", "n/a")
+
         # Backoff before probing
         sleep_s = backoff[attempt - 1] if attempt - 1 < len(backoff) else backoff[-1]
         time.sleep(sleep_s)
@@ -456,6 +468,23 @@ def _recovery_loop(app: App) -> dict:
 
 
 _UCC_OLDER_BUILD_TELL = "older build"
+
+# Wedged-container signatures in `app-<slug> <verb>` output. lifecycle keeps
+# only the last 200 chars of each stream, so the traceback's final line
+# (sh.TimeoutException) is the one that reliably survives.
+_WEDGED_TELLS = (
+    "sh.timeoutexception",
+    "exited with error: 999",
+    "guard_container_action",
+)
+
+
+def _is_wedged_container(lr) -> bool:
+    """True when the UCC CLI died inside appmanager's docker inspect timeout."""
+    if lr is None or getattr(lr, "ok", True):
+        return False
+    text = f"{getattr(lr, 'stdout', '')}\n{getattr(lr, 'stderr', '')}".lower()
+    return any(t in text for t in _WEDGED_TELLS)
 
 
 def _is_ucc_older_build(lr) -> bool:
