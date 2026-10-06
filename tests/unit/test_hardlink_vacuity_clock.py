@@ -134,6 +134,33 @@ def test_the_threshold_is_tunable(code, tmp_path):
     assert _run(code, tmp_path, [], max_days="30").returncode == 0
 
 
+def test_defaults_fit_the_measured_inflow():
+    """QFLX-8: ~1 distinct torrent per 10d means MIN_SAMPLE=5 needs ~50d. The
+    old 7d blind / 14d TTL made the red permanent. Pin the new sizing, and that
+    TTL >= blind budget (else entries age out before the sample can fill)."""
+    import re
+    src = CANARY.read_text(encoding="utf-8")
+    blind = int(re.search(r"MAX_VACUOUS_DAYS:-(\d+)\}", src).group(1))
+    ttl = int(re.search(r"OBSERVATION_TTL_DAYS:-(\d+)\}", src).group(1))
+    pyb = int(re.search(r'get\("MAX_VACUOUS_DAYS", "(\d+)"\)', src).group(1))
+    pyt = int(re.search(r'get\("OBSERVATION_TTL_DAYS", "(\d+)"\)', src).group(1))
+    assert blind == pyb == 60 and ttl == pyt == 60
+    assert ttl >= blind
+    assert "MIN_SAMPLE:-5}" in src, "MIN_SAMPLE must not be lowered"
+
+
+def test_the_observed_incident_no_longer_reds_at_default(code, tmp_path):
+    """The live red: blind 7.8d with 1/5 observed. Under the default budget that
+    is an inconclusive PASS that still shows the streak."""
+    sf = _state_file(tmp_path)
+    sf.parent.mkdir(parents=True, exist_ok=True)
+    sf.write_text(json.dumps({"since": int(time.time()) - int(7.8 * DAY)}),
+                  encoding="utf-8")
+    r = _run(code, tmp_path, [], max_days="60")
+    assert r.returncode == 0, r.stderr
+    assert "blind 7.8d of 60d" in r.stdout
+
+
 # --- robustness: the bookkeeping must never be the thing that pages --------
 
 def test_corrupt_state_re_arms_instead_of_crashing(code, tmp_path):
