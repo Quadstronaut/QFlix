@@ -71,6 +71,12 @@ _FILE_LOGS = {
     "listmonk":        str(HOME / ".apps/listmonk/logs/listmonk.log"),
     "tdarr-server":    str(HOME / ".apps/tdarr/logs/server.log"),
     "tdarr-node":      str(HOME / ".apps/tdarr/logs/node.log"),
+    # Nightly cron output of scripts/ops/listmonk-sync.py. Unrouted until
+    # 2026-10-09, and unstamped: a 502 traceback from the 2026-10-02/03
+    # Postgres outage sat in it with no date and re-alerted a week later as if
+    # current. The script now prefixes every line with an ISO timestamp, which
+    # the Python-logging pattern above parses.
+    "listmonk-sync":   str(HOME / ".apps/listmonk/logs/sync.log"),
 }
 
 # Apps with date-rotated logs (no stable filename): resolve at scan time to the
