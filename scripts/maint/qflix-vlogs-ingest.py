@@ -141,20 +141,29 @@ def _parse_with_carry(lines: list[str], *, source: str, last_ts: str | None) -> 
 
 def _journal_new_lines(unit: str, cursor_file: Path, *, window: str, tail: int) -> list[str]:
     """journalctl --cursor-file reads after the saved cursor and rewrites it.
-    No cursor file yet → bootstrap from the --since window once."""
-    cmd = ["journalctl", "--user", "-u", unit, f"--cursor-file={cursor_file}",
-           "-n", str(tail), "--output", "short-iso", "--no-pager"]
-    if not cursor_file.exists():
-        cmd += ["--since", f"{window} ago"]
+
+    No cursor file yet → bootstrap from the --since window once. journalctl
+    (systemd 257) refuses --since together with --cursor-file, so the bootstrap
+    uses --show-cursor and writes the trailing "-- cursor: X" line itself.
+    Raises on a journalctl failure, so the caller counts it, not "0 lines".
+    """
+    import subprocess
+    base = ["journalctl", "--user", "-u", unit, "-n", str(tail),
+            "--output", "short-iso", "--no-pager"]
     cursor_file.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        import subprocess
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except Exception:
-        return []
+    bootstrap = not cursor_file.exists()
+    cmd = base + (["--since", f"{window} ago", "--show-cursor"] if bootstrap
+                  else [f"--cursor-file={cursor_file}"])
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if proc.returncode != 0:
-        return []
-    return [ln for ln in proc.stdout.splitlines() if ln.strip() != "-- No entries --"]
+        raise RuntimeError(f"journalctl rc={proc.returncode}: {proc.stderr.strip()[:200]}")
+    out = []
+    for ln in proc.stdout.splitlines():
+        if ln.startswith("-- cursor: "):
+            cursor_file.write_text(ln[len("-- cursor: "):].strip())
+        elif ln.strip() != "-- No entries --":
+            out.append(ln)
+    return out
 
 
 def _read_port() -> int:

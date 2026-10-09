@@ -149,3 +149,33 @@ def test_cursors_roundtrip_and_corrupt_file(tmp_path):
     assert mod._load_cursors(p) == {"a": {"offset": 3}}
     p.write_text("{not json")
     assert mod._load_cursors(p) == {}
+
+
+def test_journal_bootstrap_uses_show_cursor_not_cursor_file(tmp_path, monkeypatch):
+    """systemd 257 rejects --since with --cursor-file (rc=1); the first run must
+    use --since + --show-cursor and persist the cursor itself."""
+    import subprocess
+    mod = _load_ingest()
+    calls = []
+
+    class P:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        p = P()
+        if any(a.startswith("--cursor-file=") for a in cmd):
+            assert "--since" not in cmd
+            p.stdout = "2026-10-09T02:00:01+0200 host x[1]: second\n"
+        else:
+            p.stdout = "2026-10-09T02:00:00+0200 host x[1]: first\n-- cursor: s=abc\n"
+        return p
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    cf = tmp_path / "u.journal-cursor"
+    assert mod._journal_new_lines("u", cf, window="6m", tail=10) == [
+        "2026-10-09T02:00:00+0200 host x[1]: first"]
+    assert cf.read_text() == "s=abc"
+    assert mod._journal_new_lines("u", cf, window="6m", tail=10) == [
+        "2026-10-09T02:00:01+0200 host x[1]: second"]
