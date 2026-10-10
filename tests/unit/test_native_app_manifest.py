@@ -281,16 +281,11 @@ def test_radarr2_flip_keeps_the_probe_secrets_the_whole_stack_reads():
         "radarr2.port", "radarr2.key", "radarr2.urlbase")
 
 
-def test_the_other_radarr_is_not_converted_by_this_ticket():
-    assert _apps()["radarr"]["class"] == "ucc"                       # A7 (QFLX-31)
-
-
-def test_generated_skip_list_carries_radarr2_and_not_radarr():
+def test_generated_skip_list_carries_radarr2():
     r = subprocess.run([sys.executable, str(LIB / "ucc_skip.py"), "--list",
                         "--manifest", str(MANIFEST)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    names = r.stdout.split()
-    assert "radarr2" in names and "radarr" not in names
+    assert "radarr2" in r.stdout.split()           # radarr (A7) is pinned below
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
@@ -336,3 +331,77 @@ def test_swapped_radarr2_is_lifecycled_as_the_native_unit(tmp_path, fn):
     argv = [c[0][0] for c in run.call_args_list]
     assert argv and not any(a[0] == "app-radarr2" for a in argv), argv
     assert any(a[0] == "systemctl" and "qflix-radarr2.service" in a for a in argv), argv
+
+
+# --- radarr (QFLX-31, A7) ---------------------------------------------------------
+
+def test_radarr_is_converted_with_a_full_build_pin():
+    a = _converted()["radarr"]
+    assert a["unit"] == "qflix-radarr.service" and a["swap_state"] == "pending-swap"
+    assert a["health"]["kind"] == "http_api" and a["health"]["require_unit_active"] is True
+    assert a["upgrade"]["kind"] == "tarball_swap"
+    assert _versions_env()["RADARR_VERSION"].count(".") == 3        # 6.4.4.10685, not the panel's 6.4.4
+    assert "linux-core-x64" in a["upgrade"]["url_template"]
+
+
+def test_radarr_upgrade_hoists_the_tarball_top_dir_into_bin_ver():
+    steps = " && ".join(_converted()["radarr"]["upgrade"]["post_steps"])
+    assert "mv Radarr .pkg" in steps and "mv .pkg/* ." in steps    # dir and apphost share a name
+    assert "rm -rf Radarr.Update" in steps
+    assert "bin/current" in steps
+
+
+def test_radarr_flip_keeps_the_probe_secrets_the_whole_stack_reads():
+    h = _converted()["radarr"]["health"]
+    assert (h["port_secret"], h["auth_secret"], h["urlbase_secret"]) == (
+        "radarr.port", "radarr.key", "radarr.urlbase")
+
+
+def test_generated_skip_list_carries_radarr():
+    r = subprocess.run([sys.executable, str(LIB / "ucc_skip.py"), "--list",
+                        "--manifest", str(MANIFEST)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "radarr" in r.stdout.split()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
+def test_appctl_never_starts_the_radarr_container_after_the_swap(tmp_path, verb):
+    man = _post_swap_manifest_for(tmp_path, "radarr")
+    binp = tmp_path / "bin"
+    binp.mkdir()
+    for n in ("app-radarr", "systemctl"):
+        (binp / n).write_text(_STUB, newline="\n")
+        (binp / n).chmod(0o755)
+    log = tmp_path / "argv.log"
+    env = dict(os.environ, HOME=tmp_path.as_posix(), STUB_LOG=log.as_posix(),
+               PATH=binp.as_posix() + os.pathsep + os.environ.get("PATH", ""),
+               APPCTL_MANIFEST=man.as_posix(), APPCTL_PYTHON=Path(sys.executable).as_posix(),
+               APPCTL_LIB=LIB.as_posix())
+    r = subprocess.run(["bash", APPCTL.as_posix(), verb, "radarr"], env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    argv = log.read_text() if log.exists() else ""
+    assert "app-radarr" not in argv
+    want = "is-active" if verb == "status" else verb
+    assert f"systemctl --user {want} qflix-radarr.service" in argv
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
+def test_lifecycle_never_starts_the_radarr_container_after_the_swap(tmp_path, fn):
+    app = load_manifest(_post_swap_manifest_for(tmp_path, "radarr")).app("radarr")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "active\n", "")) as run:
+        fn(app)
+    for call in run.call_args_list:
+        assert not call[0][0][0].startswith("app-"), call
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart])
+def test_pending_swap_radarr_is_still_lifecycled_as_the_container(tmp_path, fn):
+    """Before the swap the container is the live runtime: pusher recovery must
+    never `systemctl --user restart` the native unit beside it (I-6)."""
+    app = load_manifest(MANIFEST).app("radarr")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "", "")) as run:
+        fn(app)
+    argv = [c[0][0] for c in run.call_args_list]
+    assert argv and all(a[0] == "app-radarr" for a in argv), argv

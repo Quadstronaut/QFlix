@@ -1,0 +1,9 @@
+[Unit]
+Description=QFlix radarr loopback forwarder
+Requires=qflix-radarr-fwd.socket
+After=qflix-radarr-fwd.socket qflix-radarr.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 172.17.0.1:17027
+Nice=5
