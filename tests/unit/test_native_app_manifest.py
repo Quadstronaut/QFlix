@@ -91,6 +91,7 @@ def test_generated_skip_list_carries_unpackerr():
     assert r.returncode == 0, r.stderr
     assert "unpackerr" in r.stdout.split()
     assert "flaresolverr" in r.stdout.split()
+    assert "qbittorrent" in r.stdout.split()
 
 
 # --- zero UCC starts after the swap (O-3 / F8 dependency) --------------------------

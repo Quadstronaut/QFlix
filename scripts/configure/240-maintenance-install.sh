@@ -297,6 +297,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
     scripts/configure/301-native-flaresolverr-install.sh \
+    scripts/configure/310-native-qbittorrent-install.sh \
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
@@ -470,6 +471,8 @@ cp -f   "$STG"/scripts/configure/300-native-unpackerr-install.sh ~/scripts/confi
 chmod +x ~/scripts/configure/300-native-unpackerr-install.sh
 cp -f   "$STG"/scripts/configure/301-native-flaresolverr-install.sh ~/scripts/configure/301-native-flaresolverr-install.sh
 chmod +x ~/scripts/configure/301-native-flaresolverr-install.sh
+cp -f   "$STG"/scripts/configure/310-native-qbittorrent-install.sh ~/scripts/configure/310-native-qbittorrent-install.sh
+chmod +x ~/scripts/configure/310-native-qbittorrent-install.sh
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.

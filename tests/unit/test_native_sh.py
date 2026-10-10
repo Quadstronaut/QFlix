@@ -66,7 +66,7 @@ def test_render_unit_dotnet_matches_golden(tmp_path):
 
 @pytest.mark.parametrize("fam,slug", [("dotnet", "radarr"), ("go", "unpackerr"),
                                       ("node", "seerr"), ("python", "tautulli"),
-                                      ("db", "postgres")])
+                                      ("db", "postgres"), ("static", "qbittorrent")])
 def test_every_family_has_path_line_and_no_taskmax(tmp_path, fam, slug):
     r = _sh(tmp_path, f"native_render_unit {slug} {fam} exe '--x'")
     assert r.returncode == 0, r.stderr
@@ -81,6 +81,14 @@ def test_db_family_gets_120s_stop_timeout(tmp_path):
     out = _sh(tmp_path, "native_render_unit postgres db postgres '-D x'").stdout
     assert "TimeoutStopSec=120\n" in out
     assert "TimeoutStopSec=60\n" in _sh(tmp_path, "native_render_unit a go a ''").stdout
+
+
+def test_static_family_gets_120s_stop_and_no_thread_knob(tmp_path):
+    # qbittorrent-nox (QFLX-35): libtorrent flushes resume data on SIGTERM.
+    out = _sh(tmp_path, "native_render_unit qbittorrent static qbittorrent-nox ''").stdout
+    assert "TimeoutStopSec=120\n" in out
+    env = _sh(tmp_path, "native_render_env qbittorrent static 5.0.3").stdout.splitlines()
+    assert env == ["MALLOC_ARENA_MAX=2"]
 
 
 def test_node_wasm_flag_on_cli_never_in_node_options(tmp_path):
@@ -106,6 +114,7 @@ def test_slug_traversal_refused(tmp_path):
     ("go", ["GOMAXPROCS=4", "MALLOC_ARENA_MAX=2"]),
     ("node", ["UV_THREADPOOL_SIZE=4", "MALLOC_ARENA_MAX=2"]),
     ("python", ["MALLOC_ARENA_MAX=2"]),
+    ("static", ["MALLOC_ARENA_MAX=2"]),
 ])
 def test_env_caps_per_family(tmp_path, fam, lines):
     out = _sh(tmp_path, f"native_render_env app {fam} 1.0").stdout.splitlines()
