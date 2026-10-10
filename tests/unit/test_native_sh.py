@@ -111,7 +111,8 @@ def test_render_unit_absolute_exe_is_used_verbatim(tmp_path):
 # --- env caps -------------------------------------------------------------------
 
 @pytest.mark.parametrize("fam,lines", [
-    ("dotnet", ["DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "MALLOC_ARENA_MAX=2"]),
+    ("dotnet", ["DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "DOTNET_GCRegionRange=80000000",
+                "MALLOC_ARENA_MAX=2"]),
     ("go", ["GOMAXPROCS=4", "MALLOC_ARENA_MAX=2"]),
     ("node", ["UV_THREADPOOL_SIZE=4", "MALLOC_ARENA_MAX=2"]),
     ("python", ["MALLOC_ARENA_MAX=2"]),
