@@ -19,25 +19,14 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 source "$HERE/../lib/ssh.sh"
 source "$HERE/../lib/log.sh"
 source "$HERE/../lib/secrets.sh"
+source "$HERE/../lib/ports.sh"
 
 VLOGS_VERSION="${VLOGS_VERSION:-v1.50.0}"
 
 log_info "Phase 80: VictoriaLogs install on seedbox"
 
 # ── Step 1: claim a loopback port ───────────────────────────────────────────
-if ! secret_exists vlogs.port; then
-  USED_LOCAL=$(cat "$REPO_ROOT"/secrets/*.port 2>/dev/null | sort -u | paste -sd, -)
-  USED_BOUND=$(sshm "ss -tln 2>/dev/null | grep -oE '127\\.0\\.0\\.1:[0-9]+' | cut -d: -f2 | sort -u" | paste -sd, -)
-  PORT=$(sshm "app-ports free 2>/dev/null | grep -E '^[0-9]+\$'" | while read p; do
-    case ",$USED_LOCAL,$USED_BOUND," in
-      *",$p,"*) ;;
-      *) echo "$p"; break ;;
-    esac
-  done)
-  [ -n "$PORT" ] || die "no truly-free port from app-ports for vlogs"
-  secret_write vlogs.port "$PORT"
-  log_info "claimed vlogs port $PORT"
-fi
+claim_port vlogs.port
 VLOGS_PORT=$(secret_read vlogs.port)
 log_info "vlogs port = $VLOGS_PORT (loopback only)"
 

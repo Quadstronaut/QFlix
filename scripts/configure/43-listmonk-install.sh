@@ -13,6 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/../lib/ssh.sh"
 source "$HERE/../lib/log.sh"
 source "$HERE/../lib/secrets.sh"
+source "$HERE/../lib/ports.sh"
 
 LM_VER="6.1.0"
 LM_URL="https://github.com/knadh/listmonk/releases/download/v${LM_VER}/listmonk_${LM_VER}_linux_amd64.tar.gz"
@@ -28,12 +29,7 @@ SMTP_USER="$(secret_read listmonk.smtp_user)"
 SMTP_HELLO_HOST="${PUBLIC_HOST}"
 
 # ── Step 1: claim port ──────────────────────────────────────────────────────
-if ! secret_exists listmonk.port; then
-  PORT=$(sshm 'app-ports free 2>/dev/null | grep -E "^[0-9]+$" | head -1')
-  [ -n "$PORT" ] || die "app-ports free returned no port"
-  secret_write listmonk.port "$PORT"
-  log_info "claimed listmonk port $PORT"
-fi
+claim_port listmonk.port
 PORT=$(secret_read listmonk.port)
 log_info "listmonk port = $PORT"
 

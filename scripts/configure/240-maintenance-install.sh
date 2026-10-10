@@ -14,6 +14,7 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 source "$HERE/../lib/ssh.sh"
 source "$HERE/../lib/log.sh"
 source "$HERE/../lib/secrets.sh"
+source "$HERE/../lib/ports.sh"
 
 # ── Step 1: pre-flight — required local secrets ─────────────────────────────
 log_info "Phase 240: maintenance system install"
@@ -28,23 +29,9 @@ secret_exists discord-operator.id || die "missing secrets/discord-operator.id �
 log_info "pre-flight: all required secrets present"
 
 # ── Step 2: claim webhook port ──────────────────────────────────────────────
-# `app-ports free` over-reports — it lists ports that have been allocated
-# elsewhere but not yet bound at the moment app-ports samples. Filter the
-# free list against (a) ports already in secrets/*.port and (b) ports
-# actually bound on the host (ss -tln) before picking one.
-if ! secret_exists maintenance.port; then
-  USED_LOCAL=$(cat "$REPO_ROOT"/secrets/*.port 2>/dev/null | sort -u | paste -sd, -)
-  USED_BOUND=$(sshm "ss -tln 2>/dev/null | grep -oE '127\\.0\\.0\\.1:[0-9]+' | cut -d: -f2 | sort -u" | paste -sd, -)
-  PORT=$(sshm "app-ports free 2>/dev/null | grep -E '^[0-9]+\$'" | while read p; do
-    case ",$USED_LOCAL,$USED_BOUND," in
-      *",$p,"*) ;;
-      *) echo "$p"; break ;;
-    esac
-  done)
-  [ -n "$PORT" ] || die "no truly-free port from app-ports (local + bound exclusion)"
-  secret_write maintenance.port "$PORT"
-  log_info "claimed maintenance webhook port $PORT"
-fi
+# app-ports over-reports free ports (allocated-but-unbound ports); lib/ports.py claim()
+# filters it against secrets/*.port and the ports bound on the box (ss -tln).
+claim_port maintenance.port
 WEBHOOK_PORT=$(secret_read maintenance.port)
 log_info "webhook port = $WEBHOOK_PORT (loopback only)"
 

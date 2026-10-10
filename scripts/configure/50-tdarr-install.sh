@@ -12,6 +12,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/../lib/ssh.sh"
 source "$HERE/../lib/log.sh"
 source "$HERE/../lib/secrets.sh"
+source "$HERE/../lib/ports.sh"
 
 # Pinned to 2.17.01. The plan suggested 2.45.01 but:
 #   1. storage.tdarr.io 404s on that version
@@ -30,16 +31,7 @@ PUBLIC_HOST="$(secret_read seedbox.host)"
 #    a single serverPort. webUIPort is NOT bound, but the server's
 #    internal redirect builder defaults to :8265 unless we set it — so
 #    pin it to the same value as serverPort below). ──────────────────────
-if ! secret_exists tdarr.server_port; then
-  # Cross-check against every existing secrets/*.port to avoid double-claim.
-  # The earlier conjurr/newsletterr-specific dedup was wrong (those secrets
-  # were purged 2026-05-11; secret_read on a missing file dies, so the
-  # 2>/dev/null hid the error and the dedup silently degraded).
-  USED=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../secrets" && cat *.port 2>/dev/null | sort -u)
-  PORT=$(sshm "app-ports free 2>/dev/null | grep -E '^[0-9]+\$'" | grep -vxF "$USED" | head -1)
-  [ -n "$PORT" ] || die "no free port for tdarr"
-  secret_write tdarr.server_port "$PORT"
-fi
+claim_port tdarr.server_port
 SERVER_PORT=$(secret_read tdarr.server_port)
 log_info "tdarr port (UI + API + Node) = $SERVER_PORT"
 
