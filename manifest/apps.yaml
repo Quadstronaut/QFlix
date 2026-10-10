@@ -41,8 +41,26 @@ apps:
       expect_status: 200
 
   sonarr2:
-    class: ucc
+    # QFLX-30 (UCC divorce A6): converted to the native Sonarr v4 linux-x64 build
+    # run as qflix-sonarr2.service by scripts/configure/305-native-sonarr2-
+    # install.sh (build pinned in versions.env SONARR2_VERSION + sha256 in the
+    # installer; the panel tool only reports 4.0.20, the API reports the full
+    # 4.0.20.3014). Port, bind address and the update mechanism come from the
+    # unit's env file (SONARR__SERVER__*, SONARR__UPDATE__*); config.xml stays
+    # what the container reads. The app binds the docker bridge (Seerr,
+    # Prowlarr and Bazarr call it there) and a socket-activated forwarder
+    # (qflix-sonarr2-fwd.socket) owns the loopback listener nginx and the
+    # canaries use. The UCC container stays installed and DORMANT as the
+    # rollback target (I-8). renameEpisodes must stay true (arr-plex-parity).
+    # swap_state: pending-swap (spec 5.9 step 7) = this flip is merged and
+    # deployed but the swap has not run: the container still serves, so appctl
+    # and lifecycle dispatch it as UCC and require_unit_active is off. A
+    # follow-up PR removes the line right after the swap.
+    class: systemd
+    unit: qflix-sonarr2.service
     ucc_slug: sonarr2
+    ucc_dormant: true
+    swap_state: pending-swap
     kuma_monitor: "Sonarr Anime"
     health:
       kind: http_api
@@ -52,6 +70,22 @@ apps:
       port_secret: sonarr2.port
       urlbase_secret: sonarr2.urlbase
       expect_status: 200
+      require_unit_active: true
+    upgrade:
+      # Each release lands in bin/<ver>, then `current` flips atomically. The
+      # tarball's single top-level dir (Sonarr/) is hoisted into bin/<ver> and
+      # the self-updater dir dropped. The soak gate (lib/swapstate.py) refuses
+      # it for 14 days after the swap and the first one closes the
+      # rollback-to-UCC window (I-10).
+      kind: tarball_swap
+      url_template: "https://github.com/Sonarr/Sonarr/releases/download/v{version}/Sonarr.main.{version}.linux-x64.tar.gz"
+      target_dir: "~/.apps/sonarr2/bin/{version}"
+      post_steps:
+        - "cd ~/.apps/sonarr2/bin/{version} && mv Sonarr .pkg && mv .pkg/* . && rmdir .pkg && rm -rf Sonarr.Update && chmod 0755 Sonarr"
+        - "ln -sfn {version} ~/.apps/sonarr2/bin/.current.new && mv -Tf ~/.apps/sonarr2/bin/.current.new ~/.apps/sonarr2/bin/current"
+      version_pin:
+        source: versions.env
+        key: SONARR2_VERSION
 
   radarr:
     # QFLX-31 (UCC divorce A7): converted to the native linux-core-x64 build run
@@ -102,8 +136,27 @@ apps:
         key: RADARR_VERSION
 
   radarr2:
-    class: ucc
+    # QFLX-29 (UCC divorce A5, the anime Radarr): converted to the native
+    # linux-core-x64 build run as qflix-radarr2.service by scripts/configure/
+    # 304-native-radarr2-install.sh (build pinned in versions.env
+    # RADARR2_VERSION + sha256 in the installer; the panel tool only reports
+    # 6.4.4, the API reports the full 6.4.4.10685). Port, bind address and the
+    # update mechanism come from the unit's env file (RADARR__SERVER__*,
+    # RADARR__UPDATE__*); config.xml stays what the container reads and the
+    # data stays in place (~/.apps/radarr2, database file radarr.db). The app
+    # binds the docker bridge (the arrs' callers reach it there) and a
+    # socket-activated forwarder (qflix-radarr2-fwd.socket) owns the loopback
+    # listener nginx and the canaries use. The UCC container stays installed and
+    # DORMANT as the rollback target (I-8). NOTE: the `radarr` container shares
+    # radarr2's process name; only the /config mount tells them apart.
+    # Swapped to native 2026-10-10 (spec 5.9 steps 1-6); the `swap_state:
+    # pending-swap` line that held this flip inert until the swap ran is gone,
+    # so appctl / lifecycle / require_unit_active / runtime parity now treat the
+    # native unit as the live runtime. 14-day soak until 2026-10-24.
+    class: systemd
+    unit: qflix-radarr2.service
     ucc_slug: radarr2
+    ucc_dormant: true
     kuma_monitor: "Radarr 2"
     health:
       kind: http_api
@@ -113,10 +166,43 @@ apps:
       port_secret: radarr2.port
       urlbase_secret: radarr2.urlbase
       expect_status: 200
+      require_unit_active: true
+    upgrade:
+      # Each release lands in bin/<ver>, then `current` flips atomically. The
+      # tarball's single top-level dir (Radarr/) is hoisted into bin/<ver>
+      # and the self-updater dir dropped. The soak gate (lib/swapstate.py)
+      # refuses it for 14 days after the swap and the first one closes the
+      # rollback-to-UCC window (I-10).
+      kind: tarball_swap
+      url_template: "https://github.com/Radarr/Radarr/releases/download/v{version}/Radarr.master.{version}.linux-core-x64.tar.gz"
+      target_dir: "~/.apps/radarr2/bin/{version}"
+      post_steps:
+        - "cd ~/.apps/radarr2/bin/{version} && mv Radarr .pkg && mv .pkg/* . && rmdir .pkg && rm -rf Radarr.Update && chmod 0755 Radarr"
+        - "ln -sfn {version} ~/.apps/radarr2/bin/.current.new && mv -Tf ~/.apps/radarr2/bin/.current.new ~/.apps/radarr2/bin/current"
+      version_pin:
+        source: versions.env
+        key: RADARR2_VERSION
 
   prowlarr:
-    class: ucc
+    # QFLX-28 (UCC divorce A4, the first .NET app): converted to the native
+    # linux-core-x64 build run as qflix-prowlarr.service by scripts/configure/
+    # 303-native-prowlarr-install.sh (build pinned in versions.env
+    # PROWLARR_VERSION + sha256 in the installer; the panel tool only reports
+    # 2.6.5, the API reports the full 2.6.5.5623). Port, bind address and the
+    # update mechanism come from the unit's env file (PROWLARR__SERVER__*,
+    # PROWLARR__UPDATE__*); config.xml stays what the container reads. The app
+    # binds the docker bridge (the arrs call it there) and a socket-activated
+    # forwarder (qflix-prowlarr-fwd.socket) owns the loopback listener nginx and
+    # the canaries use. The UCC container stays installed and DORMANT as the
+    # rollback target (I-8).
+    # Swapped to native 2026-10-10 (spec 5.9 steps 1-6); the `swap_state:
+    # pending-swap` line that held this flip inert until the swap ran is gone,
+    # so appctl / lifecycle / require_unit_active / runtime parity now treat the
+    # native unit as the live runtime. 14-day soak until 2026-10-24.
+    class: systemd
+    unit: qflix-prowlarr.service
     ucc_slug: prowlarr
+    ucc_dormant: true
     kuma_monitor: "Prowlarr"
     health:
       kind: http_api
@@ -126,10 +212,39 @@ apps:
       port_secret: prowlarr.port
       urlbase_secret: prowlarr.urlbase
       expect_status: 200
+      require_unit_active: true
+    upgrade:
+      # Each release lands in bin/<ver>, then `current` flips atomically. The
+      # tarball's single top-level dir (Prowlarr/) is hoisted into bin/<ver>
+      # and the self-updater dir dropped. The soak gate (lib/swapstate.py)
+      # refuses it for 14 days after the swap and the first one closes the
+      # rollback-to-UCC window (I-10).
+      kind: tarball_swap
+      url_template: "https://github.com/Prowlarr/Prowlarr/releases/download/v{version}/Prowlarr.master.{version}.linux-core-x64.tar.gz"
+      target_dir: "~/.apps/prowlarr/bin/{version}"
+      post_steps:
+        - "cd ~/.apps/prowlarr/bin/{version} && mv Prowlarr .pkg && mv .pkg/* . && rmdir .pkg && rm -rf Prowlarr.Update && chmod 0755 Prowlarr"
+        - "ln -sfn {version} ~/.apps/prowlarr/bin/.current.new && mv -Tf ~/.apps/prowlarr/bin/.current.new ~/.apps/prowlarr/bin/current"
+      version_pin:
+        source: versions.env
+        key: PROWLARR_VERSION
 
   bazarr:
-    class: ucc
+    # QFLX-27 (UCC divorce A3): converted to the native release zip run by a
+    # python3.11 venv as qflix-bazarr.service by scripts/configure/302-native-
+    # bazarr-install.sh (version pinned in versions.env BAZARR_VERSION + sha256
+    # in the installer; the unit's env sets BAZARR_VERSION, which bazarr reports
+    # from). Data stays in place: --config ~/.apps/bazarr. The UCC container
+    # stays installed and DORMANT as the rollback target (I-8). bazarr2-sync
+    # keeps pinning bazarr2 to this instance's /api/system/status version.
+    # Swapped to native 2026-10-10 (spec 5.9 steps 1-6); the `swap_state:
+    # pending-swap` line that held this flip inert until the swap ran is gone,
+    # so appctl / lifecycle / require_unit_active / runtime parity now treat the
+    # native unit as the live runtime. 14-day soak until 2026-10-24.
+    class: systemd
+    unit: qflix-bazarr.service
     ucc_slug: bazarr
+    ucc_dormant: true
     kuma_monitor: "Bazarr"
     health:
       kind: http_api
@@ -139,6 +254,21 @@ apps:
       port_secret: bazarr.port
       urlbase_secret: bazarr.urlbase
       expect_status: 200
+      require_unit_active: true
+    upgrade:
+      # The release zip carries the prebuilt web UI. lifecycle unzips it into
+      # bin/<ver>; the post step (the installer's --post-upgrade) patches
+      # server.py, updates the venv, flips `current` and rewrites
+      # BAZARR_VERSION in the env file. The soak gate refuses it for 14 days
+      # after the swap; the first one closes the rollback-to-UCC window (I-10).
+      kind: zip_swap
+      url_template: "https://github.com/morpheus65535/bazarr/releases/download/v{version}/bazarr.zip"
+      target_dir: "~/.apps/bazarr/bin/{version}"
+      post_steps:
+        - "~/scripts/configure/302-native-bazarr-install.sh --post-upgrade {version} --execute"
+      version_pin:
+        source: versions.env
+        key: BAZARR_VERSION
 
   bazarr2:
     # Second Bazarr instance for the anime *arr pair (Sonarr2 + Radarr2).
