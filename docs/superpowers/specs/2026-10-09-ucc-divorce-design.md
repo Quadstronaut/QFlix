@@ -123,7 +123,13 @@ New invariants (from R2):
 - **I-9 Nothing wakes a dormant app.**
   - `appctl` refuses every verb except `stop` on a dormant slug.
   - `ucc.probe_app` is pinned once to `plex`, which is never converted on
-    Ultra.
+    Ultra, and the `_DEFAULT_PROBE_APP` constant in `ucc.py` changes from
+    `sonarr` to `plex`, because any secret read error falls back to the
+    default and would otherwise run `app-sonarr start` every 5 minutes.
+  - Every other call site that can start a container is re-routed through
+    `appctl` or guarded: `31-unpackerr.sh` (`app-unpackerr restart || start`),
+    `05-sonarr2.sh` / `07-radarr2.sh` (`app_install` runs `app-$app install`),
+    and the lifecycle `ucc_update` kind (`app-<slug> stop` + `update`).
   - The `app-upgrade-all` skip list is generated from the manifest.
 - **I-10 Version parity + soak.**
   - The native version equals `app-<slug> version` at swap time.
@@ -137,9 +143,13 @@ New invariants (from R2):
 - **I-12 Fail-closed host identity.** The `host.profile` secret is explicit. A
   missing secret, or a mismatch with `detect()`, stops the run. It never
   defaults to `ultra` just because `app-ports` exists.
-- **I-13 Gate safety around Seerr.** The Seerr swap pauses the entitlement gate
-  through the manual rail (never by unsetting fields). The gate stays
-  disarmed on green.
+- **I-13 Gate safety around Seerr.** The `rail: manual` attribute is a
+  per-household billing attribute, not a pause switch (it routes households to
+  the frozen unknown-payer or floor branches). The Seerr swap pauses the gate
+  with its real switches instead: remove the `--execute` `execute.conf`
+  drop-in (or set `armed:false`), confirm `execute=False` in the next run's
+  log line, and reinstall the drop-in afterwards (I-2). Never unset fields.
+  The gate stays disarmed on green.
 
 ## 5. Framework
 
@@ -162,8 +172,12 @@ New invariants (from R2):
   - Binaries go in `~/.apps/<slug>/bin/<ver>` with a `current` symlink.
   - Env files live at `~/.config/qflix/<slug>.env` (0600, rendered from
     secrets).
-  - Units go in `~/.config/systemd/user/<slug>.service`, where bazarr2,
-    listmonk and tdarr already live.
+  - Units go in `~/.config/systemd/user/qflix-<slug>.service` (manifest
+    `unit:` set to match), next to bazarr2, listmonk and tdarr. The `qflix-`
+    prefix avoids a collision with panel-managed units: qbittorrent already
+    runs as the panel's `qbittorrent.service` (F-18), and the panel's Upgrade
+    & Repair could rewrite a same-named file. The panel unit file is backed up
+    before A11 and stays as the rollback target.
   - Proof copies go in `~/.apps/.prove/<slug>/`, quota-checked first and
     deleted after the verdict.
   - Swap state goes in `~/.opt/maint/swap/<slug>/`: `listen-set.before`,
@@ -184,7 +198,8 @@ New invariants (from R2):
 `is-native <slug>`, `ports-free`, `proxy-reload`.
 
 **Dispatch** (the manifest is read with a short `python3 -c` over the deployed
-`manifest/apps.yaml`):
+copy at `~/.opt/maint/apps.yaml`; the repo path `manifest/apps.yaml` does not
+exist on the box):
 
 1. `class: systemd` runs `systemctl --user <verb> <unit>`. `version` reads
    `bin/current`.
@@ -201,8 +216,12 @@ New invariants (from R2):
   Generic runs `nginx -t` (or `caddy validate`), then
   `systemctl --user reload`.
 
-**Call sites to change:** F-11, F-12, `lifecycle._ucc_status` (F-3) and the
-`recovery.py` hint text.
+**Call sites to change:** F-11, F-12, `lifecycle._ucc_status` (F-3), the
+`recovery.py` hint text, `31-unpackerr.sh:34`, `05-sonarr2.sh` /
+`07-radarr2.sh` (`app_install`), and the lifecycle `ucc_update` kind. Every
+re-routed call site uses the absolute `%h/bin/appctl` (`~/bin/appctl`),
+including the `FS_RESTART_CMD` default, because a bare `appctl` fails with
+ENOENT under the systemd `--user` default PATH.
 
 **Unchanged:** `lifecycle.py` verbs, `recovery.py` and `mcp/dispatch.py`. The
 class flip routes them (F-2, F-8).
@@ -219,6 +238,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/.apps/<slug>
+Environment=PATH=%h/.apps/<slug>/bin/current:%h/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/qflix/<slug>.env
 ExecStart=%h/.apps/<slug>/bin/current/<exe> <data-dir flag> <bind/port flags>
 Restart=on-failure
@@ -231,6 +251,14 @@ UMask=0002
 [Install]
 WantedBy=default.target
 ```
+
+`render_unit` always emits the `Environment=PATH=` line (a golden-unit assertion
+checks it) and has a per-family extra-env hook. First user: native bazarr-1
+needs `BAZARR_VERSION` (bazarr reports its version from that variable;
+`bazarr2-sync` reads bazarr-1's version from `/api/system/status`), written by
+the installer and by the bazarr2-sync equivalent for bazarr-1. Without it the
+bazarr2 pin and I-10 version parity both break. `TasksMax=` is left out unless
+F6's box proof shows pids delegation under the user manager.
 
 Thread caps go in the env file, because `ulimit -u 2000` is shared by every
 process on the slot:
@@ -310,8 +338,18 @@ New host-level secrets:
 
 **`hostpolicy_ultra.py`** owns everything Ultra-specific:
 
-- the Mon 11:00-15:00 UTC window. `lib/window.py` asks the policy instead of
-  hard-coding it, so window awareness stays active on Ultra (R7);
+- the Mon 11:00-15:00 UTC window. `window.py` is a lock orchestrator with no
+  clock, so the window is NOT defined there today. It is set by timer
+  `OnCalendar` lines (`manitoba-maint-window.timer`, `window-watchdog.timer`)
+  and by hard-coded Monday checks in at least 9 files
+  (`qflix-entitlement.py` x2, `qflix-anime-janitor.py`,
+  `qflix-torrent-janitor.py`, `qflix-remux-regrab.py`, and the canaries
+  `prowlarr-app-sync.sh`, `dash-asset-integrity.sh`, `plex-playback.sh`,
+  `library-container-sanity.sh`). F1 adds one policy-backed
+  `in_maintenance_window(now)` (or renders the timer `OnCalendar` from the
+  policy), migrates every caller, and adds an audit check against new
+  `weekday() == 0` literals, so window awareness stays active on Ultra (R7)
+  and the generic profile's "window may be none" can actually take effect;
 - the UCC gate probe, pinned to `plex` (I-9);
 - `quota -p` via `scripts/canaries/quota.sh`;
 - `task_ceiling` 2000;
@@ -371,19 +409,34 @@ This replaces the four copies (F-10).
 
 ### 5.8 Runtime-parity detector (ships before swap #1)
 
-This is a new leg of an existing slot, preferably `scripts/maint/qflix-audit-live.py`
-(timer `manitoba-maint-audit-live`). It adds no new timer and no new Kuma
-monitor, so jobs.yaml C-01 and the five 240 lists are untouched. It goes red
-when, for any app with swap state:
+The audit-live timer fires only at 02,08,14,20:15 UTC, so a woken container
+could run up to 6h, and its red would land on the shared "QFlix Audit Live"
+monitor mixed with unrelated legs. The detector is therefore split:
 
-- the dormant UCC container is running (woken);
-- two process trees serve the app (two PIDs that match `process_pattern`);
-- the port owner is not the unit's `MainPID`;
-- the live listen set differs from `listen-set.before` (minus recorded
-  exceptions).
+- **Per-minute path (the pusher, no new timer or monitor):**
+  - `require_unit_active: true` in `health.py` (a revived container that
+    answers 200 with stale data shows red, not green);
+  - a cgroup-scoped woken-container check: any PID whose `/proc/<pid>/cgroup`
+    belongs to the dormant container and whose cmdline matches the app;
+  - the two-process-trees predicate, using `pgrep -u "$(id -u)"` and matching
+    on the unit's `ExecStart`, never the bare `pgrep -f <pattern>` of
+    `health.py`, which is not scoped to our uid and can count other tenants'
+    `postgres: checkpointer` or a `tail` of the unpackerr log;
+  - the port owner is not the unit's `MainPID`.
+- **Audit-live leg (`scripts/maint/qflix-audit-live.py`, timer
+  `manitoba-maint-audit-live`):** only the listen-set diff against
+  `listen-set.before` (minus recorded exceptions).
 
-`health.py` also gains an optional `require_unit_active: true`. A revived
-container that answers 200 with stale data then shows red, not green.
+This adds no new timer and no new Kuma monitor, so jobs.yaml C-01 and the five
+240 lists are untouched.
+
+**deploy-drift scope.** The `deploy-drift` canary compares only `*.py` and
+`*.sh` under `~/scripts`. The manifest that drives the flip is deployed flat to
+`~/.opt/maint/apps.yaml`, and `~/bin/appctl`, units and
+`~/.config/qflix/*.env` are outside that scope, so "deploy-drift green" would
+hold even if a flip was never deployed. F5 extends deploy-drift (or adds a
+sibling leg) to hash `~/.opt/maint/{apps,jobs}.yaml`, `~/bin/appctl` and the
+rendered units against the commit's renders.
 
 If this ever needs its own timer, it is promoted the full way: jobs.yaml, the
 five 240 lists, Kuma channels 1 and 2 (born-mute rule), and
@@ -400,29 +453,61 @@ branch and PR. Each step is checked before the next:
    2. Run `sanitize` and assert the zero counts.
    3. Boot on a `ports.claim` port bound to `127.0.0.1` only, with no nginx
       fragment and no Kuma monitor.
-   4. Run the status and version checks, then destroy the copy.
+   4. Run the status and version checks, measure the proof copy's task count,
+      then destroy the copy. Refuse the swap if the current
+      thread-ceiling count plus the delta would reach 70% of `task_ceiling()`.
+      The `Canary Thread Ceiling` canary is a named behavioural canary for
+      every A-ticket.
 3. **Capture** the listen set. Path-audit the config for container paths
-   (`/config`, `/data`, `/downloads`).
-4. **Suppress** the Kuma monitor via `push-suppress.json`. The pusher pushes
-   UP and skips recovery (F-9).
+   (`/config`, `/data`, `/downloads`). Assert and record in swap state that
+   local-address auth bypass is off: arr `AuthenticationRequired=Enabled` (not
+   `DisabledForLocalAddresses`), qBit `bypass_local_auth=false`, SAB `api_key`
+   plus username required. (Connections reach the container today from the
+   docker gateway `172.17.0.1` and will reach the native app from
+   `127.0.0.1`; both are private, so the behaviour matches only if this is
+   set explicitly.)
+4. **Suppress** the app's Kuma monitor AND its listed behavioural canaries
+   (the plan's A-table list) via `push-suppress.json`, which is keyed per app
+   or canary name. The pusher pushes UP and skips recovery (F-9). Before A2,
+   confirm the self-destructing `flaresolverr-unsuppress` watcher units are
+   gone, or it lifts suppression as soon as port 17011 answers, mid-swap.
 5. **Snapshot** the data (tar or VACUUM INTO, excluding cache and logs).
-6. `app-<slug> stop`, then `systemctl --user enable --now <slug>.service` on
-   the recorded listen set.
+6. `app-<slug> stop`. Stop is asynchronous Docker behaviour on a box where
+   `docker.sock` is denied, so before enabling the unit, poll with a timeout
+   and abort the swap on failure until all three hold: no PID whose
+   `/proc/<pid>/cgroup` belongs to the container and whose cmdline matches the
+   app; an empty `ss -tlnH sport = :P`; and `fuser` on the db and its `-wal`
+   file returns nothing. No WAL checkpoint step is needed (the native app
+   replays `-wal` itself). Then
+   `systemctl --user enable --now qflix-<slug>.service` on the recorded listen
+   set.
 7. **Manifest flip:** class systemd, `ucc_dormant: true`, `upgrade:` block.
-   Deploy via 240 so the generated skip list updates in the same deploy.
+   Ordering: branch protection means the flip PR merges first, and the swap
+   runs immediately after its 240 deploy, with the manifest in a
+   `pending-swap` state that `appctl` and `health` understand (no
+   `class:systemd` + `require_unit_active` red while UCC still serves). Deploy
+   via 240 so the generated skip list updates in the same deploy.
 8. **Verify:** runtime-parity green, the app's behavioural canaries green, and
-   the `deploy-drift` canary green.
-9. **Unsuppress** and start the 14-day soak.
+   the extended `deploy-drift` check green (it now covers the deployed
+   manifest, `appctl` and units; see section 5.8).
+9. **Unsuppress** the app and its canaries together and start the 14-day
+   soak.
 
 **Rollback** (any time inside the soak):
 
-1. `systemctl --user disable --now <slug>`.
-2. `app-<slug> start`.
-3. Revert the manifest.
-4. Restore the snapshot only if a migration ran. That cannot happen while the
+0. Re-suppress the app and its canaries via `push-suppress.json`, and run
+   `systemctl --user mask qflix-<slug>.service`. Without this, the
+   unit-inactive probe goes red and pusher recovery (`lifecycle.restart` ->
+   `systemctl --user restart`) starts even a disabled unit, giving two
+   runtimes on one SQLite file (I-6).
+1. `systemctl --user disable --now qflix-<slug>.service`.
+2. Revert the deployed manifest (PR + 240 deploy) BEFORE the next step.
+3. `app-<slug> start`.
+4. Unmask only at the next forward swap.
+5. Restore the snapshot only if a migration ran. That cannot happen while the
    versions match.
 
-The pilot (unpackerr) drills this rollback once, for real.
+The pilot (unpackerr) drills this rollback once, for real. A1 depends on the F8 ratchet (or on a test asserting zero `app-<converted>` starts), because re-running the config renderer after the pilot swap would otherwise wake UCC unpackerr.
 
 ## 6. Per-app table
 
@@ -438,14 +523,29 @@ Order follows R5. "Status" is the state at spec time.
 | 6 | sonarr2 | Shared .NET arr installer (Sonarr v4) | In place | As radarr2. Check `renameEpisodes=true` | Run the buildarr oneshot afterwards | medium | QFLX-30 | planned |
 | 7 | radarr | Shared .NET arr installer | In place | Data-only proof | Seerr (still UCC) reaches it via `172.17.0.1`. Canary movie is the acceptance test | medium | QFLX-31 | planned |
 | 8 | sonarr | Shared .NET arr installer | In place | Data-only proof | Hard prerequisite: probe pinned to plex (F-5, F-6) | medium | QFLX-32 | planned |
-| 9 | sabnzbd | Source tarball + venv (sabctools). Static par2cmdline-turbo, unrar, 7zz | In place, `-f sabnzbd.ini`. Path audit of the dirs | Servers `enable=0`, fixture par2/unrar repair | Pause the queue via API and re-poll. `pause_on_post_processing` stays 0. Single provider | medium | QFLX-33 | planned |
+| 9 | sabnzbd | Source tarball + venv (sabctools). Static par2cmdline-turbo, unrar, 7zz | In place, `-f sabnzbd.ini`. Path audit of the dirs | Servers `enable=0`, fixture par2/unrar repair, and `command -v par2 unrar 7zz` under `systemd-run --user --pipe` | Pause the queue via API and re-poll. `pause_on_post_processing` stays 0. Single provider | medium | QFLX-33 | planned |
 | 10 | tautulli | git tag + venv, `--datadir --nolaunch` | In place | Notifiers and newsletters off. Plex link reachable | `pms_url` keeps pointing at UCC Plex. No member activity leaves the box | low | QFLX-34 | planned |
-| 11 | qbittorrent | Adopt: static userdocs qbittorrent-nox at the running version, tracked unit | Profile unchanged (system-level config, F-18) | Scratch `--profile` on a loopback WebUI port. Never two engines on one profile | Pause all, stop and disable the panel unit, start the tracked unit, wait out the WebUI bind race | medium | QFLX-35 | planned |
-| 12 | seerr | Built from source at the exact tag in a CI `debian:bullseye` job (glibc 2.31), plus Node 22 portable | In place, `CONFIG_DIRECTORY=~/.apps/seerr` | Sanitize notifications, arr servers and plex sync. Login only, never requests | Gate paused via the manual rail. UCC seerr stays dormant forever (owns the vhost). Live vhost test first | high | QFLX-36 | planned |
-| 13 | postgres | bullseye-pgdg debs `dpkg-deb -x`, same major | **Copy**: `pg_dump -Fc` / `pg_restore` into a fresh C.UTF-8 cluster | Restore on a free port, per-table row counts | Never within 24h of the newsletter. Retire `ucc-postgres-upgrade.sh` (F-23) | high | QFLX-37 | planned |
+| 11 | qbittorrent | Adopt: static userdocs qbittorrent-nox at the running version, tracked unit | Profile unchanged (system-level config, F-18) | Scratch `--profile` on a loopback WebUI port. Never two engines on one profile | Back up the panel `qbittorrent.service` file, pause all, stop and disable the panel unit, start the tracked `qflix-qbittorrent.service`, wait out the WebUI bind race | medium | QFLX-35 | planned |
+| 12 | seerr | Built from source at the exact tag in a CI `debian:bullseye` job (glibc 2.31), plus Node 22 portable | In place, `CONFIG_DIRECTORY=~/.apps/seerr` | Sanitize notifications, arr servers and plex sync. Login only, never requests | Gate paused by removing the `execute.conf` drop-in (I-13), reinstalled afterwards. UCC seerr stays dormant forever (owns the vhost). Live vhost test first | high | QFLX-36 | planned |
+| 13 | postgres | bullseye-pgdg debs `dpkg-deb -x`, same major | **Copy** (A13 sequence below): `pg_dumpall --globals-only` + `pg_dump -Fc`, restore into a fresh C.UTF-8 cluster | Restore on a free port, per-table row counts | Never within 24h of the newsletter. Retire `ucc-postgres-upgrade.sh` (F-23) | high | QFLX-37 | planned |
 | 14 | plex | Default: **stays UCC on Ultra**, native on box 2 (deb-extracted, new identity). Spike can flip it | Box 2: fresh claim and libraries. Ultra (spike-pass only): in place | Spike: private-port bind + claim exposure | Ultra conversion only on operator go after the spike | high | QFLX-38 (spike) | decision pending |
 | - | nginx | **Stays panel-managed on Ultra** (already a user unit, already in `DEFAULT_SKIP`). Box 2: our own proxy (Caddy or nginx, operator decision) | Fragments re-rendered per host | `nginx -t` / `caddy validate` + an HTTPS ingress probe | `appctl proxy-reload` | low | QFLX-41 (box 2) | Ultra: no change |
 | - | uptimekuma | **Stays panel-managed on Ultra** (the observer must not move mid-migration). Box 2: native user unit | Box 2: `kuma.db` copy so push tokens stay valid | Kuma audit (manifest vs `kuma.db`) on box 2 | Never dual-posting (I-1). Push base URL flipped in one step | medium | QFLX-41 (box 2) | Ultra: no change |
+
+**A13 postgres sequence** (replaces the standard step 6, because `pg_dump` needs
+the UCC postgres running and listmonk writes continuously):
+
+1. Stop `listmonk.service` and the `listmonk-sync` timer (the writers: the
+   service, the timer and the public subscribe form).
+2. From the running UCC postgres take `pg_dumpall --globals-only` (roles and
+   passwords; `-Fc` does not carry them) plus `pg_dump -Fc`, and record
+   per-table row counts.
+3. Stop UCC postgres.
+4. Restore roles and data into pg-native on `postgres.port`. The listmonk role
+   and password must match `~/.apps/listmonk/etc/config.toml`.
+5. Compare row counts and sequence values, then start listmonk.
+
+Rollback restores no data: nothing writes between the dump and the cutover.
 
 ## 7. Plex variants (R3, operator decides)
 
@@ -584,9 +684,11 @@ Every ticket carries tests and a box-proof step.
 | A schema migration breaks rollback | Exact version parity, self-update off, soak gate (I-10) |
 | glibc 2.31: Seerr's Node addon, FlareSolverr's Chromium, postgres debs | Bullseye CI build for Seerr; ldd gate; pgdg bullseye debs; `version_pin.max` |
 | Container-internal paths inside SAB ini or arr remote path mappings | Path audit before stop; rewrite only together with the mappings |
-| Thread budget (`ulimit -u 2000`) with 13 native processes | Env caps; task delta measured per proof; thread-ceiling watched during soak |
+| Thread budget (`ulimit -u 2000`) with 13 native processes | Env caps; the swap refuses when current count + proof delta reaches 70% of `task_ceiling()` (5.9 step 2); `Canary Thread Ceiling` is a named canary for every A-ticket |
 | The Seerr vhost targets the container IP, not the host port | Brief live test with the native unit before committing the swap |
-| Postgres writes made after the final dump are lost on rollback | Short window, never near the newsletter |
+| Postgres writes made after the final dump are lost on rollback | A13 sequence stops all writers before the dump, so rollback restores nothing; never near the newsletter |
+| Planned swap outage pages through dependent canaries | Suppress the app plus its listed behavioural canaries together (5.9 step 4) |
+| Rollback or panel restart runs UCC and native at once | Rollback step 0: re-suppress + `mask`; revert the deployed manifest before `app-<slug> start` |
 | `172.17.0.1` literal sprawl (F-16) | `net.app_host` + a shrink-only audit ratchet (QFLX-23) |
 | Log timestamps shift on ingest when apps move to our units | QFLX-44: per-source zone, never box-local; `_time` vs mtime check |
 | Plex claim exposure on a shared host | Default P1; the spike checks it before any P2 |
@@ -596,4 +698,31 @@ Unverified items, to be probed live before relying on them:
 - whether Ultra auto-restarts stopped containers;
 - the Seerr vhost target;
 - container paths inside the arr and SAB configs;
-- the PMS listen port on a shared host.
+- the PMS listen port on a shared host;
+- whether Ultra isolates tenants by network namespace or `hidepid` (decides
+  how exposed a loopback or `172.17.0.1` listener is to other tenants).
+
+## 13. Review ledger
+
+Cross-vendor review folded in (QFLX-15). One line per finding.
+
+| Id | Verdict | What changed |
+|---|---|---|
+| G-1 | partial | No unix sockets (arrs and SAB cannot use them; exposure already exists via docker-proxy, F-17). 5.9 step 3 now asserts and records local-auth-bypass off (arr, qBit, SAB); section 12 "Unverified" gains the netns/hidepid check |
+| G-2 | partial | 5.9 step 2.4 refuses a swap when thread-ceiling count + proof task delta reaches 70% of `task_ceiling()`; `Canary Thread Ceiling` is a named canary for every A-ticket; `TasksMax=` left out until F6 proves pids delegation |
+| G-3 | accept | `render_unit` emits `Environment=PATH=...`; all re-routed call sites use absolute `%h/bin/appctl` incl. `FS_RESTART_CMD`; golden PATH assertion; SAB `command -v par2 unrar 7zz` proof step |
+| G-4 | partial | No WAL checkpoint step; 5.9 step 6 adds a polled, abort-on-failure stop check (no container PID by cgroup, empty `ss`, `fuser` on db + `-wal`) before enabling the unit |
+| G-5 | reject | Linger already in effect (listmonk, tdarr, qflix-dash user units run today; F9 provisions it in CI); at most an optional `loginctl show-user -p Linger` line in box-2 preflight |
+| G-6 | reject | No ownership mismatch evidence (31-unpackerr.sh already edits `~/.apps/unpackerr`); if ever added, use `find -H "$(cd ~/.apps/<slug> && pwd -P)" ! -user` and assert entries > 0 |
+| G-7 | partial | New A13 sequence: stop listmonk + sync timer, `pg_dumpall --globals-only` + `pg_dump -Fc` from running UCC postgres, row counts, stop, restore roles + data, compare rows and sequences; rollback restores no data |
+| G-8 | partial | Process note only, no spec change from G-8 itself; the own-findings below cover the uncovered areas (second Gemini pass optional) |
+| O-1 | accept | I-13, the A12 row and plan A12 no longer say "manual rail"; use the `execute.conf` drop-in removal / `armed:false`, confirm `execute=False`, reinstall |
+| O-2 | accept | Rollback gains step 0 (re-suppress + `mask`) and reverts the deployed manifest before `app-<slug> start` (I-6) |
+| O-3 | accept | I-9 and 5.2 add `31-unpackerr.sh`, `05-sonarr2.sh`/`07-radarr2.sh`, lifecycle `ucc_update`; `_DEFAULT_PROBE_APP` becomes `plex`; A1 depends on F8 |
+| O-4 | accept | 5.8 moves woken-container and unit-active predicates into the per-minute pusher path with cgroup-scoped, uid-scoped `pgrep` on `ExecStart`; audit-live keeps only the listen-set diff |
+| O-5 | accept | 5.6 states the window lives in timer `OnCalendar` and 9+ hard-coded files; F1 adds `in_maintenance_window(now)`, migrates callers, adds an audit check against new `weekday() == 0` literals |
+| O-6 | accept | 5.8 extends deploy-drift to the deployed manifest, `appctl` and units; 5.2 uses `~/.opt/maint/apps.yaml`; 5.9 step 7 fixes merge-then-deploy ordering with a `pending-swap` manifest state |
+| O-7 | accept | Tracked units are `qflix-<slug>.service` (manifest `unit:` matches); panel qbittorrent unit backed up before A11; `render_unit` per-family extra-env hook (`BAZARR_VERSION`) |
+| O-8 | accept | 5.9 step 4 suppresses the app plus its listed canaries, unsuppressed together at step 9; confirm the flaresolverr unsuppress watcher is gone before A2 |
+
+The operator-decision list (section 11, D-1..D-8) is unchanged.

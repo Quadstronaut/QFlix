@@ -13,6 +13,10 @@ Rules for every ticket:
   audit boundary is the git index.
 - Run pytest from the Bash tool.
 - No box operations Mon 11:00-15:00 UTC.
+- Every swap follows spec 5.9 including: thread-ceiling gate (step 2.4),
+  auth-bypass assertions (step 3), app + canary suppression (step 4),
+  container-exit check (step 6) and rollback step 0 (re-suppress + mask).
+  Cross-vendor review ledger: spec section 13.
 - No member data in the repo. Tests assert counts only.
 - App swaps run strictly one at a time. Swap N+1 starts only when swap N is
   green, and never within the Monday window. A soak blocks only native
@@ -65,7 +69,13 @@ merged and deployed, with the runtime-parity leg green on the box.
     `hostpolicy_generic.py` as flat modules, with no `__init__.py`.
   - Add the `host.profile` secret. It is read lazily, a missing secret fails
     closed, and it is cross-checked against `detect()`.
-  - `lib/window.py` asks the policy for the window.
+  - Add one policy-backed `in_maintenance_window(now)` (or render the timer
+    `OnCalendar` from the policy) and migrate every hard-coded Monday check
+    (`qflix-entitlement.py` x2, `qflix-anime-janitor.py`,
+    `qflix-torrent-janitor.py`, `qflix-remux-regrab.py`, canaries
+    `prowlarr-app-sync.sh`, `dash-asset-integrity.sh`, `plex-playback.sh`,
+    `library-container-sanity.sh`). `window.py` has no clock and is not the
+    place. Add an audit check against new `weekday() == 0` literals.
   - `ssh.sh _sshm_on_host` uses the `~/.config/qflix/host.id` marker, with the
     hostname check as a fallback.
 - **Acceptance:** no behaviour change on Ultra.
@@ -84,7 +94,8 @@ merged and deployed, with the runtime-parity leg green on the box.
 - **Scope:**
   - `app-upgrade-all.sh` gets an explicit skip list, generated from the
     manifest at deploy time: slugs with `class != ucc` or `ucc_dormant`.
-  - Pin the `ucc.probe_app` secret to `plex`. `ucc.py` refuses to probe a
+  - Pin the `ucc.probe_app` secret to `plex` and change `_DEFAULT_PROBE_APP`
+    in `ucc.py` from `sonarr` to `plex` (secret read errors fall back to it). `ucc.py` refuses to probe a
     converted or dormant slug.
 - **Acceptance:** a converted slug is skipped even when its `~/.apps` dir and
   `app-<slug>` exist.
@@ -104,8 +115,11 @@ merged and deployed, with the runtime-parity leg green on the box.
   - Dispatch by class.
   - The dormant refusal: every verb except `stop` exits 3.
   - `status` becomes version plus a port probe, which fixes F-3.
-  - Re-route the call sites listed in spec F-11 and F-12, and the
-    `recovery.py` hint text.
+  - Re-route the call sites listed in spec F-11 and F-12, the
+    `recovery.py` hint text, `31-unpackerr.sh:34`, `05-sonarr2.sh` /
+    `07-radarr2.sh` (`app_install`) and the lifecycle `ucc_update` kind. All
+    use the absolute `~/bin/appctl` (incl. the `FS_RESTART_CMD` default).
+  - `appctl` reads the deployed `~/.opt/maint/apps.yaml`.
 - **Acceptance:** no direct `app-<x>` call remains outside the F8 allowlist.
 - **Tests:** `test_appctl` stub-PATH argv matrix, the dormant refusal, and that
   `status` never emits `app-x status`.
@@ -132,10 +146,14 @@ merged and deployed, with the runtime-parity leg green on the box.
 - **Scope:**
   - `scripts/ops/qflix-listen-set.sh` captures the listen set and writes swap
     state.
-  - Add a runtime-parity leg in `qflix-audit-live.py` that alarms on a woken
-    dormant container, 2 PIDs, a port owner that is not the `MainPID`, or a
-    listen set that differs from the recorded one.
-  - `health.py` gets `require_unit_active`.
+  - Per-minute pusher path: `require_unit_active`, a cgroup-scoped
+    woken-container check, 2 PIDs (`pgrep -u "$(id -u)"`, match on
+    `ExecStart`) and a port owner that is not the `MainPID`.
+  - `qflix-audit-live.py` leg: only the listen-set diff against the recorded
+    one.
+  - Extend `deploy-drift` (or a sibling leg) to hash
+    `~/.opt/maint/{apps,jobs}.yaml`, `~/bin/appctl` and rendered units.
+  - `appctl`/`health` understand a `pending-swap` manifest state.
   - No new timer and no new monitor.
 - **Tests:**
   - fixture predicates for each failure mode;
@@ -150,7 +168,11 @@ merged and deployed, with the runtime-parity leg green on the box.
 
 - **Scope:**
   - `fetch_verify`, `install_versioned` and `render_unit`, with the thread
-    caps from spec section 5.3.
+    caps from spec section 5.3, an `Environment=PATH=` line (golden-asserted),
+    units named `qflix-<slug>.service`, and a per-family extra-env hook
+    (`BAZARR_VERSION`).
+  - Box proof also checks whether the user manager delegates pids
+    (`TasksMax=` stays out otherwise).
   - The installer refuses to proceed unless the target version equals
     `app-<slug> version`.
   - Self-update is off.
@@ -224,19 +246,19 @@ ticket has the same four parts:
 
 | # | Key | App | Size | Depends | App-specific scope | Behavioural canaries |
 |---|---|---|---|---|---|---|
-| A1 | QFLX-25 | unpackerr (pilot) | S | F2, F3, F5, F6 | Inert fixture-folder proof; **rollback-to-UCC drilled once, timed** | Kuma Unpackerr; one import end to end |
-| A2 | QFLX-26 | flaresolverr | M | A1, F8 | Bind `172.17.0.1` only; ldd + task-delta gate; `FS_RESTART_CMD` via appctl; D-7 fallback | prowlarr-proxy-link-fatal, prowlarr-indexer-health |
-| A3 | QFLX-27 | bazarr | S | A2, F7 | Reuse the `06-bazarr2.sh` recipe; config path audit | bazarr-ingest |
+| A1 | QFLX-25 | unpackerr (pilot) | S | F2, F3, F5, F6, F8 | Inert fixture-folder proof; **rollback-to-UCC drilled once, timed** (incl. rollback step 0 mask); zero `app-unpackerr` starts after swap | Kuma Unpackerr; one import end to end; Canary Thread Ceiling |
+| A2 | QFLX-26 | flaresolverr | M | A1, F8 | Bind `172.17.0.1` only; ldd + task-delta gate; `FS_RESTART_CMD` via appctl; D-7 fallback; confirm the flaresolverr unsuppress watcher units are gone | prowlarr-proxy-link-fatal, prowlarr-indexer-health, Canary Thread Ceiling |
+| A3 | QFLX-27 | bazarr | S | A2, F7 | Reuse the `06-bazarr2.sh` recipe; config path audit; `BAZARR_VERSION` env | bazarr-ingest, Canary Thread Ceiling |
 | A4 | QFLX-28 | prowlarr | S | A3 | First .NET; `SyncLevel` disabled in the proof | prowlarr-app-sync, prowlarr-indexer-health |
 | A5 | QFLX-29 | radarr2 | S | A4 | Shared arr installer; queue idle | anime, hardlink-integrity, library-container-sanity |
 | A6 | QFLX-30 | sonarr2 | S | A5 | `renameEpisodes` true; buildarr oneshot afterwards | anime, arr-plex-parity |
 | A7 | QFLX-31 | radarr | S | A6 | Low-request hour | movie |
 | A8 | QFLX-32 | sonarr | S | A7 | Pre-swap assert `probe_app != sonarr` | arr-plex-parity, seerr-arr-parity, ucc-gate-stuck |
-| A9 | QFLX-33 | sabnzbd | M | A8 | par2/unrar/7zz; ini path audit; pause/re-poll | sab-stall + one real download |
+| A9 | QFLX-33 | sabnzbd | M | A8 | par2/unrar/7zz (`command -v` under `systemd-run --user --pipe`); ini path audit; pause/re-poll; api_key + username required | sab-stall + one real download, Canary Thread Ceiling |
 | A10 | QFLX-34 | tautulli | S | A9 | `pms_url` unchanged; privacy | tautulli-plex-link |
-| A11 | QFLX-35 | qbittorrent (adopt) | M | A10 | Static nox; panel unit disabled; WebUI bind race | qbit-stall, arr download-client test |
-| A12 | QFLX-36 | seerr | L | A11 | CI bullseye build; gate paused via the manual rail; vhost live test; UCC seerr dormant forever | movie, anime, seerr-arr-parity, entitlement-service |
-| A13 | QFLX-37 | postgres | M | A12 | dump/restore; retire `ucc-postgres-upgrade.sh` + its sweep child; never within 24h of the newsletter | Listmonk health, subscriber count parity |
+| A11 | QFLX-35 | qbittorrent (adopt) | M | A10 | Static nox; panel `qbittorrent.service` file backed up, then disabled; tracked unit `qflix-qbittorrent.service`; `bypass_local_auth=false`; WebUI bind race | qbit-stall, arr download-client test |
+| A12 | QFLX-36 | seerr | L | A11 | CI bullseye build; gate paused by removing the `execute.conf` drop-in (confirm `execute=False`, reinstall after); vhost live test; UCC seerr dormant forever | movie, anime, seerr-arr-parity, entitlement-service |
+| A13 | QFLX-37 | postgres | M | A12 | spec 6 A13 sequence (stop listmonk + sync timer, `pg_dumpall --globals-only` + `pg_dump -Fc`, row counts, restore roles + data, compare rows and sequences); retire `ucc-postgres-upgrade.sh` + its sweep child; never within 24h of the newsletter | Listmonk health, subscriber count parity |
 | A14 | QFLX-38 | Plex spike | S | F6 | Private-port bind, claim exposure, task delta; written verdict for D-1 | n/a (5-min scratch boot) |
 
 ### Box 2 and closing items
