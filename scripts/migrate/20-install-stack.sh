@@ -40,9 +40,9 @@ need_tables
 CONFIGURE_DIR="${QFLIX_CONFIGURE_DIR:-$ROOT/scripts/configure}"
 
 declare -A SKIP=(
-  [31-unpackerr.sh]="superseded by the native unpackerr installer (it runs app-unpackerr, a panel verb; I-9)"
+  [31-unpackerr.sh]="superseded by the native unpackerr installer (it runs the unpackerr panel verb; I-9)"
   [49b-conjurr-newsletterr-decom.sh]="decommissions apps green never had"
-  [60-www-images.sh]="writes an Ultra proxy.d fragment + app-nginx (F-11); box-2 proxy is QFLX-41"
+  [60-www-images.sh]="writes an Ultra proxy.d fragment + the panel nginx verb (F-11); box-2 proxy is QFLX-41"
   [90-qflix-dash-install.sh]="reads secrets/seedbox.ssh-host directly (ignores SSHM_HOST) -- it would install onto BLUE. Patch it to honor SSHM_HOST, then drop this skip"
   [90-sabnzbd-usenet-install.sh]="Ultra app-CLI install path; SAB server + arr wiring arrive with SAB/arr data in 35"
   [91-nginx-root-to-dash.sh]="front-door change (50-cutover step 7 / QFLX-41) and reads seedbox.ssh-host directly"

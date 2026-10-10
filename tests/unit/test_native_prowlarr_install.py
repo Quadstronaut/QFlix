@@ -126,6 +126,7 @@ class Box:
         (self.secrets / "prowlarr.port").write_text("17024\n")
         (self.secrets / "prowlarr.key").write_text("k" * 32 + "\n")
         (self.secrets / "prowlarr.urlbase").write_text("prowlarr\n")
+        (self.secrets / "net.app_host").write_text("172.17.0.1\n")
         self.write_config()
         self._db()
         (self.appdir / "Definitions").mkdir()
