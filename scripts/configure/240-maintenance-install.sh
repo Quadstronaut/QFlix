@@ -296,6 +296,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/55-kometa-install.sh \
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
+    scripts/configure/305-native-sonarr2-install.sh \
+    scripts/maint/native_sanitize.py \
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
@@ -467,6 +469,11 @@ chmod +x ~/scripts/configure/240-maintenance-install.sh
 cp -f   "$STG"/scripts/lib/native.sh ~/scripts/lib/native.sh
 cp -f   "$STG"/scripts/configure/300-native-unpackerr-install.sh ~/scripts/configure/300-native-unpackerr-install.sh
 chmod +x ~/scripts/configure/300-native-unpackerr-install.sh
+# QFLX-30 (A6 sonarr2): the proof sanitizes its VACUUM INTO copy with
+# native_sanitize.py, so it is deployed beside the installer (~/scripts/maint).
+cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py
+cp -f   "$STG"/scripts/configure/305-native-sonarr2-install.sh ~/scripts/configure/305-native-sonarr2-install.sh
+chmod +x ~/scripts/configure/305-native-sonarr2-install.sh
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.
