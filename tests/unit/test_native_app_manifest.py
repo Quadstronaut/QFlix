@@ -100,9 +100,10 @@ def test_sabnzbd_is_converted_pending_swap():
     assert not any("rm -rf" in s for s in steps)
 
 
-def test_tautulli_is_converted_pending_swap():
+def test_tautulli_is_converted_and_swapped():
     a = _converted()["tautulli"]
-    assert a["swap_state"] == "pending-swap" and a["unit"] == "qflix-tautulli.service"
+    assert a["unit"] == "qflix-tautulli.service" and "swap_state" not in a   # swapped 2026-10-10
+    assert a["health"]["require_unit_active"] is True
     # Same port secret and probe kind: the native app answers on the recorded port.
     assert a["health"]["kind"] == "http_root" and a["health"]["port_secret"] == "tautulli.port"
     steps = a["upgrade"]["post_steps"]
