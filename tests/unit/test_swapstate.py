@@ -231,3 +231,23 @@ def test_cli_add_exception(capsys):
                            "--reason", "operator ok"]) == 0
     assert swapstate.load_state("sabnzbd")["exceptions"] == ["203.0.113.9:17007"]
     assert swapstate.main(["add-exception", "sabnzbd", "bad", "--reason", "x"]) == 2
+
+
+def test_exceptions_are_settable_as_a_list_or_csv_and_validated():
+    """QFLX-28: a D-4 listen-set exception (the dropped public-IP listener)."""
+    st = swapstate.update_state("prowlarr", exceptions="192.0.2.7:17024, [2001:db8::1]:17024")
+    assert st["exceptions"] == ["192.0.2.7:17024", "[2001:db8::1]:17024"]
+    assert swapstate.update_state("prowlarr", exceptions=[])["exceptions"] == []
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.update_state("prowlarr", exceptions="not an address")
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.update_state("prowlarr", exceptions="1.2.3.4")         # no port
+
+
+def test_recorded_exceptions_hide_only_those_addresses_from_the_diff():
+    swapstate.capture("prowlarr", "LISTEN 0 1 192.0.2.7:17024 0.0.0.0:*\n"
+                      "LISTEN 0 1 172.17.0.1:17024 0.0.0.0:*\n", 17024)
+    swapstate.update_state("prowlarr", exceptions="192.0.2.7:17024")
+    now = "LISTEN 0 1 172.17.0.1:17024 0.0.0.0:*\nLISTEN 0 1 127.0.0.1:17024 0.0.0.0:*\n"
+    d = swapstate.diff_listen("prowlarr", now)
+    assert d == {"added": ["127.0.0.1:17024"], "removed": []}

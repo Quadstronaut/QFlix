@@ -26,10 +26,11 @@ namespace package; never add an __init__.py).
 
 CLI:
   swapstate.py capture SLUG [--port N | --manifest PATH] [--ss-file F|-] [--ucc-version V]
-  swapstate.py set SLUG key=value ...   (swap_date, soak_until, rollback_window, ucc_version)
   swapstate.py add-exception SLUG ADDR:PORT... --reason TEXT
                                  record operator-approved listen-set exceptions
                                  (spec 5.4 / D-4; e.g. a dropped public-IP listener)
+  swapstate.py set SLUG key=value ...   (swap_date, soak_until, rollback_window, ucc_version,
+                                         exceptions=addr:port,addr:port)
   swapstate.py show SLUG
   swapstate.py diff SLUG [--ss-file F|-]   exit 0 same, 1 differs, 2 error
   swapstate.py soak-check SLUG   exit 1 refused (inside soak), 0 ok
@@ -55,7 +56,7 @@ except ImportError:  # non-POSIX workstation: lock degrades to no-op (fail open)
 LOCK_TIMEOUT_S = 10.0
 _SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ROLLBACK_WINDOWS = ("open", "closed")
-SETTABLE = ("swap_date", "soak_until", "rollback_window", "ucc_version")
+SETTABLE = ("swap_date", "soak_until", "rollback_window", "ucc_version", "exceptions")
 
 
 class SwapStateError(RuntimeError):
@@ -235,6 +236,14 @@ def update_state(slug: str, **fields) -> dict:
     bad = set(fields) - set(SETTABLE)
     if bad:
         raise SwapStateError(f"unsettable field(s): {sorted(bad)}")
+    exc = fields.get("exceptions")
+    if isinstance(exc, str):
+        # CLI form: comma-separated "addr:port" entries (D-4 listen-set exceptions).
+        exc = [x.strip() for x in exc.split(",") if x.strip()]
+        fields = dict(fields, exceptions=exc)
+    if exc is not None and not (isinstance(exc, list) and all(
+            isinstance(x, str) and re.match(r"^[0-9A-Za-z.:\[\]_-]+:\d{1,5}$", x) for x in exc)):
+        raise SwapStateError("exceptions must be addr:port entries")
     rw = fields.get("rollback_window")
     if rw is not None and rw not in ROLLBACK_WINDOWS:
         raise SwapStateError(f"rollback_window must be one of {ROLLBACK_WINDOWS}")

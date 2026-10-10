@@ -143,6 +143,29 @@ def is_descendant(pid: int, root: int, ppid_of, limit: int = 64) -> bool:
 # Predicates
 # ---------------------------------------------------------------------------
 
+_APPS_ROOT_RE = re.compile(r"/\.apps/([^/\s]+)/?$")
+
+
+def _mounts_sibling_config(host: Host, pid: int, slug: str) -> bool:
+    """True when *pid*'s container bind-mounts ANOTHER app's ~/.apps/<x> at
+    /config. sonarr and sonarr2 containers run the identical cmdline
+    (/app/sonarr/bin/Sonarr -data=/config, s6 "svc-sonarr"), so the cmdline
+    needle alone flags the live sibling as "sonarr woken" (box, 2026-10-10).
+    Only a POSITIVE identification of a different slug excludes the pid: an
+    unreadable mountinfo or no /config mount keeps the hit (fail toward red)."""
+    try:
+        text = host.read(pid, "mountinfo")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) > 4 and f[4] == "/config":
+            m = _APPS_ROOT_RE.search(f[3])
+            if m and m.group(1) != slug:
+                return True
+    return False
+
+
 def woken_container(host: Host, app, uid: int) -> list[str]:
     slug = app.raw["ucc_slug"]
     unit = app.raw["unit"]
@@ -162,7 +185,7 @@ def woken_container(host: Host, app, uid: int) -> list[str]:
             cmd = host.read(pid, "cmdline").replace("\0", " ").lower()
         except OSError:
             continue                      # process exited mid-scan
-        if any(n in cmd for n in needles):
+        if any(n in cmd for n in needles) and not _mounts_sibling_config(host, pid, slug):
             hits.append(pid)
     if hits:
         return [f"dormant container woken: {slug} pid(s) {','.join(map(str, hits[:5]))}"]
@@ -192,6 +215,36 @@ def process_trees(host: Host, app, uid: int, show: dict, show_text: str) -> list
     return []
 
 
+def fwd_unit(unit: str) -> Optional[str]:
+    """The companion loopback forwarder of *unit* (QFLX-28): qflix-x.service ->
+    qflix-x-fwd.service. Kestrel binds ONE address, so a .NET app binds the
+    docker bridge and qflix-x-fwd.socket owns the loopback listener."""
+    if not unit.endswith(".service") or unit.endswith("-fwd.service"):
+        return None
+    return unit[: -len(".service")] + "-fwd.service"
+
+
+def is_forwarder(host: Host, pid: int, unit: str) -> bool:
+    """True when *pid* is the app's own socket forwarder: a process in the
+    companion <stem>-fwd.service cgroup (systemd-socket-proxyd), or the user
+    systemd manager (init.scope) holding the not-yet-activated .socket. ss only
+    names pids of our own uid, so a stranger never reaches this check as ours."""
+    fwd = fwd_unit(unit)
+    if not fwd:
+        return False
+    try:
+        cg = host.read(pid, "cgroup")
+    except OSError:
+        return False
+    for line in cg.splitlines():
+        path = line.rsplit(":", 1)[-1].strip()
+        if path.endswith("/" + fwd):
+            return True
+        if path.endswith("/init.scope") and "/user@" in path:
+            return True
+    return False
+
+
 def port_owner(host: Host, app, show: dict, port: int) -> list[str]:
     rc, out = host.run(["ss", "-tlnpH", f"sport = :{port}"])
     if rc != 0:
@@ -207,7 +260,9 @@ def port_owner(host: Host, app, show: dict, port: int) -> list[str]:
     if not owners:
         return [f"port {port} listener is not owned by our uid (unit MainPID {main_pid})"]
     ppid_of = _ppid_of(host)
-    stray = sorted(p for p in owners if not is_descendant(p, main_pid, ppid_of))
+    unit = app.raw.get("unit", "")
+    stray = sorted(p for p in owners if not is_descendant(p, main_pid, ppid_of)
+                   and not is_forwarder(host, p, unit))
     if stray:
         return [f"port {port} owned by pid {stray[0]}, not unit MainPID {main_pid}"]
     return []
