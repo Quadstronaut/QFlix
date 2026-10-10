@@ -75,7 +75,7 @@
 # Overrides (tests; resolved at call time): QFLIX_APPS_DIR QFLIX_UNIT_DIR
 # QFLIX_ENV_DIR QFLIX_SWAP_DIR QFLIX_SECRETS_DIR MANITOBA_STATE_DIR QFLIX_MANIFEST
 # QFLIX_PROC QFLIX_PYTHON QFLIX_PY311 QFLIX_APPCTL QFLIX_SYSTEMCTL QFLIX_SS
-# QFLIX_PS QFLIX_FUSER QFLIX_CURL QFLIX_HOSTPOLICY QFLIX_HOST_ID_FILE
+# QFLIX_PS QFLIX_PGREP QFLIX_FUSER QFLIX_CURL QFLIX_HOSTPOLICY QFLIX_HOST_ID_FILE
 # QFLIX_BAZARR_SHA256 QFLIX_BAZARR_PORT QFLIX_POLL_S QFLIX_SETTLE_S
 # QFLIX_STOP_TIMEOUT_S QFLIX_PROOF_TIMEOUT_S QFLIX_STATUS_TIMEOUT_S
 # QFLIX_KEEP_PROOF.
@@ -144,6 +144,7 @@ APPCTL="${QFLIX_APPCTL:-$HOME/bin/appctl}"
 SYSTEMCTL="${QFLIX_SYSTEMCTL:-systemctl}"
 SS="${QFLIX_SS:-ss}"
 PS="${QFLIX_PS:-ps}"
+PGREP="${QFLIX_PGREP:-pgrep}"
 FUSER="${QFLIX_FUSER:-fuser}"
 PROC="${QFLIX_PROC:-/proc}"
 POLL="${QFLIX_POLL_S:-2}"
@@ -216,8 +217,41 @@ T0=$SECONDS
 # One EXIT trap for every temp path / proof process.
 CLEANUP_PATHS=()
 PROOF_PID=""
+# The proof boot is TWO processes: bazarr.py is a supervisor that spawns
+# bazarr/main.py, and a SIGTERM to the supervisor does NOT take the child down
+# (box 2026-10-10: the first real --prove left main.py running, 72 threads, on
+# its loopback port, after the copy was deleted). So the proof runs in its own
+# session (setsid: PID == PGID) and is stopped as a GROUP, and the result is
+# checked as STATE: no process may still carry `--config $PROVE`.
+proof_survivors() { "$PGREP" -u "$(id -u)" -f -- "--config $PROVE( |\$)" 2>/dev/null; }
+stop_proof() {
+  [ -n "$PROOF_PID" ] || return 0
+  local i=0 pids
+  kill -TERM -- "-$PROOF_PID" 2>/dev/null || kill -TERM "$PROOF_PID" 2>/dev/null
+  wait "$PROOF_PID" 2>/dev/null
+  while pids="$(proof_survivors)" && [ -n "$pids" ]; do
+    i=$((i + 1))
+    # pgrep sweep as well as the group: a child that left the group still dies.
+    if [ "$i" -ge 10 ]; then
+      kill -KILL -- "-$PROOF_PID" 2>/dev/null
+      # shellcheck disable=SC2086
+      kill -KILL $pids 2>/dev/null
+    else
+      # shellcheck disable=SC2086
+      kill -TERM $pids 2>/dev/null
+    fi
+    if [ "$i" -ge 20 ]; then
+      # shellcheck disable=SC2086
+      echo "[302-bazarr] ERROR: proof processes survived: "$pids >&2
+      PROOF_PID=""
+      return 1
+    fi
+    sleep 1
+  done
+  PROOF_PID=""
+}
 cleanup() {
-  [ -n "$PROOF_PID" ] && kill "$PROOF_PID" 2>/dev/null
+  stop_proof
   local p
   for p in "${CLEANUP_PATHS[@]}"; do rm -rf "$p"; done
 }
@@ -537,17 +571,24 @@ PY
     set -a; . "$ENV_FILE"; set +a
     BAZARR_LISTEN="127.0.0.1:$pport"
     export BAZARR_LISTEN
-    exec "$APPDIR/venv/bin/python" "$APPDIR/bin/current/bazarr.py" --no-update --config "$PROVE" \
+    # Own session so stop_proof can signal the supervisor AND its child. setsid
+    # does not fork here (a background subshell is not a group leader), so
+    # $! stays the session id. Absent setsid (Git Bash) it runs ungrouped and
+    # the pgrep sweep in stop_proof still applies.
+    SETSID=()
+    command -v setsid >/dev/null 2>&1 && SETSID=(setsid)
+    exec "${SETSID[@]}" "$APPDIR/venv/bin/python" "$APPDIR/bin/current/bazarr.py" --no-update --config "$PROVE" \
       >"$PROVE/stdout.log" 2>&1
   ) &
   PROOF_PID=$!
   sleep "$SETTLE"
   ver=""
-  i=0
+  # Wall-clock deadline: POLL may be fractional (tests use 0.2) and bash
+  # arithmetic is integer-only, so `i * POLL` died on the first slow boot.
+  local proof_deadline=$((SECONDS + PROOF_TIMEOUT))
   until ver="$(status_probe "$PROVE/config/config.yaml" "$pport")" && [ -n "$ver" ]; do
     ver=""
-    i=$((i + 1))
-    if [ $((i * POLL)) -ge "$PROOF_TIMEOUT" ]; then
+    if [ "$SECONDS" -ge "$proof_deadline" ]; then
       tail -5 "$PROVE/stdout.log" 2>/dev/null >&2
       die "proof: /api/system/status never answered 200 within ${PROOF_TIMEOUT}s"
     fi
@@ -557,7 +598,7 @@ PY
   after="$(user_tasks)"
   [[ "$after" =~ ^[0-9]+$ ]] || die "cannot count tasks"
   delta=$((after - before))
-  kill "$PROOF_PID" 2>/dev/null; wait "$PROOF_PID" 2>/dev/null; PROOF_PID=""
+  stop_proof || die "proof: the proof boot left processes behind (--config $PROVE); not recording a proof"
   [ "$delta" -gt 0 ] || die "proof: measured task delta $delta; cannot gate the swap; refusing"
   if [ $(( (before + delta) * 100 )) -ge $(( 70 * ceiling )) ]; then
     die "thread gate: $before + $delta tasks reaches 70% of the ceiling $ceiling; refusing the swap"

@@ -82,32 +82,6 @@ def test_diff_listen_reports_added_removed_and_honours_exceptions(tmp_path):
     assert d == {"added": ["127.0.0.2:42050"], "removed": ["172.17.0.1:42050"]}
 
 
-def test_add_exceptions_records_union_and_is_honoured_by_diff():
-    swapstate.capture("tautulli", SS, 42050)
-    swapstate.add_exceptions("tautulli", ["172.17.0.1:42050"])
-    st = swapstate.add_exceptions("tautulli", ["[::]:42050", "172.17.0.1:42050"])
-    assert st["exceptions"] == ["172.17.0.1:42050", "[::]:42050"]
-    assert st["port"] == 42050 and st["rollback_window"] == "open"   # untouched
-    only_loopback = "LISTEN 0 4096 127.0.0.1:42050 0.0.0.0:*\n"
-    assert swapstate.diff_listen("tautulli", only_loopback) == {"added": [], "removed": []}
-    # a NEW unexpected listener is still reported
-    d = swapstate.diff_listen("tautulli", only_loopback + "LISTEN 0 1 0.0.0.0:42050 0.0.0.0:*\n")
-    assert d["added"] == ["0.0.0.0:42050"]
-
-
-@pytest.mark.parametrize("bad", ["", "nope", "1.2.3.4", "1.2.3.4:x", "a b:1"])
-def test_add_exceptions_rejects_malformed_addresses(bad):
-    swapstate.capture("tautulli", SS, 42050)
-    with pytest.raises(swapstate.SwapStateError):
-        swapstate.add_exceptions("tautulli", [bad])
-
-
-def test_add_exception_cli(tmp_path, capsys):
-    swapstate.capture("tautulli", SS, 42050)
-    assert swapstate.main(["add-exception", "tautulli", "172.17.0.1:42050"]) == 0
-    assert json.loads(capsys.readouterr().out) == ["172.17.0.1:42050"]
-
-
 def test_diff_without_baseline_raises_not_clean():
     with pytest.raises(swapstate.SwapStateError):
         swapstate.diff_listen("never-captured", SS)
@@ -224,3 +198,56 @@ def test_merge_refuses_corrupt_state_instead_of_erasing_swap_record(tmp_path):
     with pytest.raises(swapstate.SwapStateError):
         swapstate.update_state("sonarr", rollback_window="closed")
     assert sj.read_text() == "{not json"      # left for the operator, not overwritten
+
+
+# --- add-exception (QFLX-33: operator-approved dropped listeners, D-4) ----------
+
+SAB_SS = ("LISTEN 0 4096 127.0.0.1:17007 0.0.0.0:*\n"
+          "LISTEN 0 4096 172.17.0.1:17007 0.0.0.0:*\n"
+          "LISTEN 0 4096 203.0.113.9:17007 0.0.0.0:*\n")
+
+
+def test_add_exceptions_records_reason_and_is_honoured_by_diff():
+    swapstate.capture("sabnzbd", SAB_SS, 17007)
+    st = swapstate.add_exceptions("sabnzbd", ["203.0.113.9:17007"], "drop public IP (D-4)")
+    assert st["exceptions"] == ["203.0.113.9:17007"]
+    assert st["exception_reasons"]["203.0.113.9:17007"] == "drop public IP (D-4)"
+    native = "".join(SAB_SS.splitlines(keepends=True)[:2])
+    assert swapstate.diff_listen("sabnzbd", native) == {"added": [], "removed": []}
+    # idempotent, and the swap bookkeeping survives
+    swapstate.update_state("sabnzbd", swap_date="2026-10-10T00:00:00Z")
+    st = swapstate.add_exceptions("sabnzbd", ["203.0.113.9:17007"], "again")
+    assert st["exceptions"] == ["203.0.113.9:17007"] and st["swap_date"]
+
+
+@pytest.mark.parametrize("addrs,reason", [([], "r"), (["nonsense"], "r"), (["1.2.3.4:5"], " ")])
+def test_add_exceptions_rejects_bad_input(addrs, reason):
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.add_exceptions("sabnzbd", addrs, reason)
+
+
+def test_cli_add_exception(capsys):
+    assert swapstate.main(["add-exception", "sabnzbd", "203.0.113.9:17007",
+                           "--reason", "operator ok"]) == 0
+    assert swapstate.load_state("sabnzbd")["exceptions"] == ["203.0.113.9:17007"]
+    assert swapstate.main(["add-exception", "sabnzbd", "bad", "--reason", "x"]) == 2
+
+
+def test_exceptions_are_settable_as_a_list_or_csv_and_validated():
+    """QFLX-28: a D-4 listen-set exception (the dropped public-IP listener)."""
+    st = swapstate.update_state("prowlarr", exceptions="192.0.2.7:17024, [2001:db8::1]:17024")
+    assert st["exceptions"] == ["192.0.2.7:17024", "[2001:db8::1]:17024"]
+    assert swapstate.update_state("prowlarr", exceptions=[])["exceptions"] == []
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.update_state("prowlarr", exceptions="not an address")
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.update_state("prowlarr", exceptions="1.2.3.4")         # no port
+
+
+def test_recorded_exceptions_hide_only_those_addresses_from_the_diff():
+    swapstate.capture("prowlarr", "LISTEN 0 1 192.0.2.7:17024 0.0.0.0:*\n"
+                      "LISTEN 0 1 172.17.0.1:17024 0.0.0.0:*\n", 17024)
+    swapstate.update_state("prowlarr", exceptions="192.0.2.7:17024")
+    now = "LISTEN 0 1 172.17.0.1:17024 0.0.0.0:*\nLISTEN 0 1 127.0.0.1:17024 0.0.0.0:*\n"
+    d = swapstate.diff_listen("prowlarr", now)
+    assert d == {"added": ["127.0.0.1:17024"], "removed": []}

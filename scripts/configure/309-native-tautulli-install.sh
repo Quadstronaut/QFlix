@@ -691,7 +691,9 @@ do_swap() {
     others+=("$a")
   done <<<"$before"
   if [ "${#others[@]}" -gt 0 ]; then
-    swapstate add-exception "$SLUG" "${others[@]}" >/dev/null || die "cannot record the listen-set exceptions"
+    swapstate add-exception "$SLUG" "${others[@]}" \
+      --reason "QFLX-34 D-4: tautulli binds one host; other container listeners dropped, ingress via nginx" >/dev/null \
+      || die "cannot record the listen-set exceptions"
     info "listen-set exceptions recorded (D-4, nginx-only ingress): ${others[*]}"
   fi
   cfgtool audit "$cfg" >/dev/null || die "config.ini names container paths I cannot map (/data or /downloads): $(cfgtool audit "$cfg")"

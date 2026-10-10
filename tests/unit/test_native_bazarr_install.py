@@ -96,6 +96,21 @@ for line in open(os.path.join(cfgdir, "config", "config.yaml"), encoding="utf-8"
     if sec == "auth" and line.strip().startswith("apikey:"): key = line.split(":", 1)[1].strip()
 marker = os.path.join(os.environ["QFLIX_PROC"], "proof.alive")
 open(marker, "w").close()
+# Real bazarr.py is a SUPERVISOR: it spawns bazarr/main.py and does not take it
+# down on SIGTERM (box 2026-10-10: the first real --prove orphaned main.py).
+# Model that: a child carrying the same --config that only dies on its own TERM.
+import subprocess
+CHILD = chr(10).join([
+    "import os, signal, sys, time",
+    "m = os.path.join(os.environ['QFLIX_PROC'], 'proof-child.alive')",
+    "open(m, 'w').close()",
+    "def bye(*a):",
+    "    try: os.remove(m)",
+    "    except OSError: pass",
+    "    os._exit(0)",
+    "signal.signal(signal.SIGTERM, bye)",
+    "time.sleep(60); bye()",
+])
 def bye(*a):
     try: os.remove(marker)
     except OSError: pass
@@ -111,6 +126,7 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers()
         self.wfile.write(b)
 srv = HTTPServer((host, int(port)), H)
+subprocess.Popen([sys.executable, "-c", CHILD, "--no-update", "--config", cfgdir])
 srv.timeout = 1
 import time
 deadline = time.time() + 60          # watchdog: never outlive a test run (Git Bash cannot kill us)
@@ -454,7 +470,7 @@ def test_installer_never_calls_the_panel_tool_or_the_gateway_directly():
 def test_manifest_flip_for_bazarr():
     a = yaml.safe_load((REPO / "manifest" / "apps.yaml").read_text(encoding="utf-8"))["apps"]["bazarr"]
     assert a["class"] == "systemd" and a["unit"] == UNIT and a["ucc_dormant"] is True
-    assert a["swap_state"] == "pending-swap"
+    assert "swap_state" not in a          # swapped 2026-10-10; the pending-swap hold is gone
     assert a["health"]["require_unit_active"] is True
     up = a["upgrade"]
     assert up["kind"] == "zip_swap" and "{version}" in up["target_dir"]
@@ -591,6 +607,8 @@ def test_prove_boots_a_sanitized_copy_measures_tasks_and_cleans_up(box):
     assert _tree_hash(box.appdir) == live_before                       # live data untouched
     if os.name != "nt":      # Git Bash cannot SIGTERM a Windows python; the fake self-exits
         assert not (box.proc / "proof.alive").exists()                 # proof process stopped
+        # ...and its child: a TERM to the supervisor alone orphans it (box 2026-10-10)
+        assert not (box.proc / "proof-child.alive").exists()
 
 
 def test_prove_copy_is_inert_and_off_container_paths(box):

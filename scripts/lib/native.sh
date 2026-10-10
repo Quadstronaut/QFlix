@@ -14,6 +14,7 @@
 # Functions:
 #   native_fetch_verify URL SHA256 DEST    download + sha256 check (DEST removed on mismatch)
 #   native_check_parity SLUG VERSION       refuse unless VERSION == `appctl version SLUG`
+#                                          (NATIVE_PARITY=prefix: a dotted prefix of VERSION is enough)
 #   native_install_versioned SLUG VER SRC  parity, then bin/<VER> + atomic `current` symlink
 #   native_render_env SLUG FAMILY VER [K=V..]   env-file body (thread caps + family hook)
 #   native_render_unit SLUG FAMILY EXE ARGS    qflix-<slug>.service body (EXE %h/... or /... = verbatim)
@@ -71,11 +72,18 @@ native_ucc_version() {
 }
 
 # I-10 exact-version parity. Fails CLOSED: an unreadable version is a refusal.
+# NATIVE_PARITY=prefix (QFLX-28): the panel tool reports a TRUNCATED version
+# (prowlarr: "2.6.5" for build 2.6.5.5623). The panel value must then be a whole
+# dotted prefix of the target ("2.6.5" of "2.6.5.5623", never "2.6" of "2.6.5.x"
+# matching "2.60"); the caller proves the full build another way (the app API).
 native_check_parity() {
   local slug="$1" want="${2#v}" have
   have="$(native_ucc_version "$slug")"; have="${have#v}"
   if [ -z "$have" ]; then
     _native_err "parity: cannot read 'appctl version $slug'; refusing"; return 1
+  fi
+  if [ "${NATIVE_PARITY:-exact}" = prefix ]; then
+    case "$want." in "$have."*) return 0 ;; esac
   fi
   if [ "$have" != "$want" ]; then
     _native_err "parity: target $want != app-$slug version $have; refusing"; return 1
@@ -104,11 +112,17 @@ native_install_versioned() {
 
 # stdout: env-file body. Thread caps live HERE because ulimit -u 2000 is shared
 # by every process on the slot (spec 5.3). NODE_OPTIONS is never used.
+# .NET also needs DOTNET_GCRegionRange: the slot caps address space (ulimit -v
+# and systemd LimitAS, ~10 GB) and the regions GC reserves 256 GB of virtual
+# range by default, so CoreCLR dies at boot with "GC heap initialization failed
+# 0x8007000E" (box 2026-10-10, first prowlarr --prove). 80000000 is HEX (the
+# runtime parses DOTNET_* GC values as hex) = 2 GiB of reserved range, ~10x
+# prowlarr's RSS. DOTNET_GCHeapHardLimit alone did NOT fix it (tested on box).
 native_render_env() {
   local slug="$1" fam="$2" ver="$3"; shift 3
   _native_valid_slug "$slug" || { _native_err "bad slug: $slug"; return 1; }
   case "$fam" in
-    dotnet) printf 'DOTNET_PROCESSOR_COUNT=4\nDOTNET_gcServer=0\n' ;;
+    dotnet) printf 'DOTNET_PROCESSOR_COUNT=4\nDOTNET_gcServer=0\nDOTNET_GCRegionRange=80000000\n' ;;
     go)     printf 'GOMAXPROCS=4\n' ;;
     node)   printf 'UV_THREADPOOL_SIZE=4\n' ;;
     python|db) ;;
