@@ -1,0 +1,12 @@
+[Unit]
+Description=QFlix radarr2 loopback listener (forwards to the docker-bridge bind)
+
+[Socket]
+# Kestrel binds ONE address; the UCC container listened on three (spec 5.4,
+# F-17). The app binds 172.17.0.1 (the arrs, Seerr and Bazarr reach it there);
+# nginx, the health probe and the canaries reach it on loopback through this
+# socket. The public-IP listener is the recorded D-4 exception.
+ListenStream=127.0.0.1:17008
+
+[Install]
+WantedBy=sockets.target
