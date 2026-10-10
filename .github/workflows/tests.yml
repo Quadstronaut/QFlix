@@ -113,3 +113,40 @@ jobs:
             exit 1
           }
           ./tests/local-llm/test-qflix-rea.ps1
+
+  generic-host:
+    # QFLX-24 (F9): proves native.sh works on a plain Linux host (host.profile
+    # generic: no Ultra.cc, no appctl, no 172.17.0.1). A linger-enabled test user
+    # gets a real `systemd --user` manager; the smoke test renders a unit with
+    # native_render_unit and starts it. NOT a required check (D-8).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        run: python -m pip install --quiet pytest pyyaml
+      - name: Shellcheck scripts/lib (advisory)
+        run: |
+          if command -v shellcheck >/dev/null; then
+            shellcheck -S error scripts/lib/*.sh || echo "::warning::shellcheck findings (advisory)"
+          else
+            echo "::notice::shellcheck not installed; skipped"
+          fi
+      - name: Unit and subprocess tests for the generic host
+        run: python -m pytest -q tests/unit/test_ci_generic_host.py tests/unit/test_native_sh.py
+      - name: Create linger test user with systemd --user
+        run: |
+          sudo useradd -m -s /bin/bash ciuser
+          sudo loginctl enable-linger ciuser
+          sudo systemctl start "user@$(id -u ciuser).service"
+          sudo cp -r "$GITHUB_WORKSPACE" /home/ciuser/repo
+          sudo chown -R ciuser:ciuser /home/ciuser/repo
+      - name: Render and start a native unit as the test user
+        run: |
+          uid=$(id -u ciuser)
+          sudo -u ciuser env HOME=/home/ciuser XDG_RUNTIME_DIR="/run/user/$uid" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+            PYTHONDONTWRITEBYTECODE=1 PATH="$(dirname "$(command -v python)"):$PATH" \
+            bash -c 'cd /home/ciuser/repo && python -m pytest -q -p no:cacheprovider tests/ci/test_generic_host_smoke.py -rs'
