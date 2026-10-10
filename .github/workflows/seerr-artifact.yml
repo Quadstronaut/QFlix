@@ -61,7 +61,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w \
+          # -i: the build script arrives on stdin (without it bash -s reads
+          # nothing and "succeeds" having built nothing).
+          docker run -i --rm -v "$GITHUB_WORKSPACE:/w" -w /w \
             -e SEERR_VERSION -e SEERR_COMMIT -e SEERR_NODE_VERSION -e SEERR_NODE_SHA256 \
             debian:bullseye bash -euo pipefail -s <<'EOS'
           export DEBIAN_FRONTEND=noninteractive
@@ -120,6 +122,7 @@ jobs:
           cat "seerr-${SEERR_VERSION}-linux-x64.tar.gz.sha256"
           ls -la /w/out
           EOS
+          test -s "out/seerr-${SEERR_VERSION}-linux-x64.tar.gz" || { echo "::error::no tarball built"; exit 1; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: seerr-${{ steps.pins.outputs.version }}-linux-x64

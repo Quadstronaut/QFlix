@@ -499,6 +499,7 @@ def test_workflow_builds_the_pinned_commit_in_bullseye_and_publishes_once():
     for k in ("SEERR_VERSION", "SEERR_COMMIT", "SEERR_NODE_VERSION", "SEERR_NODE_SHA256"):
         assert k in text
     assert "debian:bullseye" in text
+    assert "docker run -i " in text                                  # script arrives on stdin
     assert "codeload.github.com/seerr-team/seerr/tar.gz/${SEERR_COMMIT}" in text
     assert "pnpm install --frozen-lockfile" in text and "pnpm build" in text
     assert "sha256sum -c -" in text                                  # node runtime verified
@@ -687,7 +688,7 @@ def test_prove_boots_a_sanitized_copy_checks_login_measures_tasks_and_cleans_up(
     assert pe["cwd"].endswith("/seerr/bin/current")
     assert pe["argv"][0] == "--disable-wasm-trap-handler" and pe["argv"][1] == "--require"
     assert box.dropin.read_text() == DROPIN                             # gate untouched
-    assert "curl https://" not in box.calls_text()                     # never the live vhost
+    assert "/api/v1/status" not in box.calls_text()                    # never the live vhost
 
 
 def test_prove_copy_is_inert(box):
