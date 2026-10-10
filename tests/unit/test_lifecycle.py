@@ -710,3 +710,61 @@ def test_unset_dormant_flag_still_starts(value):
     with patch("subprocess.run", return_value=_ok_cp()) as mock_run:
         assert start(app).ok is True
     assert mock_run.call_args[0][0] == ["app-sonarr", "start"]
+
+
+# ---- QFLX-21: soak gate on native upgrades ---------------------------------
+
+def _native_app(name="sonarr"):
+    app = _make_app("systemd", name=name, unit=f"qflix-{name}.service")
+    return _attach_upgrade(app, kind="tarball_swap")
+
+
+@pytest.fixture
+def _swap(tmp_path, monkeypatch):
+    monkeypatch.setenv("QFLIX_SWAP_DIR", str(tmp_path / "swap"))
+    monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path / "st"))
+    from lib import swapstate
+    return swapstate
+
+
+def test_native_upgrade_refused_inside_soak_and_recorded(_swap):
+    _swap.update_state("sonarr", swap_date="2026-10-25", soak_until="2999-01-01")
+    app = _native_app()
+    with patch("subprocess.run") as run, \
+         patch("lib.lifecycle._record_state") as rec:
+        result = upgrade(app, target_version="4.0.21")
+    run.assert_not_called()
+    assert result.ok is False and result.reason.startswith("skipped: soak")
+    rec.assert_called_once()
+    assert rec.call_args.args[1] == "skipped" and rec.call_args.args[3].startswith("soak")
+    assert _swap.load_state("sonarr")["rollback_window"] == "open"
+
+
+def test_first_native_upgrade_after_soak_closes_rollback_window(_swap):
+    _swap.update_state("sonarr", swap_date="2020-01-01", soak_until="2020-01-15")
+    app = _native_app()
+    with patch("lib.lifecycle._apply_upgrade", return_value=LifecycleResult(True, 0.0, "", "", "ok")), \
+         patch("lib.lifecycle._restart_after_upgrade", return_value=LifecycleResult(True, 0.0, "", "", "ok")), \
+         patch("lib.lifecycle._post_health_probe", return_value=(True, "ok")), \
+         patch("lib.lifecycle._record_state"):
+        result = upgrade(app, target_version="4.0.21")
+    assert result.ok is True
+    assert _swap.load_state("sonarr")["rollback_window"] == "closed"
+
+
+def test_failed_apply_does_not_close_the_window(_swap):
+    _swap.update_state("sonarr", swap_date="2020-01-01", soak_until="2020-01-15")
+    app = _native_app()
+    with patch("lib.lifecycle._apply_upgrade", return_value=LifecycleResult(False, 0.0, "", "", "boom")), \
+         patch("lib.lifecycle._record_state"):
+        upgrade(app, target_version="4.0.21")
+    assert _swap.load_state("sonarr")["rollback_window"] == "open"
+
+
+def test_unswapped_systemd_app_is_not_gated(_swap):
+    app = _native_app("bazarr2")
+    with patch("lib.lifecycle._apply_upgrade", return_value=LifecycleResult(True, 0.0, "", "", "ok")), \
+         patch("lib.lifecycle._restart_after_upgrade", return_value=LifecycleResult(True, 0.0, "", "", "ok")), \
+         patch("lib.lifecycle._post_health_probe", return_value=(True, "ok")), \
+         patch("lib.lifecycle._record_state"):
+        assert upgrade(app, target_version="1.0").ok is True

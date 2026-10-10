@@ -533,6 +533,30 @@ def _apply_upgrade(app: App, target_version: str, timeout_s: float) -> Lifecycle
     raise LifecycleError(f"unknown upgrade kind '{kind}' for {app.name}")
 
 
+def _native_swap_slug(app: App) -> Optional[str]:
+    """Slug for swap-state lookups when `app` is a converted (systemd) app."""
+    if app.class_ != "systemd":
+        return None
+    return app.raw.get("ucc_slug") or app.name
+
+
+def _soak_gate(slug: str) -> dict:
+    try:
+        from lib import swapstate
+        return swapstate.soak_gate(slug)
+    except Exception as exc:  # unreadable state dir: a never-swapped app must not wedge
+        sys.stderr.write("lifecycle.py: soak gate unreadable (failing open): " + repr(exc) + "\n")
+        return {"refused": False, "reason": "unreadable"}
+
+
+def _close_rollback_window(slug: str) -> None:
+    try:
+        from lib import swapstate
+        swapstate.close_rollback_window(slug)
+    except Exception as exc:
+        sys.stderr.write("lifecycle.py: rollback_window close FAILED: " + repr(exc) + "\n")
+
+
 def _record_state(app: App, event: str, version: str, reason: str) -> None:
     try:
         from lib import state as state_mod
@@ -579,10 +603,22 @@ def upgrade(
     target = _resolve_target_version(app, target_version)
     _validate_max(app, target)
 
+    # QFLX-21 soak gate (spec 5.7). Only a forward upgrade is gated: downgrade
+    # and the internal rollback pass _allow_rollback=False and must never be
+    # blocked by a soak.
+    native_slug = _native_swap_slug(app)
+    if native_slug and _allow_rollback:
+        gate = _soak_gate(native_slug)
+        if gate.get("refused"):
+            _record_state(app, "skipped", target, "soak: " + str(gate.get("reason")))
+            return _fail("skipped: soak (" + str(gate.get("reason")) + ")")
+
     apply_result = _apply_upgrade(app, target, t)
     if not apply_result.ok:
         _record_state(app, "upgrade_failed", target, apply_result.reason)
         return apply_result
+    if native_slug:
+        _close_rollback_window(native_slug)
 
     restart_result = _restart_after_upgrade(app, t)
     if not restart_result.ok:
