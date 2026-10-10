@@ -394,14 +394,14 @@ apps:
     # The UCC seerr app is DORMANT FOREVER, never uninstalled: it owns the
     # seerr-<slot> vhost (I-8). The swap pauses the entitlement gate by parking
     # its execute.conf drop-in (I-13), reinstalled by --finish / --rollback.
-    # swap_state: pending-swap (spec 5.9 step 7) = flip merged + deployed, swap
-    # not yet run: the container still serves, appctl/lifecycle dispatch it as
-    # UCC and require_unit_active is off. A follow-up PR removes the line.
+    # Swapped to native 2026-10-10 (spec 5.9 steps 1-6); the `swap_state:
+    # pending-swap` line that held this flip inert until the swap ran is gone,
+    # so appctl / lifecycle / require_unit_active / runtime parity now treat
+    # qflix-seerr.service as the live runtime. 14-day soak until 2026-10-24.
     class: systemd
     unit: qflix-seerr.service
     ucc_slug: seerr
     ucc_dormant: true
-    swap_state: pending-swap
     kuma_monitor: "Seerr"
     health:
       kind: http_api

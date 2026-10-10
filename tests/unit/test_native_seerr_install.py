@@ -539,7 +539,7 @@ def test_installer_never_calls_the_panel_tool_the_gateway_or_the_rail():
 def test_manifest_flip_for_seerr():
     a = yaml.safe_load((REPO / "manifest" / "apps.yaml").read_text(encoding="utf-8"))["apps"]["seerr"]
     assert a["class"] == "systemd" and a["unit"] == UNIT and a["ucc_dormant"] is True
-    assert a["swap_state"] == "pending-swap" and a["ucc_slug"] == "seerr"
+    assert "swap_state" not in a and a["ucc_slug"] == "seerr"   # swapped 2026-10-10
     up = a["upgrade"]
     assert up["kind"] == "tarball_swap" and "{version}" in up["target_dir"]
     assert any("311-native-seerr-install.sh --post-upgrade {version} --execute" in s

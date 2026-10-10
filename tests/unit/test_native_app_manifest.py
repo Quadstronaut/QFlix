@@ -61,10 +61,10 @@ def test_bazarr_is_converted():
     assert _converted()["bazarr"]["upgrade"]["kind"] == "zip_swap"
 
 
-def test_seerr_is_converted_pending_swap_and_stays_dormant():
+def test_seerr_is_converted_swapped_and_stays_dormant():
     """QFLX-36 (A12): the UCC seerr app owns the vhost, so it is dormant forever."""
     a = _converted()["seerr"]
-    assert a["swap_state"] == "pending-swap" and a["unit"] == "qflix-seerr.service"
+    assert "swap_state" not in a and a["unit"] == "qflix-seerr.service"   # swapped 2026-10-10
     assert a["ucc_dormant"] is True and a["kuma_monitor"] == "Seerr"
     assert a["health"]["require_unit_active"] is True
     up = a["upgrade"]
