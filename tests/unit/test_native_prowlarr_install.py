@@ -472,7 +472,8 @@ def test_install_lays_out_binary_env_and_stages_units_without_enabling(box):
         assert os.access(cur / "Prowlarr", os.X_OK)
     assert (cur / "Prowlarr").exists()
     env = (box.envdir / "prowlarr.env").read_text().splitlines()
-    for line in ("DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "MALLOC_ARENA_MAX=2",
+    for line in ("DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "DOTNET_GCRegionRange=80000000",
+                 "MALLOC_ARENA_MAX=2",
                  "TZ=Europe/Amsterdam", "COMPlus_EnableDiagnostics=0",
                  "PROWLARR__SERVER__BINDADDRESS=172.17.0.1", "PROWLARR__SERVER__PORT=17024",
                  "PROWLARR__UPDATE__MECHANISM=External", "PROWLARR__UPDATE__AUTOMATICALLY=false"):
