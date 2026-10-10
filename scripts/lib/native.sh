@@ -112,11 +112,17 @@ native_install_versioned() {
 
 # stdout: env-file body. Thread caps live HERE because ulimit -u 2000 is shared
 # by every process on the slot (spec 5.3). NODE_OPTIONS is never used.
+# .NET also needs DOTNET_GCRegionRange: the slot caps address space (ulimit -v
+# and systemd LimitAS, ~10 GB) and the regions GC reserves 256 GB of virtual
+# range by default, so CoreCLR dies at boot with "GC heap initialization failed
+# 0x8007000E" (box 2026-10-10, first prowlarr --prove). 80000000 is HEX (the
+# runtime parses DOTNET_* GC values as hex) = 2 GiB of reserved range, ~10x
+# prowlarr's RSS. DOTNET_GCHeapHardLimit alone did NOT fix it (tested on box).
 native_render_env() {
   local slug="$1" fam="$2" ver="$3"; shift 3
   _native_valid_slug "$slug" || { _native_err "bad slug: $slug"; return 1; }
   case "$fam" in
-    dotnet) printf 'DOTNET_PROCESSOR_COUNT=4\nDOTNET_gcServer=0\n' ;;
+    dotnet) printf 'DOTNET_PROCESSOR_COUNT=4\nDOTNET_gcServer=0\nDOTNET_GCRegionRange=80000000\n' ;;
     go)     printf 'GOMAXPROCS=4\n' ;;
     node)   printf 'UV_THREADPOOL_SIZE=4\n' ;;
     python|db) ;;

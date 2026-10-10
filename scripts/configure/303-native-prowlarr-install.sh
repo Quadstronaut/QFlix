@@ -479,7 +479,9 @@ PY
   [[ "$before" =~ ^[0-9]+$ ]] || die "cannot count tasks"
   # Port/bind/update come from the ENVIRONMENT, exactly as in the real unit:
   # config.xml still says Port 9696, so a green status here proves the override.
-  env DOTNET_PROCESSOR_COUNT=4 DOTNET_gcServer=0 MALLOC_ARENA_MAX=2 COMPlus_EnableDiagnostics=0 \
+  # DOTNET_GCRegionRange: same as the env file (native.sh); without it CoreCLR
+  # cannot reserve its GC range under the slot's ~10 GB address-space cap.
+  env DOTNET_PROCESSOR_COUNT=4 DOTNET_gcServer=0 DOTNET_GCRegionRange=80000000 MALLOC_ARENA_MAX=2 COMPlus_EnableDiagnostics=0 \
       "$TZ_ENV" PROWLARR__SERVER__BINDADDRESS="$LOOPBACK" PROWLARR__SERVER__PORT="$pport" \
       PROWLARR__UPDATE__MECHANISM=External PROWLARR__UPDATE__AUTOMATICALLY=false \
       "$APPDIR/bin/current/$EXE" -nobrowser "-data=$PROVE" >"$PROVE/stdout.log" 2>&1 &
