@@ -62,9 +62,14 @@ def parse_ss(text: str) -> set[int]:
         # peer column is always `*:*`/`0.0.0.0:*`, so take the first :NNNN col
         # after the numeric Recv-Q/Send-Q pair.
         if len(cols) >= 4 and cols[0].upper() == "LISTEN":
-            m = re.search(r":(\d{1,5})$", cols[3])
-            if m:
-                found.add(int(m.group(1)))
+            local = cols[3]
+        elif len(cols) >= 3 and cols[0].isdigit() and cols[1].isdigit():
+            local = cols[2]          # rows without the State column
+        else:
+            continue
+        m = re.search(r":(\d{1,5})$", local)
+        if m:
+            found.add(int(m.group(1)))
     return found
 
 
@@ -184,6 +189,7 @@ def main(argv=None) -> int:
     c.add_argument("--secrets-dir", required=True)
     c.add_argument("--app-ports", default="", help="`app-ports free` output")
     c.add_argument("--ss", default="", help="`ss -tln` output")
+    c.add_argument("--ss-file", default=None, help="file with `ss -tln` output; - = stdin")
     f = sub.add_parser("free", help="list claimable ports (read-only)")
     f.add_argument("--secrets-dir", required=True)
     f.add_argument("--ss", default="", help="`ss -tln` output")
@@ -213,7 +219,12 @@ def main(argv=None) -> int:
             print(p)
         return 0
     try:
-        port = claim(a.name, a.secrets_dir, parse_candidates(a.app_ports), parse_ss(a.ss))
+        ss_text = a.ss
+        if a.ss_file == "-":
+            ss_text += sys.stdin.read()
+        elif a.ss_file:
+            ss_text += Path(a.ss_file).read_text()
+        port = claim(a.name, a.secrets_dir, parse_candidates(a.app_ports), parse_ss(ss_text))
     except PortClaimError as exc:
         print(f"ports: {exc}", file=sys.stderr)
         return 1

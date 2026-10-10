@@ -338,3 +338,15 @@ def test_ssh_no_marker_no_match_is_remote(tmp_path):
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 def test_ssh_hostname_fallback_still_works(tmp_path):
     assert _sshm_on_host(tmp_path, None, "manitoba") == "YES"
+
+
+def test_ultra_port_candidates_warn_when_empty(secrets, monkeypatch, capsys):
+    _load("hostpolicy")
+    mod = _load("hostpolicy_ultra")
+
+    def boom(*a, **k):
+        raise OSError("no app-ports")
+
+    monkeypatch.setattr(mod.subprocess, "run", boom)
+    assert list(mod.UltraPolicy().port_candidates()) == []
+    assert "no candidates" in capsys.readouterr().err
