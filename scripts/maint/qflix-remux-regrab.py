@@ -191,6 +191,7 @@ for _p in (str(_HERE), str(_MCP_DIR)):
         sys.path.insert(0, _p)
 
 from lib.secrets import secrets_dir, read_secret  # noqa: E402
+from lib.hostpolicy import in_maintenance_window as _policy_window  # noqa: E402  (QFLX-16)
 
 ARR_SLUG = "radarr"          # main Radarr only. radarr2 is a 6-movie anime/
                              # foreign instance with 1 remux file; sonarr main
@@ -286,7 +287,7 @@ def _notify(msg: str, level: str = "info") -> None:
 def in_maintenance_window(now=None) -> bool:
     if now is None:
         now = datetime.now(timezone.utc)
-    if now.weekday() == 0 and 11 <= now.hour < 15:
+    if _policy_window(now):   # host policy: Mon 11:00-14:59 UTC on Ultra
         return True
     try:
         lock = Path(os.environ.get("MANITOBA_STATE_DIR",

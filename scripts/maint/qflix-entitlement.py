@@ -83,6 +83,7 @@ sys.path.insert(0, str(_HERE / "lib"))
 
 import access_state as ST                                    # noqa: E402
 import entitlement as ENT                                    # noqa: E402
+import hostpolicy as HP                                      # noqa: E402  (QFLX-16)
 import members as MEM                                        # noqa: E402
 import oracle_state as OSTATE                                 # noqa: E402
 import payer_oracle as ORACLE                                 # noqa: E402
@@ -417,7 +418,7 @@ def _notify(msg: str, level: str = "info") -> None:
 
 def in_maintenance_window(now: Optional[dt.datetime] = None) -> bool:
     now = now or dt.datetime.now(dt.timezone.utc)
-    if now.weekday() == 0 and 11 <= now.hour < 15:
+    if HP.in_maintenance_window(now):
         return True
     try:
         lock = Path(os.environ.get("MANITOBA_STATE_DIR",
@@ -983,7 +984,7 @@ def should_send_digest(plans: Sequence[Plan], now: dt.datetime) -> bool:
         return False
     if min(p.days_remaining for p in pending) <= 7:
         return True
-    return now.weekday() == 0
+    return now.weekday() == 0   # window-ok: weekly digest cadence, not the maintenance window
 
 
 # ===========================================================================
