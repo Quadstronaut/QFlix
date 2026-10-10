@@ -63,7 +63,11 @@ def test_converted_slug_is_skipped_even_with_dir_and_wrapper(convbox):
     assert (convbox.bin / "app-radarr").exists()
     cp = convbox.sweep()
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    assert sorted(_upgraded(convbox)) == ["bazarr", "sonarr"]
+    # order.log also carries the postgres child's own lines; only the generic
+    # app-* stubs matter here.
+    upgraded = set(_upgraded(convbox))
+    assert {"sonarr", "bazarr"} <= upgraded
+    assert not upgraded & {"radarr", "tautulli"}
     assert re.search(r"skip: radarr: converted/dormant", cp.stdout)
     assert re.search(r"skip: tautulli: converted/dormant", cp.stdout)
     res = json.loads((convbox.state / "last-upgrade.json").read_text())
