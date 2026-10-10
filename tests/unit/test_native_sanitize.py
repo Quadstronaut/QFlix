@@ -179,6 +179,38 @@ def test_seerr_settings_json(tmp_path):
     assert s["main"]["apiKey"] == "k"
 
 
+def _seerr_db(d, cols="watchlistSyncMovies BOOLEAN, watchlistSyncTv BOOLEAN"):
+    (d / "settings.json").write_text(json.dumps({"main": {"apiKey": "k"}, "radarr": [], "sonarr": []}))
+    (d / "db").mkdir()
+    _db(d / "db" / "db.sqlite3", [
+        f"CREATE TABLE user_settings (id INTEGER PRIMARY KEY, {cols})",
+        "CREATE TABLE media_request (id INTEGER PRIMARY KEY)",
+    ], ["INSERT INTO user_settings VALUES (1,1,1)", "INSERT INTO user_settings VALUES (2,0,NULL)",
+        "INSERT INTO media_request VALUES (7)"])
+
+
+def test_seerr_db_watchlist_sync_off(tmp_path):
+    """QFLX-36: plex-watchlist-sync would AUTO-REQUEST from a booted proof copy."""
+    d = tmp_path / "seerr"
+    d.mkdir()
+    _seerr_db(d)
+    counts = ns.sanitize("seerr", d)
+    assert counts["watchlist_sync"] == 0 and sum(counts.values()) == 0
+    db = d / "db" / "db.sqlite3"
+    assert _q(db, "SELECT count(*) FROM user_settings WHERE watchlistSyncMovies!=0 "
+                  "OR watchlistSyncTv!=0") == [(0,)]
+    assert _q(db, "SELECT count(*) FROM user_settings") == [(2,)]       # rows kept
+    assert _q(db, "SELECT count(*) FROM media_request") == [(1,)]       # data untouched
+
+
+def test_seerr_db_without_the_flag_columns_fails_closed(tmp_path):
+    d = tmp_path / "seerr"
+    d.mkdir()
+    _seerr_db(d, cols="locale TEXT, other TEXT")
+    with pytest.raises(ns.SanitizeError):
+        ns.sanitize("seerr", d)
+
+
 def test_seerr_missing_settings_fails_closed(tmp_path):
     d = tmp_path / "seerr"
     d.mkdir()
