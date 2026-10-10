@@ -20,6 +20,13 @@
 # Stage labels (printed to stderr on failure → Kuma `msg=`):
 #   log-stale-<app>   — log mtime exceeds the cadence's stale threshold
 #   log-missing-<app> — expected log file does not exist on the seedbox
+#
+# unpackerr leg (QFLX-46): unpackerr.log has no cadence of its own, so instead of
+# a fixed cap it is compared with the newest journald line of the native unit.
+# Reds when the file is > 2h behind the journal (the [[general]] TOML trap voids
+# log_file while the process keeps running and logging to stdout), or when the
+# conf carries a [[general]] header. No journal line (UCC era) = nothing to
+# compare against = pass.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -55,6 +62,32 @@ WATCHED=(
 NOW=$(date -u +%s)
 FAILED=()
 PASSED=()
+
+# BEGIN unpackerr-leg (QFLX-46; tests extract this block, keep it quote-free)
+unpackerr_leg() {
+  local conf="$HOME/.apps/unpackerr/unpackerr.conf"
+  local log="$HOME/.apps/unpackerr/unpackerr.log"
+  local line jt lm gap
+  if [ -f "$conf" ] && grep -qiE "^[[:space:]]*\[\[?[[:space:]]*general[[:space:]]*\]\]?" "$conf"; then
+    FAILED+=("unpackerr:conf-general-header")
+  fi
+  line=$(journalctl --user -u qflix-unpackerr.service _COMM=unpackerr -n 1 -o short-unix --no-pager 2>/dev/null | grep -E "^[0-9]" | tail -1)
+  jt=${line%% *}
+  jt=${jt%%.*}
+  case "$jt" in ""|*[!0-9]*) PASSED+=("unpackerr:no-journal"); return 0 ;; esac
+  if [ ! -f "$log" ]; then
+    FAILED+=("log-missing-unpackerr")
+    return 0
+  fi
+  lm=$(stat -c %Y "$log" 2>/dev/null || echo 0)
+  gap=$((jt - lm))
+  if [ "$gap" -gt 7200 ]; then
+    FAILED+=("unpackerr:log-behind-journal=$((gap / 3600))h>cap=2h")
+  else
+    PASSED+=("unpackerr:log-in-step")
+  fi
+}
+# END unpackerr-leg
 for entry in "${WATCHED[@]}"; do
   app=$(printf %s "$entry" | cut -d "|" -f1)
   path=$(printf %s "$entry" | cut -d "|" -f2)
@@ -74,6 +107,8 @@ for entry in "${WATCHED[@]}"; do
     PASSED+=("$app:${age_h}h")
   fi
 done
+
+unpackerr_leg
 
 if [ ${#FAILED[@]} -gt 0 ]; then
   joined_fail=$(IFS=,; echo "${FAILED[*]}")

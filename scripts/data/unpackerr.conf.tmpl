@@ -1,5 +1,13 @@
 ## Unpackerr config (rendered by scripts/configure/31-unpackerr.sh).
-## Placeholders {{X}} are replaced before push.
+## Placeholders {{X}} are replaced before push. No secrets live in this file.
+##
+## TOML TRAP (QFLX-46): the general keys below MUST stay top-level, ABOVE the
+## first [table]. Wrapping them in a [[general]] / [general] header (what
+## app-unpackerr's panel regenerate does) makes unpackerr ignore every one of
+## them, log_file included, and the durable log goes dark with no error.
+## 31-unpackerr.sh refuses to push a config that fails
+## scripts/maint/lib/unpackerr_conf.py, and the stale-log-watchdog canary reds
+## on a [[general]] header or an unpackerr.log behind journald.
 debug = false
 quiet = false
 activity = false
@@ -17,32 +25,32 @@ dir_mode = "0755"
 [[sonarr]]
 url = "http://{{APP_HOST}}:{{SONARR_PORT}}/{{SONARR_BASE}}"
 api_key = "{{SONARR_KEY}}"
-paths = ["/home/quadstronaut/downloads/qbittorrent/tv-sonarr"]
-protocols = "torrent"
+paths = ["/home/quadstronaut/downloads/qbittorrent/tv-sonarr", "{{SAB_COMPLETE}}/sonarr"]
+protocols = "torrent,usenet"
 timeout = "10s"
 delete_orig = false
 
 [[sonarr]]
 url = "http://{{APP_HOST}}:{{SONARR2_PORT}}/{{SONARR2_BASE}}"
 api_key = "{{SONARR2_KEY}}"
-paths = ["/home/quadstronaut/downloads/qbittorrent/sonarr-anime"]
-protocols = "torrent"
+paths = ["/home/quadstronaut/downloads/qbittorrent/sonarr-anime", "{{SAB_COMPLETE}}/sonarr-anime"]
+protocols = "torrent,usenet"
 timeout = "10s"
 delete_orig = false
 
 [[radarr]]
 url = "http://{{APP_HOST}}:{{RADARR_PORT}}/{{RADARR_BASE}}"
 api_key = "{{RADARR_KEY}}"
-paths = ["/home/quadstronaut/downloads/qbittorrent/radarr"]
-protocols = "torrent"
+paths = ["/home/quadstronaut/downloads/qbittorrent/radarr", "{{SAB_COMPLETE}}/radarr"]
+protocols = "torrent,usenet"
 timeout = "10s"
 delete_orig = false
 
 [[radarr]]
 url = "http://{{APP_HOST}}:{{RADARR2_PORT}}/{{RADARR2_BASE}}"
 api_key = "{{RADARR2_KEY}}"
-paths = ["/home/quadstronaut/downloads/qbittorrent/radarr-anime"]
-protocols = "torrent"
+paths = ["/home/quadstronaut/downloads/qbittorrent/radarr-anime", "{{SAB_COMPLETE}}/radarr-anime"]
+protocols = "torrent,usenet"
 timeout = "10s"
 delete_orig = false
 
