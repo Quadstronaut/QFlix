@@ -312,6 +312,12 @@ repo_areas:
     paths: ["tests/unit/*"]
     covered_by: [C-10]
 
+  - id: A-tests-ci
+    surface: S1
+    paths: ["tests/ci/**"]
+    covered_by: [C-10]
+    note: QFLX-24 generic-host smoke, run by the generic-host job.
+
   - id: A-tests-audit
     surface: S5
     paths: ["tests/unit/audit/**"]
@@ -363,6 +369,11 @@ ci_execution:
       must_contain: "tests/local-llm/test-qflix-rea.ps1"
       executes:
         - "tests/local-llm/**"
+    # QFLX-24 generic-host job: NOT a required check (D-8).
+    - job: generic-host
+      must_contain: "tests/ci/test_generic_host_smoke.py"
+      executes:
+        - "tests/ci/**"
 
 # Files matching these are TEST FILES for C-10's purposes.
 test_file_patterns:
