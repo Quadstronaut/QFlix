@@ -251,6 +251,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/ops/qflix-listen-set.sh \
     scripts/lib/ssh.sh \
     scripts/lib/appctl \
+    scripts/lib/native.sh \
     scripts/canaries/anime.sh \
     scripts/canaries/kometa-deploy-drift.sh \
     scripts/canaries/kometa-libraries.sh \
@@ -291,6 +292,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/rea-liveness.sh \
     scripts/configure/55-kometa-install.sh \
     scripts/configure/240-maintenance-install.sh \
+    scripts/configure/300-native-unpackerr-install.sh \
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
@@ -455,6 +457,13 @@ cp -f   "$STG"/scripts/configure/55-kometa-install.sh ~/scripts/configure/55-kom
 # alternative was deleting the box copy, and adding a file is the reversible one.
 cp -f   "$STG"/scripts/configure/240-maintenance-install.sh ~/scripts/configure/240-maintenance-install.sh
 chmod +x ~/scripts/configure/240-maintenance-install.sh
+# QFLX-25 (UCC divorce A1): the native installers RUN ON THE BOX (they drive
+# systemctl --user, appctl and /proc locally), so each one ships with the
+# native.sh lib it sources. Deploying them does nothing by itself: every
+# installer is inert without --execute.
+cp -f   "$STG"/scripts/lib/native.sh ~/scripts/lib/native.sh
+cp -f   "$STG"/scripts/configure/300-native-unpackerr-install.sh ~/scripts/configure/300-native-unpackerr-install.sh
+chmod +x ~/scripts/configure/300-native-unpackerr-install.sh
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.

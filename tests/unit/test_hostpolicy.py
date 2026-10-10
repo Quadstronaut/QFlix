@@ -350,3 +350,28 @@ def test_ultra_port_candidates_warn_when_empty(secrets, monkeypatch, capsys):
     monkeypatch.setattr(mod.subprocess, "run", boom)
     assert list(mod.UltraPolicy().port_candidates()) == []
     assert "no candidates" in capsys.readouterr().err
+
+
+# --- task-ceiling CLI (QFLX-25: the swap's 70% thread gate, spec 5.9 step 2.4) --
+
+class _Pol:
+    def __init__(self, ceiling):
+        self._c = ceiling
+
+    def task_ceiling(self):
+        return self._c
+
+
+def test_cli_task_ceiling_prints_the_policy_value(hp, monkeypatch, capsys):
+    monkeypatch.setattr(hp, "load", lambda *a, **k: _Pol(2000))
+    assert hp.main(["task-ceiling"]) == 0
+    assert capsys.readouterr().out.strip() == "2000"
+
+
+def test_cli_task_ceiling_unknown_fails_closed(hp, monkeypatch):
+    monkeypatch.setattr(hp, "load", lambda *a, **k: _Pol(None))
+    assert hp.main(["task-ceiling"]) == 2
+
+
+def test_cli_task_ceiling_missing_profile_fails_closed(hp, secrets):
+    assert hp.main(["task-ceiling"]) == 2

@@ -137,10 +137,136 @@ def recovery_suppressed(app) -> bool:
         # recovery is skipped even if some path probes the app directly.
         if push_suppressed(getattr(app, "name", "")):
             return True
-        if getattr(app, "class_", None) != "ucc":
+        # A pending-swap app (QFLX-25, spec 5.9 step 7) is still served by its
+        # UCC container, so the UCC gate blocks its recovery exactly as before.
+        raw = getattr(app, "raw", None) or {}
+        pending = isinstance(raw, dict) and raw.get("swap_state") == "pending-swap"
+        if getattr(app, "class_", None) != "ucc" and not pending:
             return False
         return ucc_active()
     except Exception as exc:
         print(f"WARNING: suppression.recovery_suppressed: unexpected error: {exc}",
               file=sys.stderr)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Writer + CLI (QFLX-25, spec 5.9 steps 4 / 9 and rollback step 0)
+# ---------------------------------------------------------------------------
+# A UCC->native swap mutes the app's Kuma monitor AND its behavioural canaries
+# (canary keys are `canary-<name>`, cli.py) for the planned outage, then lifts
+# them together. The registry is shared, so the whole read-modify-write runs
+# under an exclusive flock and lands via mkstemp + os.replace (a reader never
+# sees a half-written file). Contention past the timeout or an unparseable
+# registry is a REFUSAL (exit 2): merging onto {} would silently drop someone
+# else's suppression, and a swap must not proceed unsuppressed (pusher
+# recovery would otherwise restart the app mid-swap). Lock INFRASTRUCTURE
+# missing (no fcntl on a workstation) fails open, as in swapstate.py.
+#
+#   python3 suppression.py add NAME... --reason TEXT    exit 0 ok, 2 refused
+#   python3 suppression.py remove NAME...               exit 0 ok, 2 refused
+#   python3 suppression.py has NAME                     exit 0 listed, 1 not
+
+_WRITE_LOCK_TIMEOUT_S = 10.0
+
+
+class SuppressionWriteError(RuntimeError):
+    """Registry unreadable, lock contended, or the write failed."""
+
+
+def _locked_rmw(mutate) -> dict:
+    import tempfile
+    import time
+    try:
+        import fcntl
+    except ImportError:            # non-POSIX workstation: no lock (fail open)
+        fcntl = None               # type: ignore[assignment]
+    sd = _state_dir()
+    sd.mkdir(parents=True, exist_ok=True)
+    path = sd / _PUSH_SUPPRESS_FILE
+    lock = open(sd / (_PUSH_SUPPRESS_FILE + ".lock"), "a+")
+    try:
+        if fcntl is not None:
+            deadline = time.monotonic() + _WRITE_LOCK_TIMEOUT_S
+            while True:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise SuppressionWriteError(f"{path}: lock contended")
+                    time.sleep(0.1)
+        try:
+            cur = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except (OSError, ValueError) as exc:
+            raise SuppressionWriteError(f"{path} unreadable ({exc}); refusing to overwrite")
+        if not isinstance(cur, dict):
+            raise SuppressionWriteError(f"{path} is not a JSON object; refusing to overwrite")
+        new = mutate(dict(cur))
+        fd, tmp = tempfile.mkstemp(dir=str(sd), prefix=".push-suppress.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(new, indent=2, sort_keys=True) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return new
+    finally:
+        lock.close()
+
+
+def add_push_suppress(names, reason: str) -> dict:
+    """Mute *names*. Idempotent: an existing entry keeps its original `since`."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def m(cur):
+        for n in names:
+            if not isinstance(cur.get(n), dict):
+                cur[n] = {"reason": reason, "since": now}
+        return cur
+    return _locked_rmw(m)
+
+
+def remove_push_suppress(names) -> dict:
+    def m(cur):
+        for n in names:
+            cur.pop(n, None)
+        return cur
+    return _locked_rmw(m)
+
+
+def main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="push-suppress.json writer")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    a = sub.add_parser("add")
+    a.add_argument("names", nargs="+")
+    a.add_argument("--reason", required=True)
+    r = sub.add_parser("remove")
+    r.add_argument("names", nargs="+")
+    h = sub.add_parser("has")
+    h.add_argument("name")
+    args = ap.parse_args(argv)
+    try:
+        if args.cmd == "add":
+            add_push_suppress(args.names, args.reason)
+            print("suppressed: " + " ".join(args.names))
+            return 0
+        if args.cmd == "remove":
+            remove_push_suppress(args.names)
+            print("unsuppressed: " + " ".join(args.names))
+            return 0
+        return 0 if push_suppressed(args.name) else 1
+    except (SuppressionWriteError, OSError) as exc:
+        print(f"suppression: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

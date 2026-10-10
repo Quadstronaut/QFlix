@@ -125,10 +125,21 @@ def _dormant_refusal(app: App, verb: str) -> LifecycleResult:
                  f"wake the dormant container (I-9)")
 
 
+def _pending_swap(app: App) -> bool:
+    """QFLX-25 (spec 5.9 step 7): the manifest flip (class systemd, ucc_dormant,
+    unit) merges BEFORE the swap runs, marked `swap_state: pending-swap`. Until
+    the follow-up deploy drops the marker the app is lifecycled as the UCC app
+    it still is, exactly as scripts/lib/appctl dispatches it. Without this,
+    pusher recovery would `systemctl --user restart` the native unit next to
+    the live container (two runtimes on one config dir, I-6)."""
+    return app.class_ == "systemd" and app.raw.get("swap_state") == "pending-swap"
+
+
 def _ucc_verb(app: App, verb: str, timeout_s: float) -> LifecycleResult:
     slug = app.raw.get("ucc_slug") or app.name
     # Only `stop` may reach a dormant container (it can never wake one).
-    if verb != "stop" and _ucc_dormant(app):
+    # pending-swap: the container is still the live runtime, not dormant yet.
+    if verb != "stop" and _ucc_dormant(app) and not _pending_swap(app):
         return _dormant_refusal(app, verb)
     return _run(["app-" + slug, verb], timeout_s)
 
@@ -166,7 +177,7 @@ def _ucc_status(app: App, timeout_s: float) -> LifecycleResult:
     always failed with a usage error. Status = `app-<slug> version` (the panel
     tool answers) plus a TCP probe of the app's port (the app answers). Apps
     with no port secret (unpackerr, postgres) report on version alone."""
-    if _ucc_dormant(app):
+    if _ucc_dormant(app) and not _pending_swap(app):
         return _dormant_refusal(app, "status")
     slug = app.raw.get("ucc_slug") or app.name
     result = _run(["app-" + slug, "version"], timeout_s)
@@ -265,7 +276,7 @@ def _cron_start_service(app: App, timeout_s: float) -> LifecycleResult:
 
 def start(app: App, *, timeout_s: float | None = None) -> LifecycleResult:
     t = _timeout(app, timeout_s)
-    if app.class_ == "ucc":
+    if app.class_ == "ucc" or _pending_swap(app):
         return _ucc_verb(app, "start", t)
     if app.class_ == "systemd":
         return _systemd_verb(app, "start", t)
@@ -278,7 +289,7 @@ def start(app: App, *, timeout_s: float | None = None) -> LifecycleResult:
 
 def stop(app: App, *, timeout_s: float | None = None) -> LifecycleResult:
     t = _timeout(app, timeout_s)
-    if app.class_ == "ucc":
+    if app.class_ == "ucc" or _pending_swap(app):
         return _ucc_verb(app, "stop", t)
     if app.class_ == "systemd":
         return _systemd_verb(app, "stop", t)
@@ -289,7 +300,7 @@ def stop(app: App, *, timeout_s: float | None = None) -> LifecycleResult:
 
 def restart(app: App, *, timeout_s: float | None = None) -> LifecycleResult:
     t = _timeout(app, timeout_s)
-    if app.class_ == "ucc":
+    if app.class_ == "ucc" or _pending_swap(app):
         return _ucc_verb(app, "restart", t)
     if app.class_ == "systemd":
         return _systemd_verb(app, "restart", t)
@@ -302,7 +313,7 @@ def restart(app: App, *, timeout_s: float | None = None) -> LifecycleResult:
 
 def status(app: App) -> LifecycleResult:
     t = _timeout(app, None)
-    if app.class_ == "ucc":
+    if app.class_ == "ucc" or _pending_swap(app):
         return _ucc_status(app, t)
     if app.class_ == "systemd":
         return _systemd_status(app, t)
@@ -453,8 +464,12 @@ def _apply_tarball_swap(app: App, target_version: str, timeout_s: float) -> Life
     cfg = app.upgrade.raw
     version_for_url = target_version.lstrip("v")
     url = cfg["url_template"].format(version=version_for_url)
-    target_path = _expand(cfg.get("target_path") or "")
-    target_dir = _expand(cfg.get("target_dir") or "")
+    # QFLX-25: `{version}` in target_dir / target_path / post_steps lets a native
+    # app land each release in ~/.apps/<slug>/bin/<ver> and flip `current`
+    # (spec 5.1). Plain str.replace, NOT .format: post steps are shell and may
+    # legitimately contain ${VAR} braces.
+    target_path = _expand(_with_version(cfg.get("target_path") or "", version_for_url))
+    target_dir = _expand(_with_version(cfg.get("target_dir") or "", version_for_url))
     extract_dir = os.path.dirname(target_path) if target_path else target_dir
     if not extract_dir:
         return _fail("tarball_swap missing target_path/target_dir")
@@ -470,10 +485,14 @@ def _apply_tarball_swap(app: App, target_version: str, timeout_s: float) -> Life
     if not r.ok:
         return r
     for step in cfg.get("post_steps", []) or []:
-        r = _run(["bash", "-c", step], timeout_s)
+        r = _run(["bash", "-c", _with_version(step, version_for_url)], timeout_s)
         if not r.ok:
             return r
     return _ok()
+
+
+def _with_version(text: str, version: str) -> str:
+    return text.replace("{version}", version)
 
 
 def _apply_zip_swap(app: App, target_version: str, timeout_s: float) -> LifecycleResult:
@@ -606,6 +625,11 @@ def upgrade(
     config errors (unknown kind, target above max ceiling).
     """
     t = _timeout(app, timeout_s)
+    if _pending_swap(app):
+        # The UCC container still serves: a native upgrade now would break the
+        # exact-version parity the swap relies on (I-10).
+        return _fail(f"refused: {app.name} is pending-swap; native upgrades wait "
+                     f"until the swap completes")
     target = _resolve_target_version(app, target_version)
     _validate_max(app, target)
 
