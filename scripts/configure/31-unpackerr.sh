@@ -41,7 +41,9 @@ sshm '~/bin/appctl restart unpackerr 2>&1 || ~/bin/appctl start unpackerr 2>&1' 
 sleep 8
 
 log_info "Service status:"
-sshm 'systemctl --user is-active unpackerr 2>&1'
+# QFLX-25: the unit is qflix-unpackerr.service once converted; ~/bin/appctl
+# answers for whichever runtime the deployed manifest says serves the app.
+sshm '~/bin/appctl status unpackerr 2>&1'
 
 log_info "Tail of log:"
 sshm 'tail -20 ~/.apps/unpackerr/unpackerr.log 2>/dev/null'
