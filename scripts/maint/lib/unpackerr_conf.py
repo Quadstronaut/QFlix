@@ -23,7 +23,9 @@ import sys
 
 _GENERAL = re.compile(r"^\s*\[\[?\s*general\s*\]\]?\s*(#.*)?$", re.I)
 _TABLE = re.compile(r"^\s*\[")
-_LOGFILE = re.compile(r"""^\s*log_file\s*=\s*["'][^"']+["']""")
+_EMPTY_KEY = re.compile(r"""^\s*api_key\s*=\s*(""|'')\s*$""")
+_EMPTY_URL = re.compile(r"""^\s*url\s*=\s*"http://:""")
+_LOGFILE =re.compile(r"""^\s*log_file\s*=\s*["'][^"']+["']""")
 
 
 def check(text: str) -> list[str]:
@@ -41,6 +43,12 @@ def check(text: str) -> list[str]:
         problems.append("log-file-missing")
     if any("{{" in ln for ln in lines if not ln.lstrip().startswith("#")):
         problems.append("unresolved-placeholder")
+    # An empty secret renders url = "http://:/" / api_key = "": unpackerr then
+    # sees 0 servers and shuts down. Caught live 2026-10-10.
+    for ln in lines:
+        if _EMPTY_KEY.match(ln) or _EMPTY_URL.match(ln):
+            problems.append("empty-secret")
+            break
     try:
         import tomllib
     except ImportError:                # box python < 3.11: line scan only
