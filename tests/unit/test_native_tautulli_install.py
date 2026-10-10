@@ -1,4 +1,4 @@
-"""scripts/configure/302-native-tautulli-install.sh (QFLX-34, A10, spec 5.9 + row 10).
+"""scripts/configure/309-native-tautulli-install.sh (QFLX-34, A10, spec 5.9 + row 10).
 
 Subprocess tests against fakes that MODEL the box (same approach as the pilot,
 test_native_unpackerr_install.py and test_native_flaresolverr_install.py): a fake
@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-INSTALLER = REPO / "scripts" / "configure" / "302-native-tautulli-install.sh"
+INSTALLER = REPO / "scripts" / "configure" / "309-native-tautulli-install.sh"
 GOLDEN_UNIT = REPO / "scripts" / "maint" / "systemd" / "qflix-tautulli.service"
 UNIT = "qflix-tautulli.service"
 PORT = "17014"
@@ -442,10 +442,10 @@ def test_pins_exact_version_and_sha256_matching_versions_env():
 
 def test_240_stages_and_deploys_the_installer_and_the_sanitizer():
     text = (REPO / "scripts" / "configure" / "240-maintenance-install.sh").read_text(encoding="utf-8")
-    assert "    scripts/configure/302-native-tautulli-install.sh \\\n" in text
+    assert "    scripts/configure/309-native-tautulli-install.sh \\\n" in text
     assert "    scripts/maint/native_sanitize.py \\\n" in text
-    assert ("~/scripts/configure/302-native-tautulli-install.sh\n"
-            "chmod +x ~/scripts/configure/302-native-tautulli-install.sh") in text
+    assert ("~/scripts/configure/309-native-tautulli-install.sh\n"
+            "chmod +x ~/scripts/configure/309-native-tautulli-install.sh") in text
     assert '"$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py' in text
 
 

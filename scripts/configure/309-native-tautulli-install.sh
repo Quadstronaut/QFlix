@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 302-native-tautulli-install.sh -- QFLX-34 (UCC divorce A10, convert tautulli).
+# 309-native-tautulli-install.sh -- QFLX-34 (UCC divorce A10, convert tautulli).
 #
 # Moves tautulli off the Ultra.cc container manager (UCC) onto a user unit the
 # repo owns: the upstream release tarball (git tag) plus a python venv, run as
@@ -109,11 +109,11 @@ ENV_KEYS=(TZ LANG)
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"     # .../scripts
 ARGS=("$@")
 
-info() { echo "[302-tautulli] $*"; }
-die()  { echo "[302-tautulli] ERROR: $*" >&2; exit 1; }
+info() { echo "[309-tautulli] $*"; }
+die()  { echo "[309-tautulli] ERROR: $*" >&2; exit 1; }
 blocked() {
-  echo "[302-tautulli] BLOCKED (D-7): $*" >&2
-  echo "[302-tautulli] tautulli stays a UCC app on this slot; it converts on box 2." >&2
+  echo "[309-tautulli] BLOCKED (D-7): $*" >&2
+  echo "[309-tautulli] tautulli stays a UCC app on this slot; it converts on box 2." >&2
   exit 3
 }
 usage() {
@@ -192,7 +192,7 @@ if ! _on_host; then
   # shellcheck source=/dev/null
   source "$HERE/lib/ssh.sh"
   info "not on the box: running the deployed copy there"
-  sshm "~/scripts/configure/302-native-tautulli-install.sh $(printf '%q ' "${ARGS[@]}")"
+  sshm "~/scripts/configure/309-native-tautulli-install.sh $(printf '%q ' "${ARGS[@]}")"
   exit $?
 fi
 
@@ -759,7 +759,7 @@ do_rollback() {
   wait_until "$STOP_TIMEOUT" native_gone || die "native tautulli did not stop (or the port stayed bound) within ${STOP_TIMEOUT}s"
   isn="$("$APPCTL" is-native "$SLUG" 2>/dev/null)"
   if [ "${isn%$'\r'}" != ucc ]; then
-    echo "[302-tautulli] PAUSED: native stopped + masked; revert the deployed manifest (PR + 240) so appctl dispatches $SLUG as UCC, then re-run --rollback --execute" >&2
+    echo "[309-tautulli] PAUSED: native stopped + masked; revert the deployed manifest (PR + 240) so appctl dispatches $SLUG as UCC, then re-run --rollback --execute" >&2
     exit 10
   fi
   undo_config_edits || die "could not restore the container-side config.ini (snapshot: $SWAPDIR/snapshot); still suppressed"

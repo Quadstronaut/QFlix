@@ -297,7 +297,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
     scripts/configure/301-native-flaresolverr-install.sh \
-    scripts/configure/302-native-tautulli-install.sh \
+    scripts/configure/302-native-bazarr-install.sh \
+    scripts/configure/309-native-tautulli-install.sh \
     scripts/maint/native_sanitize.py \
     manifest/apps.yaml \
     manifest/jobs.yaml \
@@ -472,11 +473,14 @@ cp -f   "$STG"/scripts/configure/300-native-unpackerr-install.sh ~/scripts/confi
 chmod +x ~/scripts/configure/300-native-unpackerr-install.sh
 cp -f   "$STG"/scripts/configure/301-native-flaresolverr-install.sh ~/scripts/configure/301-native-flaresolverr-install.sh
 chmod +x ~/scripts/configure/301-native-flaresolverr-install.sh
-cp -f   "$STG"/scripts/configure/302-native-tautulli-install.sh ~/scripts/configure/302-native-tautulli-install.sh
-chmod +x ~/scripts/configure/302-native-tautulli-install.sh
-# The proof step of the data-bearing installers (tautulli, the arrs, ...) runs
-# this on a COPY of the data; it refuses a live ~/.apps/<slug> path.
+# QFLX-27 (A3 bazarr): same shape, plus native_sanitize.py (the proof copy is
+# sanitized with it, spec 5.9 step 2.2). Inert without --execute.
+cp -f   "$STG"/scripts/configure/302-native-bazarr-install.sh ~/scripts/configure/302-native-bazarr-install.sh
+chmod +x ~/scripts/configure/302-native-bazarr-install.sh
 cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py
+chmod +x ~/scripts/maint/native_sanitize.py
+cp -f   "$STG"/scripts/configure/309-native-tautulli-install.sh ~/scripts/configure/309-native-tautulli-install.sh
+chmod +x ~/scripts/configure/309-native-tautulli-install.sh
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.

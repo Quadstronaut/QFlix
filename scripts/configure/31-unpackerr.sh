@@ -26,6 +26,14 @@ sed \
   -e "s|{{RADARR2_KEY}}|$(secret_read radarr2.key)|g" \
   "$TMPL" > "$OUT"
 
+# QFLX-46: refuse to push a config unpackerr would half-ignore. A [[general]]
+# header (what the panel regenerate writes) silently voids log_file and every
+# other general key; a surviving {{X}} means a secret failed to render.
+PYBIN="$(command -v python3 || command -v python)"
+if ! PROBLEMS="$("$PYBIN" "$HERE/maint/lib/unpackerr_conf.py" check "$OUT")"; then
+  die "rendered unpackerr.conf failed validation: $(echo "$PROBLEMS" | tr '\n' ' ')"
+fi
+
 log_info "Backing up existing config + pushing new..."
 sshm 'cp ~/.apps/unpackerr/unpackerr.conf ~/.apps/unpackerr/unpackerr.conf.bak.$(date +%Y%m%d) 2>/dev/null || true'
 scpm_to "$OUT" "/home/quadstronaut/.apps/unpackerr/unpackerr.conf"
@@ -46,4 +54,6 @@ log_info "Service status:"
 sshm '~/bin/appctl status unpackerr 2>&1'
 
 log_info "Tail of log:"
+# unpackerr writes log_file AND stdout, so journald (native unit) keeps its copy.
+# The stale-log-watchdog canary reds if the file falls behind the journal.
 sshm 'tail -20 ~/.apps/unpackerr/unpackerr.log 2>/dev/null'
