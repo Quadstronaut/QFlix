@@ -27,7 +27,7 @@ body), AND:
     so we don't restart during cold-start startup), AND
   - we've issued fewer than FS_MAX_RESTARTS_PER_HOUR restarts in the last
     rolling 60 minutes (default 3, crash-loop protection)
-then: subprocess.run(['app-flaresolverr', 'restart']) and notify via Discord.
+then: run FS_RESTART_CMD (~/bin/appctl restart flaresolverr) and notify via Discord.
 
 Push-suppression: this is a SECOND, independent alert path from the pusher —
 it runs on its own timer and pages Discord directly. So like the pusher, it
@@ -77,7 +77,11 @@ FS_SUPPRESS_KEY = os.environ.get("FS_SUPPRESS_KEY", "flaresolverr")
 FS_TIMEOUT_S = int(os.environ.get("FS_TIMEOUT_S", "10"))
 FS_MIN_UPTIME_S = int(os.environ.get("FS_MIN_UPTIME_S", "60"))
 FS_MAX_RESTARTS_PER_HOUR = int(os.environ.get("FS_MAX_RESTARTS_PER_HOUR", "3"))
-FS_RESTART_CMD = os.environ.get("FS_RESTART_CMD", "app-flaresolverr restart")
+# Absolute ~/bin/appctl (QFLX-18): the systemd --user default PATH has no ~/bin,
+# so a bare name fails ENOENT. ~/bin/appctl dispatches by the deployed manifest class
+# and refuses to wake a dormant UCC container (I-9).
+FS_RESTART_CMD = os.environ.get(
+    "FS_RESTART_CMD", os.path.expanduser("~/bin/appctl") + " restart flaresolverr")
 # Restart-command subprocess timeout. 60s was too tight: during a host-level
 # reboot recovery (load avg ≥30 on the 2026-05-20 incident), `app-flaresolverr
 # restart` exceeded 60s and the canary emitted a false-positive "restart

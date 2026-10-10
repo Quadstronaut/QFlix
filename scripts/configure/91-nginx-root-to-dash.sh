@@ -65,7 +65,8 @@
 # ---------------------------------------------------------------------------
 #
 # Safety: validates with `nginx -t -p <prefix>` (gating on "syntax is ok" + no
-# emerg) BEFORE any reload, reloads via `app-nginx restart`, then verifies root
+# emerg) BEFORE any reload, reloads via `~/bin/appctl proxy-reload` (Ultra:
+# app-nginx restart), then verifies root
 # 200 + dashboard marker + that the access log actually grew from the probe.
 # AUTO-ROLLS-BACK on any failure — a bad reload takes down ALL public services,
 # so nothing here is allowed to fail forward.
@@ -189,8 +190,8 @@ echo "nginx -t: syntax ok"
 # rather than that some file merely exists.
 BEFORE=0; [ -f "$ACCESS" ] && BEFORE=$(stat -c %s "$ACCESS")
 
-app-nginx restart >/dev/null 2>&1 || {
-  echo "RELOAD FAILED"; cp "$BAK" "$DEF"; app-nginx restart >/dev/null 2>&1; exit 1; }
+"$HOME/bin/appctl" proxy-reload >/dev/null 2>&1 || {
+  echo "RELOAD FAILED"; cp "$BAK" "$DEF"; "$HOME/bin/appctl" proxy-reload >/dev/null 2>&1; exit 1; }
 sleep 2
 
 H="$(cat ~/secrets/seedbox.host)"
@@ -200,11 +201,11 @@ AFTER=0; [ -f "$ACCESS" ] && AFTER=$(stat -c %s "$ACCESS")
 
 if [ "$CODE" != "200" ] || [ "$MARK" != "data-qflix-dash" ]; then
   echo "VERIFY FAILED ($CODE/$MARK) — rollback"
-  cp "$BAK" "$DEF"; app-nginx restart >/dev/null 2>&1; exit 1
+  cp "$BAK" "$DEF"; "$HOME/bin/appctl" proxy-reload >/dev/null 2>&1; exit 1
 fi
 if [ "$AFTER" -le "$BEFORE" ]; then
   echo "LOGGING VERIFY FAILED: $ACCESS did not grow ($BEFORE -> $AFTER) — rollback"
-  cp "$BAK" "$DEF"; app-nginx restart >/dev/null 2>&1; exit 1
+  cp "$BAK" "$DEF"; "$HOME/bin/appctl" proxy-reload >/dev/null 2>&1; exit 1
 fi
 
 echo "OK: root 200 + dashboard marker + access log grew $BEFORE -> $AFTER bytes"

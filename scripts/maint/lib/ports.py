@@ -149,6 +149,33 @@ def claim(name: str, secrets_dir, candidates, bound) -> int:
             handle.close()
 
 
+def free(secrets_dir, candidates, bound) -> list[int]:
+    """Read-only: candidates minus every claimed secrets/*.port minus bound.
+
+    Backs `appctl ports-free` (QFLX-18, spec 5.2). Takes no lock and writes
+    nothing: it answers "what could be claimed right now", and only claim()
+    may turn an answer into a secret.
+    """
+    taken = _claimed(Path(secrets_dir)) | set(bound)
+    return [p for p in candidates if p not in taken]
+
+
+def _policy_candidates() -> list[int]:
+    """The host policy's port candidates. Raises the policy's HostProfileError
+    (fail closed, I-12) when host.profile is missing or mismatched. hostpolicy
+    is a sibling loaded by PATH, like it loads its own siblings."""
+    import importlib.util
+    key = "_qflix_hp_hostpolicy"
+    mod = sys.modules.get(key)
+    if mod is None:
+        path = Path(__file__).resolve().parent / "hostpolicy.py"
+        spec = importlib.util.spec_from_file_location(key, str(path))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[key] = mod
+        spec.loader.exec_module(mod)
+    return [int(p) for p in mod.load().port_candidates()]
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -157,7 +184,34 @@ def main(argv=None) -> int:
     c.add_argument("--secrets-dir", required=True)
     c.add_argument("--app-ports", default="", help="`app-ports free` output")
     c.add_argument("--ss", default="", help="`ss -tln` output")
+    f = sub.add_parser("free", help="list claimable ports (read-only)")
+    f.add_argument("--secrets-dir", required=True)
+    f.add_argument("--ss", default="", help="`ss -tln` output")
+    # On a shared slot `ss -tln` lists every tenant's listener and overflows
+    # ARG_MAX as one argv string; `--ss-file -` reads it from stdin instead.
+    f.add_argument("--ss-file", default=None, help="file with `ss -tln` output; - = stdin")
+    src = f.add_mutually_exclusive_group(required=True)
+    src.add_argument("--candidates", help="candidate list, one port per line")
+    src.add_argument("--from-policy", action="store_true",
+                     help="ask the host policy (fails closed, exit 2)")
     a = ap.parse_args(argv)
+    if a.cmd == "free":
+        if a.from_policy:
+            try:
+                cands = _policy_candidates()
+            except Exception as exc:  # HostProfileError or a broken policy file
+                print(f"ports: host policy unresolved: {exc}", file=sys.stderr)
+                return 2
+        else:
+            cands = parse_candidates(a.candidates)
+        ss_text = a.ss
+        if a.ss_file == "-":
+            ss_text += sys.stdin.read()
+        elif a.ss_file:
+            ss_text += Path(a.ss_file).read_text()
+        for p in free(a.secrets_dir, cands, parse_ss(ss_text)):
+            print(p)
+        return 0
     try:
         port = claim(a.name, a.secrets_dir, parse_candidates(a.app_ports), parse_ss(a.ss))
     except PortClaimError as exc:

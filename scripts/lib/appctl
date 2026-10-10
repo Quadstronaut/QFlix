@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# appctl -- the ONE lifecycle shim for every QFlix app (QFLX-18, spec 5.2).
+#
+# Deployed to ~/bin/appctl by scripts/configure/240-maintenance-install.sh.
+# Callers ALWAYS use the absolute path (~/bin/appctl, $HOME/bin/appctl or
+# %h/bin/appctl in a unit): the systemd --user default PATH does not include
+# ~/bin, so a bare `appctl` fails ENOENT (review G-3).
+#
+# Usage:
+#   appctl start|stop|restart|status|version|upgrade <app> [extra args...]
+#   appctl is-native <app>      exit 0 native/dormant, 1 still UCC, 2 unknown
+#   appctl ports-free           free listen ports per the host policy
+#   appctl proxy-reload         reload the public reverse proxy
+#
+# Dispatch reads the DEPLOYED manifest ~/.opt/maint/apps.yaml (the repo path
+# manifest/apps.yaml does not exist on the box; review O-6):
+#   class: systemd -> systemctl --user <verb> <unit>; `version` reads
+#                     ~/.apps/<slug>/bin/current; `upgrade` -> manitoba-maint.
+#   class: ucc     -> app-<slug> <verb>. `status` is `app-<slug> version` plus
+#                     a port probe, NEVER `app-<slug> status`: that subcommand
+#                     does not exist (spec F-3).
+#   anything else  -> exit 2 "no lifecycle for <app>".
+#
+# DORMANT REFUSAL (I-9). After a swap the UCC container stays installed but
+# must never run again while the native unit serves the app. If the manifest
+# marks the app `ucc_dormant: true` and the verb would reach UCC, every verb
+# except `stop` exits 3 without touching anything. `stop` stays allowed so a
+# woken container can always be put back to sleep.
+#
+# Exit codes: 0 ok | 1 the dispatched command failed / app down | 2 no
+# lifecycle, unreadable manifest or unresolvable host profile (fail closed) |
+# 3 dormant refusal | 64 usage.
+#
+# Overrides (tests and odd hosts): APPCTL_MANIFEST, APPCTL_SECRETS_DIR,
+# APPCTL_APPS_DIR, APPCTL_LIB, APPCTL_PYTHON.
+set -uo pipefail
+
+MANIFEST="${APPCTL_MANIFEST:-$HOME/.opt/maint/apps.yaml}"
+SECRETS="${APPCTL_SECRETS_DIR:-${MANITOBA_SECRETS_DIR:-$HOME/secrets}}"
+APPS_DIR="${APPCTL_APPS_DIR:-$HOME/.apps}"
+LIB="${APPCTL_LIB:-$HOME/scripts/maint/lib}"
+PY="${APPCTL_PYTHON:-python3}"
+# The policy/ports helpers resolve secrets the same way appctl does.
+export MANITOBA_SECRETS_DIR="$SECRETS"
+
+usage() {
+  echo "usage: appctl {start|stop|restart|status|version|upgrade} <app> [args...]" >&2
+  echo "       appctl is-native <app> | ports-free | proxy-reload" >&2
+  exit 64
+}
+die2() { echo "appctl: $*" >&2; exit 2; }
+
+# Strip a trailing CR (a Windows python writes CRLF; harmless on the box).
+_cr() { local s="$1"; printf '%s' "${s%$'\r'}"; }
+
+# Look the app up in the deployed manifest. Prints one line:
+#   name|class|slug|unit|dormant(0/1)|port_secret
+# Exit 4 = no such app, 5 = manifest unreadable.
+lookup() {
+  "$PY" - "$MANIFEST" "$1" <<'PY'
+import sys
+try:
+    import yaml
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        apps = (yaml.safe_load(fh) or {}).get("apps") or {}
+except Exception as exc:  # missing file, bad yaml, no pyyaml: fail closed
+    sys.stderr.write("manifest unreadable: %s\n" % exc)
+    sys.exit(5)
+want = sys.argv[2]
+name = want if want in apps else next(
+    (k for k, v in apps.items() if isinstance(v, dict) and v.get("ucc_slug") == want), None)
+if name is None or not isinstance(apps.get(name), dict):
+    sys.exit(4)
+a = apps[name]
+h = a.get("health") or {}
+print("|".join([
+    name,
+    str(a.get("class") or ""),
+    str(a.get("ucc_slug") or name),
+    str(a.get("unit") or ""),
+    # Fail closed, same rule as lib/ucc_skip.py and lifecycle._ucc_dormant:
+    # anything but absent/null/false is dormant (a typo must not wake it).
+    "0" if a.get("ucc_dormant") in (None, False) else "1",
+    str(h.get("port_secret") or ""),
+]))
+PY
+}
+
+# Is anything listening on TCP port $1 (any bind address)? UCC apps bind
+# loopback, the public IP and/or the docker gateway (FlareSolverr: gateway
+# only), so ask the socket table rather than guessing an address to dial.
+port_listening() {
+  local port="$1"
+  ss -tlnH "sport = :$port" 2>/dev/null \
+    | awk -v p=":$port" '$1=="LISTEN" && substr($4, length($4)-length(p)+1)==p {f=1} END {exit !f}'
+}
+
+ucc_status() {   # $1 name, $2 slug, $3 port_secret
+  local name="$1" slug="$2" psec="$3" out ver port
+  # `app-<slug> version` prints {"data": {"version": "4.0.20"}, "result": true}
+  # (box, 2026-10-10). Some panel tools have no `version` at all
+  # (app-postgres: "Unknown command: version"); then the port alone decides.
+  if out="$("app-$slug" version 2>&1)"; then
+    ver="$(printf '%s' "$out" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | tail -n 1)"
+    [ -n "$ver" ] || ver="$(printf '%s' "$out" | tail -n 1 | tr -d '\r')"
+  elif printf '%s' "$out" | grep -q 'Unknown command'; then
+    ver="n/a"
+  else
+    echo "$name: down (app-$slug version failed: ${out:0:120})"
+    return 1
+  fi
+  if [ -z "$psec" ]; then
+    if [ "$ver" = "n/a" ]; then
+      echo "$name: unknown (app-$slug has no version subcommand; no port secret)"
+      return 1
+    fi
+    echo "$name: ucc version=$ver port=none"
+    return 0
+  fi
+  port="$(tr -d '[:space:]' < "$SECRETS/$psec" 2>/dev/null)"
+  if [ -z "$port" ]; then
+    echo "$name: unknown (version=$ver; port secret $psec missing)"
+    return 1
+  fi
+  if port_listening "$port"; then
+    echo "$name: ucc version=$ver port=$port listening"
+    return 0
+  fi
+  echo "$name: down (version=$ver; port $port not listening)"
+  return 1
+}
+
+native_version() {   # $1 slug
+  local cur="$APPS_DIR/$1/bin/current"
+  if [ -L "$cur" ]; then
+    basename "$(readlink "$cur")"
+  elif [ -f "$cur" ]; then
+    tr -d '[:space:]' < "$cur"; echo
+  else
+    echo "appctl: no $cur" >&2
+    return 1
+  fi
+}
+
+host_profile() {   # policy name, fail closed (I-12)
+  local out
+  out="$("$PY" "$LIB/hostpolicy.py" preflight)" || die2 "host profile unresolved; refusing"
+  _cr "$out"
+}
+
+[ $# -ge 1 ] || usage
+VERB="$1"; shift
+
+case "$VERB" in
+  ports-free)
+    host_profile >/dev/null
+    # Piped, not passed as argv: on the shared slot `ss` lists every tenant's
+    # listener and overflowed ARG_MAX ("Argument list too long", 2026-10-10).
+    # pipefail: a failed ss is a refusal, never "everything is free".
+    out="$(ss -tlnH | "$PY" "$LIB/ports.py" free --secrets-dir "$SECRETS" \
+            --from-policy --ss-file -)"
+    rc=$?
+    [ "$rc" -eq 0 ] || exit 2
+    printf '%s\n' "$out" | tr -d '\r'
+    exit 0 ;;
+  proxy-reload)
+    prof="$(host_profile)" || exit 2
+    case "$prof" in
+      # Ultra keeps today's proven command (spec 5.2 / F-11).
+      ultra) exec app-nginx restart ;;
+      *) die2 "no proxy-reload for host profile '$prof' yet (QFLX-41)" ;;
+    esac ;;
+  start|stop|restart|status|version|upgrade|is-native) ;;
+  *) usage ;;
+esac
+
+[ $# -ge 1 ] || usage
+WANT="$1"; shift
+
+row="$(lookup "$WANT")"; rc=$?
+case "$rc" in
+  0) ;;
+  4) [ "$VERB" = is-native ] && { echo "unknown"; exit 2; }
+     die2 "no lifecycle for $WANT (not in $MANIFEST)" ;;
+  *) die2 "no lifecycle for $WANT (manifest $MANIFEST unreadable)" ;;
+esac
+IFS='|' read -r NAME CLASS SLUG UNIT DORMANT PSEC <<<"$(_cr "$row")"
+
+if [ "$VERB" = is-native ]; then
+  if [ "$CLASS" = systemd ] || [ "$DORMANT" = 1 ]; then echo native; exit 0; fi
+  if [ "$CLASS" = ucc ]; then echo ucc; exit 1; fi
+  echo "no-lifecycle"; exit 2
+fi
+
+case "$CLASS" in
+  systemd)
+    [ -n "$UNIT" ] || die2 "no lifecycle for $NAME (class systemd without unit)"
+    case "$VERB" in
+      start|stop|restart) exec systemctl --user "$VERB" "$UNIT" ;;
+      status)  exec systemctl --user is-active "$UNIT" ;;
+      version) native_version "$SLUG"; exit $? ;;
+      upgrade) exec "$HOME/bin/manitoba-maint" upgrade "$NAME" "$@" ;;
+    esac ;;
+  ucc)
+    if [ "$DORMANT" = 1 ] && [ "$VERB" != stop ]; then
+      echo "appctl: refused: $NAME's UCC runtime is dormant (ucc_dormant: true); only 'stop' may reach it" >&2
+      exit 3
+    fi
+    command -v "app-$SLUG" >/dev/null 2>&1 || die2 "no lifecycle for $NAME (app-$SLUG not installed)"
+    case "$VERB" in
+      status) ucc_status "$NAME" "$SLUG" "$PSEC"; exit $? ;;
+      *) exec "app-$SLUG" "$VERB" "$@" ;;
+    esac ;;
+  *)
+    die2 "no lifecycle for $NAME (class '${CLASS:-none}')" ;;
+esac

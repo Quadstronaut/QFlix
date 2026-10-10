@@ -404,7 +404,7 @@ def _recovery_loop(app: App) -> dict:
             slug = app.raw.get("ucc_slug") or app_name
             msg = (
                 f"✗ {app_name}: UCC retired this build, start/restart gated —"
-                f" run 'Upgrade & Repair' in UCP or `app-{slug} upgrade`"
+                f" run 'Upgrade & Repair' in UCP or `~/bin/appctl upgrade {app_name}`"
                 f" (pass -p <current password> for DB apps or it rotates)"
             )
             _emit("failed", app_name, attempt, "down", "n/a", msg, "error",

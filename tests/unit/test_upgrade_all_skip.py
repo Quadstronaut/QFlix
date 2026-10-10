@@ -153,8 +153,10 @@ def test_installer_stages_the_generator_and_prints_the_list():
 
 
 def test_unpackerr_configure_step_checks_the_manifest_before_waking():
+    # QFLX-18 moved the guard into ~/bin/appctl, which reads the deployed
+    # manifest and refuses (exit 3) to wake a dormant ucc slug; the dispatch
+    # itself is pinned by tests/unit/test_appctl.py.
     code = _code(UNPACKERR)
-    guard = code.index("ucc_skip.py --check unpackerr")
-    assert guard < code.index("app-unpackerr restart")
-    # no unguarded app-unpackerr call anywhere else
-    assert code.count("app-unpackerr") == 2
+    assert "~/bin/appctl restart unpackerr" in code
+    # no direct (unguarded) app-unpackerr call anywhere
+    assert code.count("app-unpackerr") == 0

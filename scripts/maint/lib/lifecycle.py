@@ -1,7 +1,8 @@
 """lib/lifecycle.py — per-class lifecycle dispatch.
 
 Dispatches start/stop/restart/status on app.class_:
-  ucc      — app-<ucc_slug> {start|stop|restart|status}
+  ucc      — app-<ucc_slug> {start|stop|restart}; status = `version` + port probe
+             (there is no `app-<slug> status`); ucc_dormant refuses all but stop
   systemd  — systemctl --user {start|stop|restart|is-active} <unit>
   cron     — start/stop/restart return not-applicable; status runs is-active on timer
   library  — all four return not-applicable
@@ -132,10 +133,77 @@ def _ucc_verb(app: App, verb: str, timeout_s: float) -> LifecycleResult:
     return _run(["app-" + slug, verb], timeout_s)
 
 
+_PORT_PROBE_TIMEOUT_S = 3.0
+
+
+def _port_listening(host: str, port: int) -> bool:
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=_PORT_PROBE_TIMEOUT_S):
+            return True
+    except OSError:
+        return False
+
+
+def _panel_version(stdout: str) -> str:
+    """`app-<slug> version` prints {"data": {"version": "4.0.20"}, "result": true}
+    (box, 2026-10-10). Fall back to the raw last line for any other shape."""
+    import json
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    if not lines:
+        return "?"
+    try:
+        v = json.loads(lines[-1])["data"]["version"]
+        if isinstance(v, str) and v:
+            return v
+    except (ValueError, KeyError, TypeError):
+        pass
+    return lines[-1]
+
+
 def _ucc_status(app: App, timeout_s: float) -> LifecycleResult:
+    """`app-<slug> status` is NOT a UCC subcommand (spec F-3), so the old code
+    always failed with a usage error. Status = `app-<slug> version` (the panel
+    tool answers) plus a TCP probe of the app's port (the app answers). Apps
+    with no port secret (unpackerr, postgres) report on version alone."""
+    if _ucc_dormant(app):
+        return _dormant_refusal(app, "status")
     slug = app.raw.get("ucc_slug") or app.name
-    result = _run(["app-" + slug, "status"], timeout_s)
-    return result
+    result = _run(["app-" + slug, "version"], timeout_s)
+    if result.reason == "dry-run":
+        return result
+    raw = app.health.raw if app.health else {}
+    port_secret = raw.get("port_secret")
+    if result.ok:
+        version = _panel_version(result.stdout)
+    elif "Unknown command" in (result.stdout + result.stderr):
+        # app-postgres has no `version` subcommand (box, 2026-10-10): the
+        # port alone decides, and with no port the answer is "unknown".
+        version = "n/a"
+        if not port_secret:
+            result.reason = f"unknown: app-{slug} has no version subcommand and no port secret"
+            return result
+        result = LifecycleResult(ok=True, duration_s=result.duration_s, stdout=result.stdout,
+                                 stderr=result.stderr, reason="ok")
+    else:
+        return result
+    if not port_secret:
+        result.reason = f"version {version}; no port"
+        return result
+    try:
+        from lib.secrets import read_secret
+        port = int(read_secret(port_secret))
+    except (OSError, ValueError) as exc:
+        return LifecycleResult(ok=False, duration_s=result.duration_s, stdout=result.stdout,
+                               stderr=result.stderr,
+                               reason=f"version {version}; port secret {port_secret} unreadable: {exc}")
+    host = raw.get("hostname", "127.0.0.1")
+    if _port_listening(host, port):
+        result.reason = f"version {version}; port {port} listening"
+        return result
+    return LifecycleResult(ok=False, duration_s=result.duration_s, stdout=result.stdout,
+                           stderr=result.stderr,
+                           reason=f"version {version}; port {port} not listening")
 
 
 # ---------------------------------------------------------------------------
@@ -427,9 +495,10 @@ def _apply_zip_swap(app: App, target_version: str, timeout_s: float) -> Lifecycl
 
 
 def _apply_ucc_update(app: App, target_version: Optional[str], timeout_s: float) -> LifecycleResult:
-    slug = app.raw.get("ucc_slug") or app.name
+    # `update` would rebuild and START the container: never on a dormant app (I-9).
     if _ucc_dormant(app):
         return _dormant_refusal(app, "update")
+    slug = app.raw.get("ucc_slug") or app.name
     # Stop first; tolerate failure (app may already be stopped)
     _run(["app-" + slug, "stop"], timeout_s)
     return _run(["app-" + slug, "update"], timeout_s)

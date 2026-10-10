@@ -193,7 +193,7 @@ class TestRecoveryFailure:
         mock_probe.assert_not_called()
         mock_down.assert_not_called()
         msg = mock_notify.call_args[0][0]
-        assert "Upgrade & Repair" in msg and "app-postgres upgrade" in msg
+        assert "Upgrade & Repair" in msg and "~/bin/appctl upgrade postgres" in msg
 
     def test_plain_restart_failure_is_not_older_build(self, tmp_path):
         assert not recovery_mod._is_ucc_older_build(_fail_lifecycle())
