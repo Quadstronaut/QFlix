@@ -16,7 +16,7 @@
 #   native_check_parity SLUG VERSION       refuse unless VERSION == `appctl version SLUG`
 #   native_install_versioned SLUG VER SRC  parity, then bin/<VER> + atomic `current` symlink
 #   native_render_env SLUG FAMILY VER [K=V..]   env-file body (thread caps + family hook)
-#   native_render_unit SLUG FAMILY EXE ARGS    qflix-<slug>.service body (EXE %h/... or /... = verbatim)
+#   native_render_unit SLUG FAMILY EXE ARGS [WORKDIR]  qflix-<slug>.service body (EXE %h/... or /... = verbatim)
 #   native_write_secure PATH MODE          stdin -> PATH atomically, chmod MODE
 #   native_listen_capture SLUG PORT        record listen set (swapstate.py)
 #   native_listen_compare SLUG             diff live vs recorded (exit 1 = drift)
@@ -125,8 +125,17 @@ native_render_env() {
 
 # stdout: the unit (spec 5.3). ARGS is a raw string; %h specifiers pass through.
 native_render_unit() {
-  local slug="$1" fam="$2" exe="$3" args="${4:-}" stop=60 pre="" cmd
+  local slug="$1" fam="$2" exe="$3" args="${4:-}" wd="${5:-}" stop=60 pre="" cmd
   _native_valid_slug "$slug" || { _native_err "bad slug: $slug"; return 1; }
+  # WORKDIR (QFLX-36): defaults to the data dir. Seerr's Next.js server resolves
+  # its .next build from the CWD, so it runs from %h/.apps/seerr/bin/current.
+  # Only a path under %h/.apps/<slug> is accepted.
+  case "$wd" in
+    "") wd="%h/.apps/$slug" ;;
+    "%h/.apps/$slug"|"%h/.apps/$slug/"*)
+      [[ "$wd" != *..* && "$wd" != *[[:space:]]* ]] || { _native_err "bad workdir: $wd"; return 1; } ;;
+    *) _native_err "workdir must be under %h/.apps/$slug: $wd"; return 1 ;;
+  esac
   case "$fam" in
     dotnet|go|python) ;;
     node) pre="--disable-wasm-trap-handler " ;;   # CLI flag, never NODE_OPTIONS
@@ -147,7 +156,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/.apps/$slug
+WorkingDirectory=$wd
 Environment=PATH=%h/.apps/$slug/bin/current:%h/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/qflix/$slug.env
 ExecStart=${cmd} ${pre}${args}

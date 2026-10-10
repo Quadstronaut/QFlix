@@ -181,8 +181,24 @@ apps:
       expect_status: 200
 
   seerr:
-    class: ucc
+    # QFLX-36 (UCC divorce A12): converted to OUR build of the container's exact
+    # commit (.github/workflows/seerr-artifact.yml, debian:bullseye, release
+    # seerr-v<ver> of this repo; upstream ships no linux-x64 build) run by a
+    # pinned portable Node 22 as qflix-seerr.service by scripts/configure/311-
+    # native-seerr-install.sh (versions.env SEERR_* + sha256 in the installer).
+    # Data in place: CONFIG_DIRECTORY=~/.apps/seerr. All three recorded
+    # listeners are reproduced by the --require preload (SEERR_LISTEN).
+    # The UCC seerr app is DORMANT FOREVER, never uninstalled: it owns the
+    # seerr-<slot> vhost (I-8). The swap pauses the entitlement gate by parking
+    # its execute.conf drop-in (I-13), reinstalled by --finish / --rollback.
+    # swap_state: pending-swap (spec 5.9 step 7) = flip merged + deployed, swap
+    # not yet run: the container still serves, appctl/lifecycle dispatch it as
+    # UCC and require_unit_active is off. A follow-up PR removes the line.
+    class: systemd
+    unit: qflix-seerr.service
     ucc_slug: seerr
+    ucc_dormant: true
+    swap_state: pending-swap
     kuma_monitor: "Seerr"
     health:
       kind: http_api
@@ -191,6 +207,22 @@ apps:
       auth_secret: seerr.key
       port_secret: seerr.port
       expect_status: 200
+      require_unit_active: true
+    upgrade:
+      # A new Seerr version needs a new seerr-artifact build first (pins in
+      # versions.env). lifecycle extracts the flat tarball into bin/<ver>; the
+      # post step (the installer's --post-upgrade) checks it is that version's
+      # build for the installed Node major, flips `current` and rewrites
+      # COMMIT_TAG. The soak gate refuses it for 14 days after the swap; the
+      # first one closes the rollback-to-UCC window (I-10).
+      kind: tarball_swap
+      url_template: "https://github.com/Quadstronaut/QFlix/releases/download/seerr-v{version}/seerr-{version}-linux-x64.tar.gz"
+      target_dir: "~/.apps/seerr/bin/{version}"
+      post_steps:
+        - "~/scripts/configure/311-native-seerr-install.sh --post-upgrade {version} --execute"
+      version_pin:
+        source: versions.env
+        key: SEERR_VERSION
 
   tautulli:
     class: ucc

@@ -299,6 +299,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/301-native-flaresolverr-install.sh \
     scripts/configure/302-native-bazarr-install.sh \
     scripts/maint/native_sanitize.py \
+    scripts/configure/311-native-seerr-install.sh \
+    scripts/data/seerr-listen.cjs \
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
@@ -478,6 +480,13 @@ cp -f   "$STG"/scripts/configure/302-native-bazarr-install.sh ~/scripts/configur
 chmod +x ~/scripts/configure/302-native-bazarr-install.sh
 cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py
 chmod +x ~/scripts/maint/native_sanitize.py
+# QFLX-36 (A12 seerr): same shape, plus the --require preload that reproduces
+# the recorded listen set (the installer copies it into ~/.apps/seerr/native/).
+# Inert without --execute.
+cp -f   "$STG"/scripts/configure/311-native-seerr-install.sh ~/scripts/configure/311-native-seerr-install.sh
+chmod +x ~/scripts/configure/311-native-seerr-install.sh
+mkdir -p ~/scripts/data
+cp -f   "$STG"/scripts/data/seerr-listen.cjs ~/scripts/data/seerr-listen.cjs
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.

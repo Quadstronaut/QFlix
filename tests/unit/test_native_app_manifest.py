@@ -61,6 +61,18 @@ def test_bazarr_is_converted():
     assert _converted()["bazarr"]["upgrade"]["kind"] == "zip_swap"
 
 
+def test_seerr_is_converted_pending_swap_and_stays_dormant():
+    """QFLX-36 (A12): the UCC seerr app owns the vhost, so it is dormant forever."""
+    a = _converted()["seerr"]
+    assert a["swap_state"] == "pending-swap" and a["unit"] == "qflix-seerr.service"
+    assert a["ucc_dormant"] is True and a["kuma_monitor"] == "Seerr"
+    assert a["health"]["require_unit_active"] is True
+    up = a["upgrade"]
+    assert up["kind"] == "tarball_swap" and up["target_dir"] == "~/.apps/seerr/bin/{version}"
+    assert "/releases/download/seerr-v{version}/seerr-{version}-linux-x64.tar.gz" in up["url_template"]
+    assert up["version_pin"] == {"source": "versions.env", "key": "SEERR_VERSION"}
+
+
 @pytest.mark.parametrize("name", sorted(_converted()))
 def test_converted_app_has_installer_pin_upgrade_and_unit(name):
     a = _converted()[name]
@@ -106,6 +118,7 @@ def test_generated_skip_list_carries_unpackerr():
     assert "unpackerr" in r.stdout.split()
     assert "flaresolverr" in r.stdout.split()
     assert "bazarr" in r.stdout.split()
+    assert "seerr" in r.stdout.split()
 
 
 # --- zero UCC starts after the swap (O-3 / F8 dependency) --------------------------
@@ -122,7 +135,7 @@ _STUB = '#!/bin/sh\necho "$(basename "$0") $*" >> "$STUB_LOG"\nexit 0\n'
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-@pytest.mark.parametrize("slug", ["unpackerr", "bazarr"])
+@pytest.mark.parametrize("slug", ["unpackerr", "bazarr", "seerr"])
 @pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
 def test_appctl_never_starts_the_ucc_container_after_the_swap(tmp_path, verb, slug):
     man = _post_swap_manifest(tmp_path, slug)
@@ -145,7 +158,7 @@ def test_appctl_never_starts_the_ucc_container_after_the_swap(tmp_path, verb, sl
     assert f"systemctl --user {want} qflix-{slug}.service" in argv
 
 
-@pytest.mark.parametrize("slug", ["unpackerr", "bazarr"])
+@pytest.mark.parametrize("slug", ["unpackerr", "bazarr", "seerr"])
 @pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
 def test_lifecycle_never_starts_the_ucc_container_after_the_swap(tmp_path, fn, slug):
     app = load_manifest(_post_swap_manifest(tmp_path, slug)).app(slug)
