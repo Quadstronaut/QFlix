@@ -438,4 +438,37 @@ def probe(app: App, *, timeout_s: float | None = None) -> HealthResult:
     if fn is None:
         raise ValueError(f"Unknown health kind '{kind}' for app '{app.name}'")
 
-    return fn(app, timeout_s)
+    result = fn(app, timeout_s)
+    return _apply_require_unit_active(app, result, timeout_s)
+
+
+def _apply_require_unit_active(app: App, result: HealthResult,
+                               timeout_s: float) -> HealthResult:
+    """QFLX-20: `health.require_unit_active: true` on a CONVERTED app.
+
+    A revived UCC container can answer 200 on the app's port with stale data
+    while the native unit is dead; the kind probe alone then shows green. When
+    the flag is set, a passing probe is only believed if the app's systemd unit
+    is also active. A probe that already failed stays failed (its reason is the
+    more specific one).
+
+    `swap_state: pending-swap` (spec 5.9 step 7) switches the check off: the
+    manifest flip has merged but the swap has not run, so UCC legitimately still
+    serves and no unit exists yet."""
+    if not result.ok:
+        return result
+    if app.health.raw.get("require_unit_active") is not True:
+        return result
+    if app.raw.get("swap_state") == "pending-swap":
+        return result
+    unit = app.health.raw.get("unit") or app.raw.get("unit")
+    if not unit:
+        return HealthResult(ok=False, latency_ms=result.latency_ms,
+                            reason="require_unit_active set but no unit configured")
+    unit_result = _probe_systemd_only(app, timeout_s)
+    if unit_result.ok:
+        return result
+    return HealthResult(
+        ok=False, latency_ms=result.latency_ms,
+        reason=f"unit {unit} not active ({unit_result.reason}) but the probe "
+               f"answered: another runtime is serving")

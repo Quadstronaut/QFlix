@@ -1,0 +1,136 @@
+"""lib/swapstate.py - swap state + recorded listen set (QFLX-20, spec 5.8)."""
+from __future__ import annotations
+
+import json
+import threading
+
+import pytest
+
+from lib import swapstate
+
+SS = """\
+LISTEN 0 4096 127.0.0.1:42050 0.0.0.0:*
+LISTEN 0 4096 172.17.0.1:42050 0.0.0.0:*
+LISTEN 0 4096 127.0.0.1:42051 0.0.0.0:*
+LISTEN 0 128 [::]:42050 [::]:*
+"""
+
+
+@pytest.fixture(autouse=True)
+def _swap_dir(tmp_path, monkeypatch):
+    # Resolved lazily: setenv after import must take effect.
+    monkeypatch.setenv("QFLIX_SWAP_DIR", str(tmp_path / "swap"))
+
+
+def test_parse_listen_keeps_only_the_port_sorted_unique():
+    assert swapstate.parse_listen(SS, 42050) == [
+        "127.0.0.1:42050", "172.17.0.1:42050", "[::]:42050"]
+    assert swapstate.parse_listen(SS, 9) == []
+
+
+def test_parse_listen_accepts_rows_without_state_column():
+    assert swapstate.parse_listen("0 4096 127.0.0.1:7878 0.0.0.0:*\n", 7878) == [
+        "127.0.0.1:7878"]
+
+
+def test_capture_writes_listen_set_and_state(tmp_path):
+    got = swapstate.capture("sonarr", SS, 42050, ucc_version="4.0.20")
+    assert got == ["127.0.0.1:42050", "172.17.0.1:42050", "[::]:42050"]
+    base = tmp_path / "swap" / "sonarr"
+    assert (base / "listen-set.before").read_text().splitlines() == got
+    st = json.loads((base / "state.json").read_text())
+    assert st["ucc_version"] == "4.0.20"
+    assert st["port"] == 42050
+    assert st["rollback_window"] == "open"
+    assert st["swap_date"] is None and st["soak_until"] is None
+
+
+def test_recapture_never_resets_swap_bookkeeping():
+    swapstate.capture("sonarr", SS, 42050, ucc_version="4.0.20")
+    swapstate.update_state("sonarr", swap_date="2026-10-20", soak_until="2026-11-03",
+                           rollback_window="closed")
+    swapstate.capture("sonarr", SS, 42050)
+    st = swapstate.load_state("sonarr")
+    assert (st["swap_date"], st["soak_until"], st["rollback_window"]) == (
+        "2026-10-20", "2026-11-03", "closed")
+    assert st["ucc_version"] == "4.0.20"
+
+
+def test_update_state_rejects_bad_input():
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.update_state("sonarr", rollback_window="maybe")
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.update_state("sonarr", port="1")
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.capture("../evil", SS, 1)
+
+
+def test_diff_listen_reports_added_removed_and_honours_exceptions(tmp_path):
+    swapstate.capture("sonarr", SS, 42050)
+    same = swapstate.diff_listen("sonarr", SS)
+    assert same == {"added": [], "removed": []}
+    now = SS.replace("[::]:42050", "0.0.0.0:42050").replace(
+        "172.17.0.1:42050", "127.0.0.2:42050")
+    d = swapstate.diff_listen("sonarr", now)
+    assert d["added"] == ["0.0.0.0:42050", "127.0.0.2:42050"]
+    assert d["removed"] == ["172.17.0.1:42050", "[::]:42050"]
+    p = tmp_path / "swap" / "sonarr" / "state.json"
+    st = json.loads(p.read_text())
+    st["exceptions"] = ["0.0.0.0:42050", "[::]:42050"]
+    p.write_text(json.dumps(st))
+    d = swapstate.diff_listen("sonarr", now)
+    assert d == {"added": ["127.0.0.2:42050"], "removed": ["172.17.0.1:42050"]}
+
+
+def test_diff_without_baseline_raises_not_clean():
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.diff_listen("never-captured", SS)
+
+
+def test_swapped_slugs_needs_a_swap_date():
+    swapstate.capture("a", SS, 42050)
+    swapstate.capture("b", SS, 42050)
+    swapstate.update_state("b", swap_date="2026-10-20")
+    assert swapstate.swapped_slugs() == ["b"]
+
+
+@pytest.mark.skipif(swapstate.fcntl is None, reason="flock is POSIX-only (fail-open elsewhere)")
+def test_concurrent_updates_do_not_lose_fields():
+    """flock around the whole read-modify-write: two writers, both keys land."""
+    swapstate.capture("a", SS, 42050)
+    errs = []
+
+    def w(**kw):
+        try:
+            for _ in range(20):
+                swapstate.update_state("a", **kw)
+        except Exception as exc:  # noqa: BLE001
+            errs.append(exc)
+
+    t1 = threading.Thread(target=w, kwargs={"swap_date": "2026-10-20"})
+    t2 = threading.Thread(target=w, kwargs={"soak_until": "2026-11-03"})
+    t1.start(); t2.start(); t1.join(); t2.join()
+    assert not errs
+    st = swapstate.load_state("a")
+    assert st["swap_date"] == "2026-10-20" and st["soak_until"] == "2026-11-03"
+
+
+def test_cli_capture_and_diff_roundtrip(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(tmp_path / "sec"))
+    (tmp_path / "sec").mkdir()
+    (tmp_path / "sec" / "sonarr.port").write_text("42050\n")
+    man = tmp_path / "apps.yaml"
+    man.write_text("apps:\n  sonarr:\n    class: ucc\n    health: {kind: http_api, port_secret: sonarr.port}\n"
+                   "  unpackerr:\n    class: ucc\n    health: {kind: process_pattern}\n")
+    ssf = tmp_path / "ss.txt"
+    ssf.write_text(SS)
+    assert swapstate.main(["capture", "sonarr", "--manifest", str(man), "--ss-file", str(ssf)]) == 0
+    assert swapstate.main(["diff", "sonarr", "--ss-file", str(ssf)]) == 0
+    ssf.write_text("")
+    assert swapstate.main(["diff", "sonarr", "--ss-file", str(ssf)]) == 1
+    # app with no port secret is skipped loudly but not an error
+    assert swapstate.main(["capture", "unpackerr", "--manifest", str(man), "--ss-file", str(ssf)]) == 0
+    assert swapstate.recorded_listen("unpackerr") is None
+    capsys.readouterr()
+    assert swapstate.main(["ucc-slugs", "--manifest", str(man)]) == 0
+    assert capsys.readouterr().out.split() == ["sonarr", "unpackerr"]

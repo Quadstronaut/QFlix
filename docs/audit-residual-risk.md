@@ -51,6 +51,7 @@ classes that will keep producing new findings forever.
 | L-05 | Every self-pusher has a **persisted** push token. | The born-mute class: a push token is a live Kuma artifact in `~/secrets/kuma-push-tokens.json`, and a missing one makes the job exit 0 silently. Nothing in the repo can observe it. |
 | L-06 | Quota / thread ceiling / disk. | Inherently live numbers on a shared seedbox whose limits Ultra.cc can change out-of-band (128 cores visible, `ulimit -u` 2000, `ulimit -v` 10GB). |
 | L-07 | Stale-green push monitors. | Kuma's push-timeout timers reset on Kuma restart; a beat already overdue at restart gets a fresh deadline that can land past the job's next run, so the missed run never pages (2026-08-18: reaper + torrent-janitor + audit-regime, green on 36-38h beats after the host reboot). Only live `kuma.db` shows beat age vs window. |
+| L-08 | Listen set of a swapped app differs from the one recorded before its swap. | The recorded set (`~/.opt/maint/swap/<slug>/listen-set.before`) and the socket table are box state. The per-minute predicates (woken container, two process trees, port owner) run in the pusher; this leg is only the 6-hourly diff against the baseline (QFLX-20). |
 
 ## Known, unclosed dead-man gaps
 
