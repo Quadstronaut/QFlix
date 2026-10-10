@@ -688,7 +688,8 @@ def test_prove_boots_a_sanitized_copy_checks_login_measures_tasks_and_cleans_up(
     assert pe["env"]["CONFIG_DIRECTORY"].endswith("/.apps/.prove/seerr")
     assert pe["env"]["SEERR_LISTEN"].startswith("127.0.0.1:")
     assert pe["env"]["NODE_ENV"] == "production" and pe["env"]["NODE_OPTIONS"] is None
-    assert pe["cwd"].endswith("/seerr/bin/current")
+    # bin/current (Git Bash copies it) or the release it links to (getcwd resolves)
+    assert pe["cwd"].endswith(("/seerr/bin/current", "/seerr/bin/3.5.0"))
     assert pe["argv"][0] == "--disable-wasm-trap-handler" and pe["argv"][1] == "--require"
     assert box.dropin.read_text() == DROPIN                             # gate untouched
     assert "/api/v1/status" not in box.calls_text()                    # never the live vhost
