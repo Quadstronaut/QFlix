@@ -198,3 +198,36 @@ def test_merge_refuses_corrupt_state_instead_of_erasing_swap_record(tmp_path):
     with pytest.raises(swapstate.SwapStateError):
         swapstate.update_state("sonarr", rollback_window="closed")
     assert sj.read_text() == "{not json"      # left for the operator, not overwritten
+
+
+# --- add-exception (QFLX-33: operator-approved dropped listeners, D-4) ----------
+
+SAB_SS = ("LISTEN 0 4096 127.0.0.1:17007 0.0.0.0:*\n"
+          "LISTEN 0 4096 172.17.0.1:17007 0.0.0.0:*\n"
+          "LISTEN 0 4096 203.0.113.9:17007 0.0.0.0:*\n")
+
+
+def test_add_exceptions_records_reason_and_is_honoured_by_diff():
+    swapstate.capture("sabnzbd", SAB_SS, 17007)
+    st = swapstate.add_exceptions("sabnzbd", ["203.0.113.9:17007"], "drop public IP (D-4)")
+    assert st["exceptions"] == ["203.0.113.9:17007"]
+    assert st["exception_reasons"]["203.0.113.9:17007"] == "drop public IP (D-4)"
+    native = "".join(SAB_SS.splitlines(keepends=True)[:2])
+    assert swapstate.diff_listen("sabnzbd", native) == {"added": [], "removed": []}
+    # idempotent, and the swap bookkeeping survives
+    swapstate.update_state("sabnzbd", swap_date="2026-10-10T00:00:00Z")
+    st = swapstate.add_exceptions("sabnzbd", ["203.0.113.9:17007"], "again")
+    assert st["exceptions"] == ["203.0.113.9:17007"] and st["swap_date"]
+
+
+@pytest.mark.parametrize("addrs,reason", [([], "r"), (["nonsense"], "r"), (["1.2.3.4:5"], " ")])
+def test_add_exceptions_rejects_bad_input(addrs, reason):
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.add_exceptions("sabnzbd", addrs, reason)
+
+
+def test_cli_add_exception(capsys):
+    assert swapstate.main(["add-exception", "sabnzbd", "203.0.113.9:17007",
+                           "--reason", "operator ok"]) == 0
+    assert swapstate.load_state("sabnzbd")["exceptions"] == ["203.0.113.9:17007"]
+    assert swapstate.main(["add-exception", "sabnzbd", "bad", "--reason", "x"]) == 2

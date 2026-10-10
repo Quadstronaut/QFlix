@@ -297,6 +297,9 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
     scripts/configure/301-native-flaresolverr-install.sh \
+    scripts/configure/308-native-sabnzbd-install.sh \
+    scripts/lib/qflix-tcpfwd.py \
+    scripts/maint/native_sanitize.py \
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
@@ -470,6 +473,12 @@ cp -f   "$STG"/scripts/configure/300-native-unpackerr-install.sh ~/scripts/confi
 chmod +x ~/scripts/configure/300-native-unpackerr-install.sh
 cp -f   "$STG"/scripts/configure/301-native-flaresolverr-install.sh ~/scripts/configure/301-native-flaresolverr-install.sh
 chmod +x ~/scripts/configure/301-native-flaresolverr-install.sh
+# QFLX-33: the sabnzbd installer also needs the loopback forwarder (copied into
+# bin/<ver>/ at install; SAB binds one host) and the proof-copy sanitizer.
+cp -f   "$STG"/scripts/configure/308-native-sabnzbd-install.sh ~/scripts/configure/308-native-sabnzbd-install.sh
+chmod +x ~/scripts/configure/308-native-sabnzbd-install.sh
+cp -f   "$STG"/scripts/lib/qflix-tcpfwd.py ~/scripts/lib/qflix-tcpfwd.py
+cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.
