@@ -252,6 +252,15 @@ repo_areas:
     paths: ["scripts/mcp/systemd/**"]
     covered_by: [C-01]
 
+  - id: A-scripts-migrate
+    surface: S1
+    paths: ["scripts/migrate/**"]
+    covered_by: [C-02, C-03, C-08]
+    note: >-
+      Box-2 migration (QFLX-39): workstation-run scripts, never deployed to a
+      box. Behaviour is pinned by tests/unit/test_migrate_scripts.py (fake
+      ssh/scp/rsync) and tests/unit/test_migrate_manifest.py.
+
   - id: A-scripts-ops
     surface: S1
     paths: ["scripts/ops/**"]
