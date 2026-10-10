@@ -1,6 +1,6 @@
 # QFlix — operator runbook for Claude
 
-Self-healing Plex stack on one Ultra.cc shared seedbox: `manifest/apps.yaml` (single source of truth), `manitoba-maint` Python daemon, 35 canaries, Kuma push monitors, weekly newsletter. README + `inventory.md` describe the system; this file is what must not go wrong.
+Self-healing Plex stack on one Ultra.cc shared seedbox: `manifest/apps.yaml` (single source of truth), `manitoba-maint` Python daemon, 40 canaries, Kuma push monitors, weekly newsletter. README + `inventory.md` describe the system; this file is what must not go wrong.
 
 ## Access & safety
 - SSH is **`quadstronaut@seedbox.example.com` only** (real host in gitignored `secrets/seedbox.ssh-host`; wrapper `scripts/lib/ssh.sh`). Wrong-user guesses trip Ultra.cc fail2ban and kill the tunnel; ban bypass = `ssh -J starhold quadstronaut@seedbox.example.com`.
@@ -13,7 +13,7 @@ Self-healing Plex stack on one Ultra.cc shared seedbox: `manifest/apps.yaml` (si
 ## What's live vs. gone (check before asserting)
 | Live | Retired — do not restore |
 |---|---|
-| Plex (primary), Seerr, Prowlarr, Sonarr/Sonarr2, Radarr/Radarr2, Bazarr/Bazarr2, qBittorrent, SABnzbd, Tdarr, Tautulli, **Kometa** (daily 03:30 timer), Listmonk, qflix-dash, qflix-reaper, 35 canaries | Jellyfin/Jellystat (2026-05-10) · Notifiarr (2026-05-10; Discord webhook is the only channel) · Maintainerr → qflix-reaper (2026-06-20) · Homarr → qflix-dash (2026-07-13) · books stack kavita/komga/calibre-web/audiobookshelf (2026-08-16) |
+| Plex (primary), Seerr, Prowlarr, Sonarr/Sonarr2, Radarr/Radarr2, Bazarr/Bazarr2, qBittorrent, SABnzbd, Tdarr, Tautulli, **Kometa** (daily 03:30 timer), Listmonk, qflix-dash, qflix-reaper, 40 canaries | Jellyfin/Jellystat (2026-05-10) · Notifiarr (2026-05-10; Discord webhook is the only channel) · Maintainerr → qflix-reaper (2026-06-20) · Homarr → qflix-dash (2026-07-13) · books stack kavita/komga/calibre-web/audiobookshelf (2026-08-16) |
 
 When the operator says something was purged, **verify on the box** (`~/.apps/`, `systemctl --user list-timers`) before agreeing or acting — the manifest is the truth, memory is a lead.
 
