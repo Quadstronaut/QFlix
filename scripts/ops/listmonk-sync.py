@@ -7,21 +7,39 @@ on the subscriber via attribs.source ("plex" | "seerr"). Idempotent —
 never removes subscribers (they self-unsubscribe via Listmonk link).
 
 Secrets live in ~/secrets/<name> on the seedbox (one file per secret,
-gitignored in the source repo). Logs to stderr (cron tees to
-~/.apps/listmonk/logs/sync.log).
+gitignored in the source repo). Logs timestamped lines to stderr
+(cron appends to ~/.apps/listmonk/logs/sync.log, ingested into vlogs as
+app=listmonk-sync).
 """
 import base64
 import json
 import os
 import ssl
 import sys
+import time
+import traceback
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
 SECRETS = os.path.join(HOME, "secrets")
 SSL_CTX = ssl.create_default_context()
+
+
+def log(msg, level="INFO"):
+    """One stamped line to stderr (cron appends it to sync.log).
+
+    ISO-8601 with an EXPLICIT UTC offset, in the Python-logging shape
+    scripts/mcp/logs.py parses ("2026-10-10T00:11:43.312+00:00 listmonk-sync
+    [INFO] msg"). A zone-less stamp was read as box-local (CEST) on ingest and
+    landed 2h early in VictoriaLogs; the explicit offset removes the guess.
+    Before 2026-10-09 these lines carried no time at all, and a week-old 502
+    traceback re-alerted as if it were current.
+    """
+    stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    print(f"{stamp} listmonk-sync [{level}] {msg}", file=sys.stderr, flush=True)
 
 
 def s(name):
@@ -43,13 +61,35 @@ def lm_auth():
     return "Basic " + base64.b64encode(f"{s('listmonk.api_user')}:{s('listmonk.api_token')}".encode()).decode()
 
 
+# Upstream-unavailable codes from nginx in front of Listmonk. A single blip
+# used to kill the whole nightly run; retry these, fail fast on everything else
+# (4xx is our bug or a real answer, and retrying a non-idempotent POST that
+# reached Listmonk could double-act).
+_RETRY_CODES = {502, 503, 504}
+_RETRY_DELAYS_S = (5, 15, 45)
+
+
 def lm_req(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(f"{LM_HOST}{path}", method=method, data=data,
-                                  headers={"Content-Type": "application/json", "Authorization": lm_auth()})
-    with urllib.request.urlopen(req, context=SSL_CTX, timeout=20) as r:
-        raw = r.read()
-        return json.loads(raw) if raw else {}
+    for attempt, delay in enumerate((*_RETRY_DELAYS_S, None), start=1):
+        req = urllib.request.Request(f"{LM_HOST}{path}", method=method, data=data,
+                                      headers={"Content-Type": "application/json", "Authorization": lm_auth()})
+        try:
+            with urllib.request.urlopen(req, context=SSL_CTX, timeout=20) as r:
+                raw = r.read()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            if e.code not in _RETRY_CODES or delay is None:
+                raise
+            reason = f"HTTP {e.code}"
+        except urllib.error.URLError as e:
+            # Connection refused / DNS / TLS: the request never reached
+            # Listmonk, so even a POST is safe to resend.
+            if delay is None:
+                raise
+            reason = str(e.reason)
+        log(f"{method} {path}: {reason}; retry {attempt}/{len(_RETRY_DELAYS_S)} in {delay}s", "WARN")
+        time.sleep(delay)
 
 
 def fetch_subscribers_by_email():
@@ -128,10 +168,10 @@ def fetch_plex_friends():
         with urllib.request.urlopen(req, context=SSL_CTX, timeout=15) as r:
             root = ET.fromstring(r.read())
     except urllib.error.HTTPError as e:
-        print(f"  ! plex.tv users fetch failed: HTTP {e.code}", file=sys.stderr)
+        log(f"plex.tv users fetch failed: HTTP {e.code}", "ERROR")
         return []
     except ET.ParseError as e:
-        print(f"  ! plex.tv users response not parseable XML: {e}", file=sys.stderr)
+        log(f"plex.tv users response not parseable XML: {e}", "ERROR")
         return []
     out = []
     for u in root.iter("User"):
@@ -189,14 +229,14 @@ def main() -> int:
     try:
         skip = plex_only_exclusions()
     except Exception as e:
-        print(f"  ! cannot read plex_only exclusions from members.yaml ({e}); "
-              f"ABORTING before any subscribe - this sync never removes, so "
-              f"an unfiltered run is permanent", file=sys.stderr)
+        log(f"cannot read plex_only exclusions from members.yaml ({e}); "
+            f"ABORTING before any subscribe - this sync never removes, so "
+            f"an unfiltered run is permanent", "ERROR")
         return 1
 
     list_id = int(s("listmonk.list_id"))
     existing = fetch_subscribers_by_email()
-    print(f"snapshot: {len(existing)} existing subscribers (target list_id={list_id})", file=sys.stderr)
+    log(f"snapshot: {len(existing)} existing subscribers (target list_id={list_id})")
 
     deltas = {"created": 0, "updated": 0, "noop": 0, "errors": 0}
 
@@ -209,23 +249,31 @@ def main() -> int:
         try:
             users = fetcher()
         except Exception as e:
-            print(f"  ! {tag} fetch failed: {e}", file=sys.stderr)
+            log(f"{tag} fetch failed: {e}", "ERROR")
             deltas["errors"] += 1
             continue
         nskip = sum(1 for e2, _ in users if e2.strip().lower() in skip)
         users = [(e2, n) for e2, n in users if e2.strip().lower() not in skip]
-        print(f"  {tag}: {len(users)} users with email" + (f" ({nskip} plex_only tagalong(s) skipped)" if nskip else ""), file=sys.stderr)
+        log(f"{tag}: {len(users)} users with email" + (f" ({nskip} plex_only tagalong(s) skipped)" if nskip else ""))
         for email, name in users:
             try:
                 action = upsert(email, name, list_id, tag, existing)
                 deltas[action] = deltas.get(action, 0) + 1
             except Exception as e:
-                print(f"  ! {tag} upsert {email}: {e}", file=sys.stderr)
+                log(f"{tag} upsert {email}: {e}", "ERROR")
                 deltas["errors"] += 1
 
-    print(f"sync done: {deltas}", file=sys.stderr)
+    log(f"sync done: {deltas}", "INFO" if deltas["errors"] == 0 else "ERROR")
     return 0 if deltas["errors"] == 0 else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as e:
+        # One stamped, greppable ERROR line first; the traceback after it has
+        # no timestamps, and logs.py stamps those continuation lines with this
+        # line's time rather than the ingest clock.
+        log(f"sync aborted: {type(e).__name__}: {e}", "ERROR")
+        traceback.print_exc()
+        sys.exit(1)

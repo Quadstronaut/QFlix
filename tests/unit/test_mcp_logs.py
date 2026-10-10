@@ -182,3 +182,32 @@ def test_since_seconds_falls_back_to_24h_on_garbage():
     assert logs._since_seconds("2d") == 172800
     assert logs._since_seconds("") == 86400
     assert logs._since_seconds("banana") == 86400
+
+
+# --- QFLX-13 (d): explicit-zone stamps convert to UTC; zone-less unchanged ---
+
+def test_parse_line_explicit_utc_offset_kept_as_utc():
+    line = "2026-10-10T00:11:43.312+00:00 listmonk-sync [INFO] sync done"
+    parsed = logs.parse_line(line, source="sync.log")
+    assert parsed["ts"] == "2026-10-10T00:11:43.312Z"
+    assert parsed["level"] == "INFO"
+    assert parsed["message"] == "sync done"
+
+
+def test_parse_line_nonzero_offset_converted_to_utc():
+    parsed = logs.parse_line("2026-10-10T02:11:43.312+02:00 x [WARN] m", source="s")
+    assert parsed["ts"] == "2026-10-10T00:11:43.312Z"
+    parsed = logs.parse_line("2026-10-09T20:11:43,500-0400 x [WARN] m", source="s")
+    assert parsed["ts"] == "2026-10-10T00:11:43.500Z"
+
+
+def test_parse_line_z_suffix():
+    parsed = logs.parse_line("2026-10-10T00:11:43.312Z x [ERROR] boom", source="s")
+    assert parsed["ts"] == "2026-10-10T00:11:43.312Z"
+    assert parsed["level"] == "ERROR"
+
+
+def test_parse_line_zoneless_python_logging_unchanged():
+    """Zone-less handling is a separate ticket: output must stay as before."""
+    parsed = logs.parse_line("2026-10-10 00:11:43,312 listmonk-sync [INFO] m", source="s")
+    assert parsed["ts"] == "2026-10-10T00:11:43.312"
