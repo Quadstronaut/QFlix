@@ -182,3 +182,85 @@ def test_31_unpackerr_goes_through_appctl_only():
     assert "~/bin/appctl restart unpackerr" in text
     assert "~/bin/appctl status unpackerr" in text
     assert "systemctl --user is-active unpackerr" not in text
+
+
+# --- prowlarr (QFLX-28, A4) ---------------------------------------------------------
+
+def test_prowlarr_is_converted_with_a_full_build_pin():
+    a = _converted()["prowlarr"]
+    assert a["unit"] == "qflix-prowlarr.service" and a["swap_state"] == "pending-swap"
+    assert a["health"]["kind"] == "http_api" and a["health"]["require_unit_active"] is True
+    assert a["upgrade"]["kind"] == "tarball_swap"
+    assert _versions_env()["PROWLARR_VERSION"].count(".") == 3        # 2.6.5.5623, not the panel's 2.6.5
+    assert "linux-core-x64" in a["upgrade"]["url_template"]
+
+
+def test_prowlarr_upgrade_hoists_the_tarball_top_dir_into_bin_ver():
+    steps = " && ".join(_converted()["prowlarr"]["upgrade"]["post_steps"])
+    assert "mv Prowlarr .pkg" in steps and "mv .pkg/* ." in steps    # dir and apphost share a name
+    assert "rm -rf Prowlarr.Update" in steps
+    assert "bin/current" in steps
+
+
+def test_prowlarr_flip_keeps_the_probe_secrets_the_whole_stack_reads():
+    h = _converted()["prowlarr"]["health"]
+    assert (h["port_secret"], h["auth_secret"], h["urlbase_secret"]) == (
+        "prowlarr.port", "prowlarr.key", "prowlarr.urlbase")
+
+
+def test_generated_skip_list_carries_prowlarr():
+    r = subprocess.run([sys.executable, str(LIB / "ucc_skip.py"), "--list",
+                        "--manifest", str(MANIFEST)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "prowlarr" in r.stdout.split()
+
+
+def _post_swap_manifest_for(tmp_path: Path, name: str) -> Path:
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    data["apps"][name].pop("swap_state", None)
+    p = tmp_path / "apps.yaml"
+    p.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return p
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
+def test_appctl_never_starts_the_prowlarr_container_after_the_swap(tmp_path, verb):
+    man = _post_swap_manifest_for(tmp_path, "prowlarr")
+    binp = tmp_path / "bin"
+    binp.mkdir()
+    for n in ("app-prowlarr", "systemctl"):
+        (binp / n).write_text(_STUB, newline="\n")
+        (binp / n).chmod(0o755)
+    log = tmp_path / "argv.log"
+    env = dict(os.environ, HOME=tmp_path.as_posix(), STUB_LOG=log.as_posix(),
+               PATH=binp.as_posix() + os.pathsep + os.environ.get("PATH", ""),
+               APPCTL_MANIFEST=man.as_posix(), APPCTL_PYTHON=Path(sys.executable).as_posix(),
+               APPCTL_LIB=LIB.as_posix())
+    r = subprocess.run(["bash", APPCTL.as_posix(), verb, "prowlarr"], env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    argv = log.read_text() if log.exists() else ""
+    assert "app-prowlarr" not in argv
+    want = "is-active" if verb == "status" else verb
+    assert f"systemctl --user {want} qflix-prowlarr.service" in argv
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
+def test_lifecycle_never_starts_the_prowlarr_container_after_the_swap(tmp_path, fn):
+    app = load_manifest(_post_swap_manifest_for(tmp_path, "prowlarr")).app("prowlarr")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "active\n", "")) as run:
+        fn(app)
+    for call in run.call_args_list:
+        assert not call[0][0][0].startswith("app-"), call
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart])
+def test_pending_swap_prowlarr_is_still_lifecycled_as_the_container(tmp_path, fn):
+    """Before the swap the container is the live runtime: pusher recovery must
+    never `systemctl --user restart` the native unit beside it (I-6)."""
+    app = load_manifest(MANIFEST).app("prowlarr")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "", "")) as run:
+        fn(app)
+    argv = [c[0][0] for c in run.call_args_list]
+    assert argv and all(a[0] == "app-prowlarr" for a in argv), argv

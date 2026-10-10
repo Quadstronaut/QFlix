@@ -297,6 +297,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/300-native-unpackerr-install.sh \
     scripts/configure/301-native-flaresolverr-install.sh \
     scripts/configure/302-native-bazarr-install.sh \
+    scripts/configure/303-native-prowlarr-install.sh \
     scripts/maint/native_sanitize.py \
     scripts/configure/312-native-postgres-install.sh \
     scripts/maint/pg_native.py \
@@ -478,6 +479,9 @@ cp -f   "$STG"/scripts/configure/302-native-bazarr-install.sh ~/scripts/configur
 chmod +x ~/scripts/configure/302-native-bazarr-install.sh
 cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py
 chmod +x ~/scripts/maint/native_sanitize.py
+# QFLX-28 (A4 prowlarr): same shape; reuses native_sanitize.py deployed above.
+cp -f   "$STG"/scripts/configure/303-native-prowlarr-install.sh ~/scripts/configure/303-native-prowlarr-install.sh
+chmod +x ~/scripts/configure/303-native-prowlarr-install.sh
 # QFLX-37 (A13 postgres): the dump/restore installer + its tested helpers
 # (listmonk config, pgpass, listen set, counts, sanitizer SQL). Inert without
 # --execute.
