@@ -261,6 +261,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 # empty string reads as unset and is silently replaced by the default, which is
 # how the equivalent test went green against the wrong leg on the dash canary.
 export QFLIX_CANARY_APPSYNC_MAINT_LIB="${QFLIX_CANARY_APPSYNC_MAINT_LIB-$ROOT/scripts/maint}"
+export QFLIX_CANARY_APPSYNC_HOSTPOLICY="${QFLIX_CANARY_APPSYNC_HOSTPOLICY-$ROOT/scripts/maint/lib/hostpolicy.py}"
 
 exec python3 - "$@" <<'PY'
 import datetime as dt
@@ -293,6 +294,7 @@ MAGNET_REQUIRED = [s.strip() for s in _mag.split(",") if s.strip()]
 # "1" forces in-window, "0" forces out-of-window, "" (default) means measure.
 FORCE_WINDOW = (os.environ.get("QFLIX_CANARY_APPSYNC_FORCE_WINDOW") or "").strip()
 MAINT_LIB = os.environ.get("QFLIX_CANARY_APPSYNC_MAINT_LIB") or ""
+HOSTPOLICY = os.environ.get("QFLIX_CANARY_APPSYNC_HOSTPOLICY") or ""
 WINDOW_START_HOUR_UTC = 11
 WINDOW_END_HOUR_UTC = 15
 
@@ -409,6 +411,26 @@ def _window_lock_is_leaked():
         return False
 
 
+def _policy_window(now):
+    """Wall-clock maintenance window from the host policy (QFLX-16). Loaded BY
+    PATH from HOSTPOLICY (default: next to this canary under scripts/maint/lib,
+    NOT under MAINT_LIB, so the wall-clock leg stays independent of it). Any failure answers
+    False (fail open): the lock legs still guard, and a canary that cannot
+    load the policy must not go quiet on its own say-so."""
+    if not HOSTPOLICY:
+        return False
+    try:
+        _p = Path(HOSTPOLICY)
+        _s = importlib.util.spec_from_file_location("_canary_hostpolicy", str(_p))
+        if _s is None or _s.loader is None:
+            return False
+        _m = importlib.util.module_from_spec(_s)
+        _s.loader.exec_module(_m)
+        return bool(_m.in_maintenance_window(now))
+    except Exception:                                  # noqa: BLE001 - boundary
+        return False
+
+
 def window_active():
     """(active, leg). Three OR-ed legs, mirroring dash-asset-integrity.sh:816
     and scripts/maint/qflix-torrent-janitor.py:
@@ -429,8 +451,7 @@ def window_active():
         return False, "forced-off"
 
     now = dt.datetime.now(dt.timezone.utc)
-    if (now.weekday() == 0
-            and WINDOW_START_HOUR_UTC <= now.hour < WINDOW_END_HOUR_UTC):
+    if _policy_window(now):
         return True, "wallclock-mon-%02d00-%02d00-utc" % (
             WINDOW_START_HOUR_UTC, WINDOW_END_HOUR_UTC)
 

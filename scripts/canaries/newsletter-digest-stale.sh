@@ -174,7 +174,7 @@ if force == "1":
     print("in-window")
     sys.exit(0)
 
-is_monday = now.isoweekday() == 1
+is_monday = now.isoweekday() == 1   # window-ok: newsletter send cadence, not the maintenance window
 tod_min = now.hour * 60 + now.minute
 in_send_window = is_monday and (14 * 60 + 15) <= tod_min < (24 * 60)
 print("in-window" if in_send_window else "out-of-window")

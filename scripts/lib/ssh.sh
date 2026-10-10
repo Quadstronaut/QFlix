@@ -22,7 +22,14 @@ SSHM_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30)
 # If we're already running on the seedbox (e.g., from systemd canary timers),
 # skip the SSH hop entirely — the seedbox doesn't have key-auth back to itself,
 # and the network round-trip is wasted anyway.
+#
+# Detection (QFLX-16): the on-box marker ~/.config/qflix/host.id (written by
+# 240-maintenance-install.sh from secrets/host.id) is authoritative; the old
+# hostname check stays as the fallback so a box that has not been re-deployed
+# yet behaves exactly as before. QFLIX_HOST_ID_FILE overrides the path (tests).
 _sshm_on_host() {
+  local _marker="${QFLIX_HOST_ID_FILE:-$HOME/.config/qflix/host.id}"
+  [ -s "$_marker" ] && return 0
   [ "$(hostname 2>/dev/null)" = "manitoba" ]
 }
 
