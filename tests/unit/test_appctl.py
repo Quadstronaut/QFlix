@@ -77,6 +77,9 @@ case "$(basename "$0")" in
   app-postgres)
     # Verbatim box behaviour 2026-10-10: app-postgres has no `version`.
     if [ "$1" = version ]; then echo "Unknown command: version"; exit 1; fi ;;
+  app-ports)
+    # Must precede the app-* glob: case takes the first matching pattern.
+    printf '42001\\n42002\\n42003\\n' ;;
   app-*)
     # Verbatim shape of `app-sonarr version` on the box (2026-10-10).
     if [ "$1" = version ]; then echo '{"data": {"version": "4.0.20"}, "result": true}'; fi ;;
@@ -85,8 +88,6 @@ case "$(basename "$0")" in
     for p in $SS_LISTEN; do
       echo "LISTEN 0 4096 127.0.0.1:$p 0.0.0.0:*"
     done ;;
-  app-ports)
-    printf '42001\\n42002\\n42003\\n' ;;
   systemctl)
     if [ "$2" = is-active ]; then echo active; fi ;;
 esac
