@@ -168,7 +168,7 @@ def test_31_unpackerr_goes_through_appctl_only():
 
 def test_prowlarr_is_converted_with_a_full_build_pin():
     a = _converted()["prowlarr"]
-    assert a["unit"] == "qflix-prowlarr.service" and a["swap_state"] == "pending-swap"
+    assert a["unit"] == "qflix-prowlarr.service" and "swap_state" not in a   # swapped 2026-10-10
     assert a["health"]["kind"] == "http_api" and a["health"]["require_unit_active"] is True
     assert a["upgrade"]["kind"] == "tarball_swap"
     assert _versions_env()["PROWLARR_VERSION"].count(".") == 3        # 2.6.5.5623, not the panel's 2.6.5
@@ -236,11 +236,13 @@ def test_lifecycle_never_starts_the_prowlarr_container_after_the_swap(tmp_path, 
 
 
 @pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart])
-def test_pending_swap_prowlarr_is_still_lifecycled_as_the_container(tmp_path, fn):
-    """Before the swap the container is the live runtime: pusher recovery must
-    never `systemctl --user restart` the native unit beside it (I-6)."""
+def test_swapped_prowlarr_is_lifecycled_as_the_native_unit(tmp_path, fn):
+    """Swapped 2026-10-10 (pending-swap dropped): the native unit is the live
+    runtime, so pusher recovery acts on it and never wakes the dormant
+    container through the panel tool (I-6)."""
     app = load_manifest(MANIFEST).app("prowlarr")
     with patch("subprocess.run", return_value=CompletedProcess([], 0, "", "")) as run:
         fn(app)
     argv = [c[0][0] for c in run.call_args_list]
-    assert argv and all(a[0] == "app-prowlarr" for a in argv), argv
+    assert argv and not any(a[0] == "app-prowlarr" for a in argv), argv
+    assert any(a[0] == "systemctl" and "qflix-prowlarr.service" in a for a in argv), argv
