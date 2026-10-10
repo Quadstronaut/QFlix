@@ -55,6 +55,12 @@ def test_unpackerr_is_converted():
     assert "unpackerr" in _converted()
 
 
+def test_bazarr_is_converted():
+    """QFLX-27 (A3)."""
+    assert "bazarr" in _converted()
+    assert _converted()["bazarr"]["upgrade"]["kind"] == "zip_swap"
+
+
 @pytest.mark.parametrize("name", sorted(_converted()))
 def test_converted_app_has_installer_pin_upgrade_and_unit(name):
     a = _converted()[name]
@@ -83,6 +89,14 @@ def test_flaresolverr_is_converted_pending_swap():
 def test_real_manifest_loads_with_the_flip():
     app = load_manifest(MANIFEST).app("unpackerr")
     assert app.class_ == "systemd" and app.upgrade.kind == "tarball_swap"
+    bz = load_manifest(MANIFEST).app("bazarr")
+    assert bz.class_ == "systemd" and bz.upgrade.kind == "zip_swap"
+
+
+def test_bazarr2_is_untouched_by_the_bazarr_flip():
+    """bazarr2 stays the bare-python systemd app it was; it is not a UCC slug."""
+    a = _apps()["bazarr2"]
+    assert a["class"] == "systemd" and a["unit"] == "bazarr2.service" and not a.get("ucc_slug")
 
 
 def test_generated_skip_list_carries_unpackerr():
@@ -91,13 +105,14 @@ def test_generated_skip_list_carries_unpackerr():
     assert r.returncode == 0, r.stderr
     assert "unpackerr" in r.stdout.split()
     assert "flaresolverr" in r.stdout.split()
+    assert "bazarr" in r.stdout.split()
 
 
 # --- zero UCC starts after the swap (O-3 / F8 dependency) --------------------------
 
-def _post_swap_manifest(tmp_path: Path) -> Path:
+def _post_swap_manifest(tmp_path: Path, slug: str = "unpackerr") -> Path:
     data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
-    data["apps"]["unpackerr"].pop("swap_state", None)
+    data["apps"][slug].pop("swap_state", None)
     p = tmp_path / "apps.yaml"
     p.write_text(yaml.safe_dump(data), encoding="utf-8")
     return p
@@ -107,12 +122,13 @@ _STUB = '#!/bin/sh\necho "$(basename "$0") $*" >> "$STUB_LOG"\nexit 0\n'
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("slug", ["unpackerr", "bazarr"])
 @pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
-def test_appctl_never_starts_the_ucc_container_after_the_swap(tmp_path, verb):
-    man = _post_swap_manifest(tmp_path)
+def test_appctl_never_starts_the_ucc_container_after_the_swap(tmp_path, verb, slug):
+    man = _post_swap_manifest(tmp_path, slug)
     binp = tmp_path / "bin"
     binp.mkdir()
-    for n in ("app-unpackerr", "systemctl"):
+    for n in (f"app-{slug}", "systemctl"):
         (binp / n).write_text(_STUB, newline="\n")
         (binp / n).chmod(0o755)
     log = tmp_path / "argv.log"
@@ -120,18 +136,19 @@ def test_appctl_never_starts_the_ucc_container_after_the_swap(tmp_path, verb):
                PATH=binp.as_posix() + os.pathsep + os.environ.get("PATH", ""),
                APPCTL_MANIFEST=man.as_posix(), APPCTL_PYTHON=Path(sys.executable).as_posix(),
                APPCTL_LIB=LIB.as_posix())
-    r = subprocess.run(["bash", APPCTL.as_posix(), verb, "unpackerr"], env=env,
+    r = subprocess.run(["bash", APPCTL.as_posix(), verb, slug], env=env,
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     argv = log.read_text() if log.exists() else ""
-    assert "app-unpackerr" not in argv
+    assert f"app-{slug}" not in argv
     want = "is-active" if verb == "status" else verb
-    assert f"systemctl --user {want} qflix-unpackerr.service" in argv
+    assert f"systemctl --user {want} qflix-{slug}.service" in argv
 
 
+@pytest.mark.parametrize("slug", ["unpackerr", "bazarr"])
 @pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
-def test_lifecycle_never_starts_the_ucc_container_after_the_swap(tmp_path, fn):
-    app = load_manifest(_post_swap_manifest(tmp_path)).app("unpackerr")
+def test_lifecycle_never_starts_the_ucc_container_after_the_swap(tmp_path, fn, slug):
+    app = load_manifest(_post_swap_manifest(tmp_path, slug)).app(slug)
     with patch("subprocess.run", return_value=CompletedProcess([], 0, "active\n", "")) as run:
         fn(app)
     for call in run.call_args_list:
@@ -147,16 +164,252 @@ def test_31_unpackerr_goes_through_appctl_only():
     assert "systemctl --user is-active unpackerr" not in text
 
 
-# --- sonarr (QFLX-32, A8) --------------------------------------------------------------
+# --- prowlarr (QFLX-28, A4) ---------------------------------------------------------
+
+def test_prowlarr_is_converted_with_a_full_build_pin():
+    a = _converted()["prowlarr"]
+    assert a["unit"] == "qflix-prowlarr.service" and "swap_state" not in a   # swapped 2026-10-10
+    assert a["health"]["kind"] == "http_api" and a["health"]["require_unit_active"] is True
+    assert a["upgrade"]["kind"] == "tarball_swap"
+    assert _versions_env()["PROWLARR_VERSION"].count(".") == 3        # 2.6.5.5623, not the panel's 2.6.5
+    assert "linux-core-x64" in a["upgrade"]["url_template"]
 
 
-def _sonarr_post_swap_manifest(tmp_path: Path) -> Path:
-    """The deployed manifest after the follow-up PR dropped swap_state."""
+def test_prowlarr_upgrade_hoists_the_tarball_top_dir_into_bin_ver():
+    steps = " && ".join(_converted()["prowlarr"]["upgrade"]["post_steps"])
+    assert "mv Prowlarr .pkg" in steps and "mv .pkg/* ." in steps    # dir and apphost share a name
+    assert "rm -rf Prowlarr.Update" in steps
+    assert "bin/current" in steps
+
+
+def test_prowlarr_flip_keeps_the_probe_secrets_the_whole_stack_reads():
+    h = _converted()["prowlarr"]["health"]
+    assert (h["port_secret"], h["auth_secret"], h["urlbase_secret"]) == (
+        "prowlarr.port", "prowlarr.key", "prowlarr.urlbase")
+
+
+def test_generated_skip_list_carries_prowlarr():
+    r = subprocess.run([sys.executable, str(LIB / "ucc_skip.py"), "--list",
+                        "--manifest", str(MANIFEST)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "prowlarr" in r.stdout.split()
+
+
+def _post_swap_manifest_for(tmp_path: Path, name: str) -> Path:
     data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
-    data["apps"]["sonarr"].pop("swap_state", None)
+    data["apps"][name].pop("swap_state", None)
     p = tmp_path / "apps.yaml"
     p.write_text(yaml.safe_dump(data), encoding="utf-8")
     return p
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
+def test_appctl_never_starts_the_prowlarr_container_after_the_swap(tmp_path, verb):
+    man = _post_swap_manifest_for(tmp_path, "prowlarr")
+    binp = tmp_path / "bin"
+    binp.mkdir()
+    for n in ("app-prowlarr", "systemctl"):
+        (binp / n).write_text(_STUB, newline="\n")
+        (binp / n).chmod(0o755)
+    log = tmp_path / "argv.log"
+    env = dict(os.environ, HOME=tmp_path.as_posix(), STUB_LOG=log.as_posix(),
+               PATH=binp.as_posix() + os.pathsep + os.environ.get("PATH", ""),
+               APPCTL_MANIFEST=man.as_posix(), APPCTL_PYTHON=Path(sys.executable).as_posix(),
+               APPCTL_LIB=LIB.as_posix())
+    r = subprocess.run(["bash", APPCTL.as_posix(), verb, "prowlarr"], env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    argv = log.read_text() if log.exists() else ""
+    assert "app-prowlarr" not in argv
+    want = "is-active" if verb == "status" else verb
+    assert f"systemctl --user {want} qflix-prowlarr.service" in argv
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
+def test_lifecycle_never_starts_the_prowlarr_container_after_the_swap(tmp_path, fn):
+    app = load_manifest(_post_swap_manifest_for(tmp_path, "prowlarr")).app("prowlarr")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "active\n", "")) as run:
+        fn(app)
+    for call in run.call_args_list:
+        assert not call[0][0][0].startswith("app-"), call
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart])
+def test_swapped_prowlarr_is_lifecycled_as_the_native_unit(tmp_path, fn):
+    """Swapped 2026-10-10 (pending-swap dropped): the native unit is the live
+    runtime, so pusher recovery acts on it and never wakes the dormant
+    container through the panel tool (I-6)."""
+    app = load_manifest(MANIFEST).app("prowlarr")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "", "")) as run:
+        fn(app)
+    argv = [c[0][0] for c in run.call_args_list]
+    assert argv and not any(a[0] == "app-prowlarr" for a in argv), argv
+    assert any(a[0] == "systemctl" and "qflix-prowlarr.service" in a for a in argv), argv
+
+
+# --- radarr2 (QFLX-29, A5) ----------------------------------------------------------
+
+def _radarr2_post_swap_manifest(tmp_path: Path, name: str = "radarr2") -> Path:
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    data["apps"][name].pop("swap_state", None)
+    p = tmp_path / "apps.yaml"
+    p.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return p
+
+
+def test_radarr2_is_converted_with_a_full_build_pin():
+    a = _converted()["radarr2"]
+    assert a["unit"] == "qflix-radarr2.service" and "swap_state" not in a    # swapped 2026-10-10
+    assert a["health"]["kind"] == "http_api" and a["health"]["require_unit_active"] is True
+    assert a["upgrade"]["kind"] == "tarball_swap"
+    assert _versions_env()["RADARR2_VERSION"].count(".") == 3        # 6.4.4.10685, not the panel's 6.4.4
+    assert "linux-core-x64" in a["upgrade"]["url_template"]
+
+
+def test_radarr2_upgrade_hoists_the_tarball_top_dir_into_bin_ver():
+    steps = " && ".join(_converted()["radarr2"]["upgrade"]["post_steps"])
+    assert "mv Radarr .pkg" in steps and "mv .pkg/* ." in steps      # dir and apphost share a name
+    assert "rm -rf Radarr.Update" in steps
+    assert "bin/current" in steps
+    assert "~/.apps/radarr2/bin/" in steps and "~/.apps/radarr/bin" not in steps
+
+
+def test_radarr2_flip_keeps_the_probe_secrets_the_whole_stack_reads():
+    h = _converted()["radarr2"]["health"]
+    assert (h["port_secret"], h["auth_secret"], h["urlbase_secret"]) == (
+        "radarr2.port", "radarr2.key", "radarr2.urlbase")
+
+
+def test_generated_skip_list_carries_radarr2():
+    r = subprocess.run([sys.executable, str(LIB / "ucc_skip.py"), "--list",
+                        "--manifest", str(MANIFEST)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "radarr2" in r.stdout.split()           # radarr (A7) is pinned below
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
+def test_appctl_never_starts_the_radarr2_container_after_the_swap(tmp_path, verb):
+    man = _radarr2_post_swap_manifest(tmp_path, "radarr2")
+    binp = tmp_path / "bin"
+    binp.mkdir()
+    for n in ("app-radarr2", "systemctl"):
+        (binp / n).write_text(_STUB, newline="\n")
+        (binp / n).chmod(0o755)
+    log = tmp_path / "argv.log"
+    env = dict(os.environ, HOME=tmp_path.as_posix(), STUB_LOG=log.as_posix(),
+               PATH=binp.as_posix() + os.pathsep + os.environ.get("PATH", ""),
+               APPCTL_MANIFEST=man.as_posix(), APPCTL_PYTHON=Path(sys.executable).as_posix(),
+               APPCTL_LIB=LIB.as_posix())
+    r = subprocess.run(["bash", APPCTL.as_posix(), verb, "radarr2"], env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    argv = log.read_text() if log.exists() else ""
+    assert "app-radarr2" not in argv
+    want = "is-active" if verb == "status" else verb
+    assert f"systemctl --user {want} qflix-radarr2.service" in argv
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
+def test_lifecycle_never_starts_the_radarr2_container_after_the_swap(tmp_path, fn):
+    app = load_manifest(_radarr2_post_swap_manifest(tmp_path, "radarr2")).app("radarr2")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "active\n", "")) as run:
+        fn(app)
+    for call in run.call_args_list:
+        assert not call[0][0][0].startswith("app-"), call
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart])
+def test_swapped_radarr2_is_lifecycled_as_the_native_unit(tmp_path, fn):
+    """Swapped 2026-10-10 (pending-swap dropped): the native unit is the live
+    runtime, so pusher recovery acts on it and never wakes the dormant
+    container through the panel tool (I-6)."""
+    app = load_manifest(MANIFEST).app("radarr2")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "", "")) as run:
+        fn(app)
+    argv = [c[0][0] for c in run.call_args_list]
+    assert argv and not any(a[0] == "app-radarr2" for a in argv), argv
+    assert any(a[0] == "systemctl" and "qflix-radarr2.service" in a for a in argv), argv
+
+
+# --- radarr (QFLX-31, A7) ---------------------------------------------------------
+
+def test_radarr_is_converted_with_a_full_build_pin():
+    a = _converted()["radarr"]
+    assert a["unit"] == "qflix-radarr.service" and "swap_state" not in a     # swapped 2026-10-10
+    assert a["health"]["kind"] == "http_api" and a["health"]["require_unit_active"] is True
+    assert a["upgrade"]["kind"] == "tarball_swap"
+    assert _versions_env()["RADARR_VERSION"].count(".") == 3        # 6.4.4.10685, not the panel's 6.4.4
+    assert "linux-core-x64" in a["upgrade"]["url_template"]
+
+
+def test_radarr_upgrade_hoists_the_tarball_top_dir_into_bin_ver():
+    steps = " && ".join(_converted()["radarr"]["upgrade"]["post_steps"])
+    assert "mv Radarr .pkg" in steps and "mv .pkg/* ." in steps    # dir and apphost share a name
+    assert "rm -rf Radarr.Update" in steps
+    assert "bin/current" in steps
+
+
+def test_radarr_flip_keeps_the_probe_secrets_the_whole_stack_reads():
+    h = _converted()["radarr"]["health"]
+    assert (h["port_secret"], h["auth_secret"], h["urlbase_secret"]) == (
+        "radarr.port", "radarr.key", "radarr.urlbase")
+
+
+def test_generated_skip_list_carries_radarr():
+    r = subprocess.run([sys.executable, str(LIB / "ucc_skip.py"), "--list",
+                        "--manifest", str(MANIFEST)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "radarr" in r.stdout.split()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
+def test_appctl_never_starts_the_radarr_container_after_the_swap(tmp_path, verb):
+    man = _post_swap_manifest_for(tmp_path, "radarr")
+    binp = tmp_path / "bin"
+    binp.mkdir()
+    for n in ("app-radarr", "systemctl"):
+        (binp / n).write_text(_STUB, newline="\n")
+        (binp / n).chmod(0o755)
+    log = tmp_path / "argv.log"
+    env = dict(os.environ, HOME=tmp_path.as_posix(), STUB_LOG=log.as_posix(),
+               PATH=binp.as_posix() + os.pathsep + os.environ.get("PATH", ""),
+               APPCTL_MANIFEST=man.as_posix(), APPCTL_PYTHON=Path(sys.executable).as_posix(),
+               APPCTL_LIB=LIB.as_posix())
+    r = subprocess.run(["bash", APPCTL.as_posix(), verb, "radarr"], env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    argv = log.read_text() if log.exists() else ""
+    assert "app-radarr" not in argv
+    want = "is-active" if verb == "status" else verb
+    assert f"systemctl --user {want} qflix-radarr.service" in argv
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
+def test_lifecycle_never_starts_the_radarr_container_after_the_swap(tmp_path, fn):
+    app = load_manifest(_post_swap_manifest_for(tmp_path, "radarr")).app("radarr")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "active\n", "")) as run:
+        fn(app)
+    for call in run.call_args_list:
+        assert not call[0][0][0].startswith("app-"), call
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart])
+def test_swapped_radarr_is_lifecycled_as_the_native_unit(tmp_path, fn):
+    """Swapped 2026-10-10 (pending-swap dropped): the native unit is the live
+    runtime, so pusher recovery acts on it and never wakes the dormant
+    container through the panel tool (I-6)."""
+    app = load_manifest(MANIFEST).app("radarr")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "", "")) as run:
+        fn(app)
+    argv = [c[0][0] for c in run.call_args_list]
+    assert argv and not any(a[0] == "app-radarr" for a in argv), argv
+    assert any(a[0] == "systemctl" and "qflix-radarr.service" in a for a in argv), argv
+
+
+# --- sonarr (QFLX-32, A8) --------------------------------------------------------------
 
 
 def test_sonarr_is_converted_with_a_full_build_pin():
@@ -181,18 +434,11 @@ def test_sonarr_flip_keeps_the_probe_secrets_the_whole_stack_reads():
         "sonarr.port", "sonarr.key", "sonarr.urlbase")
 
 
-def test_sonarr2_is_untouched_by_the_sonarr_flip():
-    """sonarr2 has its own ticket (QFLX-30) and its container shares sonarr's cmdline."""
-    a = _apps()["sonarr2"]
-    assert a["class"] == "ucc" and "swap_state" not in a
-
-
-def test_generated_skip_list_carries_sonarr_but_not_sonarr2():
+def test_generated_skip_list_carries_sonarr():
     r = subprocess.run([sys.executable, str(LIB / "ucc_skip.py"), "--list",
                         "--manifest", str(MANIFEST)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert "sonarr" in r.stdout.split()
-    assert "sonarr2" not in r.stdout.split()
 
 
 def test_gate_probe_can_never_name_sonarr_once_converted():
@@ -207,7 +453,7 @@ def test_gate_probe_can_never_name_sonarr_once_converted():
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 @pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
 def test_appctl_never_starts_the_sonarr_container_after_the_swap(tmp_path, verb):
-    man = _sonarr_post_swap_manifest(tmp_path)
+    man = _post_swap_manifest_for(tmp_path, "sonarr")
     binp = tmp_path / "bin"
     binp.mkdir()
     for n in ("app-sonarr", "systemctl"):
@@ -229,7 +475,7 @@ def test_appctl_never_starts_the_sonarr_container_after_the_swap(tmp_path, verb)
 
 @pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
 def test_lifecycle_never_starts_the_sonarr_container_after_the_swap(tmp_path, fn):
-    app = load_manifest(_sonarr_post_swap_manifest(tmp_path)).app("sonarr")
+    app = load_manifest(_post_swap_manifest_for(tmp_path, "sonarr")).app("sonarr")
     with patch("subprocess.run", return_value=CompletedProcess([], 0, "active\n", "")) as run:
         fn(app)
     for call in run.call_args_list:

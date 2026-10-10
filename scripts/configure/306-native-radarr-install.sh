@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# 307-native-sonarr-install.sh -- QFLX-32 (UCC divorce A8, sonarr main).
+# 306-native-radarr-install.sh -- QFLX-31 (UCC divorce A7, the second .NET app).
 #
-# Moves sonarr off the Ultra.cc container manager (UCC) onto user units the
-# repo owns: the upstream Sonarr v4 linux-x64 tarball at EXACTLY the container's
-# build, sha256-pinned, run as qflix-sonarr.service, plus a socket-activated
-# loopback forwarder (qflix-sonarr-fwd.socket/.service). Spec:
-# docs/superpowers/specs/2026-10-09-ucc-divorce-design.md 5.1-5.9, row 8 of 14.
-# Shape copied from the pilot, 300-native-unpackerr-install.sh (QFLX-25) and the
-# first .NET installer, 303-native-prowlarr-install.sh (QFLX-28).
+# Moves radarr off the Ultra.cc container manager (UCC) onto user units the
+# repo owns: the upstream linux-core-x64 tarball at EXACTLY the container's
+# build, sha256-pinned, run as qflix-radarr.service, plus a socket-activated
+# loopback forwarder (qflix-radarr-fwd.socket/.service). Spec:
+# docs/superpowers/specs/2026-10-09-ucc-divorce-design.md 5.1-5.9, row A7 of the plan. Shape copied from 303-native-prowlarr-install.sh (QFLX-28).
+# Pilot: 300-native-unpackerr-install.sh (QFLX-25).
 #
 # RUNS ON THE BOX. 240-maintenance-install.sh deploys it to ~/scripts/configure/
 # with ~/scripts/lib/native.sh and ~/scripts/maint/native_sanitize.py beside it.
@@ -18,21 +17,20 @@
 #
 #   --install   5.9 step 1. Fetch + sha256-verify the release, refuse unless the
 #               panel version is a dotted prefix of the pinned build (the panel
-#               prints "4.0.20", the build is 4.0.20.3014) AND the live API says
-#               the pinned build (I-10), lay out ~/.apps/sonarr/bin/<ver> +
+#               prints "6.4.4", the build is 6.4.4.10685) AND the live API says
+#               the pinned build (I-10), lay out ~/.apps/radarr/bin/<ver> +
 #               `current`, write the env file and STAGE the three units in
-#               ~/.apps/sonarr/native/. Deliberately NOT copied into
+#               ~/.apps/radarr/native/. Deliberately NOT copied into
 #               ~/.config/systemd/user and NOT enabled: WantedBy=default.target
 #               would start it beside the live container (I-6).
-#   --prove     5.9 step 2. VACUUM INTO a copy of sonarr.db under
-#               ~/.apps/.prove/sonarr, copy config.xml, run
-#               native_sanitize (download clients, indexers, import lists off,
-#               notifications deleted, auto-update off) plus the metadata consumers
-#               (PlexMetadata would write .plexmatch into the real series folders),
-#               all re-read and counted, boot the NATIVE binary on a free
+#   --prove     5.9 step 2. VACUUM INTO a copy of radarr.db under
+#               ~/.apps/.prove/radarr, copy config.xml, run
+#               native_sanitize (import lists + notifications deleted, auto-update
+#               off, re-read and counted), boot the NATIVE binary on a free
 #               loopback port with the port/bind/update settings coming from the
-#               environment (proves config.xml's Port 8989 is overridden), check
-#               status (build == pin, not docker) and compare the series count with the live app's,
+#               environment (proves config.xml's Port 7878 is overridden), check
+#               status (build == pin, not docker) and run ONE metadata lookup, require API movie count == db
+#               movie count (parity),
 #               measure the task count (refused at 70% of the host ceiling), then
 #               delete the copy. Never side by side against live queues.
 #   --swap      5.9 steps 3-6: needs the proof and the DEPLOYED pending-swap
@@ -53,7 +51,7 @@
 #               three (without the mask, pusher recovery restarts even a
 #               disabled unit: two runtimes on one SQLite file, I-6). 1: stop
 #               them and wait for exit and a free port. 2: the DEPLOYED manifest
-#               must dispatch sonarr as UCC again (revert PR + 240, or the
+#               must dispatch radarr as UCC again (revert PR + 240, or the
 #               pending-swap state); otherwise exit 10 and re-run after the
 #               revert. 3: start the container through appctl. 5: config.xml is
 #               restored byte-for-byte if the native era changed it; no db
@@ -61,7 +59,7 @@
 #               next --swap.
 #
 # Settings that differ from the container live in the ENV FILE, never in
-# config.xml (SONARR__SERVER__PORT / __BINDADDRESS, SONARR__UPDATE__MECHANISM
+# config.xml (RADARR__SERVER__PORT / __BINDADDRESS, RADARR__UPDATE__MECHANISM
 # = External). config.xml stays exactly what the container reads, so a rollback
 # needs no config surgery.
 #
@@ -74,48 +72,44 @@
 # QFLIX_ENV_DIR QFLIX_SWAP_DIR QFLIX_SECRETS_DIR MANITOBA_STATE_DIR
 # QFLIX_MANIFEST QFLIX_PROC QFLIX_PYTHON QFLIX_APPCTL QFLIX_SYSTEMCTL QFLIX_SS
 # QFLIX_PS QFLIX_CURL QFLIX_FUSER QFLIX_HOSTPOLICY QFLIX_HOST_ID_FILE
-# QFLIX_SONARR_SHA256 QFLIX_POLL_S QFLIX_SETTLE_S QFLIX_STOP_TIMEOUT_S
+# QFLIX_RADARR_SHA256 QFLIX_POLL_S QFLIX_SETTLE_S QFLIX_STOP_TIMEOUT_S
 # QFLIX_PROOF_TIMEOUT_S QFLIX_API_TIMEOUT_S QFLIX_KEEP_PROOF.
 set -uo pipefail
 
-SLUG=sonarr
-VERSION="4.0.20.3014"         # == versions.env SONARR_VERSION (test-pinned)
-SHA256="1fc48544b5a3401b2fc3df8d0642c1e6a73a28e41a351169edd9cd8f54770db5"
-URL="https://github.com/Sonarr/Sonarr/releases/download/v${VERSION}/Sonarr.main.${VERSION}.linux-x64.tar.gz"
+SLUG=radarr
+VERSION="6.4.4.10685"         # == versions.env RADARR_VERSION (test-pinned)
+SHA256="a1d726129535e739d4efaf93b5fdd771bb1c78349f55ceac70e365e37b5a12a3"
+URL="https://github.com/Radarr/Radarr/releases/download/v${VERSION}/Radarr.master.${VERSION}.linux-core-x64.tar.gz"
 UNIT="qflix-${SLUG}.service"
 FWD_SOCKET="qflix-${SLUG}-fwd.socket"
 FWD_UNIT="qflix-${SLUG}-fwd.service"
 ALL_UNITS=("$UNIT" "$FWD_SOCKET" "$FWD_UNIT")
 FAMILY=dotnet
-EXE=Sonarr
+EXE=Radarr
 # %h stays literal: systemd expands it. -data is the container's /config seen
-# from the host: the container mounted ~/.apps/sonarr at /config.
+# from the host: the container mounted ~/.apps/radarr at /config.
 EXEC_ARGS="-nobrowser -data=%h/.apps/${SLUG}"
 # The container ran with TZ=Europe/Amsterdam and COMPlus_EnableDiagnostics=0
 # (its /proc/<pid>/environ, box 2026-10-10). Keeping TZ keeps the log timestamps
 # vlogs ingests unshifted (QFLX-44 class).
 TZ_ENV="TZ=Europe/Amsterdam"
-PORT=17026                   # the UCC host port == secrets/sonarr.port (asserted)
+PORT=17027                   # the UCC host port == secrets/radarr.port (asserted)
 BRIDGE=""                    # secret net.app_host (docker0 on Ultra); the arrs / Seerr / FlareSolverr call here (F-17)
 LOOPBACK=127.0.0.1           # nginx, the health probe and the canaries call here
-# Behavioural canaries muted with the app (plan A-table row A8). Keys follow
-# cli.py: canary-<name>.
-SUPPRESS=("$SLUG" "canary-arr-plex-parity" "canary-seerr-arr-parity"
-          "canary-ucc-gate-stuck" "canary-thread-ceiling")
-PATTERN="/Sonarr"          # cmdline of both runtimes: /app/sonarr/bin/Sonarr, .../bin/current/Sonarr
-# DANGER (box, 2026-10-10): the sonarr AND sonarr2 containers run the IDENTICAL
-# cmdline (/app/sonarr/bin/Sonarr -nobrowser -data=/config) with the same
-# s6-supervise name. Only the bind mount tells them apart: this app's data dir
-# is mounted at /config, so /proc/<pid>/mountinfo carries "/.apps/sonarr /config ".
-# Without that filter the container scan would see sonarr2 and the swap would
-# wait forever (or, worse, a rollback would call it "up").
-MOUNT_RE="/\\.apps/${SLUG} /config "
+# Behavioural canaries muted with the app (plan A-table row A7: movie). Keys
+# follow cli.py: canary-<name>. Every canary here calls Radarr's API.
+SUPPRESS=("$SLUG" "canary-movie" "canary-seerr-arr-parity" "canary-arr-plex-parity"
+          "canary-thread-ceiling")
+# cmdline of both runtimes: /app/radarr/bin/Radarr (container), .../bin/current/Radarr.
+# radarr2's container runs the IDENTICAL cmdline (box, 2026-10-10), so the
+# container scan also demands this slot's /config bind mount (see scan_pids).
+PATTERN="/Radarr"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"     # .../scripts
 ARGS=("$@")
 
-info() { echo "[307-sonarr] $*"; }
-die()  { echo "[307-sonarr] ERROR: $*" >&2; exit 1; }
+info() { echo "[306-radarr] $*"; }
+die()  { echo "[306-radarr] ERROR: $*" >&2; exit 1; }
 usage() {
   echo "usage: $0 [--install|--prove|--swap|--finish|--rollback] [--execute]" >&2
   exit 64
@@ -155,7 +149,7 @@ SETTLE="${QFLIX_SETTLE_S:-10}"
 STOP_TIMEOUT="${QFLIX_STOP_TIMEOUT_S:-120}"
 PROOF_TIMEOUT="${QFLIX_PROOF_TIMEOUT_S:-300}"
 API_TIMEOUT="${QFLIX_API_TIMEOUT_S:-120}"
-WANT_SHA="${QFLIX_SONARR_SHA256:-$SHA256}"
+WANT_SHA="${QFLIX_RADARR_SHA256:-$SHA256}"
 
 hostpolicy() {
   if [ -n "${QFLIX_HOSTPOLICY:-}" ]; then "$QFLIX_HOSTPOLICY" "$@"
@@ -170,7 +164,7 @@ plan() {
   info "DRY-RUN mode=$MODE (nothing touched; add --execute to run)"
   case "$MODE" in
     install)  info "would fetch $URL (sha256 $WANT_SHA), check version parity (panel prefix + API build), lay out $APPDIR/bin/$VERSION, write $ENV_DIR/$SLUG.env, stage $APPDIR/native/{$UNIT,$FWD_SOCKET,$FWD_UNIT} (not enabled)" ;;
-    prove)    info "would VACUUM INTO a copy of sonarr.db in $PROVE, sanitize it (+ metadata consumers), boot the native binary on a free loopback port with env-only port/bind, check status + series count parity, gate the task delta at 70% of the ceiling, then delete the copy" ;;
+    prove)    info "would VACUUM INTO a copy of radarr.db in $PROVE, sanitize it, boot the native binary on a free loopback port with env-only port/bind, check status + one metadata lookup + movie count parity, gate the task delta at 70% of the ceiling, then delete the copy" ;;
     swap)     info "would capture the listen set (port $PORT: loopback + the net.app_host bridge required), assert config==secrets and auth-bypass off, path-audit, suppress ${SUPPRESS[*]}, snapshot, stop the container, wait for exit + free port + idle db, enable --now $UNIT then $FWD_SOCKET, verify, record swap state" ;;
     finish)   info "would verify the native units and lift suppression for ${SUPPRESS[*]}" ;;
     rollback) info "would suppress ${SUPPRESS[*]}, park + mask ${ALL_UNITS[*]}, stop them, wait for the manifest revert, start the container via appctl, unsuppress" ;;
@@ -189,7 +183,7 @@ if ! _on_host; then
   # shellcheck source=/dev/null
   source "$HERE/lib/ssh.sh"
   info "not on the box: running the deployed copy there"
-  sshm "~/scripts/configure/307-native-sonarr-install.sh $(printf '%q ' "${ARGS[@]}")"
+  sshm "~/scripts/configure/306-native-radarr-install.sh $(printf '%q ' "${ARGS[@]}")"
   exit $?
 fi
 
@@ -246,6 +240,13 @@ print("|".join([str(a.get("class") or ""), str(a.get("swap_state") or ""),
 PY
 }
 
+# True when the process's /config bind mount is THIS slot's directory
+# (mountinfo field 4 = the mount root, e.g. /quadstronaut/.apps/radarr). radarr
+# and radarr2 containers have identical cmdlines and only differ here.
+mounts_our_config() {
+  awk -v want="/.apps/$SLUG" '$5 == "/config" { n = length($4) - length(want) + 1; if (n > 0 && substr($4, n) == want) found = 1 } END { exit !found }' "$1/mountinfo" 2>/dev/null
+}
+
 # PIDs under OUR uid whose cmdline carries the app pattern. kind=container: in
 # a container cgroup (docker/libpod/...), not the unit's. kind=native: in the
 # unit's cgroup. A `tail` of the log, the proof process or this script is in
@@ -264,10 +265,7 @@ scan_pids() {
       case "$cg" in *"$UNIT"*) echo "$pid" ;; esac
     else
       case "$cg" in *"$UNIT"*) continue ;; esac
-      [[ "$cg" =~ docker|libpod|podman|containerd|crio ]] || continue
-      # sonarr2's container has the same cmdline: tell them apart by the mount.
-      grep -qE "$MOUNT_RE" "$d/mountinfo" 2>/dev/null || continue
-      echo "$pid"
+      if [[ "$cg" =~ docker|libpod|podman|containerd|crio ]] && mounts_our_config "$d"; then echo "$pid"; fi
     fi
   done
 }
@@ -279,7 +277,7 @@ port_free() { ! "$SS" -tlnH "sport = :$PORT" 2>/dev/null | grep -q ":$PORT\b"; }
 db_idle() {
   local f
   command -v "$FUSER" >/dev/null 2>&1 || { echo "no fuser: cannot prove the db idle" >&2; return 1; }
-  for f in "$APPDIR/sonarr.db" "$APPDIR/sonarr.db-wal" "$APPDIR/logs.db" "$APPDIR/logs.db-wal"; do
+  for f in "$APPDIR/radarr.db" "$APPDIR/radarr.db-wal" "$APPDIR/logs.db" "$APPDIR/logs.db-wal"; do
     [ -e "$f" ] || continue
     if "$FUSER" -s "$f" >/dev/null 2>&1; then return 1; fi
   done
@@ -335,14 +333,18 @@ except Exception:
 print(str(v).lower() if isinstance(v, bool) else v)' "$1"
 }
 
-json_len() {
-  "$PY" -c 'import sys, json
-try:
-    d = json.load(sys.stdin)
-    assert isinstance(d, list)
-except Exception:
-    sys.exit(1)
-print(len(d))'
+# Movie count the API serves on <port>, and the rows in a db file (read-only).
+api_movies() {
+  api_get "$1" movie 2>/dev/null \
+    | "$PY" -c 'import sys, json; d = json.load(sys.stdin); assert isinstance(d, list); print(len(d))'
+}
+db_movies() {
+  "$PY" - "$1" <<'PY'
+import sqlite3, sys
+from pathlib import Path
+con = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
+print(con.execute("select count(*) from Movies").fetchone()[0])
+PY
 }
 
 # The build the API reports on <port> must be exactly the pin (I-10); the panel
@@ -353,27 +355,17 @@ api_build_is_pin() {
   [ "${v%$'\r'}" = "$VERSION" ]
 }
 
-# QFLX-17 hard prerequisite: the UCC gate probe runs `app-<probe_app> start` every
-# 5 minutes. If it still named sonarr it would wake the dormant container next to
-# the native unit (I-6). Fails closed: an unreadable secret is a refusal too.
-assert_probe_not_me() {
-  local pa
-  pa="$(secret ucc.probe_app)"
-  [ -n "$pa" ] || die "secrets/ucc.probe_app unreadable; pin it to plex before converting $SLUG"
-  [ "$pa" != "$SLUG" ] || die "secrets/ucc.probe_app is '$pa': the gate probe would start the dormant container; pin it to plex first"
-}
-
 # Container paths (/config, /data, /downloads) mean nothing on the host (5.9 step 3).
 path_audit() {
   local hits dbhits
   hits="$(grep -nE ">(/config|/data|/downloads)(/|<)" "$APPDIR/config.xml" || true)"
   [ -z "$hits" ] || die "container path(s) in $APPDIR/config.xml: $(echo "$hits" | head -3 | tr '\n' ' ')"
-  dbhits="$("$PY" - "$APPDIR/sonarr.db" <<'PY'
+  dbhits="$("$PY" - "$APPDIR/radarr.db" <<'PY'
 import re, sqlite3, sys
 from pathlib import Path
 rx = re.compile(r"""(^|["'])(/config|/data|/downloads)(/|["']|$)""")
 con = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
-skip = {"History", "Blocklist", "ScheduledTasks", "ExtraFiles", "SubtitleFiles", "MetadataFiles", "DownloadHistory"}
+skip = {"History", "Blocklist", "DownloadHistory", "PendingReleases", "Commands", "ScheduledTasks", "IndexerStatus", "DownloadClientStatus", "ImportListStatus", "NotificationStatus"}
 hits = []
 for (t,) in con.execute("select name from sqlite_master where type='table' and name not like 'sqlite_%'"):
     if t in skip:
@@ -388,7 +380,7 @@ for (t,) in con.execute("select name from sqlite_master where type='table' and n
 print(" ".join(sorted(set(hits))))
 PY
 )" || die "db path audit failed"
-  [ -z "$dbhits" ] || die "container path(s) in sonarr.db columns: $dbhits"
+  [ -z "$dbhits" ] || die "container path(s) in radarr.db columns: $dbhits"
 }
 
 # systemd treats a unit linked to /dev/null OR an empty unit file as masked.
@@ -419,11 +411,11 @@ unmask_all() {
   [ "$any" = 0 ] || sysd daemon-reload || true
 }
 
-# --- unit bodies (byte-identical to scripts/maint/systemd/qflix-sonarr*; test-enforced)
+# --- unit bodies (byte-identical to scripts/maint/systemd/qflix-radarr*; test-enforced)
 render_fwd_socket() {
   cat <<EOF
 [Unit]
-Description=QFlix sonarr loopback listener (forwards to the docker-bridge bind)
+Description=QFlix radarr loopback listener (forwards to the docker-bridge bind)
 
 [Socket]
 # Kestrel binds ONE address; the UCC container listened on three (spec 5.4,
@@ -439,7 +431,7 @@ EOF
 render_fwd_service() {
   cat <<EOF
 [Unit]
-Description=QFlix sonarr loopback forwarder
+Description=QFlix radarr loopback forwarder
 Requires=$FWD_SOCKET
 After=$FWD_SOCKET $UNIT
 
@@ -454,25 +446,25 @@ EOF
 do_install() {
   local stage panel_port
   [ -f "$APPDIR/config.xml" ] || die "$APPDIR/config.xml missing (the config is used in place)"
-  panel_port="$(secret sonarr.port)"
-  [ "$panel_port" = "$PORT" ] || die "secrets/sonarr.port is '$panel_port', the pinned units use $PORT; refusing"
+  panel_port="$(secret radarr.port)"
+  [ "$panel_port" = "$PORT" ] || die "secrets/radarr.port is '$panel_port', the pinned units use $PORT; refusing"
   mkdir -p "$APPS" || die "cannot create $APPS"
-  # The API build is the real parity: the panel tool truncates (4.0.20).
+  # The API build is the real parity: the panel tool truncates (6.4.4).
   make_hdr
   api_build_is_pin "$PORT" || die "the live container's API build is not $VERSION; re-pin before installing"
   stage="$(mktemp -d "$APPS/.stage-$SLUG.XXXXXX")" || die "mktemp failed"
   CLEANUP_PATHS+=("$stage")
   native_fetch_verify "$URL" "$WANT_SHA" "$stage/p.tgz" || die "fetch/sha256 verify failed"
   mkdir -p "$stage/x"
-  # The tarball's single top-level dir is Sonarr/; strip it so bin/<ver>/Sonarr is the apphost.
+  # The tarball's single top-level dir is Radarr/; strip it so bin/<ver>/Radarr is the apphost.
   "${TAR[@]}" -xzf "$stage/p.tgz" -C "$stage/x" --strip-components=1 || die "cannot unpack the tarball"
-  [ -f "$stage/x/$EXE" ] && [ -f "$stage/x/Sonarr.dll" ] || die "tarball has no $EXE / Sonarr.dll"
+  [ -f "$stage/x/$EXE" ] && [ -f "$stage/x/Radarr.dll" ] || die "tarball has no $EXE / Radarr.dll"
   chmod 0755 "$stage/x/$EXE"
-  rm -rf "$stage/x/Sonarr.Update"        # the self-updater is dead weight: UpdateMechanism=External (I-10)
+  rm -rf "$stage/x/Radarr.Update"        # the self-updater is dead weight: UpdateMechanism=External (I-10)
   NATIVE_PARITY=prefix native_install_versioned "$SLUG" "$VERSION" "$stage/x" || die "install refused (see above)"
   native_render_env "$SLUG" "$FAMILY" "$VERSION" "$TZ_ENV" "COMPlus_EnableDiagnostics=0" \
-      "SONARR__SERVER__BINDADDRESS=$BRIDGE" "SONARR__SERVER__PORT=$PORT" \
-      "SONARR__UPDATE__MECHANISM=External" "SONARR__UPDATE__AUTOMATICALLY=false" \
+      "RADARR__SERVER__BINDADDRESS=$BRIDGE" "RADARR__SERVER__PORT=$PORT" \
+      "RADARR__UPDATE__MECHANISM=External" "RADARR__UPDATE__AUTOMATICALLY=false" \
     | native_write_secure "$ENV_DIR/$SLUG.env" 0600 || die "env file write failed"
   native_render_unit "$SLUG" "$FAMILY" "$EXE" "$EXEC_ARGS" \
     | native_write_secure "$APPDIR/native/$UNIT" 0644 || die "unit staging failed"
@@ -482,7 +474,7 @@ do_install() {
 }
 
 do_prove() {
-  local before ceiling delta pport count live_series status_json version docker
+  local before ceiling delta pport count status_json version docker movies dbm
   [ -x "$APPDIR/bin/current/$EXE" ] || die "not installed; run --install --execute first"
   [ -f "$SANITIZE" ] || die "$SANITIZE missing (run 240 first)"
   ceiling="$(hostpolicy task-ceiling)" || die "task ceiling unknown; refusing (G-2)"
@@ -495,7 +487,7 @@ do_prove() {
   [ "${QFLIX_KEEP_PROOF:-0}" = 1 ] || CLEANUP_PATHS+=("$PROVE")
   # Copy, never the live files: VACUUM INTO writes a consistent snapshot even
   # while the container holds the WAL open.
-  "$PY" - "$APPDIR/sonarr.db" "$PROVE/sonarr.db" <<'PY' || die "VACUUM INTO failed"
+  "$PY" - "$APPDIR/radarr.db" "$PROVE/radarr.db" <<'PY' || die "VACUUM INTO failed"
 import sqlite3, sys
 from pathlib import Path
 con = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
@@ -503,32 +495,20 @@ con.execute("VACUUM INTO ?", (sys.argv[2],))
 con.close()
 PY
   cp -p "$APPDIR/config.xml" "$PROVE/config.xml" || die "cannot copy config.xml"
-  # INERT (I-11): clients, indexers and import lists off, notifications gone, updates off.
+  # INERT (I-11): import lists + notifications are gone, updates off.
   # The sanitizer re-reads the files and refuses unless every count is 0.
   "$PY" "$SANITIZE" "$SLUG" "$PROVE" >"$PROVE/sanitize.out" 2>&1 \
     || { cat "$PROVE/sanitize.out" >&2; die "sanitize refused: the proof copy is not inert; not booting it"; }
-  # The shared arr sanitizer leaves metadata consumers alone. PlexMetadata is
-  # ENABLED on the box and writes .plexmatch into the real series folders on a
-  # refresh, so the proof copy turns every consumer off and re-reads the count.
-  "$PY" - "$PROVE/sonarr.db" <<'PY' || die "metadata consumers could not be disabled in the proof copy"
-import sqlite3, sys
-con = sqlite3.connect(sys.argv[1])
-con.execute('UPDATE "Metadata" SET "Enable"=0')
-con.commit()
-left = con.execute('SELECT count(*) FROM "Metadata" WHERE "Enable"!=0').fetchone()[0]
-con.close()
-sys.exit(0 if left == 0 else 1)
-PY
   before="$(user_tasks)"
   [[ "$before" =~ ^[0-9]+$ ]] || die "cannot count tasks"
   # Port/bind/update come from the ENVIRONMENT, exactly as in the real unit:
-  # config.xml still says Port 8989, so a green status here proves the override.
+  # config.xml still says Port 7878, so a green status here proves the override.
   # DOTNET_GCRegionRange: same as the env file (native.sh); without it CoreCLR
   # cannot reserve its GC range under the slot's ~10 GB address-space cap
-  # ("GC heap initialization failed 0x8007000E", radarr proof 2026-10-10, #64).
+  # ("GC heap initialization failed 0x8007000E", seen on the box 2026-10-10).
   env DOTNET_PROCESSOR_COUNT=4 DOTNET_gcServer=0 DOTNET_GCRegionRange=80000000 MALLOC_ARENA_MAX=2 COMPlus_EnableDiagnostics=0 \
-      "$TZ_ENV" SONARR__SERVER__BINDADDRESS="$LOOPBACK" SONARR__SERVER__PORT="$pport" \
-      SONARR__UPDATE__MECHANISM=External SONARR__UPDATE__AUTOMATICALLY=false \
+      "$TZ_ENV" RADARR__SERVER__BINDADDRESS="$LOOPBACK" RADARR__SERVER__PORT="$pport" \
+      RADARR__UPDATE__MECHANISM=External RADARR__UPDATE__AUTOMATICALLY=false \
       "$APPDIR/bin/current/$EXE" -nobrowser "-data=$PROVE" >"$PROVE/stdout.log" 2>&1 &
   PROOF_PID=$!
   sleep "$SETTLE"
@@ -542,12 +522,17 @@ PY
   docker="$(printf '%s' "$status_json" | json_get isDocker)"
   [ "${version%$'\r'}" = "$VERSION" ] || die "proof: status reports build '$version', pinned $VERSION"
   [ "${docker%$'\r'}" = false ] || die "proof: status says isDocker=$docker; this is not the native binary"
-  # Data parity: the proof copy must hold exactly the series the live container
-  # serves (the VACUUM INTO copy lost nothing, the native binary reads it all).
-  live_series="$(api_get "$PORT" series 2>/dev/null | json_len)" || die "proof: cannot count the live series"
-  count="$(api_get "$pport" series 2>/dev/null | json_len)" || die "proof: cannot count the proof copy's series"
-  { [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ] && [ "$count" = "$live_series" ]; } \
-    || die "proof: series count differs (live=$live_series proof=$count); refusing"
+  # ONE metadata lookup (TMDB id 603): proves the .NET runtime, TLS and the
+  # metadata server work natively. Import lists are deleted in the copy, so
+  # nothing is added or pushed anywhere.
+  count="$(api_get "$pport" "movie/lookup?term=tmdb:603" 2>/dev/null \
+    | "$PY" -c 'import sys, json; d = json.load(sys.stdin); assert isinstance(d, list) and d; print(len(d))')" \
+    || die "proof: the metadata lookup failed"
+  # Movie count parity: what the native binary serves from the copy must equal
+  # the rows in the copy (and so the live db at VACUUM time).
+  movies="$(api_movies "$pport")" || die "proof: cannot list movies from the proof copy"
+  dbm="$(db_movies "$PROVE/radarr.db")" || die "proof: cannot count movies in the proof copy"
+  [ "$movies" = "$dbm" ] && [ "$movies" -gt 0 ] || die "proof: movie parity failed (api=$movies db=$dbm)"
   delta="$(ls "$PROC/$PROOF_PID/task" 2>/dev/null | wc -l | tr -d ' ')"
   [ "${delta:-0}" -gt 0 ] || die "proof: cannot read the task count of pid $PROOF_PID; refusing"
   kill "$PROOF_PID" 2>/dev/null; wait "$PROOF_PID" 2>/dev/null; PROOF_PID=""
@@ -555,10 +540,10 @@ PY
     die "thread gate: $before + $delta tasks reaches 70% of the ceiling $ceiling; refusing the swap"
   fi
   mkdir -p "$SWAPDIR"
-  printf '{"ok": true, "version": "%s", "before": %s, "delta": %s, "ceiling": %s, "series": %s, "at": "%s"}\n' \
-    "$VERSION" "$before" "$delta" "$ceiling" "$count" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  printf '{"ok": true, "version": "%s", "before": %s, "delta": %s, "ceiling": %s, "lookup_results": %s, "movies": %s, "at": "%s"}\n' \
+    "$VERSION" "$before" "$delta" "$ceiling" "$count" "$movies" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     | native_write_secure "$SWAPDIR/proof.json" 0644 || die "cannot record the proof"
-  info "PROOF OK: status build $VERSION, $count series match the live app; before=$before delta=$delta ceiling=$ceiling. Next: --swap --execute"
+  info "PROOF OK: status build $VERSION, lookup returned $count, movies=$movies (api==db); before=$before delta=$delta ceiling=$ceiling. Next: --swap --execute"
 }
 
 verify_native() {
@@ -599,7 +584,7 @@ check_listen_set() {
 }
 
 do_swap() {
-  local st cls ss_state ver snap now soak key ub
+  local st cls ss_state ver snap now soak key ub movies_before movies_after
   [ -f "$SWAPDIR/proof.json" ] || die "no proof recorded; run --prove --execute first"
   [ -x "$APPDIR/bin/current/$EXE" ] && [ -f "$APPDIR/native/$UNIT" ] && [ -f "$APPDIR/native/$FWD_SOCKET" ] \
     && [ -f "$APPDIR/native/$FWD_UNIT" ] && [ -f "$ENV_DIR/$SLUG.env" ] \
@@ -612,7 +597,7 @@ do_swap() {
   if sysd is-active "$UNIT" >/dev/null 2>&1 && [ -z "$(scan_pids container)" ]; then
     info "already swapped; verifying only"
     make_hdr
-    verify_native || die "native sonarr fails parity; run --rollback --execute"
+    verify_native || die "native radarr fails parity; run --rollback --execute"
     info "verified"
     return 0
   fi
@@ -621,19 +606,18 @@ do_swap() {
   unmask_all
 
   # Step 3: captures + audits.
-  assert_probe_not_me
   make_hdr
   ver="$(native_ucc_version "$SLUG")"
   ver="${ver#v}"
   case "$VERSION." in "$ver."*) ;; *) die "version parity: panel=$ver pinned=$VERSION" ;; esac
   api_build_is_pin "$PORT" || die "version parity: the container's API build is not $VERSION"
   # 5.5: the app's own config must equal the secrets the whole stack reads.
-  [ "$(secret sonarr.port)" = "$PORT" ] || die "secrets/sonarr.port is not $PORT"
-  # config.xml says "/sonarr", the secret says "sonarr" (box, 2026-10-10).
+  [ "$(secret radarr.port)" = "$PORT" ] || die "secrets/radarr.port is not $PORT"
+  # config.xml says "/radarr", the secret says "radarr" (box, 2026-10-10).
   ub="$(cfg_get UrlBase)"; ub="${ub#/}"; ub="${ub%/}"
-  [ -n "$ub" ] && [ "$ub" = "$(secret sonarr.urlbase)" ] || die "config.xml UrlBase differs from secrets/sonarr.urlbase; aborting"
+  [ -n "$ub" ] && [ "$ub" = "$(secret radarr.urlbase)" ] || die "config.xml UrlBase differs from secrets/radarr.urlbase; aborting"
   key="$(cfg_get ApiKey)"
-  [ -n "$key" ] && [ "$key" = "$(secret sonarr.key)" ] || die "config.xml ApiKey differs from secrets/sonarr.key; aborting"
+  [ -n "$key" ] && [ "$key" = "$(secret radarr.key)" ] || die "config.xml ApiKey differs from secrets/radarr.key; aborting"
   # Local-address auth bypass must be off: the callers move from 172.17.0.1 to
   # loopback/the bridge, both private, so the behaviour only matches if it is explicit.
   [ "$(cfg_get AuthenticationRequired)" = Enabled ] \
@@ -645,13 +629,13 @@ do_swap() {
   path_audit
 
   # Step 4: suppress the app and its canaries together.
-  suppression add "${SUPPRESS[@]}" --reason "QFLX-32 swap to native" >/dev/null \
+  suppression add "${SUPPRESS[@]}" --reason "QFLX-31 swap to native" >/dev/null \
     || die "cannot suppress ${SUPPRESS[*]}; refusing to swap unsuppressed"
 
   # Step 5: snapshot (config + db; logs and caches excluded).
   snap="$SWAPDIR/snapshot-$(date -u +%Y%m%dT%H%M%SZ).tgz"
   "${TAR[@]}" -czf "$snap" -C "$APPS" --exclude="$SLUG/bin" --exclude="$SLUG/native" \
-      --exclude="$SLUG/logs" --exclude="$SLUG/logs.db*" --exclude="$SLUG/MediaCover" \
+      --exclude="$SLUG/logs" --exclude="$SLUG/logs.db*" --exclude="$SLUG/MediaCover" --exclude="$SLUG/Sentry" --exclude="$SLUG/xdg" \
       --exclude="$SLUG/Backups" --exclude="$SLUG/*.prew-rectify" "$SLUG" || die "snapshot failed"
 
   # Step 6: stop the container; its exit is asynchronous Docker behaviour, so
@@ -664,6 +648,11 @@ do_swap() {
   fi
   # config.xml as the container left it: the byte-exact rollback copy.
   cp -p "$APPDIR/config.xml" "$SWAPDIR/config.xml.pre-native" || die "cannot keep config.xml.pre-native"
+  # Movie parity baseline: the container is gone, so the db is quiescent and
+  # this is the final count (ticket proof: movie count parity).
+  movies_before="$(db_movies "$APPDIR/radarr.db")"
+  [[ "$movies_before" =~ ^[0-9]+$ ]] || die "cannot count movies in radarr.db; run --rollback --execute"
+  printf '%s\n' "$movies_before" | native_write_secure "$SWAPDIR/movies.before" 0644 || die "cannot record movies.before"
   mkdir -p "$UNIT_DIR"
   native_write_secure "$UNIT_DIR/$UNIT" 0644 < "$APPDIR/native/$UNIT" || die "unit install failed"
   native_write_secure "$UNIT_DIR/$FWD_SOCKET" 0644 < "$APPDIR/native/$FWD_SOCKET" || die "socket install failed"
@@ -674,8 +663,11 @@ do_swap() {
 
   # Step 8 (in-place part): parity.
   if ! verify_native; then
-    die "native sonarr fails parity after the swap; suppression kept ON; run --rollback --execute"
+    die "native radarr fails parity after the swap; suppression kept ON; run --rollback --execute"
   fi
+  movies_after="$(api_movies "$PORT")"
+  [ "$movies_after" = "$movies_before" ] \
+    || die "movie count parity failed: db before=$movies_before, native API=${movies_after:-unreadable}; suppression kept ON; run --rollback --execute"
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   soak="$(date -u -d '+14 days' +%Y-%m-%dT%H:%M:%SZ)" || die "cannot compute soak_until"
   swapstate set "$SLUG" "swap_date=$now" "soak_until=$soak" "rollback_window=open" >/dev/null \
@@ -691,7 +683,7 @@ do_finish() {
   [ "$cls" = systemd ] && [ -z "$ss_state" ] && [ "$dormant" = 1 ] \
     || die "deployed manifest still says class=$cls swap_state=${ss_state:-none} dormant=$dormant; deploy the follow-up (no pending-swap) first"
   make_hdr
-  verify_native || die "native sonarr fails parity; run --rollback --execute"
+  verify_native || die "native radarr fails parity; run --rollback --execute"
   suppression remove "${SUPPRESS[@]}" >/dev/null || die "cannot lift suppression"
   info "FINISHED: ${SUPPRESS[*]} unsuppressed; 14-day soak running"
 }
@@ -699,17 +691,17 @@ do_finish() {
 do_rollback() {
   local isn u
   # Step 0: re-suppress + mask BEFORE anything stops.
-  suppression add "${SUPPRESS[@]}" --reason "QFLX-32 rollback to UCC" >/dev/null \
+  suppression add "${SUPPRESS[@]}" --reason "QFLX-31 rollback to UCC" >/dev/null \
     || die "cannot suppress ${SUPPRESS[*]}; refusing to roll back unsuppressed"
   mask_all
   # Step 1: stop the socket first (it would re-spawn the forwarder), then both services.
   for u in "$FWD_SOCKET" "$FWD_UNIT" "$UNIT"; do sysd stop "$u" >/dev/null 2>&1 || true; done
-  wait_until "$STOP_TIMEOUT" native_gone || die "native sonarr did not stop within ${STOP_TIMEOUT}s"
+  wait_until "$STOP_TIMEOUT" native_gone || die "native radarr did not stop within ${STOP_TIMEOUT}s"
   wait_until "$STOP_TIMEOUT" bind_clear  || die "port $PORT is still bound after stopping the native units"
-  # Step 2: the DEPLOYED manifest must dispatch sonarr as UCC again.
+  # Step 2: the DEPLOYED manifest must dispatch radarr as UCC again.
   isn="$("$APPCTL" is-native "$SLUG" 2>/dev/null)"
   if [ "${isn%$'\r'}" != ucc ]; then
-    echo "[307-sonarr] PAUSED: native stopped + masked; revert the deployed manifest (PR + 240) so appctl dispatches $SLUG as UCC, then re-run --rollback --execute" >&2
+    echo "[306-radarr] PAUSED: native stopped + masked; revert the deployed manifest (PR + 240) so appctl dispatches $SLUG as UCC, then re-run --rollback --execute" >&2
     exit 10
   fi
   # Step 5 (config half): the container reads config.xml; hand back the exact bytes it left.

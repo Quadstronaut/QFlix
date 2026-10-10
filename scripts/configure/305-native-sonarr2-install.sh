@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
-# 307-native-sonarr-install.sh -- QFLX-32 (UCC divorce A8, sonarr main).
+# 305-native-sonarr2-install.sh -- QFLX-30 (UCC divorce A6, the anime Sonarr).
 #
-# Moves sonarr off the Ultra.cc container manager (UCC) onto user units the
+# Moves sonarr2 off the Ultra.cc container manager (UCC) onto user units the
 # repo owns: the upstream Sonarr v4 linux-x64 tarball at EXACTLY the container's
-# build, sha256-pinned, run as qflix-sonarr.service, plus a socket-activated
-# loopback forwarder (qflix-sonarr-fwd.socket/.service). Spec:
-# docs/superpowers/specs/2026-10-09-ucc-divorce-design.md 5.1-5.9, row 8 of 14.
-# Shape copied from the pilot, 300-native-unpackerr-install.sh (QFLX-25) and the
-# first .NET installer, 303-native-prowlarr-install.sh (QFLX-28).
+# build, sha256-pinned, run as qflix-sonarr2.service, plus a socket-activated
+# loopback forwarder (qflix-sonarr2-fwd.socket/.service). Spec:
+# docs/superpowers/specs/2026-10-09-ucc-divorce-design.md 5.1-5.9, row 6 of 6.
+# Shape copied from the pilot (300-native-unpackerr-install.sh, QFLX-25) and the
+# first .NET arr (303-native-prowlarr-install.sh, QFLX-28). The data stays IN
+# PLACE: ~/.apps/sonarr2 (sonarr.db, logs.db, config.xml, MediaCover) is used by
+# the native binary exactly as the container used it.
+#
+# Two things differ from prowlarr and are the reason this file is not a rename:
+#   * The primary sonarr container runs the SAME binary path (/app/sonarr/bin/
+#     Sonarr -nobrowser -data=/config), so a cmdline scan cannot tell the two
+#     containers apart. "Is the sonarr2 container still alive" is therefore
+#     answered by what holds sonarr2's OWN db (fuser) and its port, never by a
+#     process pattern. The native side is told apart by the unit's cgroup.
+#   * The data dir keeps a 0-byte sonarr2.db stray (2026-05-10); the live db is
+#     sonarr.db (Sonarr's fixed name). Only sonarr.db is copied/audited.
 #
 # RUNS ON THE BOX. 240-maintenance-install.sh deploys it to ~/scripts/configure/
 # with ~/scripts/lib/native.sh and ~/scripts/maint/native_sanitize.py beside it.
@@ -19,41 +30,48 @@
 #   --install   5.9 step 1. Fetch + sha256-verify the release, refuse unless the
 #               panel version is a dotted prefix of the pinned build (the panel
 #               prints "4.0.20", the build is 4.0.20.3014) AND the live API says
-#               the pinned build (I-10), lay out ~/.apps/sonarr/bin/<ver> +
-#               `current`, write the env file and STAGE the three units in
-#               ~/.apps/sonarr/native/. Deliberately NOT copied into
+#               the pinned build (I-10), lay out ~/.apps/sonarr2/bin/<ver> +
+#               current, write the env file and STAGE the three units in
+#               ~/.apps/sonarr2/native/. Deliberately NOT copied into
 #               ~/.config/systemd/user and NOT enabled: WantedBy=default.target
 #               would start it beside the live container (I-6).
 #   --prove     5.9 step 2. VACUUM INTO a copy of sonarr.db under
-#               ~/.apps/.prove/sonarr, copy config.xml, run
-#               native_sanitize (download clients, indexers, import lists off,
-#               notifications deleted, auto-update off) plus the metadata consumers
-#               (PlexMetadata would write .plexmatch into the real series folders),
-#               all re-read and counted, boot the NATIVE binary on a free
-#               loopback port with the port/bind/update settings coming from the
-#               environment (proves config.xml's Port 8989 is overridden), check
-#               status (build == pin, not docker) and compare the series count with the live app's,
-#               measure the task count (refused at 70% of the host ceiling), then
-#               delete the copy. Never side by side against live queues.
+#               ~/.apps/.prove/sonarr2, copy config.xml, run native_sanitize
+#               (download clients + indexers + import lists off, notifications
+#               deleted, auto-update off) plus the metadata consumers off (they
+#               would write .nfo/images beside the media), re-read and counted.
+#               Boot the NATIVE binary on a free loopback port with the
+#               port/bind/update settings coming from the environment (proves
+#               config.xml's Port 8989 is overridden), check status (build ==
+#               pin, not docker), renameEpisodes == true (naming API), and
+#               series-count parity between the live container and the copy.
+#               Measure the task count (refused at 70% of the host ceiling),
+#               then delete the copy. Never side by side against live queues.
 #   --swap      5.9 steps 3-6: needs the proof and the DEPLOYED pending-swap
 #               manifest flip. Unmask (rollback step 4), assert config.xml equals
 #               the secrets (port/urlbase/key) and local-auth-bypass is off,
-#               capture the listen set (must hold loopback + 172.17.0.1; any
-#               other non-wildcard address is recorded as a D-4 exception),
-#               path-audit config.xml + db, suppress the app + its canaries,
-#               snapshot, stop the container through appctl, POLL until no
-#               container process is left, the port is free and nothing holds
-#               the db (abort and restore the container otherwise), install +
-#               enable --now the unit, then the loopback socket, verify parity,
+#               assert renameEpisodes is true on the live container, refuse while
+#               an import is in flight, capture the listen set (must hold
+#               loopback + the bridge; any other non-wildcard address is
+#               recorded as a D-4 exception), path-audit config.xml + the db,
+#               suppress the app + its canaries, snapshot, stop the container
+#               through appctl, POLL until nothing holds the db and the port is
+#               free (abort and restore the container otherwise), install +
+#               enable --now the unit, then the loopback socket, verify parity
+#               (pinned build, renameEpisodes still true, same series count),
 #               record swap state (14-day soak). Suppression stays ON: the
 #               manifest still says pending-swap.
 #   --finish    5.9 step 9, after the follow-up PR dropped `swap_state` and 240
 #               deployed it: verify, then lift the app + canaries together.
+#               Then (operator, once, by hand) run the buildarr oneshot:
+#               systemctl --user start buildarr.service (same port + key, so it
+#               reconciles against the native app; renameEpisodes stays true
+#               because the proof and the parity check both pin it).
 #   --rollback  Rollback 0-5. 0: re-suppress, park the unit files and MASK all
 #               three (without the mask, pusher recovery restarts even a
 #               disabled unit: two runtimes on one SQLite file, I-6). 1: stop
 #               them and wait for exit and a free port. 2: the DEPLOYED manifest
-#               must dispatch sonarr as UCC again (revert PR + 240, or the
+#               must dispatch sonarr2 as UCC again (revert PR + 240, or the
 #               pending-swap state); otherwise exit 10 and re-run after the
 #               revert. 3: start the container through appctl. 5: config.xml is
 #               restored byte-for-byte if the native era changed it; no db
@@ -74,12 +92,12 @@
 # QFLIX_ENV_DIR QFLIX_SWAP_DIR QFLIX_SECRETS_DIR MANITOBA_STATE_DIR
 # QFLIX_MANIFEST QFLIX_PROC QFLIX_PYTHON QFLIX_APPCTL QFLIX_SYSTEMCTL QFLIX_SS
 # QFLIX_PS QFLIX_CURL QFLIX_FUSER QFLIX_HOSTPOLICY QFLIX_HOST_ID_FILE
-# QFLIX_SONARR_SHA256 QFLIX_POLL_S QFLIX_SETTLE_S QFLIX_STOP_TIMEOUT_S
+# QFLIX_SONARR2_SHA256 QFLIX_POLL_S QFLIX_SETTLE_S QFLIX_STOP_TIMEOUT_S
 # QFLIX_PROOF_TIMEOUT_S QFLIX_API_TIMEOUT_S QFLIX_KEEP_PROOF.
 set -uo pipefail
 
-SLUG=sonarr
-VERSION="4.0.20.3014"         # == versions.env SONARR_VERSION (test-pinned)
+SLUG=sonarr2
+VERSION="4.0.20.3014"        # == versions.env SONARR2_VERSION (test-pinned)
 SHA256="1fc48544b5a3401b2fc3df8d0642c1e6a73a28e41a351169edd9cd8f54770db5"
 URL="https://github.com/Sonarr/Sonarr/releases/download/v${VERSION}/Sonarr.main.${VERSION}.linux-x64.tar.gz"
 UNIT="qflix-${SLUG}.service"
@@ -89,33 +107,31 @@ ALL_UNITS=("$UNIT" "$FWD_SOCKET" "$FWD_UNIT")
 FAMILY=dotnet
 EXE=Sonarr
 # %h stays literal: systemd expands it. -data is the container's /config seen
-# from the host: the container mounted ~/.apps/sonarr at /config.
+# from the host: the container mounted ~/.apps/sonarr2 at /config.
 EXEC_ARGS="-nobrowser -data=%h/.apps/${SLUG}"
 # The container ran with TZ=Europe/Amsterdam and COMPlus_EnableDiagnostics=0
 # (its /proc/<pid>/environ, box 2026-10-10). Keeping TZ keeps the log timestamps
 # vlogs ingests unshifted (QFLX-44 class).
 TZ_ENV="TZ=Europe/Amsterdam"
-PORT=17026                   # the UCC host port == secrets/sonarr.port (asserted)
+PORT=17003                   # the UCC host port == secrets/sonarr2.port (asserted)
 BRIDGE=""                    # secret net.app_host (docker0 on Ultra); the arrs / Seerr / FlareSolverr call here (F-17)
 LOOPBACK=127.0.0.1           # nginx, the health probe and the canaries call here
-# Behavioural canaries muted with the app (plan A-table row A8). Keys follow
+# Behavioural canaries muted with the app (plan A-table row A6: anime,
+# arr-plex-parity; seerr-arr-parity also reads sonarr2's API). Keys follow
 # cli.py: canary-<name>.
-SUPPRESS=("$SLUG" "canary-arr-plex-parity" "canary-seerr-arr-parity"
-          "canary-ucc-gate-stuck" "canary-thread-ceiling")
-PATTERN="/Sonarr"          # cmdline of both runtimes: /app/sonarr/bin/Sonarr, .../bin/current/Sonarr
-# DANGER (box, 2026-10-10): the sonarr AND sonarr2 containers run the IDENTICAL
-# cmdline (/app/sonarr/bin/Sonarr -nobrowser -data=/config) with the same
-# s6-supervise name. Only the bind mount tells them apart: this app's data dir
-# is mounted at /config, so /proc/<pid>/mountinfo carries "/.apps/sonarr /config ".
-# Without that filter the container scan would see sonarr2 and the swap would
-# wait forever (or, worse, a rollback would call it "up").
-MOUNT_RE="/\\.apps/${SLUG} /config "
+SUPPRESS=("$SLUG" "canary-anime" "canary-arr-plex-parity" "canary-seerr-arr-parity"
+          "canary-thread-ceiling")
+# Native cmdline: .../bin/current/Sonarr -nobrowser -data=... The CONTAINER
+# cmdline (/app/sonarr/bin/Sonarr) is identical for sonarr and sonarr2, so the
+# container is never found by pattern (see scan_pids / container_pids).
+PATTERN="/bin/current/Sonarr"
+DBNAME=sonarr.db             # Sonarr's fixed db name (the 0-byte sonarr2.db is a stray)
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"     # .../scripts
 ARGS=("$@")
 
-info() { echo "[307-sonarr] $*"; }
-die()  { echo "[307-sonarr] ERROR: $*" >&2; exit 1; }
+info() { echo "[305-sonarr2] $*"; }
+die()  { echo "[305-sonarr2] ERROR: $*" >&2; exit 1; }
 usage() {
   echo "usage: $0 [--install|--prove|--swap|--finish|--rollback] [--execute]" >&2
   exit 64
@@ -155,7 +171,7 @@ SETTLE="${QFLIX_SETTLE_S:-10}"
 STOP_TIMEOUT="${QFLIX_STOP_TIMEOUT_S:-120}"
 PROOF_TIMEOUT="${QFLIX_PROOF_TIMEOUT_S:-300}"
 API_TIMEOUT="${QFLIX_API_TIMEOUT_S:-120}"
-WANT_SHA="${QFLIX_SONARR_SHA256:-$SHA256}"
+WANT_SHA="${QFLIX_SONARR2_SHA256:-$SHA256}"
 
 hostpolicy() {
   if [ -n "${QFLIX_HOSTPOLICY:-}" ]; then "$QFLIX_HOSTPOLICY" "$@"
@@ -170,7 +186,7 @@ plan() {
   info "DRY-RUN mode=$MODE (nothing touched; add --execute to run)"
   case "$MODE" in
     install)  info "would fetch $URL (sha256 $WANT_SHA), check version parity (panel prefix + API build), lay out $APPDIR/bin/$VERSION, write $ENV_DIR/$SLUG.env, stage $APPDIR/native/{$UNIT,$FWD_SOCKET,$FWD_UNIT} (not enabled)" ;;
-    prove)    info "would VACUUM INTO a copy of sonarr.db in $PROVE, sanitize it (+ metadata consumers), boot the native binary on a free loopback port with env-only port/bind, check status + series count parity, gate the task delta at 70% of the ceiling, then delete the copy" ;;
+    prove)    info "would VACUUM INTO a copy of $DBNAME in $PROVE, sanitize it (arr flags + metadata consumers off), boot the native binary on a free loopback port with env-only port/bind, check status + renameEpisodes + series-count parity, gate the task delta at 70% of the ceiling, then delete the copy" ;;
     swap)     info "would capture the listen set (port $PORT: loopback + the net.app_host bridge required), assert config==secrets and auth-bypass off, path-audit, suppress ${SUPPRESS[*]}, snapshot, stop the container, wait for exit + free port + idle db, enable --now $UNIT then $FWD_SOCKET, verify, record swap state" ;;
     finish)   info "would verify the native units and lift suppression for ${SUPPRESS[*]}" ;;
     rollback) info "would suppress ${SUPPRESS[*]}, park + mask ${ALL_UNITS[*]}, stop them, wait for the manifest revert, start the container via appctl, unsuppress" ;;
@@ -189,7 +205,7 @@ if ! _on_host; then
   # shellcheck source=/dev/null
   source "$HERE/lib/ssh.sh"
   info "not on the box: running the deployed copy there"
-  sshm "~/scripts/configure/307-native-sonarr-install.sh $(printf '%q ' "${ARGS[@]}")"
+  sshm "~/scripts/configure/305-native-sonarr2-install.sh $(printf '%q ' "${ARGS[@]}")"
   exit $?
 fi
 
@@ -203,7 +219,10 @@ if hostpolicy in-window; then
 fi
 case "$MODE" in
   swap|finish|rollback)
-    [ "$PROFILE" = ultra ] || die "mode $MODE swaps against a UCC container; host profile is '$PROFILE'" ;;
+    [ "$PROFILE" = ultra ] || die "mode $MODE swaps against a UCC container; host profile is '$PROFILE'"
+    # No fuser = no way to tell the sonarr2 container from the primary sonarr
+    # one (same cmdline): refuse rather than call the container "gone".
+    command -v "${QFLIX_FUSER:-fuser}" >/dev/null 2>&1 || die "no fuser on this host; cannot tell the sonarr2 container from sonarr's" ;;
 esac
 
 # The bridge address comes from the net.app_host secret (QFLX-23), never a literal.
@@ -246,12 +265,26 @@ print("|".join([str(a.get("class") or ""), str(a.get("swap_state") or ""),
 PY
 }
 
-# PIDs under OUR uid whose cmdline carries the app pattern. kind=container: in
-# a container cgroup (docker/libpod/...), not the unit's. kind=native: in the
-# unit's cgroup. A `tail` of the log, the proof process or this script is in
-# neither.
+# kind=native: PIDs under OUR uid in the unit's cgroup whose cmdline carries the
+# native pattern. kind=container: PIDs holding sonarr2's OWN db files open that
+# are NOT in the unit's cgroup. The sonarr and sonarr2 containers run the same
+# /app/sonarr/bin/Sonarr cmdline, so a pattern scan would name the PRIMARY
+# sonarr container as ours; the db path cannot be confused.
 scan_pids() {
-  local kind="$1" uid d pid cg cmd
+  local kind="$1" uid d pid cg cmd f
+  if [ "$kind" = container ]; then
+    command -v "$FUSER" >/dev/null 2>&1 || return 0
+    for f in "$APPDIR/$DBNAME" "$APPDIR/$DBNAME-wal" "$APPDIR/logs.db" "$APPDIR/logs.db-wal"; do
+      [ -e "$f" ] || continue
+      for pid in $("$FUSER" "$f" 2>/dev/null); do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        cg="$(cat "$PROC/$pid/cgroup" 2>/dev/null)"
+        case "$cg" in *"$UNIT"*) continue ;; esac
+        echo "$pid"
+      done
+    done | sort -u
+    return 0
+  fi
   uid="$(id -u)"
   for d in "$PROC"/[0-9]*; do
     [ -d "$d" ] || continue
@@ -260,15 +293,7 @@ scan_pids() {
     cg="$(cat "$d/cgroup" 2>/dev/null)" || continue
     cmd="$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)" || continue
     case "$cmd" in *"$PATTERN"*) ;; *) continue ;; esac
-    if [ "$kind" = native ]; then
-      case "$cg" in *"$UNIT"*) echo "$pid" ;; esac
-    else
-      case "$cg" in *"$UNIT"*) continue ;; esac
-      [[ "$cg" =~ docker|libpod|podman|containerd|crio ]] || continue
-      # sonarr2's container has the same cmdline: tell them apart by the mount.
-      grep -qE "$MOUNT_RE" "$d/mountinfo" 2>/dev/null || continue
-      echo "$pid"
-    fi
+    case "$cg" in *"$UNIT"*) echo "$pid" ;; esac
   done
 }
 
@@ -279,7 +304,7 @@ port_free() { ! "$SS" -tlnH "sport = :$PORT" 2>/dev/null | grep -q ":$PORT\b"; }
 db_idle() {
   local f
   command -v "$FUSER" >/dev/null 2>&1 || { echo "no fuser: cannot prove the db idle" >&2; return 1; }
-  for f in "$APPDIR/sonarr.db" "$APPDIR/sonarr.db-wal" "$APPDIR/logs.db" "$APPDIR/logs.db-wal"; do
+  for f in "$APPDIR/$DBNAME" "$APPDIR/$DBNAME-wal" "$APPDIR/logs.db" "$APPDIR/logs.db-wal"; do
     [ -e "$f" ] || continue
     if "$FUSER" -s "$f" >/dev/null 2>&1; then return 1; fi
   done
@@ -335,14 +360,20 @@ except Exception:
 print(str(v).lower() if isinstance(v, bool) else v)' "$1"
 }
 
-json_len() {
-  "$PY" -c 'import sys, json
-try:
-    d = json.load(sys.stdin)
-    assert isinstance(d, list)
-except Exception:
-    sys.exit(1)
-print(len(d))'
+# Number of series the app on <port> serves.
+series_count() {
+  api_get "$1" series 2>/dev/null \
+    | "$PY" -c 'import sys, json; d = json.load(sys.stdin); assert isinstance(d, list); print(len(d))'
+}
+rename_is_true() {
+  [ "$(api_get "$1" config/naming 2>/dev/null | json_get renameEpisodes)" = true ]
+}
+# Nothing mid-import: a stop during an import leaves a half-moved file.
+queue_not_importing() {
+  api_get "$PORT" "queue?pageSize=200" 2>/dev/null | "$PY" -c 'import sys, json
+d = json.load(sys.stdin)
+bad = [r for r in d.get("records", []) if str(r.get("trackedDownloadState", "")).lower() in ("importing", "importpending")]
+sys.exit(1 if bad else 0)'
 }
 
 # The build the API reports on <port> must be exactly the pin (I-10); the panel
@@ -353,27 +384,19 @@ api_build_is_pin() {
   [ "${v%$'\r'}" = "$VERSION" ]
 }
 
-# QFLX-17 hard prerequisite: the UCC gate probe runs `app-<probe_app> start` every
-# 5 minutes. If it still named sonarr it would wake the dormant container next to
-# the native unit (I-6). Fails closed: an unreadable secret is a refusal too.
-assert_probe_not_me() {
-  local pa
-  pa="$(secret ucc.probe_app)"
-  [ -n "$pa" ] || die "secrets/ucc.probe_app unreadable; pin it to plex before converting $SLUG"
-  [ "$pa" != "$SLUG" ] || die "secrets/ucc.probe_app is '$pa': the gate probe would start the dormant container; pin it to plex first"
-}
-
 # Container paths (/config, /data, /downloads) mean nothing on the host (5.9 step 3).
 path_audit() {
   local hits dbhits
   hits="$(grep -nE ">(/config|/data|/downloads)(/|<)" "$APPDIR/config.xml" || true)"
   [ -z "$hits" ] || die "container path(s) in $APPDIR/config.xml: $(echo "$hits" | head -3 | tr '\n' ' ')"
-  dbhits="$("$PY" - "$APPDIR/sonarr.db" <<'PY'
+  dbhits="$("$PY" - "$APPDIR/$DBNAME" <<'PY'
 import re, sqlite3, sys
 from pathlib import Path
 rx = re.compile(r"""(^|["'])(/config|/data|/downloads)(/|["']|$)""")
 con = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
-skip = {"History", "Blocklist", "ScheduledTasks", "ExtraFiles", "SubtitleFiles", "MetadataFiles", "DownloadHistory"}
+# History-like tables keep paths from the container era on purpose.
+skip = {"History", "Blocklist", "ScheduledTasks", "PendingReleases", "EpisodeFiles",
+        "ExtraFiles", "SubtitleFiles", "MetadataFiles", "IndexerStatus", "DownloadClientStatus"}
 hits = []
 for (t,) in con.execute("select name from sqlite_master where type='table' and name not like 'sqlite_%'"):
     if t in skip:
@@ -388,7 +411,7 @@ for (t,) in con.execute("select name from sqlite_master where type='table' and n
 print(" ".join(sorted(set(hits))))
 PY
 )" || die "db path audit failed"
-  [ -z "$dbhits" ] || die "container path(s) in sonarr.db columns: $dbhits"
+  [ -z "$dbhits" ] || die "container path(s) in $DBNAME columns: $dbhits"
 }
 
 # systemd treats a unit linked to /dev/null OR an empty unit file as masked.
@@ -419,11 +442,11 @@ unmask_all() {
   [ "$any" = 0 ] || sysd daemon-reload || true
 }
 
-# --- unit bodies (byte-identical to scripts/maint/systemd/qflix-sonarr*; test-enforced)
+# --- unit bodies (byte-identical to scripts/maint/systemd/qflix-sonarr2*; test-enforced)
 render_fwd_socket() {
   cat <<EOF
 [Unit]
-Description=QFlix sonarr loopback listener (forwards to the docker-bridge bind)
+Description=QFlix sonarr2 loopback listener (forwards to the docker-bridge bind)
 
 [Socket]
 # Kestrel binds ONE address; the UCC container listened on three (spec 5.4,
@@ -439,7 +462,7 @@ EOF
 render_fwd_service() {
   cat <<EOF
 [Unit]
-Description=QFlix sonarr loopback forwarder
+Description=QFlix sonarr2 loopback forwarder
 Requires=$FWD_SOCKET
 After=$FWD_SOCKET $UNIT
 
@@ -454,8 +477,8 @@ EOF
 do_install() {
   local stage panel_port
   [ -f "$APPDIR/config.xml" ] || die "$APPDIR/config.xml missing (the config is used in place)"
-  panel_port="$(secret sonarr.port)"
-  [ "$panel_port" = "$PORT" ] || die "secrets/sonarr.port is '$panel_port', the pinned units use $PORT; refusing"
+  panel_port="$(secret sonarr2.port)"
+  [ "$panel_port" = "$PORT" ] || die "secrets/sonarr2.port is '$panel_port', the pinned units use $PORT; refusing"
   mkdir -p "$APPS" || die "cannot create $APPS"
   # The API build is the real parity: the panel tool truncates (4.0.20).
   make_hdr
@@ -482,7 +505,7 @@ do_install() {
 }
 
 do_prove() {
-  local before ceiling delta pport count live_series status_json version docker
+  local before ceiling delta pport live proofn naming status_json version docker
   [ -x "$APPDIR/bin/current/$EXE" ] || die "not installed; run --install --execute first"
   [ -f "$SANITIZE" ] || die "$SANITIZE missing (run 240 first)"
   ceiling="$(hostpolicy task-ceiling)" || die "task ceiling unknown; refusing (G-2)"
@@ -495,7 +518,7 @@ do_prove() {
   [ "${QFLIX_KEEP_PROOF:-0}" = 1 ] || CLEANUP_PATHS+=("$PROVE")
   # Copy, never the live files: VACUUM INTO writes a consistent snapshot even
   # while the container holds the WAL open.
-  "$PY" - "$APPDIR/sonarr.db" "$PROVE/sonarr.db" <<'PY' || die "VACUUM INTO failed"
+  "$PY" - "$APPDIR/$DBNAME" "$PROVE/$DBNAME" <<'PY' || die "VACUUM INTO failed"
 import sqlite3, sys
 from pathlib import Path
 con = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
@@ -503,30 +526,30 @@ con.execute("VACUUM INTO ?", (sys.argv[2],))
 con.close()
 PY
   cp -p "$APPDIR/config.xml" "$PROVE/config.xml" || die "cannot copy config.xml"
-  # INERT (I-11): clients, indexers and import lists off, notifications gone, updates off.
-  # The sanitizer re-reads the files and refuses unless every count is 0.
+  # INERT (I-11): download clients, indexers and import lists off, notifications
+  # gone, updates off. The sanitizer re-reads the files and refuses unless every
+  # count is 0. Metadata consumers (kodi/plex nfo + images) would WRITE beside
+  # the real media on a series refresh, so they go off in the copy as well.
   "$PY" "$SANITIZE" "$SLUG" "$PROVE" >"$PROVE/sanitize.out" 2>&1 \
     || { cat "$PROVE/sanitize.out" >&2; die "sanitize refused: the proof copy is not inert; not booting it"; }
-  # The shared arr sanitizer leaves metadata consumers alone. PlexMetadata is
-  # ENABLED on the box and writes .plexmatch into the real series folders on a
-  # refresh, so the proof copy turns every consumer off and re-reads the count.
-  "$PY" - "$PROVE/sonarr.db" <<'PY' || die "metadata consumers could not be disabled in the proof copy"
+  "$PY" - "$PROVE/$DBNAME" <<'PY' || die "metadata consumers not off in the proof copy; not booting it"
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1])
-con.execute('UPDATE "Metadata" SET "Enable"=0')
-con.commit()
-left = con.execute('SELECT count(*) FROM "Metadata" WHERE "Enable"!=0').fetchone()[0]
+cols = [r[1] for r in con.execute('pragma table_info("Metadata")')]
+if cols:
+    if "Enable" not in cols:
+        sys.exit("Metadata lacks Enable; cannot prove inert")
+    con.execute('UPDATE "Metadata" SET "Enable"=0')
+    con.commit()
+    if con.execute('SELECT count(*) FROM "Metadata" WHERE "Enable"!=0').fetchone()[0]:
+        sys.exit("metadata consumers still enabled")
 con.close()
-sys.exit(0 if left == 0 else 1)
 PY
   before="$(user_tasks)"
   [[ "$before" =~ ^[0-9]+$ ]] || die "cannot count tasks"
   # Port/bind/update come from the ENVIRONMENT, exactly as in the real unit:
   # config.xml still says Port 8989, so a green status here proves the override.
-  # DOTNET_GCRegionRange: same as the env file (native.sh); without it CoreCLR
-  # cannot reserve its GC range under the slot's ~10 GB address-space cap
-  # ("GC heap initialization failed 0x8007000E", radarr proof 2026-10-10, #64).
-  env DOTNET_PROCESSOR_COUNT=4 DOTNET_gcServer=0 DOTNET_GCRegionRange=80000000 MALLOC_ARENA_MAX=2 COMPlus_EnableDiagnostics=0 \
+  env DOTNET_PROCESSOR_COUNT=4 DOTNET_gcServer=0 MALLOC_ARENA_MAX=2 COMPlus_EnableDiagnostics=0 \
       "$TZ_ENV" SONARR__SERVER__BINDADDRESS="$LOOPBACK" SONARR__SERVER__PORT="$pport" \
       SONARR__UPDATE__MECHANISM=External SONARR__UPDATE__AUTOMATICALLY=false \
       "$APPDIR/bin/current/$EXE" -nobrowser "-data=$PROVE" >"$PROVE/stdout.log" 2>&1 &
@@ -542,12 +565,16 @@ PY
   docker="$(printf '%s' "$status_json" | json_get isDocker)"
   [ "${version%$'\r'}" = "$VERSION" ] || die "proof: status reports build '$version', pinned $VERSION"
   [ "${docker%$'\r'}" = false ] || die "proof: status says isDocker=$docker; this is not the native binary"
-  # Data parity: the proof copy must hold exactly the series the live container
-  # serves (the VACUUM INTO copy lost nothing, the native binary reads it all).
-  live_series="$(api_get "$PORT" series 2>/dev/null | json_len)" || die "proof: cannot count the live series"
-  count="$(api_get "$pport" series 2>/dev/null | json_len)" || die "proof: cannot count the proof copy's series"
-  { [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ] && [ "$count" = "$live_series" ]; } \
-    || die "proof: series count differs (live=$live_series proof=$count); refusing"
+  # renameEpisodes MUST be true (arr-plex-parity: sonarr2 once had it false and
+  # Plex could not match anime). Proven through the API of the booted copy.
+  naming="$(api_get "$pport" config/naming 2>/dev/null | json_get renameEpisodes)" \
+    || die "proof: cannot read config/naming from the proof copy"
+  [ "${naming%$'\r'}" = true ] || die "proof: renameEpisodes is '$naming' in the copy; it must stay true"
+  # Series-count parity: the copy answers with the same library the container serves.
+  live="$(series_count "$PORT")" || die "proof: cannot count series on the live container"
+  proofn="$(series_count "$pport")" || die "proof: cannot count series on the proof copy"
+  [ "$live" = "$proofn" ] || die "proof: series count differs (live $live, copy $proofn); retry if a series was just added"
+  [ "$live" -gt 0 ] || die "proof: zero series; refusing an empty parity"
   delta="$(ls "$PROC/$PROOF_PID/task" 2>/dev/null | wc -l | tr -d ' ')"
   [ "${delta:-0}" -gt 0 ] || die "proof: cannot read the task count of pid $PROOF_PID; refusing"
   kill "$PROOF_PID" 2>/dev/null; wait "$PROOF_PID" 2>/dev/null; PROOF_PID=""
@@ -555,10 +582,10 @@ PY
     die "thread gate: $before + $delta tasks reaches 70% of the ceiling $ceiling; refusing the swap"
   fi
   mkdir -p "$SWAPDIR"
-  printf '{"ok": true, "version": "%s", "before": %s, "delta": %s, "ceiling": %s, "series": %s, "at": "%s"}\n' \
-    "$VERSION" "$before" "$delta" "$ceiling" "$count" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  printf '{"ok": true, "version": "%s", "before": %s, "delta": %s, "ceiling": %s, "series": %s, "rename_episodes": true, "at": "%s"}\n' \
+    "$VERSION" "$before" "$delta" "$ceiling" "$live" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     | native_write_secure "$SWAPDIR/proof.json" 0644 || die "cannot record the proof"
-  info "PROOF OK: status build $VERSION, $count series match the live app; before=$before delta=$delta ceiling=$ceiling. Next: --swap --execute"
+  info "PROOF OK: status build $VERSION, renameEpisodes true, $live series on both; before=$before delta=$delta ceiling=$ceiling. Next: --swap --execute"
 }
 
 verify_native() {
@@ -575,6 +602,11 @@ verify_native() {
       && [ "$(printf '%s' "$s" | json_get version)" = "$VERSION" ] \
       && [ "$(printf '%s' "$s" | json_get isDocker)" = false ]; }
   wait_until "$API_TIMEOUT" api_ready || { echo "no pinned-build, non-docker status through :$LOOPBACK:$PORT within ${API_TIMEOUT}s" >&2; return 1; }
+  rename_is_true "$PORT" || { echo "renameEpisodes is not true on the native app" >&2; return 1; }
+  if [ -s "$SWAPDIR/series.count" ]; then
+    [ "$(series_count "$PORT")" = "$(tr -d '[:space:]' < "$SWAPDIR/series.count")" ] \
+      || { echo "series count differs from the pre-swap count in series.count" >&2; return 1; }
+  fi
 }
 
 # Listen-set policy (spec 5.4). Required: loopback + the docker bridge. Any other
@@ -599,7 +631,7 @@ check_listen_set() {
 }
 
 do_swap() {
-  local st cls ss_state ver snap now soak key ub
+  local st cls ss_state ver snap now soak key ub live_series
   [ -f "$SWAPDIR/proof.json" ] || die "no proof recorded; run --prove --execute first"
   [ -x "$APPDIR/bin/current/$EXE" ] && [ -f "$APPDIR/native/$UNIT" ] && [ -f "$APPDIR/native/$FWD_SOCKET" ] \
     && [ -f "$APPDIR/native/$FWD_UNIT" ] && [ -f "$ENV_DIR/$SLUG.env" ] \
@@ -612,7 +644,7 @@ do_swap() {
   if sysd is-active "$UNIT" >/dev/null 2>&1 && [ -z "$(scan_pids container)" ]; then
     info "already swapped; verifying only"
     make_hdr
-    verify_native || die "native sonarr fails parity; run --rollback --execute"
+    verify_native || die "native sonarr2 fails parity; run --rollback --execute"
     info "verified"
     return 0
   fi
@@ -621,38 +653,38 @@ do_swap() {
   unmask_all
 
   # Step 3: captures + audits.
-  assert_probe_not_me
   make_hdr
   ver="$(native_ucc_version "$SLUG")"
   ver="${ver#v}"
   case "$VERSION." in "$ver."*) ;; *) die "version parity: panel=$ver pinned=$VERSION" ;; esac
   api_build_is_pin "$PORT" || die "version parity: the container's API build is not $VERSION"
   # 5.5: the app's own config must equal the secrets the whole stack reads.
-  [ "$(secret sonarr.port)" = "$PORT" ] || die "secrets/sonarr.port is not $PORT"
-  # config.xml says "/sonarr", the secret says "sonarr" (box, 2026-10-10).
+  [ "$(secret sonarr2.port)" = "$PORT" ] || die "secrets/sonarr2.port is not $PORT"
+  # config.xml says "/sonarr2", the secret says "sonarr2" (box, 2026-10-10).
   ub="$(cfg_get UrlBase)"; ub="${ub#/}"; ub="${ub%/}"
-  [ -n "$ub" ] && [ "$ub" = "$(secret sonarr.urlbase)" ] || die "config.xml UrlBase differs from secrets/sonarr.urlbase; aborting"
+  [ -n "$ub" ] && [ "$ub" = "$(secret sonarr2.urlbase)" ] || die "config.xml UrlBase differs from secrets/sonarr2.urlbase; aborting"
   key="$(cfg_get ApiKey)"
-  [ -n "$key" ] && [ "$key" = "$(secret sonarr.key)" ] || die "config.xml ApiKey differs from secrets/sonarr.key; aborting"
+  [ -n "$key" ] && [ "$key" = "$(secret sonarr2.key)" ] || die "config.xml ApiKey differs from secrets/sonarr2.key; aborting"
   # Local-address auth bypass must be off: the callers move from 172.17.0.1 to
   # loopback/the bridge, both private, so the behaviour only matches if it is explicit.
   [ "$(cfg_get AuthenticationRequired)" = Enabled ] \
     || die "config.xml AuthenticationRequired is '$(cfg_get AuthenticationRequired)', not Enabled (local-address bypass); fix it first"
+  # renameEpisodes must be true BEFORE and AFTER (arr-plex-parity, 2026-08-16).
+  rename_is_true "$PORT" || die "renameEpisodes is not true on the live container; fix it first (arr-plex-parity)"
+  queue_not_importing || die "the queue has an import in flight; wait for it to finish and retry"
+  live_series="$(series_count "$PORT")" || die "cannot count series on the live container"
+  [ "$live_series" -gt 0 ] || die "zero series on the live container; refusing"
   native_listen_capture "$SLUG" "$PORT" >/dev/null || die "listen-set capture failed"
+  mkdir -p "$SWAPDIR"
+  printf '%s\n' "$live_series" | native_write_secure "$SWAPDIR/series.count" 0644 || die "cannot record series.count"
   check_listen_set
   swapstate set "$SLUG" "ucc_version=$VERSION" >/dev/null || die "cannot record ucc_version"
   swapstate set "$SLUG" "exceptions=$EXCEPTIONS" >/dev/null || die "cannot record the listen-set exceptions"
   path_audit
 
   # Step 4: suppress the app and its canaries together.
-  suppression add "${SUPPRESS[@]}" --reason "QFLX-32 swap to native" >/dev/null \
+  suppression add "${SUPPRESS[@]}" --reason "QFLX-30 swap to native" >/dev/null \
     || die "cannot suppress ${SUPPRESS[*]}; refusing to swap unsuppressed"
-
-  # Step 5: snapshot (config + db; logs and caches excluded).
-  snap="$SWAPDIR/snapshot-$(date -u +%Y%m%dT%H%M%SZ).tgz"
-  "${TAR[@]}" -czf "$snap" -C "$APPS" --exclude="$SLUG/bin" --exclude="$SLUG/native" \
-      --exclude="$SLUG/logs" --exclude="$SLUG/logs.db*" --exclude="$SLUG/MediaCover" \
-      --exclude="$SLUG/Backups" --exclude="$SLUG/*.prew-rectify" "$SLUG" || die "snapshot failed"
 
   # Step 6: stop the container; its exit is asynchronous Docker behaviour, so
   # the STATE decides (no container pid, port free, db idle), not the exit code.
@@ -661,6 +693,16 @@ do_swap() {
     "$APPCTL" start "$SLUG" >/dev/null 2>&1 || true
     suppression remove "${SUPPRESS[@]}" >/dev/null || true
     die "the container did not exit within ${STOP_TIMEOUT}s (pids: $(scan_pids container | tr '\n' ' '); port $PORT free: $(port_free && echo yes || echo no)); swap aborted, container start requested, suppression lifted"
+  fi
+  # Step 5 (after the stop, never on a live WAL db): snapshot config + db; logs
+  # and caches excluded. A failed snapshot hands the container back.
+  snap="$SWAPDIR/snapshot-$(date -u +%Y%m%dT%H%M%SZ).tgz"
+  if ! "${TAR[@]}" -czf "$snap" -C "$APPS" --exclude="$SLUG/bin" --exclude="$SLUG/native" \
+      --exclude="$SLUG/logs" --exclude="$SLUG/logs.db*" --exclude="$SLUG/MediaCover" \
+      --exclude="$SLUG/Backups" --exclude="$SLUG/*.prew-rectify" "$SLUG"; then
+    "$APPCTL" start "$SLUG" >/dev/null 2>&1 || true
+    suppression remove "${SUPPRESS[@]}" >/dev/null || true
+    die "snapshot failed after the stop; container start requested, suppression lifted"
   fi
   # config.xml as the container left it: the byte-exact rollback copy.
   cp -p "$APPDIR/config.xml" "$SWAPDIR/config.xml.pre-native" || die "cannot keep config.xml.pre-native"
@@ -674,7 +716,7 @@ do_swap() {
 
   # Step 8 (in-place part): parity.
   if ! verify_native; then
-    die "native sonarr fails parity after the swap; suppression kept ON; run --rollback --execute"
+    die "native sonarr2 fails parity after the swap; suppression kept ON; run --rollback --execute"
   fi
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   soak="$(date -u -d '+14 days' +%Y-%m-%dT%H:%M:%SZ)" || die "cannot compute soak_until"
@@ -691,7 +733,7 @@ do_finish() {
   [ "$cls" = systemd ] && [ -z "$ss_state" ] && [ "$dormant" = 1 ] \
     || die "deployed manifest still says class=$cls swap_state=${ss_state:-none} dormant=$dormant; deploy the follow-up (no pending-swap) first"
   make_hdr
-  verify_native || die "native sonarr fails parity; run --rollback --execute"
+  verify_native || die "native sonarr2 fails parity; run --rollback --execute"
   suppression remove "${SUPPRESS[@]}" >/dev/null || die "cannot lift suppression"
   info "FINISHED: ${SUPPRESS[*]} unsuppressed; 14-day soak running"
 }
@@ -699,17 +741,17 @@ do_finish() {
 do_rollback() {
   local isn u
   # Step 0: re-suppress + mask BEFORE anything stops.
-  suppression add "${SUPPRESS[@]}" --reason "QFLX-32 rollback to UCC" >/dev/null \
+  suppression add "${SUPPRESS[@]}" --reason "QFLX-30 rollback to UCC" >/dev/null \
     || die "cannot suppress ${SUPPRESS[*]}; refusing to roll back unsuppressed"
   mask_all
   # Step 1: stop the socket first (it would re-spawn the forwarder), then both services.
   for u in "$FWD_SOCKET" "$FWD_UNIT" "$UNIT"; do sysd stop "$u" >/dev/null 2>&1 || true; done
-  wait_until "$STOP_TIMEOUT" native_gone || die "native sonarr did not stop within ${STOP_TIMEOUT}s"
+  wait_until "$STOP_TIMEOUT" native_gone || die "native sonarr2 did not stop within ${STOP_TIMEOUT}s"
   wait_until "$STOP_TIMEOUT" bind_clear  || die "port $PORT is still bound after stopping the native units"
-  # Step 2: the DEPLOYED manifest must dispatch sonarr as UCC again.
+  # Step 2: the DEPLOYED manifest must dispatch sonarr2 as UCC again.
   isn="$("$APPCTL" is-native "$SLUG" 2>/dev/null)"
   if [ "${isn%$'\r'}" != ucc ]; then
-    echo "[307-sonarr] PAUSED: native stopped + masked; revert the deployed manifest (PR + 240) so appctl dispatches $SLUG as UCC, then re-run --rollback --execute" >&2
+    echo "[305-sonarr2] PAUSED: native stopped + masked; revert the deployed manifest (PR + 240) so appctl dispatches $SLUG as UCC, then re-run --rollback --execute" >&2
     exit 10
   fi
   # Step 5 (config half): the container reads config.xml; hand back the exact bytes it left.

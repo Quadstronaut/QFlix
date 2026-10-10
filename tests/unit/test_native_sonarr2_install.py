@@ -1,25 +1,25 @@
-"""scripts/configure/307-native-sonarr-install.sh (QFLX-32, A8, spec 5.9).
+"""scripts/configure/305-native-sonarr2-install.sh (QFLX-30, A6, spec 5.9).
 
 Subprocess tests in the shape of test_native_unpackerr_install.py (the pilot).
 Every step runs against fakes that MODEL the box: a fake /proc tree (the UCC
 container's pid lives in a docker cgroup, the native pid in the
-qflix-sonarr.service cgroup), a fake `ss` whose answer depends on which runtime
+qflix-sonarr2.service cgroup), a fake `ss` whose answer depends on which runtime
 is up, and fake appctl / systemctl / fuser / curl / hostpolicy that mutate that
 tree the way the real tools would. "The container exited", "the unit is active"
 and "the API answers the pinned build" are STATE the installer has to observe,
 never an exit status it can trust.
 
-What is specific to Sonarr (the shared .NET arr shape of prowlarr, QFLX-28):
+What is specific to sonarr2 (the anime Sonarr):
+  * the sonarr container runs the SAME cmdline (/app/sonarr/bin/Sonarr), so a
+    TWIN process is alive in every test and must never be mistaken for the
+    sonarr2 container: the container is found by what holds sonarr2's own db
+    (fuser), the native unit by its cgroup;
   * a REAL sqlite sonarr.db is VACUUM-INTO'd, sanitized and read back by the
     fake binary AT BOOT, so "sanitized before boot" is observed, not assumed;
+  * renameEpisodes must be true in the proof, before the swap and after it;
+    the series count must be the same in the proof copy and after the swap;
   * the panel prints "4.0.20", the API prints "4.0.20.3014": parity is prefix +
     API equality;
-  * the proof compares the series count with the live app's (ticket QFLX-32);
-  * PlexMetadata is enabled on the box and writes .plexmatch into the real
-    series folders, so the proof copy turns every metadata consumer off;
-  * the sonarr2 container runs the IDENTICAL cmdline: the fake box keeps it
-    running the whole time and only /proc/<pid>/mountinfo tells them apart;
-  * ucc.probe_app must not name sonarr (QFLX-17 prerequisite);
   * Kestrel binds one address: 172.17.0.1 natively + a systemd socket on
     loopback; the public-IP listener is a recorded D-4 exception.
 
@@ -42,19 +42,18 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-INSTALLER = REPO / "scripts" / "configure" / "307-native-sonarr-install.sh"
+INSTALLER = REPO / "scripts" / "configure" / "305-native-sonarr2-install.sh"
 UNITS = REPO / "scripts" / "maint" / "systemd"
 GOLDEN = {
-    "qflix-sonarr.service": UNITS / "qflix-sonarr.service",
-    "qflix-sonarr-fwd.socket": UNITS / "qflix-sonarr-fwd.socket",
-    "qflix-sonarr-fwd.service": UNITS / "qflix-sonarr-fwd.service",
+    "qflix-sonarr2.service": UNITS / "qflix-sonarr2.service",
+    "qflix-sonarr2-fwd.socket": UNITS / "qflix-sonarr2-fwd.socket",
+    "qflix-sonarr2-fwd.service": UNITS / "qflix-sonarr2-fwd.service",
 }
-UNIT = "qflix-sonarr.service"
-SOCKET = "qflix-sonarr-fwd.socket"
-FWD = "qflix-sonarr-fwd.service"
+UNIT = "qflix-sonarr2.service"
+SOCKET = "qflix-sonarr2-fwd.socket"
+FWD = "qflix-sonarr2-fwd.service"
 VERSION = "4.0.20.3014"
-PANEL_VERSION = "4.0.20"
-PUBLIC = "192.0.2.7:17026"            # TEST-NET-1: stands in for the public-IP listener
+PUBLIC = "192.0.2.7:17003"            # TEST-NET-1: stands in for the public-IP listener
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
@@ -78,7 +77,7 @@ def _uid() -> str:
 # The fake Sonarr apphost. It reads its sanitized database AT BOOT (so the test
 # can see what state it was started on), records the environment the real unit
 # would pass, registers 40 threads under the fake /proc and then idles.
-FAKE_SONARR = r'''#!/usr/bin/env bash
+FAKE_PROWLARR = r'''#!/usr/bin/env bash
 data=""
 for a in "$@"; do case "$a" in -data=*) data="${a#-data=}" ;; esac; done
 [ -n "$data" ] || exit 2
@@ -95,12 +94,12 @@ def one(q):
     except sqlite3.Error:
         return -1
 rec = {
-    "import_lists_on": one('select count(*) from "ImportLists" where "EnableAutomaticAdd"!=0'),
-    "clients_on": one('select count(*) from "DownloadClients" where "Enable"!=0'),
-    "indexers_on": one('select count(*) from "Indexers" where "EnableRss"!=0 or "EnableAutomaticSearch"!=0 or "EnableInteractiveSearch"!=0'),
-    "metadata_on": one('select count(*) from "Metadata" where "Enable"!=0'),
-    "notifications": one('select count(*) from "Notifications"'),
+    "download_clients": one('select count(*) from "DownloadClients" where "Enable"!=0'),
+    "indexers": one('select count(*) from "Indexers" where "EnableRss"!=0 or "EnableAutomaticSearch"!=0 or "EnableInteractiveSearch"!=0'),
+    "import_lists": one('select count(*) from "ImportLists" where "EnableAutomaticAdd"!=0'),
+    "metadata": one('select count(*) from "Metadata" where "Enable"!=0'),
     "series": one('select count(*) from "Series"'),
+    "notifications": one('select count(*) from "Notifications"'),
     "update_auto_off": "<UpdateAutomatically>False</UpdateAutomatically>"
                        in open(os.path.join(d, "config.xml"), encoding="utf-8").read(),
     "env": {k: v for k, v in os.environ.items()
@@ -109,7 +108,6 @@ rec = {
     "argv": os.environ.get("REC_ARGS", "").split(),
 }
 open(os.path.join(d, "boot.json"), "w").write(json.dumps(rec))
-open(os.path.join(d, "series.json"), "w").write(json.dumps([{"id": i} for i in range(max(rec["series"], 0))]))
 PY
 while :; do sleep 0.2; done
 '''
@@ -122,7 +120,7 @@ class Box:
         self.tmp = tmp
         self.home = tmp / "home"
         self.apps = self.home / ".apps"
-        self.appdir = self.apps / "sonarr"
+        self.appdir = self.apps / "sonarr2"
         self.unitdir = self.home / ".config" / "systemd" / "user"
         self.envdir = self.home / ".config" / "qflix"
         self.secrets = self.home / "secrets"
@@ -135,13 +133,15 @@ class Box:
         for d in (self.appdir, self.unitdir, self.envdir, self.secrets, self.swap,
                   self.proc, self.stub, self.home / "scripts" / "maint"):
             d.mkdir(parents=True, exist_ok=True)
-        (self.secrets / "sonarr.port").write_text("17026\n")
-        (self.secrets / "sonarr.key").write_text("k" * 32 + "\n")
-        (self.secrets / "sonarr.urlbase").write_text("sonarr\n")
+        (self.secrets / "sonarr2.port").write_text("17003\n")
+        (self.secrets / "sonarr2.key").write_text("k" * 32 + "\n")
+        (self.secrets / "sonarr2.urlbase").write_text("sonarr2\n")
         (self.secrets / "net.app_host").write_text("172.17.0.1\n")
-        (self.secrets / "ucc.probe_app").write_text("plex\n")
         self.write_config()
         self._db()
+        (self.appdir / "logs.db").write_bytes(b"")
+        (self.appdir / "sonarr2.db").write_bytes(b"")          # the 0-byte stray on the box
+        self.twin_up()
         self.set_manifest(swap_state="pending-swap")
         self.container_up()
         self._tarball()
@@ -153,34 +153,36 @@ class Box:
             "<Config>\n  <BindAddress>*</BindAddress>\n  <Port>8989</Port>\n"
             f"  <ApiKey>{key}</ApiKey>\n  <AuthenticationMethod>Forms</AuthenticationMethod>\n"
             f"  <AuthenticationRequired>{auth}</AuthenticationRequired>\n"
-            "  <UrlBase>/sonarr</UrlBase>\n  <UpdateMechanism>Docker</UpdateMechanism>\n"
+            "  <UrlBase>/sonarr2</UrlBase>\n  <UpdateMechanism>Docker</UpdateMechanism>\n"
             f"{extra}</Config>", newline="\n")
 
-    def _db(self, *, flag_cols=True):
+    def _db(self, *, meta_enable=True):
         db = self.appdir / "sonarr.db"
         con = sqlite3.connect(db)
-        # ImportLists without any known flag column: the sanitizer cannot prove it inert.
-        il = ('"Id" INTEGER PRIMARY KEY, "Name" TEXT, "EnableAutomaticAdd" INTEGER' if flag_cols
-              else '"Id" INTEGER PRIMARY KEY, "Name" TEXT')
-        con.execute(f'CREATE TABLE "ImportLists" ({il})')
-        for i, n in enumerate(("PlexImport", "TraktPopularImport"), 1):
-            if flag_cols:
-                con.execute('INSERT INTO "ImportLists" VALUES (?,?,1)', (i, n))
-            else:
-                con.execute('INSERT INTO "ImportLists" VALUES (?,?)', (i, n))
-        con.execute('CREATE TABLE "DownloadClients" ("Id" INTEGER PRIMARY KEY, "Enable" INTEGER)')
-        con.execute('INSERT INTO "DownloadClients" VALUES (1, 1), (2, 1)')
+        con.execute('CREATE TABLE "Series" ("Id" INTEGER PRIMARY KEY, "Title" TEXT, "Path" TEXT)')
+        for i in range(1, 6):
+            con.execute('INSERT INTO "Series" VALUES (?,?,?)', (i, f"anime {i}", f"/home/q/media/anime/{i}"))
+        con.execute('CREATE TABLE "NamingConfig" ("Id" INTEGER PRIMARY KEY, "RenameEpisodes" INTEGER)')
+        con.execute('INSERT INTO "NamingConfig" VALUES (1, 1)')
+        con.execute('CREATE TABLE "DownloadClients" ("Id" INTEGER PRIMARY KEY, "Enable" INTEGER, "Settings" TEXT)')
+        con.execute('INSERT INTO "DownloadClients" VALUES (1, 1, \'{"host": "172.17.0.1"}\')')
         con.execute('CREATE TABLE "Notifications" ("Id" INTEGER PRIMARY KEY, "Name" TEXT)')
-        con.executemany('INSERT INTO "Notifications" VALUES (?,?)', [(1, "discord"), (2, "plex")])
+        con.executemany('INSERT INTO "Notifications" VALUES (?,?)', [(1, "plex"), (2, "discord")])
         con.execute('CREATE TABLE "Indexers" ("Id" INTEGER PRIMARY KEY, "Name" TEXT, "EnableRss" INTEGER, '
                     '"EnableAutomaticSearch" INTEGER, "EnableInteractiveSearch" INTEGER, "Settings" TEXT)')
-        con.execute('INSERT INTO "Indexers" VALUES (1, "nzbgeek", 1, 1, 1, \'{"baseUrl": "https://nzb.example/"}\')')
-        con.execute('CREATE TABLE "Metadata" ("Id" INTEGER PRIMARY KEY, "Enable" INTEGER, "Name" TEXT)')
-        con.executemany('INSERT INTO "Metadata" VALUES (?,?,?)',
-                        [(1, 0, "Kodi"), (4, 1, "PlexMetadata"), (5, 0, "Kometa")])
-        con.execute('CREATE TABLE "Series" ("Id" INTEGER PRIMARY KEY, "Title" TEXT, "Path" TEXT)')
-        con.executemany('INSERT INTO "Series" VALUES (?,?,?)',
-                        [(i, f"show {i}", f"/home/q/media/TV Shows/show {i}") for i in (1, 2, 3)])
+        con.execute('INSERT INTO "Indexers" VALUES (1, "nyaa", 1, 1, 1, \'{"baseUrl": "https://nyaa.example/"}\')')
+        con.execute('CREATE TABLE "ImportLists" ("Id" INTEGER PRIMARY KEY, "Name" TEXT, "EnableAutomaticAdd" INTEGER)')
+        con.execute('INSERT INTO "ImportLists" VALUES (1, "mal", 1)')
+        mcols = '"Id" INTEGER PRIMARY KEY, "Name" TEXT, "Enable" INTEGER' if meta_enable \
+            else '"Id" INTEGER PRIMARY KEY, "Name" TEXT'
+        con.execute(f'CREATE TABLE "Metadata" ({mcols})')
+        if meta_enable:
+            con.execute('INSERT INTO "Metadata" VALUES (1, "Kodi", 1)')
+        else:
+            con.execute('INSERT INTO "Metadata" VALUES (1, "Kodi")')
+        # container-era paths belong in history-like tables and must not trip the audit
+        con.execute('CREATE TABLE "History" ("Id" INTEGER PRIMARY KEY, "Data" TEXT)')
+        con.execute('INSERT INTO "History" VALUES (1, \'{"importedPath": "/downloads/x.mkv"}\')')
         con.commit()
         con.close()
 
@@ -188,31 +190,20 @@ class Box:
         return hashlib.sha256((self.appdir / "sonarr.db").read_bytes()).hexdigest()
 
     # --- state ---------------------------------------------------------------
-    def _proc(self, pid: int, cgroup: str, cmd: str, mount: str | None = None):
+    def _proc(self, pid: int, cgroup: str, cmd: str):
         d = self.proc / str(pid)
         d.mkdir(parents=True, exist_ok=True)
         (d / "status").write_text(f"Name:\tx\nUid:\t{_uid()}\t{_uid()}\n", newline="\n")
         (d / "cgroup").write_text(cgroup + "\n", newline="\n")
         (d / "cmdline").write_bytes(cmd.replace(" ", "\0").encode() + b"\0")
         (d / "task" / "1").mkdir(parents=True, exist_ok=True)
-        if mount:
-            (d / "mountinfo").write_text(
-                f"35997 35989 65:225 /quadstronaut/.apps/{mount} /config rw,nosuid - ext4 /dev/sdae1 rw\n"
-                "36001 35989 0:50 / /proc rw - proc proc rw\n", newline="\n")
 
     def container_up(self):
-        self._proc(9001, "0::/system.slice/docker-abc.scope",
-                   "/app/sonarr/bin/Sonarr -nobrowser -data=/config", mount="sonarr")
-        self.sonarr2_up()
+        self._proc(9001, "0::/system.slice/docker-abc.scope", "/app/sonarr/bin/Sonarr -nobrowser -data=/config")
 
-    def sonarr2_up(self):
-        """sonarr2's container: same cmdline, same s6 name, different mount. It
-        runs through every scenario and must never be mistaken for sonarr's."""
-        self._proc(9003, "0::/system.slice/docker-def.scope",
-                   "/app/sonarr/bin/Sonarr -nobrowser -data=/config", mount="sonarr2")
-
-    def sonarr2_running(self) -> bool:
-        return (self.proc / "9003").exists()
+    def twin_up(self):
+        """The PRIMARY sonarr container: identical cmdline, its own cgroup, never ours."""
+        self._proc(9100, "0::/system.slice/docker-def.scope", "/app/sonarr/bin/Sonarr -nobrowser -data=/config")
 
     def container_running(self) -> bool:
         return (self.proc / "9001").exists()
@@ -221,7 +212,7 @@ class Box:
         return (self.proc / "9002").exists()
 
     def set_manifest(self, *, cls="systemd", swap_state=None, dormant=True):
-        lines = ["apps:", "  sonarr:", f"    class: {cls}", "    ucc_slug: sonarr"]
+        lines = ["apps:", "  sonarr2:", f"    class: {cls}", "    ucc_slug: sonarr2"]
         if cls == "systemd":
             lines.append(f"    unit: {UNIT}")
         if dormant:
@@ -244,7 +235,7 @@ class Box:
             top = tarfile.TarInfo("Sonarr")
             top.type, top.mode = tarfile.DIRTYPE, 0o755
             tf.addfile(top)
-            add("Sonarr/Sonarr", FAKE_SONARR.encode(), 0o644)   # exec bit is the installer's job
+            add("Sonarr/Sonarr", FAKE_PROWLARR.encode(), 0o644)   # exec bit is the installer's job
             add("Sonarr/Sonarr.dll", b"MZ")
             add("Sonarr/Sonarr.Update/Sonarr.Update.dll", b"MZ")
         self.payload = self.tmp / "payload.tgz"
@@ -264,11 +255,9 @@ case "$1" in
   version) echo '{{"data": {{"version": "'"${{FAKE_UCC_VERSION:-4.0.20}}"'"}}, "result": true}}' ;;
   ports-free) echo "${{FAKE_PROOF_PORT:-34567}}"; echo 34568 ;;
   stop) [ "${{FAKE_CONTAINER_STICKS:-0}}" = 1 ] || rm -rf "{P}/9001" ;;
-  start) [ "${{FAKE_START_NOOP:-0}}" = 1 ] && exit 0
-         mkdir -p "{P}/9001/task/1"
+  start) mkdir -p "{P}/9001/task/1"
          printf 'Name:\\tx\\nUid:\\t%s\\t%s\\n' "$(id -u)" "$(id -u)" > "{P}/9001/status"
          echo "0::/system.slice/docker-abc.scope" > "{P}/9001/cgroup"
-         printf '1 2 3:4 /quadstronaut/.apps/sonarr /config rw - ext4 x rw\\n' > "{P}/9001/mountinfo"
          printf '/app/sonarr/bin/Sonarr\\0-nobrowser\\0-data=/config\\0' > "{P}/9001/cmdline" ;;
   is-native) v="${{FAKE_ISNATIVE:-ucc}}"; echo "$v"; [ "$v" = native ] ;;
 esac
@@ -281,14 +270,14 @@ case "$1" in
   enable) if [ "$2" = --now ]; then
             {{ [ -L "$U/$3" ] || [ ! -s "$U/$3" ]; }} && {{ echo "unit $3 is masked or missing" >&2; exit 1; }}
             [ "${{FAKE_NATIVE_FAILS:-0}}" = 1 ] && exit 0
-            if [ "$3" = qflix-sonarr.service ]; then
+            if [ "$3" = qflix-sonarr2.service ]; then
               mkdir -p "{P}/9002/task/1"
               printf 'Name:\\tx\\nUid:\\t%s\\t%s\\n' "$(id -u)" "$(id -u)" > "{P}/9002/status"
               echo "0::/user.slice/user-1.slice/app.slice/$3" > "{P}/9002/cgroup"
-              printf '/h/.apps/sonarr/bin/current/Sonarr\\0-nobrowser\\0-data=/h/.apps/sonarr\\0' > "{P}/9002/cmdline"
+              printf '/h/.apps/sonarr2/bin/current/Sonarr\\0-nobrowser\\0-data=/h/.apps/sonarr2\\0' > "{P}/9002/cmdline"
             fi
           fi ;;
-  stop) [ "$2" = qflix-sonarr.service ] && rm -rf "{P}/9002" ;;
+  stop) [ "$2" = qflix-sonarr2.service ] && rm -rf "{P}/9002" ;;
   mask) [ -s "$U/$2" ] && [ ! -L "$U/$2" ] && {{ echo "Failed to mask unit: File $U/$2 already exists." >&2; exit 1; }}
         ln -sf /dev/null "$U/$2" ;;
   unmask) {{ [ -L "$U/$2" ] || [ ! -s "$U/$2" ]; }} && rm -f "$U/$2" ;;
@@ -299,17 +288,24 @@ exit 0
         before = _posix(self.tmp / "ss-before.txt")
         after = _posix(self.tmp / "ss-after.txt")
         (self.tmp / "ss-before.txt").write_text(
-            f"LISTEN 0 65535 169.150.251.170:17026 0.0.0.0:*\n".replace("169.150.251.170:17026", PUBLIC)
-            + "LISTEN 0 65535 172.17.0.1:17026 0.0.0.0:*\nLISTEN 0 65535 127.0.0.1:17026 0.0.0.0:*\n")
+            f"LISTEN 0 65535 169.150.251.170:17003 0.0.0.0:*\n".replace("169.150.251.170:17003", PUBLIC)
+            + "LISTEN 0 65535 172.17.0.1:17003 0.0.0.0:*\nLISTEN 0 65535 127.0.0.1:17003 0.0.0.0:*\n")
         (self.tmp / "ss-after.txt").write_text(
-            "LISTEN 0 65535 172.17.0.1:17026 0.0.0.0:*\nLISTEN 0 65535 127.0.0.1:17026 0.0.0.0:*\n")
+            "LISTEN 0 65535 172.17.0.1:17003 0.0.0.0:*\nLISTEN 0 65535 127.0.0.1:17003 0.0.0.0:*\n")
         self._w("ss", f'''if [ -d "{P}/9001" ]; then cat "${{FAKE_SS_BEFORE:-{before}}}"
 elif [ -d "{P}/9002" ]; then cat "${{FAKE_SS_AFTER:-{after}}}"; fi
 exit 0
 ''')
         self._w("ps", 'n=${FAKE_TASKS:-1000}; for i in $(seq 1 "$n"); do echo x; done\n')
-        self._w("fuser", f'[ "${{FAKE_DB_BUSY:-0}}" = 1 ] && exit 0\n[ -d "{P}/9001" ] && exit 0\nexit 1\n')
-        proof = _posix(self.apps / ".prove" / "sonarr" / "boot.json")
+        self._w("fuser", f'''silent=0
+[ "$1" = -s ] && {{ silent=1; shift; }}
+held=1
+if [ "${{FAKE_DB_BUSY:-0}}" = 1 ]; then held=0; [ "$silent" = 0 ] && echo " 9999"; fi
+if [ -d "{P}/9001" ]; then held=0; [ "$silent" = 0 ] && echo " 9001"; fi
+if [ "$silent" = 0 ] && [ -d "{P}/9002" ]; then held=0; echo " 9002"; fi
+exit $held
+''')
+        proof = _posix(self.apps / ".prove" / "sonarr2" / "boot.json")
         self._w("curl", f'''out=""; url=""
 while [ $# -gt 0 ]; do
   case "$1" in -o) out="$2"; shift ;; -H|--max-time|--retry) shift ;; http*) url="$1" ;; esac
@@ -318,20 +314,22 @@ done
 if [ -n "$out" ]; then cp "{_posix(self.payload)}" "$out"; exit 0; fi
 port="${{url#http://127.0.0.1:}}"; port="${{port%%/*}}"
 ver="${{FAKE_API_VERSION:-{VERSION}}}"
-if [ "$port" = 17026 ]; then
+rename=true; series="${{FAKE_SERIES:-5}}"
+if [ "$port" = 17003 ]; then
   if [ -d "{P}/9002" ]; then docker=false; ver="${{FAKE_API_VERSION_NATIVE:-$ver}}"
-  elif [ -d "{P}/9001" ]; then docker=true
+    rename="${{FAKE_RENAME_NATIVE:-true}}"; series="${{FAKE_SERIES_NATIVE:-$series}}"
+  elif [ -d "{P}/9001" ]; then docker=true; rename="${{FAKE_RENAME:-true}}"
   else exit 7; fi
 else
   [ -f "{proof}" ] || exit 7
   docker=false; ver="${{FAKE_API_VERSION_PROOF:-$ver}}"
+  rename="${{FAKE_RENAME_PROOF:-true}}"; series="${{FAKE_SERIES_PROOF:-$series}}"
 fi
 case "$url" in
   */api/v3/system/status) echo "{{\\"version\\": \\"$ver\\", \\"isDocker\\": $docker}}" ;;
-  */api/v3/series)
-    if [ "$port" = 17026 ]; then
-      n="${{FAKE_LIVE_SERIES:-3}}"; printf '['; for i in $(seq 1 "$n"); do [ "$i" -gt 1 ] && printf ','; printf '{{"id": %s}}' "$i"; done; printf ']\\n'
-    else cat "{_posix(self.apps / ".prove" / "sonarr" / "series.json")}"; fi ;;
+  */api/v3/config/naming) echo "{{\\"renameEpisodes\\": $rename}}" ;;
+  */api/v3/series) printf '['; for i in $(seq 1 "$series"); do [ "$i" -gt 1 ] && printf ','; printf '{{"id": %s}}' "$i"; done; printf ']' ;;
+  */api/v3/queue*) echo "{{\\"records\\": [{{\\"trackedDownloadState\\": \\"${{FAKE_QUEUE_STATE:-downloading}}\\"}}]}}" ;;
   *) exit 22 ;;
 esac
 ''')
@@ -367,7 +365,7 @@ esac
                  QFLIX_CURL=_posix(self.stub / "curl"),
                  QFLIX_FUSER=_posix(self.stub / "fuser"),
                  QFLIX_HOSTPOLICY=_posix(self.stub / "hostpolicy"),
-                 QFLIX_SONARR_SHA256=self.sha,
+                 QFLIX_SONARR2_SHA256=self.sha,
                  QFLIX_POLL_S="0.2", QFLIX_SETTLE_S="0.3",
                  QFLIX_STOP_TIMEOUT_S="3", QFLIX_PROOF_TIMEOUT_S="20", QFLIX_API_TIMEOUT_S="3")
         e.update(env or {})
@@ -396,7 +394,7 @@ esac
         return json.loads(p.read_text()) if p.exists() else {}
 
     def swapstate(self) -> dict:
-        p = self.swap / "sonarr" / "state.json"
+        p = self.swap / "sonarr2" / "state.json"
         return json.loads(p.read_text()) if p.exists() else {}
 
 
@@ -416,7 +414,7 @@ def test_pins_exact_version_and_sha256_matching_versions_env():
     text = INSTALLER.read_text(encoding="utf-8")
     ver = next(l.split("=", 1)[1].strip() for l in
                (REPO / "versions.env").read_text(encoding="utf-8").splitlines()
-               if l.startswith("SONARR_VERSION="))
+               if l.startswith("SONARR2_VERSION="))
     assert f'VERSION="{ver}"' in text
     assert 'SHA256="1fc48544b5a3401b2fc3df8d0642c1e6a73a28e41a351169edd9cd8f54770db5"' in text
     # the full four-part build, not the panel's truncated three
@@ -426,21 +424,21 @@ def test_pins_exact_version_and_sha256_matching_versions_env():
 def test_240_stages_and_deploys_the_installer_with_its_deps():
     text = (REPO / "scripts" / "configure" / "240-maintenance-install.sh").read_text(encoding="utf-8")
     assert "    scripts/lib/native.sh \\\n" in text
-    assert "    scripts/configure/307-native-sonarr-install.sh \\\n" in text
+    assert "    scripts/configure/305-native-sonarr2-install.sh \\\n" in text
     assert "    scripts/maint/native_sanitize.py \\\n" in text
     assert 'cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py' in text
-    assert ("~/scripts/configure/307-native-sonarr-install.sh\n"
-            "chmod +x ~/scripts/configure/307-native-sonarr-install.sh") in text
+    assert ("~/scripts/configure/305-native-sonarr2-install.sh\n"
+            "chmod +x ~/scripts/configure/305-native-sonarr2-install.sh") in text
 
 
 def test_installer_never_calls_the_panel_tool_directly():
     code = [l for l in INSTALLER.read_text(encoding="utf-8").splitlines()
             if not l.strip().startswith("#")]
-    assert not any("app-sonarr" in l for l in code)
+    assert not any("app-sonarr2" in l for l in code)
 
 
 def test_installer_is_executable_in_git():
-    out = subprocess.run(["git", "ls-files", "-s", "scripts/configure/307-native-sonarr-install.sh"],
+    out = subprocess.run(["git", "ls-files", "-s", "scripts/configure/305-native-sonarr2-install.sh"],
                          cwd=REPO, capture_output=True, text=True).stdout
     assert out.startswith("100755") or out == ""      # "" = not yet added
 
@@ -450,12 +448,12 @@ def test_golden_units_are_what_the_installer_renders(box):
     for name, golden in GOLDEN.items():
         assert (box.appdir / "native" / name).read_text() == golden.read_text(encoding="utf-8"), name
     unit = GOLDEN[UNIT].read_text(encoding="utf-8")
-    assert "ExecStart=%h/.apps/sonarr/bin/current/Sonarr -nobrowser -data=%h/.apps/sonarr" in unit
-    assert "Environment=PATH=%h/.apps/sonarr/bin/current:" in unit
+    assert "ExecStart=%h/.apps/sonarr2/bin/current/Sonarr -nobrowser -data=%h/.apps/sonarr2" in unit
+    assert "Environment=PATH=%h/.apps/sonarr2/bin/current:" in unit
     assert "TasksMax" not in unit
     sock = GOLDEN[SOCKET].read_text(encoding="utf-8")
-    assert "ListenStream=127.0.0.1:17026" in sock and "0.0.0.0" not in sock
-    assert "systemd-socket-proxyd 172.17.0.1:17026" in GOLDEN[FWD].read_text(encoding="utf-8")
+    assert "ListenStream=127.0.0.1:17003" in sock and "0.0.0.0" not in sock
+    assert "systemd-socket-proxyd 172.17.0.1:17003" in GOLDEN[FWD].read_text(encoding="utf-8")
 
 
 # --- inert by default -----------------------------------------------------------
@@ -509,13 +507,13 @@ def test_install_lays_out_binary_env_and_stages_units_without_enabling(box):
         assert os.readlink(cur) == VERSION
         assert os.access(cur / "Sonarr", os.X_OK)
     assert (cur / "Sonarr").exists()
-    env = (box.envdir / "sonarr.env").read_text().splitlines()
+    env = (box.envdir / "sonarr2.env").read_text().splitlines()
     for line in ("DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "MALLOC_ARENA_MAX=2",
                  "TZ=Europe/Amsterdam", "COMPlus_EnableDiagnostics=0",
-                 "SONARR__SERVER__BINDADDRESS=172.17.0.1", "SONARR__SERVER__PORT=17026",
+                 "SONARR__SERVER__BINDADDRESS=172.17.0.1", "SONARR__SERVER__PORT=17003",
                  "SONARR__UPDATE__MECHANISM=External", "SONARR__UPDATE__AUTOMATICALLY=false"):
         assert line in env, line
-    assert (box.envdir / "sonarr.env").stat().st_mode & 0o077 == 0 or os.name == "nt"
+    assert (box.envdir / "sonarr2.env").stat().st_mode & 0o077 == 0 or os.name == "nt"
     for name in GOLDEN:
         assert (box.appdir / "native" / name).exists()
         # NOT in the unit dir and never enabled: WantedBy=default.target would
@@ -542,13 +540,13 @@ def test_install_refuses_a_false_prefix(box):
 
 
 def test_install_refuses_when_the_api_build_differs(box):
-    r = box.run("--install", "--execute", env={"FAKE_API_VERSION": "4.0.20.3010"})
+    r = box.run("--install", "--execute", env={"FAKE_API_VERSION": "4.0.20.3000"})
     assert r.returncode != 0 and "API build" in r.stderr
     assert not (box.appdir / "bin").exists()
 
 
 def test_install_refuses_sha_mismatch(box):
-    r = box.run("--install", "--execute", env={"QFLIX_SONARR_SHA256": "0" * 64})
+    r = box.run("--install", "--execute", env={"QFLIX_SONARR2_SHA256": "0" * 64})
     assert r.returncode != 0
     assert "sha256" in r.stderr
     assert not (box.appdir / "bin").exists()
@@ -569,7 +567,7 @@ def test_installer_has_no_gateway_literal_on_an_executable_line():
 
 
 def test_install_refuses_a_port_secret_that_is_not_the_pinned_port(box):
-    (box.secrets / "sonarr.port").write_text("17999\n")
+    (box.secrets / "sonarr2.port").write_text("17999\n")
     r = box.run("--install", "--execute")
     assert r.returncode != 0 and "17999" in r.stderr
 
@@ -590,13 +588,13 @@ def test_prove_sanitizes_before_boot_and_never_touches_live_data(box):
     cfg_before = (box.appdir / "config.xml").read_bytes()
     r = box.run("--prove", "--execute", env={"QFLIX_KEEP_PROOF": "1"})
     assert r.returncode == 0, r.stdout + r.stderr
-    proof_dir = box.apps / ".prove" / "sonarr"
+    proof_dir = box.apps / ".prove" / "sonarr2"
     boot = json.loads((proof_dir / "boot.json").read_text())
     # what the BINARY saw when it started: zero syncing apps, zero notifications
-    assert boot["import_lists_on"] == 0 and boot["clients_on"] == 0 and boot["indexers_on"] == 0
-    assert boot["notifications"] == 0
-    # PlexMetadata is ON in the live db; the booted copy must have it OFF (.plexmatch)
-    assert boot["metadata_on"] == 0
+    assert boot["download_clients"] == 0 and boot["indexers"] == 0
+    assert boot["import_lists"] == 0 and boot["notifications"] == 0
+    assert boot["metadata"] == 0                       # nfo/image writers off in the copy
+    assert boot["series"] == 5                         # the library itself is intact
     assert boot["update_auto_off"] is True
     # settings come from the environment, loopback only, on the claimed port
     env = boot["env"]
@@ -608,14 +606,14 @@ def test_prove_sanitizes_before_boot_and_never_touches_live_data(box):
     assert boot["argv"] == ["-nobrowser", f"-data={proof_dir.as_posix()}"]
     # rows kept (flags flipped) except notifications, which are deleted
     con = sqlite3.connect(proof_dir / "sonarr.db")
-    assert con.execute('select count(*) from "ImportLists"').fetchone()[0] == 2
-    assert con.execute('select count(*) from "Series"').fetchone()[0] == 3
+    assert con.execute('select count(*) from "Series"').fetchone()[0] == 5
+    assert con.execute('select count(*) from "Indexers"').fetchone()[0] == 1
     con.close()
     # the live data is byte-identical and the container never stopped
     assert box.db_sha() == db_before
     assert (box.appdir / "config.xml").read_bytes() == cfg_before
     con = sqlite3.connect(box.appdir / "sonarr.db")
-    assert con.execute('select count(*) from "ImportLists" where "EnableAutomaticAdd"=1').fetchone()[0] == 2
+    assert con.execute('select count(*) from "Indexers" where "EnableRss"=1').fetchone()[0] == 1
     assert con.execute('select count(*) from "Metadata" where "Enable"=1').fetchone()[0] == 1
     assert con.execute('select count(*) from "Notifications"').fetchone()[0] == 2
     con.close()
@@ -623,13 +621,13 @@ def test_prove_sanitizes_before_boot_and_never_touches_live_data(box):
     assert "stop" not in box.calls_text()
 
 
-def test_prove_records_status_series_parity_and_task_delta_and_cleans_up(box):
+def test_prove_records_status_rename_series_and_task_delta_and_cleans_up(box):
     r = box.proved()
-    assert "delta=40" in r.stdout and "3 series match" in r.stdout
-    assert not (box.apps / ".prove" / "sonarr").exists()
-    proof = json.loads((box.swap / "sonarr" / "proof.json").read_text())
+    assert "delta=40" in r.stdout and "renameEpisodes true" in r.stdout and "5 series" in r.stdout
+    assert not (box.apps / ".prove" / "sonarr2").exists()
+    proof = json.loads((box.swap / "sonarr2" / "proof.json").read_text())
     assert proof["delta"] == 40 and proof["ceiling"] == 2000 and proof["ok"] is True
-    assert proof["version"] == VERSION and proof["series"] == 3
+    assert proof["version"] == VERSION and proof["series"] == 5 and proof["rename_episodes"] is True
     assert box.container_running()                      # live app untouched
 
 
@@ -639,42 +637,34 @@ def test_prove_refuses_at_seventy_percent_of_ceiling(box):
     r = box.run("--prove", "--execute", env={"FAKE_TASKS": "1362"})
     assert r.returncode != 0
     assert "70%" in r.stderr
-    assert not (box.swap / "sonarr" / "proof.json").exists()
-    assert not (box.apps / ".prove" / "sonarr").exists()
+    assert not (box.swap / "sonarr2" / "proof.json").exists()
+    assert not (box.apps / ".prove" / "sonarr2").exists()
 
 
 def test_prove_refuses_when_the_copy_cannot_be_proven_inert(box):
-    # ImportLists without any flag column: the sanitizer cannot prove it inert,
-    # so the binary must never be booted on that copy.
+    # Metadata without an Enable column: the copy cannot be proven inert, so
+    # the binary must never be booted on it (it would write nfo files).
     (box.appdir / "sonarr.db").unlink()
-    box._db(flag_cols=False)
+    box._db(meta_enable=False)
     box.installed()
     r = box.run("--prove", "--execute", env={"QFLIX_KEEP_PROOF": "1"})
     assert r.returncode != 0
-    assert "not inert" in r.stderr and "flag columns" in r.stderr
-    assert not (box.apps / ".prove" / "sonarr" / "boot.json").exists()
-    assert not (box.swap / "sonarr" / "proof.json").exists()
+    assert "not booting" in r.stderr and "Enable" in r.stderr
+    assert not (box.apps / ".prove" / "sonarr2" / "boot.json").exists()
+    assert not (box.swap / "sonarr2" / "proof.json").exists()
 
 
 def test_prove_refuses_a_proof_status_with_the_wrong_build(box):
     box.installed()
-    r = box.run("--prove", "--execute", env={"FAKE_API_VERSION_PROOF": "4.0.20.3010"})
+    r = box.run("--prove", "--execute", env={"FAKE_API_VERSION_PROOF": "4.0.20.3000"})
     assert r.returncode != 0 and "pinned" in r.stderr
-    assert not (box.swap / "sonarr" / "proof.json").exists()
-    assert not (box.apps / ".prove" / "sonarr").exists()
-
-
-def test_prove_refuses_a_series_count_that_differs_from_the_live_app(box):
-    box.installed()
-    r = box.run("--prove", "--execute", env={"FAKE_LIVE_SERIES": "4"})
-    assert r.returncode != 0 and "series count differs" in r.stderr
-    assert not (box.swap / "sonarr" / "proof.json").exists()
-    assert not (box.apps / ".prove" / "sonarr").exists()
+    assert not (box.swap / "sonarr2" / "proof.json").exists()
+    assert not (box.apps / ".prove" / "sonarr2").exists()
 
 
 def test_prove_needs_a_free_proof_port(box):
     box.installed()
-    r = box.run("--prove", "--execute", env={"FAKE_PROOF_PORT": "17026"})
+    r = box.run("--prove", "--execute", env={"FAKE_PROOF_PORT": "17003"})
     assert r.returncode != 0 and "proof port" in r.stderr
 
 
@@ -699,27 +689,29 @@ def test_swap_full_sequence(box):
     r = box.swapped()
     calls = box.calls_text()
     # suppress -> stop container -> container gone -> enable --now unit -> socket
-    assert calls.index("appctl stop sonarr") < calls.index(f"systemctl --user enable --now {UNIT}")
+    assert calls.index("appctl stop sonarr2") < calls.index(f"systemctl --user enable --now {UNIT}")
     assert calls.index(f"enable --now {UNIT}") < calls.index(f"enable --now {SOCKET}")
     assert not box.container_running() and box.native_running()
     for name, golden in GOLDEN.items():
         assert (box.unitdir / name).read_text() == golden.read_text(encoding="utf-8"), name
     # listen set captured: all three addresses, the public one becomes a recorded exception
-    rec = (box.swap / "sonarr" / "listen-set.before").read_text().split()
-    assert sorted(rec) == sorted([PUBLIC, "172.17.0.1:17026", "127.0.0.1:17026"])
+    rec = (box.swap / "sonarr2" / "listen-set.before").read_text().split()
+    assert sorted(rec) == sorted([PUBLIC, "172.17.0.1:17003", "127.0.0.1:17003"])
     st = box.swapstate()
     assert st["ucc_version"] == VERSION
     assert st["exceptions"] == [PUBLIC]
     assert st["swap_date"] and st["soak_until"] and st["rollback_window"] == "open"
     # suppression stays ON until --finish (the manifest still says pending-swap)
-    assert set(box.suppressed()) == {"sonarr", "canary-arr-plex-parity",
-                                     "canary-seerr-arr-parity", "canary-ucc-gate-stuck",
-                                     "canary-thread-ceiling"}
-    # sonarr2's container (identical cmdline) was neither waited on nor stopped
-    assert box.sonarr2_running()
-    assert "appctl stop sonarr2" not in box.calls_text()
-    assert list((box.swap / "sonarr").glob("snapshot-*.tgz"))
-    assert (box.swap / "sonarr" / "config.xml.pre-native").exists()
+    assert set(box.suppressed()) == {"sonarr2", "canary-anime", "canary-arr-plex-parity",
+                                     "canary-seerr-arr-parity", "canary-thread-ceiling"}
+    snaps = list((box.swap / "sonarr2").glob("snapshot-*.tgz"))
+    assert snaps
+    with tarfile.open(snaps[0]) as tf:
+        names = tf.getnames()
+    assert "sonarr2/sonarr.db" in names and "sonarr2/config.xml" in names
+    assert not any(n.startswith("sonarr2/bin") or n.startswith("sonarr2/native") for n in names)
+    assert (box.swap / "sonarr2" / "config.xml.pre-native").exists()
+    assert (box.swap / "sonarr2" / "series.count").read_text().strip() == "5"
     assert "elapsed=" in r.stdout
 
 
@@ -734,17 +726,17 @@ def test_swap_leaves_config_xml_and_db_untouched(box):
 def test_swap_refuses_a_wildcard_listener(box):
     box.proved()
     ss = box.tmp / "ss.txt"
-    ss.write_text("LISTEN 0 4096 0.0.0.0:17026 0.0.0.0:*\n"
-                  "LISTEN 0 4096 172.17.0.1:17026 0.0.0.0:*\nLISTEN 0 4096 127.0.0.1:17026 0.0.0.0:*\n")
+    ss.write_text("LISTEN 0 4096 0.0.0.0:17003 0.0.0.0:*\n"
+                  "LISTEN 0 4096 172.17.0.1:17003 0.0.0.0:*\nLISTEN 0 4096 127.0.0.1:17003 0.0.0.0:*\n")
     r = box.run("--swap", "--execute", env={"FAKE_SS_BEFORE": _posix(ss)})
     assert r.returncode != 0 and "wildcard" in r.stderr
     assert box.container_running() and not box.suppressed()
 
 
-@pytest.mark.parametrize("missing", ["127.0.0.1:17026", "172.17.0.1:17026"])
+@pytest.mark.parametrize("missing", ["127.0.0.1:17003", "172.17.0.1:17003"])
 def test_swap_refuses_a_set_missing_a_required_address(box, missing):
     box.proved()
-    keep = [l for l in ("172.17.0.1:17026", "127.0.0.1:17026") if l != missing]
+    keep = [l for l in ("172.17.0.1:17003", "127.0.0.1:17003") if l != missing]
     ss = box.tmp / "ss.txt"
     ss.write_text("".join(f"LISTEN 0 4096 {a} 0.0.0.0:*\n" for a in keep))
     r = box.run("--swap", "--execute", env={"FAKE_SS_BEFORE": _posix(ss)})
@@ -771,7 +763,7 @@ def test_swap_refuses_when_config_apikey_differs_from_the_secret(box):
 
 def test_swap_refuses_when_urlbase_differs_from_the_secret(box):
     box.proved()
-    (box.secrets / "sonarr.urlbase").write_text("other\n")
+    (box.secrets / "sonarr2.urlbase").write_text("other\n")
     r = box.run("--swap", "--execute")
     assert r.returncode != 0 and "UrlBase" in r.stderr
     assert box.container_running()
@@ -783,34 +775,6 @@ def test_swap_refuses_container_paths_in_config(box):
     r = box.run("--swap", "--execute")
     assert r.returncode != 0 and "container path" in r.stderr
     assert box.container_running()
-
-
-def test_swap_refuses_a_media_path_under_a_container_mount(box):
-    box.proved()
-    con = sqlite3.connect(box.appdir / "sonarr.db")
-    con.execute('UPDATE "Series" SET "Path"=\'/data/TV Shows/show 1\' WHERE "Id"=1')
-    con.commit()
-    con.close()
-    r = box.run("--swap", "--execute")
-    assert r.returncode != 0 and "Series.Path" in r.stderr
-    assert box.container_running()
-
-
-def test_swap_refuses_when_the_gate_probe_still_names_sonarr(box):
-    box.proved()
-    (box.secrets / "ucc.probe_app").write_text("sonarr\n")
-    r = box.run("--swap", "--execute")
-    assert r.returncode != 0 and "probe_app" in r.stderr
-    assert box.container_running() and not box.suppressed()
-    assert "appctl stop" not in box.calls_text()
-
-
-def test_swap_refuses_when_the_probe_secret_is_unreadable(box):
-    box.proved()
-    (box.secrets / "ucc.probe_app").unlink()
-    r = box.run("--swap", "--execute")
-    assert r.returncode != 0 and "probe_app" in r.stderr
-    assert box.container_running() and not box.suppressed()
 
 
 def test_swap_refuses_container_paths_in_the_database(box):
@@ -833,13 +797,6 @@ def test_swap_db_path_audit_ignores_ordinary_urls(box):
     assert box.run("--swap", "--execute").returncode == 0
 
 
-def test_a_running_sonarr2_container_is_not_sonarrs_container(box):
-    """Same cmdline, same docker cgroup shape: only the mount differs. With
-    sonarr's container gone the swap must proceed while sonarr2 keeps running."""
-    box.swapped()
-    assert box.sonarr2_running() and not box.container_running()
-
-
 def test_swap_aborts_when_container_never_exits_and_restores_service(box):
     box.proved()
     r = box.run("--swap", "--execute", env={"FAKE_CONTAINER_STICKS": "1"})
@@ -849,6 +806,7 @@ def test_swap_aborts_when_container_never_exits_and_restores_service(box):
     assert not box.native_running()
     assert box.container_running()
     assert not box.suppressed()          # back to normal monitoring
+    assert not list((box.swap / "sonarr2").glob("snapshot-*.tgz"))     # never tar a live WAL db
 
 
 def test_swap_aborts_while_something_still_holds_the_database(box):
@@ -864,23 +822,23 @@ def test_swap_parity_failure_is_reported_and_stays_suppressed(box):
     r = box.run("--swap", "--execute", env={"FAKE_NATIVE_FAILS": "1"})
     assert r.returncode != 0
     assert "--rollback" in r.stderr
-    assert "sonarr" in box.suppressed()
+    assert "sonarr2" in box.suppressed()
 
 
 def test_swap_fails_parity_when_the_listen_set_drifts(box):
     box.proved()
     ss = box.tmp / "after.txt"
-    ss.write_text("LISTEN 0 4096 172.17.0.1:17026 0.0.0.0:*\n")      # loopback socket missing
+    ss.write_text("LISTEN 0 4096 172.17.0.1:17003 0.0.0.0:*\n")      # loopback socket missing
     r = box.run("--swap", "--execute", env={"FAKE_SS_AFTER": _posix(ss)})
     assert r.returncode != 0 and "--rollback" in r.stderr
-    assert "sonarr" in box.suppressed()
+    assert "sonarr2" in box.suppressed()
 
 
 def test_swap_fails_parity_when_the_native_api_reports_the_wrong_build(box):
     box.proved()
-    r = box.run("--swap", "--execute", env={"FAKE_API_VERSION_NATIVE": "4.0.20.3010"})
+    r = box.run("--swap", "--execute", env={"FAKE_API_VERSION_NATIVE": "4.0.20.3000"})
     assert r.returncode != 0 and "--rollback" in r.stderr
-    assert "sonarr" in box.suppressed()
+    assert "sonarr2" in box.suppressed()
 
 
 def test_swap_is_resumable_when_already_swapped(box):
@@ -888,7 +846,7 @@ def test_swap_is_resumable_when_already_swapped(box):
     r = box.run("--swap", "--execute")
     assert r.returncode == 0, r.stderr
     assert "already" in r.stdout
-    assert box.calls_text().count("appctl stop sonarr") == 1
+    assert box.calls_text().count("appctl stop sonarr2") == 1
 
 
 # --- step 9: finish -----------------------------------------------------------------
@@ -897,7 +855,7 @@ def test_finish_refuses_while_manifest_still_pending_swap(box):
     box.swapped()
     r = box.run("--finish", "--execute")
     assert r.returncode != 0 and "pending-swap" in r.stderr
-    assert "sonarr" in box.suppressed()
+    assert "sonarr2" in box.suppressed()
 
 
 def test_finish_lifts_app_and_canaries_together(box):
@@ -921,7 +879,7 @@ def test_rollback_step0_suppresses_and_masks_all_three_units_before_stopping(box
     # the loopback socket is stopped before the app (it would re-spawn the forwarder)
     assert calls.index(f"systemctl --user stop {SOCKET}") < calls.index(f"systemctl --user stop {UNIT}")
     assert not box.native_running() and box.container_running()
-    assert calls.rindex("appctl start sonarr") > calls.index(f"systemctl --user stop {UNIT}")
+    assert calls.rindex("appctl start sonarr2") > calls.index(f"systemctl --user stop {UNIT}")
     assert box.suppressed() == {}
     assert "elapsed=" in r.stdout
 
@@ -934,7 +892,7 @@ def test_rollback_pauses_before_ucc_start_until_manifest_reverted(box):
     assert "revert" in r.stderr
     assert not box.native_running() and not box.container_running()
     assert "appctl start" not in box.calls_text()
-    assert "sonarr" in box.suppressed()               # stays muted while paused
+    assert "sonarr2" in box.suppressed()               # stays muted while paused
     # operator reverts the deployed manifest, re-runs: resumes at step 3
     box.set_manifest(swap_state="pending-swap")
     r = box.run("--rollback", "--execute")
@@ -942,25 +900,16 @@ def test_rollback_pauses_before_ucc_start_until_manifest_reverted(box):
     assert box.container_running()
 
 
-def test_rollback_waits_for_sonarrs_own_container_not_sonarr2s(box):
-    box.swapped()
-    assert box.sonarr2_running()                       # a pattern-only scan would say "up"
-    r = box.run("--rollback", "--execute", env={"FAKE_START_NOOP": "1"})
-    assert r.returncode != 0 and "did not come back" in r.stderr
-    assert not box.container_running() and box.sonarr2_running()
-    assert "sonarr" in box.suppressed()                # still muted: sonarr is not back
-
-
 def test_rollback_restores_config_xml_if_the_native_era_changed_it(box):
     box.swapped()
-    original = (box.swap / "sonarr" / "config.xml.pre-native").read_bytes()
+    original = (box.swap / "sonarr2" / "config.xml.pre-native").read_bytes()
     (box.appdir / "config.xml").write_text(
-        (box.appdir / "config.xml").read_text().replace("<Port>8989</Port>", "<Port>17026</Port>"),
+        (box.appdir / "config.xml").read_text().replace("<Port>8989</Port>", "<Port>17003</Port>"),
         newline="\n")
     r = box.run("--rollback", "--execute")
     assert r.returncode == 0, r.stdout + r.stderr
     assert (box.appdir / "config.xml").read_bytes() == original
-    assert "<Port>17026</Port>" in (box.swap / "sonarr" / "config.xml.native-era").read_text()
+    assert "<Port>17003</Port>" in (box.swap / "sonarr2" / "config.xml.native-era").read_text()
 
 
 def test_drill_rollback_then_reswap_unmasks_everything(box):
@@ -980,11 +929,96 @@ def test_rollback_with_nothing_swapped_is_harmless(box):
     assert box.container_running()
 
 
-def test_proof_boot_reserves_the_gc_region_like_the_unit():
-    """The proof boots the binary by hand, outside the env file: without
-    DOTNET_GCRegionRange CoreCLR cannot reserve its GC range under the slot's
-    address-space cap and the proof never answers (radarr proof, box 2026-10-10)."""
+# --- sonarr2-specific ---------------------------------------------------------------
+
+def test_the_twin_sonarr_container_is_never_mistaken_for_sonarr2(box):
+    """The primary sonarr container has the same cmdline and stays up throughout."""
+    box.swapped()
+    assert (box.proc / "9100").exists()              # twin untouched by the swap
+    assert box.native_running() and not box.container_running()
+    r = box.run("--rollback", "--execute")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (box.proc / "9100").exists()
+
+
+def test_swap_refuses_without_fuser(box):
+    box.proved()
+    r = box.run("--swap", "--execute", env={"QFLIX_FUSER": "/nonexistent/fuser"})
+    assert r.returncode != 0 and "fuser" in r.stderr
+    assert box.container_running() and not box.suppressed()
+
+
+def test_only_the_real_db_is_audited_and_snapshotted_not_the_stray(box):
+    # the 0-byte sonarr2.db stray must neither break the audit nor be required
+    box.proved()
+    assert box.run("--swap", "--execute").returncode == 0
+
+
+def test_swap_db_path_audit_ignores_history_tables(box):
+    # History holds /downloads/... from the container era on purpose (fixture row)
+    box.proved()
+    assert box.run("--swap", "--execute").returncode == 0
+
+
+def test_prove_refuses_rename_episodes_false_in_the_copy(box):
+    box.installed()
+    r = box.run("--prove", "--execute", env={"FAKE_RENAME_PROOF": "false"})
+    assert r.returncode != 0 and "renameEpisodes" in r.stderr
+    assert not (box.swap / "sonarr2" / "proof.json").exists()
+    assert not (box.apps / ".prove" / "sonarr2").exists()
+
+
+def test_prove_refuses_a_series_count_mismatch(box):
+    box.installed()
+    r = box.run("--prove", "--execute", env={"FAKE_SERIES_PROOF": "4"})
+    assert r.returncode != 0 and "series count differs" in r.stderr
+    assert not (box.swap / "sonarr2" / "proof.json").exists()
+
+
+def test_swap_refuses_when_live_rename_episodes_is_false(box):
+    box.proved()
+    r = box.run("--swap", "--execute", env={"FAKE_RENAME": "false"})
+    assert r.returncode != 0 and "renameEpisodes" in r.stderr
+    assert box.container_running() and not box.suppressed()
+
+
+@pytest.mark.parametrize("state", ["importing", "importPending"])
+def test_swap_refuses_while_an_import_is_in_flight(box, state):
+    box.proved()
+    r = box.run("--swap", "--execute", env={"FAKE_QUEUE_STATE": state})
+    assert r.returncode != 0 and "import" in r.stderr
+    assert box.container_running() and not box.suppressed()
+
+
+def test_swap_parity_fails_when_native_rename_episodes_is_false(box):
+    box.proved()
+    r = box.run("--swap", "--execute", env={"FAKE_RENAME_NATIVE": "false"})
+    assert r.returncode != 0 and "--rollback" in r.stderr
+    assert "renameEpisodes" in r.stderr
+    assert "sonarr2" in box.suppressed()
+
+
+def test_swap_parity_fails_when_the_native_series_count_differs(box):
+    box.proved()
+    r = box.run("--swap", "--execute", env={"FAKE_SERIES_NATIVE": "3"})
+    assert r.returncode != 0 and "--rollback" in r.stderr
+    assert "series count" in r.stderr
+    assert "sonarr2" in box.suppressed()
+
+
+def test_swap_refused_without_the_deployed_flip_leaves_no_suppression(box):
+    box.proved()
+    box.set_manifest(cls="ucc", dormant=False)
+    assert box.run("--swap", "--execute").returncode != 0
+    assert not box.suppressed()
+
+
+def test_env_file_never_carries_the_prowlarr_prefix(box):
+    box.installed()
+    env = (box.envdir / "sonarr2.env").read_text()
+    assert "PROWLARR__" not in env and "SONARR__SERVER__PORT=17003" in env
+
+
+def test_finish_text_documents_the_buildarr_oneshot():
     text = INSTALLER.read_text(encoding="utf-8")
-    boot = [ln for ln in text.splitlines()
-            if ln.lstrip().startswith("env DOTNET_PROCESSOR_COUNT=")]
-    assert boot and all("DOTNET_GCRegionRange=80000000" in ln for ln in boot), boot
+    assert "buildarr.service" in text
