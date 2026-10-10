@@ -24,7 +24,6 @@ sed \
   -e "s|{{RADARR2_PORT}}|$(secret_read radarr2.port)|g" \
   -e "s|{{RADARR2_BASE}}|$(secret_read radarr2.urlbase 2>/dev/null || echo radarr2)|g" \
   -e "s|{{RADARR2_KEY}}|$(secret_read radarr2.key)|g" \
-  -e "s|{{SAB_COMPLETE}}|$(secret_read sabnzbd.complete 2>/dev/null || echo /home/quadstronaut/downloads/sabnzbd/complete)|g" \
   "$TMPL" > "$OUT"
 
 # QFLX-46: refuse to push a config unpackerr would half-ignore. A [[general]]

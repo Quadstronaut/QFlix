@@ -83,7 +83,7 @@ def test_template_filled_is_valid_and_logs_to_file():
 def test_template_has_usenet_protocols_and_sab_paths_and_no_secrets():
     t = TMPL.read_text(encoding="utf-8")
     assert t.count('protocols = "torrent,usenet"') == 4
-    assert t.count("{{SAB_COMPLETE}}/") == 4
+    assert t.count("/home/quadstronaut/downloads/sabnzbd/complete/") == 4
     for m in re.finditer(r'^api_key = "(.*)"', t, re.M):
         assert re.fullmatch(r"\{\{[A-Z0-9_]+\}\}", m.group(1))
     assert not re.search(r"[0-9a-f]{32}", t)
@@ -222,3 +222,12 @@ def test_canary_calls_the_leg_before_the_verdict():
     t = CANARY.read_text(encoding="utf-8")
     assert t.index("\nunpackerr_leg\n") < t.index("if [ ${#FAILED[@]} -gt 0 ]")
     assert "'" not in _leg_block()          # lives inside sshm '...'
+
+
+def test_check_flags_empty_rendered_secrets():
+    import sys
+    sys.path.insert(0, str(TMPL.parents[2] / "scripts" / "maint" / "lib"))
+    import unpackerr_conf
+    bad = "log_file = '/x.log'\n[[sonarr]]\nurl = 'http://:/'\napi_key = ''\n"
+    bad = bad.replace("'http://:/'", '"http://:/"').replace("api_key = ''", 'api_key = ""')
+    assert "empty-secret" in unpackerr_conf.check(bad)
