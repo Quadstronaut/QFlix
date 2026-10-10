@@ -1,0 +1,9 @@
+[Unit]
+Description=QFlix sonarr loopback forwarder
+Requires=qflix-sonarr-fwd.socket
+After=qflix-sonarr-fwd.socket qflix-sonarr.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 172.17.0.1:17026
+Nice=5

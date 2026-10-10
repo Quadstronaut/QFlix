@@ -145,3 +145,103 @@ def test_31_unpackerr_goes_through_appctl_only():
     assert "~/bin/appctl restart unpackerr" in text
     assert "~/bin/appctl status unpackerr" in text
     assert "systemctl --user is-active unpackerr" not in text
+
+
+# --- sonarr (QFLX-32, A8) --------------------------------------------------------------
+
+
+def _sonarr_post_swap_manifest(tmp_path: Path) -> Path:
+    """The deployed manifest after the follow-up PR dropped swap_state."""
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    data["apps"]["sonarr"].pop("swap_state", None)
+    p = tmp_path / "apps.yaml"
+    p.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return p
+
+
+def test_sonarr_is_converted_with_a_full_build_pin():
+    a = _converted()["sonarr"]
+    assert a["unit"] == "qflix-sonarr.service" and a["swap_state"] == "pending-swap"
+    assert a["health"]["kind"] == "http_api" and a["health"]["require_unit_active"] is True
+    assert a["upgrade"]["kind"] == "tarball_swap"
+    assert _versions_env()["SONARR_VERSION"].count(".") == 3          # 4.0.20.3014, not the panel's 4.0.20
+    assert "linux-x64" in a["upgrade"]["url_template"] and "Sonarr.main." in a["upgrade"]["url_template"]
+
+
+def test_sonarr_upgrade_hoists_the_tarball_top_dir_into_bin_ver():
+    steps = " && ".join(_converted()["sonarr"]["upgrade"]["post_steps"])
+    assert "mv Sonarr .pkg" in steps and "mv .pkg/* ." in steps       # dir and apphost share a name
+    assert "rm -rf Sonarr.Update" in steps
+    assert "bin/current" in steps
+
+
+def test_sonarr_flip_keeps_the_probe_secrets_the_whole_stack_reads():
+    h = _converted()["sonarr"]["health"]
+    assert (h["port_secret"], h["auth_secret"], h["urlbase_secret"]) == (
+        "sonarr.port", "sonarr.key", "sonarr.urlbase")
+
+
+def test_sonarr2_is_untouched_by_the_sonarr_flip():
+    """sonarr2 has its own ticket (QFLX-30) and its container shares sonarr's cmdline."""
+    a = _apps()["sonarr2"]
+    assert a["class"] == "ucc" and "swap_state" not in a
+
+
+def test_generated_skip_list_carries_sonarr_but_not_sonarr2():
+    r = subprocess.run([sys.executable, str(LIB / "ucc_skip.py"), "--list",
+                        "--manifest", str(MANIFEST)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "sonarr" in r.stdout.split()
+    assert "sonarr2" not in r.stdout.split()
+
+
+def test_gate_probe_can_never_name_sonarr_once_converted():
+    """QFLX-32 test line: the UCC gate probe never names a converted slug. The
+    guard reads the deployed manifest, so after the flip `sonarr` is refused
+    even when the secret still says it."""
+    from lib import ucc_skip
+    assert ucc_skip.probe_allowed("sonarr", MANIFEST) is False
+    assert ucc_skip.probe_allowed("plex", MANIFEST) is True
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
+def test_appctl_never_starts_the_sonarr_container_after_the_swap(tmp_path, verb):
+    man = _sonarr_post_swap_manifest(tmp_path)
+    binp = tmp_path / "bin"
+    binp.mkdir()
+    for n in ("app-sonarr", "systemctl"):
+        (binp / n).write_text(_STUB, newline="\n")
+        (binp / n).chmod(0o755)
+    log = tmp_path / "argv.log"
+    env = dict(os.environ, HOME=tmp_path.as_posix(), STUB_LOG=log.as_posix(),
+               PATH=binp.as_posix() + os.pathsep + os.environ.get("PATH", ""),
+               APPCTL_MANIFEST=man.as_posix(), APPCTL_PYTHON=Path(sys.executable).as_posix(),
+               APPCTL_LIB=LIB.as_posix())
+    r = subprocess.run(["bash", APPCTL.as_posix(), verb, "sonarr"], env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    argv = log.read_text() if log.exists() else ""
+    assert "app-sonarr" not in argv
+    want = "is-active" if verb == "status" else verb
+    assert f"systemctl --user {want} qflix-sonarr.service" in argv
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
+def test_lifecycle_never_starts_the_sonarr_container_after_the_swap(tmp_path, fn):
+    app = load_manifest(_sonarr_post_swap_manifest(tmp_path)).app("sonarr")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "active\n", "")) as run:
+        fn(app)
+    for call in run.call_args_list:
+        assert not call[0][0][0].startswith("app-"), call
+
+
+@pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart])
+def test_pending_swap_sonarr_is_still_lifecycled_as_the_container(fn):
+    """Before the swap the container is the live runtime: pusher recovery must
+    never `systemctl --user restart` the native unit beside it (I-6)."""
+    app = load_manifest(MANIFEST).app("sonarr")
+    with patch("subprocess.run", return_value=CompletedProcess([], 0, "", "")) as run:
+        fn(app)
+    argv = [c[0][0] for c in run.call_args_list]
+    assert argv and all(a[0] == "app-sonarr" for a in argv), argv
