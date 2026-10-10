@@ -252,8 +252,18 @@ STANDALONE_SELF_PUSH_HEARTBEATS = {
 
 
 def _kuma_db_path() -> Path:
-    return Path(os.environ.get(
-        "QFLIX_KUMA_DB", str(Path.home() / ".apps" / "uptimekuma" / "kuma.db")))
+    """kuma.db location: QFLIX_KUMA_DB env, else secrets/uptimekuma.db-path
+    (box-2 native Kuma keeps its db under data/, QFLX-41), else the Ultra default."""
+    env = os.environ.get("QFLIX_KUMA_DB")
+    if env:
+        return Path(env)
+    try:
+        sec = _secret_read("uptimekuma.db-path")
+    except Exception:
+        sec = ""
+    if sec:
+        return Path(sec).expanduser()
+    return Path.home() / ".apps" / "uptimekuma" / "kuma.db"
 
 
 def _live_monitors_from_db():
