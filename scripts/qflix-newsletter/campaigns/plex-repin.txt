@@ -1,0 +1,54 @@
+Hi {{ .Subscriber.FirstName }},
+
+QFlix is moving to new, faster hardware. Nothing about the movies and shows
+changes. What does change is the server's identity inside Plex, so you will
+notice a few things:
+
+  - A NEW QFlix server appears in your Plex app.
+  - The OLD QFlix server disappears after we switch over.
+  - Your pinned and favorited libraries start out blank on the new one.
+
+That is normal, and it is a two-minute fix.
+
+RE-PIN YOUR LIBRARIES
+
+Plex Web (computer)
+  Open https://app.plex.tv/desktop/ . In the left sidebar, find the new QFlix
+  server and click the pin icon next to each library you want (Movies, TV, and
+  so on). Use the three-dot menu to reorder them.
+
+iPhone, iPad and Android
+  Open Plex, tap More (or your profile), then Manage Libraries (sometimes
+  called Edit Sidebar). Switch on the libraries from the new QFlix server and
+  drag them where you like.
+
+TV apps (Roku, Fire TV, Apple TV, Android TV, smart TVs)
+  Open Plex and scroll the left menu to the bottom. Choose Edit (or press the
+  options button) and pin the libraries from the new QFlix server. If the app
+  still shows only the old server, close Plex completely and reopen it.
+
+CLEARING OUT THE OLD SERVER
+
+Once we switch over, the old QFlix entry should vanish by itself. If it
+lingers on one of your devices, sign out of Plex and back in, or remove it
+from Settings > Authorized Devices on Plex Web. It is just a leftover label.
+
+ONE HONEST HEADS-UP
+
+Watch history on the old server does not carry over. The new server starts
+with a fresh slate, so shows will not remember where you left off and
+"watched" marks start over. Your requests and your account are untouched.
+
+NEED A HAND?
+
+Request something new or ask for help through Seerr:
+  https://seerr-quadstronaut.seedbox.example.com/
+Check the FAQ on the QFlix dashboard:
+  https://quadstronaut.seedbox.example.com/
+Or just reply to this email. We are happy to walk you through it.
+
+Thanks for your patience, and enjoy the show.
+
+- QFlix
+
+Unsubscribe: {{ UnsubscribeURL }}
