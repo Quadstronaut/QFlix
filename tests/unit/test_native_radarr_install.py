@@ -945,3 +945,13 @@ def test_rollback_with_nothing_swapped_is_harmless(box):
     r = box.run("--rollback", "--execute")
     assert r.returncode == 0, r.stderr
     assert box.container_running()
+
+
+def test_proof_boot_reserves_the_gc_region_like_the_unit():
+    """The proof boots the binary by hand, outside the env file: without
+    DOTNET_GCRegionRange CoreCLR cannot reserve its GC range under the slot's
+    address-space cap and the proof never answers (box, 2026-10-10)."""
+    text = INSTALLER.read_text(encoding="utf-8")
+    boot = [ln for ln in text.splitlines()
+            if ln.lstrip().startswith("env DOTNET_PROCESSOR_COUNT=")]
+    assert boot and all("DOTNET_GCRegionRange=80000000" in ln for ln in boot), boot
