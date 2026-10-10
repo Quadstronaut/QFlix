@@ -27,6 +27,7 @@ namespace package; never add an __init__.py).
 CLI:
   swapstate.py capture SLUG [--port N | --manifest PATH] [--ss-file F|-] [--ucc-version V]
   swapstate.py set SLUG key=value ...   (swap_date, soak_until, rollback_window, ucc_version)
+  swapstate.py add-exception SLUG addr:port ...   record operator-approved dropped listeners
   swapstate.py show SLUG
   swapstate.py diff SLUG [--ss-file F|-]   exit 0 same, 1 differs, 2 error
   swapstate.py soak-check SLUG   exit 1 refused (inside soak), 0 ok
@@ -240,6 +241,27 @@ def update_state(slug: str, **fields) -> dict:
         return _merge_state(d, fields)
 
 
+def add_exceptions(slug: str, addrs) -> dict:
+    """Record listener(s) the native app deliberately does NOT reproduce (spec
+    5.4 resolution 2, D-4). diff_listen subtracts them from added AND removed.
+    Union, de-duplicated, sorted; never touches the other state fields."""
+    clean = []
+    for a in addrs:
+        a = str(a).strip()
+        if not re.match(r"^(\[[0-9A-Fa-f:.]+\]|[0-9.]+):[0-9]{1,5}$", a):
+            raise SwapStateError(f"bad exception {a!r}: expected addr:port")
+        clean.append(a)
+    d = _slug_dir(slug)
+    with _Locked(d):
+        sj = d / "state.json"
+        try:
+            have = json.loads(sj.read_text(encoding="utf-8")).get("exceptions") or []
+        except (OSError, ValueError, AttributeError):
+            have = []
+        merged = sorted({str(x) for x in have} | set(clean))
+        return _merge_state(d, {"exceptions": merged})
+
+
 def diff_listen(slug: str, ss_text: str) -> dict:
     """Current listen set vs recorded, minus recorded exceptions.
 
@@ -370,6 +392,9 @@ def main(argv=None) -> int:
     s = sub.add_parser("set")
     s.add_argument("slug")
     s.add_argument("pairs", nargs="+")
+    ae = sub.add_parser("add-exception")
+    ae.add_argument("slug")
+    ae.add_argument("addrs", nargs="+")
     sh = sub.add_parser("show")
     sh.add_argument("slug")
     df = sub.add_parser("diff")
@@ -403,6 +428,9 @@ def main(argv=None) -> int:
                     raise SwapStateError(f"expected key=value, got {pair!r}")
                 kv[k] = v
             print(json.dumps(update_state(args.slug, **kv), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "add-exception":
+            print(json.dumps(add_exceptions(args.slug, args.addrs)["exceptions"]))
             return 0
         if args.cmd == "show":
             print(json.dumps({"state": load_state(args.slug),

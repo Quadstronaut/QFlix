@@ -165,13 +165,43 @@ apps:
       expect_status: 200
 
   tautulli:
-    class: ucc
+    # QFLX-34 (UCC divorce A10): converted to the upstream tag release + a
+    # python venv, run as qflix-tautulli.service by scripts/configure/302-native-
+    # tautulli-install.sh (version pinned in versions.env TAUTULLI_VERSION +
+    # sha256 in the installer). Data stays IN PLACE (~/.apps/tautulli config.ini +
+    # tautulli.db via --datadir); pms_* is never edited, so it keeps dialling the
+    # same Plex (the gateway pin of 50-tautulli-pms-url-fix.sh). The web server
+    # binds 127.0.0.1:<tautulli.port> ONLY (nginx and every on-box consumer use
+    # it); the container's public-IP and gateway listeners are dropped as
+    # recorded listen-set exceptions (spec 5.4 resolution 2, D-4). The UCC
+    # container stays installed and DORMANT as the rollback target (I-8).
+    # `swap_state: pending-swap` keeps the container the live runtime (appctl,
+    # lifecycle, health) until the swap runs; the follow-up PR drops it.
+    class: systemd
+    unit: qflix-tautulli.service
     ucc_slug: tautulli
+    ucc_dormant: true
+    swap_state: pending-swap
     kuma_monitor: "Tautulli"
     health:
       kind: http_root
       port_secret: tautulli.port
       expect_status: 200
+    upgrade:
+      # The GitHub tag archive wraps everything in Tautulli-<ver>/; the post
+      # steps flatten it, build the venv from the release's pinned requirements
+      # and flip `current` atomically. The soak gate refuses it for 14 days
+      # after the swap.
+      kind: tarball_swap
+      url_template: "https://github.com/Tautulli/Tautulli/archive/refs/tags/v{version}.tar.gz"
+      target_dir: "~/.apps/tautulli/bin/{version}"
+      post_steps:
+        - "cd ~/.apps/tautulli/bin/{version} && cp -a Tautulli-{version}/. . && rm -rf Tautulli-{version}"
+        - "cd ~/.apps/tautulli/bin/{version} && python3 -m venv venv && venv/bin/python -m pip install --disable-pip-version-check --no-cache-dir -q -r requirements.txt"
+        - "ln -sfn {version} ~/.apps/tautulli/bin/.current.new && mv -Tf ~/.apps/tautulli/bin/.current.new ~/.apps/tautulli/bin/current"
+      version_pin:
+        source: versions.env
+        key: TAUTULLI_VERSION
 
   # BOOKS STACK (audiobookshelf, kavita, komga, calibre-web): DECOMMISSIONED
   # 2026-08-16 — operator-ordered purge; nobody used any of the four. All were

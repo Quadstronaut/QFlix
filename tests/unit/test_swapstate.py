@@ -82,6 +82,32 @@ def test_diff_listen_reports_added_removed_and_honours_exceptions(tmp_path):
     assert d == {"added": ["127.0.0.2:42050"], "removed": ["172.17.0.1:42050"]}
 
 
+def test_add_exceptions_records_union_and_is_honoured_by_diff():
+    swapstate.capture("tautulli", SS, 42050)
+    swapstate.add_exceptions("tautulli", ["172.17.0.1:42050"])
+    st = swapstate.add_exceptions("tautulli", ["[::]:42050", "172.17.0.1:42050"])
+    assert st["exceptions"] == ["172.17.0.1:42050", "[::]:42050"]
+    assert st["port"] == 42050 and st["rollback_window"] == "open"   # untouched
+    only_loopback = "LISTEN 0 4096 127.0.0.1:42050 0.0.0.0:*\n"
+    assert swapstate.diff_listen("tautulli", only_loopback) == {"added": [], "removed": []}
+    # a NEW unexpected listener is still reported
+    d = swapstate.diff_listen("tautulli", only_loopback + "LISTEN 0 1 0.0.0.0:42050 0.0.0.0:*\n")
+    assert d["added"] == ["0.0.0.0:42050"]
+
+
+@pytest.mark.parametrize("bad", ["", "nope", "1.2.3.4", "1.2.3.4:x", "a b:1"])
+def test_add_exceptions_rejects_malformed_addresses(bad):
+    swapstate.capture("tautulli", SS, 42050)
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.add_exceptions("tautulli", [bad])
+
+
+def test_add_exception_cli(tmp_path, capsys):
+    swapstate.capture("tautulli", SS, 42050)
+    assert swapstate.main(["add-exception", "tautulli", "172.17.0.1:42050"]) == 0
+    assert json.loads(capsys.readouterr().out) == ["172.17.0.1:42050"]
+
+
 def test_diff_without_baseline_raises_not_clean():
     with pytest.raises(swapstate.SwapStateError):
         swapstate.diff_listen("never-captured", SS)

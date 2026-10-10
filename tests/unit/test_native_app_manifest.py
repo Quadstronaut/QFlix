@@ -80,6 +80,20 @@ def test_flaresolverr_is_converted_pending_swap():
     assert any("mv .fs-tmp/* ." in step for step in a["upgrade"]["post_steps"])
 
 
+def test_tautulli_is_converted_pending_swap():
+    a = _converted()["tautulli"]
+    assert a["swap_state"] == "pending-swap" and a["unit"] == "qflix-tautulli.service"
+    # Same port secret and probe kind: the native app answers on the recorded port.
+    assert a["health"]["kind"] == "http_root" and a["health"]["port_secret"] == "tautulli.port"
+    steps = a["upgrade"]["post_steps"]
+    # The tag archive wraps everything in Tautulli-<ver>/; the upgrade flattens it,
+    # builds the venv from the release requirements, then flips `current`.
+    assert any("cp -a Tautulli-{version}/. ." in s for s in steps)
+    assert any("-m venv venv" in s and "-r requirements.txt" in s for s in steps)
+    assert steps[-1].startswith("ln -sfn {version}")
+    assert a["upgrade"]["kind"] == "tarball_swap"
+
+
 def test_real_manifest_loads_with_the_flip():
     app = load_manifest(MANIFEST).app("unpackerr")
     assert app.class_ == "systemd" and app.upgrade.kind == "tarball_swap"
@@ -91,6 +105,7 @@ def test_generated_skip_list_carries_unpackerr():
     assert r.returncode == 0, r.stderr
     assert "unpackerr" in r.stdout.split()
     assert "flaresolverr" in r.stdout.split()
+    assert "tautulli" in r.stdout.split()
 
 
 # --- zero UCC starts after the swap (O-3 / F8 dependency) --------------------------
