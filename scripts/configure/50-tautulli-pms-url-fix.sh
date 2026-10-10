@@ -69,7 +69,7 @@ echo "  pms_url:        $PMS_URL -> $WANT_URL"
 
 cp "$CFG" "$CFG.bak.$(date +%s)"
 
-app-tautulli stop >/dev/null 2>&1 || true
+"$HOME/bin/appctl" stop tautulli >/dev/null 2>&1 || true
 for _ in 1 2 3 4 5; do
   pgrep -f 'Tautulli.py' >/dev/null || break
   sleep 1
@@ -85,7 +85,7 @@ sed -i \
 
 grep -E '^pms_(ip|port|ssl|url|url_manual) ' "$CFG"
 
-app-tautulli start >/dev/null 2>&1 || true
+"$HOME/bin/appctl" start tautulli >/dev/null 2>&1 || true
 sleep 12
 
 # Smoke test: trigger the exact sequence that used to break.

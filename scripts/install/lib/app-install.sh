@@ -17,6 +17,14 @@ app_install() {
   local password
   password="$(secret_read shared-admin.password)"
 
+  # I-9 guard (QFLX-18): `app-<x> install` creates and STARTS a UCC container.
+  # Never do that for an app the deployed manifest says is native or whose
+  # UCC runtime is dormant (it would run two runtimes on one config dir).
+  # No ~/bin/appctl yet = 240 never ran = no swap was ever deployed.
+  if sshm "[ -x ~/bin/appctl ] && ~/bin/appctl is-native $app >/dev/null 2>&1"; then
+    die "$app is native/dormant per the deployed manifest; refusing app-$app install"
+  fi
+
   if sshm "test -d ~/.apps/$app" 2>/dev/null; then
     log_info "$app already installed (~/.apps/$app exists); skipping install"
     return 0
