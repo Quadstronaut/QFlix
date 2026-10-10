@@ -57,6 +57,7 @@ sshm 'python3 -' <<'PY'
 import json, urllib.request, urllib.parse, urllib.error, pathlib
 sec = pathlib.Path.home()/"secrets"
 rd  = lambda n: (sec/n).read_text().strip()
+AH  = rd("net.app_host")   # host address containers use to reach host-side apps
 
 # ---- SABnzbd: Frugal server + sonarr category + docker-bridge whitelist ----
 SK, SP = rd("sabnzbd.key"), rd("sabnzbd.port")
@@ -81,13 +82,13 @@ if not any(c.get("name")=="sonarr" for c in cats):
 wl = sabcall({"mode":"get_config","section":"misc","keyword":"host_whitelist"})["config"]["misc"]["host_whitelist"]
 wl = [x.strip() for x in wl.split(",") if x.strip()] if isinstance(wl,str) else list(wl)
 changed=False
-for h in ("172.17.0.1","127.0.0.1","localhost"):
+for h in (AH,"127.0.0.1","localhost"):
     if h not in wl: wl.append(h); changed=True
 if changed:
     sabcall({"mode":"set_config","section":"misc","keyword":"host_whitelist","value":", ".join(wl)})
     print("SABnzbd: extended host_whitelist for docker bridge")
 
-# ---- Sonarr: download client (via 172.17.0.1 bridge) + NZBgeek + delay profile ----
+# ---- Sonarr: download client (via net.app_host bridge) + NZBgeek + delay profile ----
 SONK, SONP, SONB = rd("sonarr.key"), rd("sonarr.port"), rd("sonarr.urlbase")
 base=f"http://127.0.0.1:{SONP}/{SONB}/api/v3"
 def son(path, method="GET", body=None):
@@ -99,7 +100,7 @@ def son(path, method="GET", body=None):
 
 if not any(d["implementation"]=="Sabnzbd" for d in son("/downloadclient")):
     sch=[s for s in son("/downloadclient/schema") if s["implementation"]=="Sabnzbd"][0]
-    setv={"host":"172.17.0.1","port":int(SP),"urlBase":"sabnzbd","apiKey":SK,
+    setv={"host":AH,"port":int(SP),"urlBase":"sabnzbd","apiKey":SK,
           "tvCategory":"sonarr","useSsl":False,"recentTvPriority":-100,"olderTvPriority":-100}
     for f in sch["fields"]:
         if f["name"] in setv: f["value"]=setv[f["name"]]

@@ -224,14 +224,14 @@ apps:
       expect_status: 200
 
   flaresolverr:
-    # Binds only on the Docker bridge gateway (172.17.0.1:17011), not host
+    # Binds only on the Docker bridge gateway (net.app_host:17011), not host
     # loopback — hostname override below routes the probe accordingly.
     class: ucc
     ucc_slug: flaresolverr
     kuma_monitor: "FlareSolverr"
     health:
       kind: http_root
-      hostname: "172.17.0.1"
+      hostname_ref: net.app_host
       port_secret: flaresolverr.port
       expect_status: 200
 

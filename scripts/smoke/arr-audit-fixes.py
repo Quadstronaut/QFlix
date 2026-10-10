@@ -23,6 +23,7 @@ HOST = "https://quadstronaut.seedbox.example.com"
 HTPW = (SECRETS / "htpasswd.password").read_text().strip()
 PROW_KEY = (SECRETS / "prowlarr.key").read_text().strip()
 READ_KEY = (SECRETS / "readarr.key").read_text().strip()
+APP_HOST = (SECRETS / "net.app_host").read_text().strip()   # containers -> host-side apps
 
 
 def _basic() -> str:
@@ -70,8 +71,8 @@ def fix_a_register_readarr(dry_run: bool) -> None:
         "infoLink": "https://wiki.servarr.com/prowlarr/supported#readarr",
         "tags": [],
         "fields": [
-            {"name": "prowlarrUrl", "value": "http://172.17.0.1:17024/prowlarr"},
-            {"name": "baseUrl", "value": "http://172.17.0.1:17042/readarr"},
+            {"name": "prowlarrUrl", "value": f"http://{APP_HOST}:17024/prowlarr"},
+            {"name": "baseUrl", "value": f"http://{APP_HOST}:17042/readarr"},
             {"name": "apiKey", "value": READ_KEY},
             {"name": "syncCategories",
              "value": [3030, 7000, 7010, 7020, 7030, 7040, 7050, 7060]},

@@ -128,6 +128,9 @@ def _resolve_urlbase(app: App) -> str:
 # Probe kinds
 # ---------------------------------------------------------------------------
 
+from lib.secrets import resolve_host as _resolve_host  # noqa: E402  (hostname_ref, QFLX-23)
+
+
 def _probe_http_api(app: App, timeout_s: float) -> HealthResult:
     raw = app.health.raw
     try:
@@ -148,7 +151,10 @@ def _probe_http_api(app: App, timeout_s: float) -> HealthResult:
     if not path.startswith("/"):
         path = "/" + path
 
-    host = raw.get("hostname", "127.0.0.1")
+    try:
+        host = _resolve_host(raw)
+    except Exception as exc:
+        return HealthResult(ok=False, latency_ms=None, reason=f"config error: {exc}")
     url = f"http://{host}:{port}{path}"
 
     headers: dict[str, str] = {}
@@ -212,9 +218,12 @@ def _probe_http_root(app: App, timeout_s: float) -> HealthResult:
     path = raw.get("path_override", "/")
     if not path.startswith("/"):
         path = "/" + path
-    # hostname override lets apps that bind only to the Docker bridge (e.g.
-    # FlareSolverr at 172.17.0.1) be probed from the host netns.
-    host = raw.get("hostname", "127.0.0.1")
+    # hostname / hostname_ref lets apps that bind only to the Docker bridge (e.g.
+    # FlareSolverr at net.app_host) be probed from the host netns.
+    try:
+        host = _resolve_host(raw)
+    except Exception as exc:
+        return HealthResult(ok=False, latency_ms=None, reason=f"config error: {exc}")
     url = f"http://{host}:{port}{path}"
     expect_status = raw.get("expect_status")
 

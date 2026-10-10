@@ -2,7 +2,7 @@
 """Phase 5: Sonarr/Radarr Plex+Notifiarr Connects, Prowlarr Apps Sync, anime indexer tagging.
 
 Run on manitoba; reads PROW_KEY, SONARR_*, RADARR_*, SONARR2_*, RADARR2_*, PLEX_HOST,
-PLEX_PORT, PLEX_TOKEN, NOTIFIARR_KEY from env.
+PLEX_PORT, PLEX_TOKEN, NOTIFIARR_KEY, APP_HOST (secret net.app_host) from env.
 
 Idempotent.
 """
@@ -62,6 +62,7 @@ for ind in indexers:
 
 # ===== 2. Plex + Notifiarr Connects on Sonarr + Radarr (existing v3 *arrs) =====
 PLEX_HOST = os.environ["PLEX_HOST"]
+APP_HOST = os.environ["APP_HOST"]   # net.app_host: containers -> host-side apps
 PLEX_PORT = int(os.environ["PLEX_PORT"])
 PLEX_TOKEN = os.environ["PLEX_TOKEN"]
 NOTIFIARR_KEY = os.environ["NOTIFIARR_KEY"]
@@ -166,12 +167,12 @@ print("\n=== 3. Prowlarr Apps Sync — register all 4 *arrs ===")
 # anime tag id for Sonarr2/Radarr2 filtering
 anime_tag_id = anime_tag
 
-# *arr container reaches Prowlarr container via... within docker0 they should be able to use 172.17.0.1:17024
-# (Prowlarr is bound to 127.0.0.1 from host's perspective; from another container, must use docker0 gateway)
-PROW_URL_FOR_ARR = f"http://172.17.0.1:{os.environ['PROW_PORT']}/{os.environ['PROW_BASE']}"
+# *arr container reaches Prowlarr container via... within docker0 they should be able to use APP_HOST:17024
+# (Prowlarr is bound to 127.0.0.1 from host's perspective; from another container, must use the docker0 gateway = net.app_host)
+PROW_URL_FOR_ARR = f"http://{APP_HOST}:{os.environ['PROW_PORT']}/{os.environ['PROW_BASE']}"
 
 def register_app(name, impl, port, base, key, tags):
-    api_url = f"http://172.17.0.1:{port}/{base}"
+    api_url = f"http://{APP_HOST}:{port}/{base}"
     code, apps = req(f"{PROW_URL}/applications", api_key=PROW_KEY)
     existing = next((a for a in apps or [] if a.get("name") == name), None)
     if existing:
