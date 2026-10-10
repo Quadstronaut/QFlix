@@ -103,7 +103,7 @@ def test_app_list_names_the_class_so_the_phone_never_guesses_how_to_start_a_thin
     d = _load()
     env = d.dispatch(["app.list"])
     joined = "\n".join(env["lines"])
-    assert "sonarr ucc" in joined
+    assert "plex ucc" in joined
     assert "listmonk systemd" in joined
 
 def test_status_never_returns_the_per_member_top5_section(monkeypatch):
@@ -207,9 +207,9 @@ def test_dispatching_every_verb_never_leaks_a_member_identity_field(monkeypatch)
 def test_ucc_app_routes_to_the_approved_ultra_command(monkeypatch):
     d = _load()
     monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
-    env = d.dispatch(["app.restart", "sonarr"])
-    assert env["target"] == "sonarr"
-    assert "ucc" in env["verdict"] or "app-sonarr" in "\n".join(env["lines"] + [env["verdict"]])
+    env = d.dispatch(["app.restart", "plex"])
+    assert env["target"] == "plex"
+    assert "ucc" in env["verdict"] or "app-plex" in "\n".join(env["lines"] + [env["verdict"]])
 
 def test_systemd_app_routes_to_systemctl(monkeypatch):
     d = _load()
@@ -234,7 +234,7 @@ def test_start_during_the_ucc_gate_explains_itself(monkeypatch):
     d = _load()
     monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
     monkeypatch.setattr(d, "_ucc_gate_up", lambda: True)
-    env = d.dispatch(["app.start", "sonarr"])
+    env = d.dispatch(["app.start", "plex"])
     assert env["ok"] is False
     assert "gate" in env["verdict"].lower()
 
@@ -244,14 +244,14 @@ def test_restart_is_not_blocked_by_the_gate(monkeypatch):
     d = _load()
     monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
     monkeypatch.setattr(d, "_ucc_gate_up", lambda: True)
-    env = d.dispatch(["app.restart", "sonarr"])
+    env = d.dispatch(["app.restart", "plex"])
     assert "gate" not in env["verdict"].lower()
 
 def test_stop_routes_like_the_other_lifecycle_verbs(monkeypatch):
     d = _load()
     monkeypatch.setenv("MANITOBA_DRY_RUN", "1")
-    env = d.dispatch(["app.stop", "sonarr"])
-    assert env["target"] == "sonarr"
+    env = d.dispatch(["app.stop", "plex"])
+    assert env["target"] == "plex"
     assert "stop" in env["verdict"]
 
 
