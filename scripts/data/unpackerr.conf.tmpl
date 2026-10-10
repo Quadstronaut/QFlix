@@ -25,7 +25,7 @@ dir_mode = "0755"
 [[sonarr]]
 url = "http://{{APP_HOST}}:{{SONARR_PORT}}/{{SONARR_BASE}}"
 api_key = "{{SONARR_KEY}}"
-paths = ["/home/quadstronaut/downloads/qbittorrent/tv-sonarr", "{{SAB_COMPLETE}}/sonarr"]
+paths = ["/home/quadstronaut/downloads/qbittorrent/tv-sonarr", "/home/quadstronaut/downloads/sabnzbd/complete/sonarr"]
 protocols = "torrent,usenet"
 timeout = "10s"
 delete_orig = false
@@ -33,7 +33,7 @@ delete_orig = false
 [[sonarr]]
 url = "http://{{APP_HOST}}:{{SONARR2_PORT}}/{{SONARR2_BASE}}"
 api_key = "{{SONARR2_KEY}}"
-paths = ["/home/quadstronaut/downloads/qbittorrent/sonarr-anime", "{{SAB_COMPLETE}}/sonarr-anime"]
+paths = ["/home/quadstronaut/downloads/qbittorrent/sonarr-anime", "/home/quadstronaut/downloads/sabnzbd/complete/sonarr-anime"]
 protocols = "torrent,usenet"
 timeout = "10s"
 delete_orig = false
@@ -41,7 +41,7 @@ delete_orig = false
 [[radarr]]
 url = "http://{{APP_HOST}}:{{RADARR_PORT}}/{{RADARR_BASE}}"
 api_key = "{{RADARR_KEY}}"
-paths = ["/home/quadstronaut/downloads/qbittorrent/radarr", "{{SAB_COMPLETE}}/radarr"]
+paths = ["/home/quadstronaut/downloads/qbittorrent/radarr", "/home/quadstronaut/downloads/sabnzbd/complete/radarr"]
 protocols = "torrent,usenet"
 timeout = "10s"
 delete_orig = false
@@ -49,7 +49,7 @@ delete_orig = false
 [[radarr]]
 url = "http://{{APP_HOST}}:{{RADARR2_PORT}}/{{RADARR2_BASE}}"
 api_key = "{{RADARR2_KEY}}"
-paths = ["/home/quadstronaut/downloads/qbittorrent/radarr-anime", "{{SAB_COMPLETE}}/radarr-anime"]
+paths = ["/home/quadstronaut/downloads/qbittorrent/radarr-anime", "/home/quadstronaut/downloads/sabnzbd/complete/radarr-anime"]
 protocols = "torrent,usenet"
 timeout = "10s"
 delete_orig = false
