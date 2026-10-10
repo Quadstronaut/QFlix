@@ -137,3 +137,17 @@ def test_installer_stages_every_new_file():
               "scripts/maint/lib/deploy_parity.py", "scripts/ops/qflix-listen-set.sh"):
         assert f + " \\" in inst, f
     assert "~/scripts/ops/qflix-listen-set.sh" in inst
+
+
+def test_socket_units_are_compared_too(world):
+    """QFLX-28: qflix-prowlarr-fwd.socket is a deployed unit like any service."""
+    repo, home, _ = world
+    rel = "scripts/maint/systemd/qflix-prowlarr-fwd.socket"
+    (repo / rel).write_bytes(b"[Socket]\nListenStream=127.0.0.1:1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "socket")
+    dst = home / ".config/systemd/user/qflix-prowlarr-fwd.socket"
+    dst.write_bytes(b"[Socket]\nListenStream=0.0.0.0:1\n")
+    assert _cmp(repo, home)["drift"] == [f"{rel}:differs"]
+    dst.write_bytes((repo / rel).read_bytes())
+    assert _cmp(repo, home)["drift"] == []

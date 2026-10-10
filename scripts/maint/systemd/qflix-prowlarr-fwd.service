@@ -1,0 +1,9 @@
+[Unit]
+Description=QFlix prowlarr loopback forwarder
+Requires=qflix-prowlarr-fwd.socket
+After=qflix-prowlarr-fwd.socket qflix-prowlarr.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 172.17.0.1:17024
+Nice=5

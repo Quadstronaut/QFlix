@@ -38,7 +38,7 @@ import sys
 from pathlib import Path
 
 UNIT_PREFIXES = ("manitoba-maint-", "qflix-")
-UNIT_SUFFIXES = (".service", ".timer")
+UNIT_SUFFIXES = (".service", ".timer", ".socket")
 
 
 def _git(src: str, *args: str) -> bytes | None:
