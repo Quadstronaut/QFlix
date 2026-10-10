@@ -262,6 +262,11 @@ repo_areas:
     paths: ["scripts/patches/**"]
     covered_by: [C-08]
 
+  - id: A-scripts-migrate
+    surface: S1
+    paths: ["scripts/migrate/**"]
+    covered_by: [C-02, C-03, C-08]
+
   - id: A-scripts-plex
     surface: S1
     paths: ["scripts/plex/**"]
