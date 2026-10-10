@@ -138,13 +138,13 @@ def has_enabled_sab_client(clients: list) -> bool:
     return bool(c and c.get("enable"))
 
 
-def build_sab_downloadclient_setv(kind: str, slug: str, port: str, apikey: str) -> dict:
+def build_sab_downloadclient_setv(kind: str, slug: str, port: str, apikey: str, host: str) -> dict:
     """Field-name/value map for the SABnzbd download-client schema, keyed by
     media kind. `port` is coerced to int (the *arr schema expects a number;
     secrets are always stored as plain-text strings)."""
     fields = FIELD_MAP[kind]
     return {
-        "host": "172.17.0.1",
+        "host": host,
         "port": int(port),
         "urlBase": "sabnzbd",
         "apiKey": apikey,
@@ -169,9 +169,10 @@ def _apply_field_values(schema: dict, setv: dict) -> dict:
     return out
 
 
-def build_sab_downloadclient_payload(schema: dict, kind: str, slug: str, port: str, apikey: str) -> dict:
+def build_sab_downloadclient_payload(schema: dict, kind: str, slug: str, port: str, apikey: str,
+                                     host: str) -> dict:
     """Full POST body for /downloadclient: patched schema + name/enable."""
-    out = _apply_field_values(schema, build_sab_downloadclient_setv(kind, slug, port, apikey))
+    out = _apply_field_values(schema, build_sab_downloadclient_setv(kind, slug, port, apikey, host))
     out["name"] = "SABnzbd"
     out["enable"] = True
     return out
@@ -342,7 +343,8 @@ def ensure_download_client(ctx: dict, kind: str, execute: bool) -> str:
     if not execute:
         return "[{}] DRY-RUN would add SABnzbd download client (category={})".format(ctx["slug"], ctx["slug"])
     payload = build_sab_downloadclient_payload(
-        schema, kind, ctx["slug"], secret("sabnzbd.port"), secret("sabnzbd.key"))
+        schema, kind, ctx["slug"], secret("sabnzbd.port"), secret("sabnzbd.key"),
+        secret("net.app_host"))
     code, resp = arr_call(ctx, "POST", "/downloadclient", body=payload)
     if code in (200, 201):
         return "[{}] added SABnzbd download client".format(ctx["slug"])

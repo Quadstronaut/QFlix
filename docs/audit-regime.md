@@ -92,6 +92,7 @@ message that names which.
 | C-09 | silent-exit-on-missing-prerequisite | advisory | clean-exit sites in canaries + self-pushing jobs |
 | C-10 | test-not-in-CI / subject-not-tracked | **enforced** | tracked test files ∪ their subjects ∪ declared CI jobs |
 | C-11 | hard-coded-maintenance-window | **enforced** | Monday-shaped weekday literals in tracked scripts; the window lives in `lib/hostpolicy*.py` |
+| C-12 | raw-host-literal-ratchet | **enforced** | raw `app-<x>` calls and the docker-gateway literal; shrink-only per-file allowlist `manifest/raw-host-allowlist.yaml` (gateway comes from the `net.app_host` secret) |
 | L-01…L-07 | live classes | **residual** | box state; `scripts/maint/qflix-audit-live.py` (Phase 5) |
 
 `advisory` is not a synonym for *ignored*. An advisory class **enumerates

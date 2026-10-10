@@ -1,0 +1,45 @@
+# manifest/raw-host-allowlist.yaml -- the C-12 baseline (QFLX-23, spec F-16).
+#
+# Per-file budget of RAW provider coupling still tolerated on executable lines:
+#   app_calls      raw `app-<x>` / `app-ports` / `app-nginx` references
+#   host_literals  the docker-gateway address (replaced by secret net.app_host)
+#
+# SHRINK-ONLY. Detector c12_raw_host_literals fails the audit when a file has
+# MORE than its budget, no entry at all, or FEWER than its budget (so a removed
+# literal must be deleted from here in the same change). Never raise a number or
+# add a file: route the new code through ~/bin/appctl, lib/hostpolicy*.py or the
+# net.app_host secret instead. tests/unit/audit/test_c12_raw_host_literals.py
+# pins a ceiling on the totals, so raising one is a two-file, loud edit.
+#
+# Policy homes (lib/hostpolicy*.py) and REA fingerprint text (scripts/local-llm)
+# are outside the scan by design. All host_literals were converted in QFLX-23.
+
+schema: 1
+
+files:
+  manifest/decommissioned.yaml:
+    app_calls: 1
+  manifest/jobs.yaml:
+    app_calls: 1
+  scripts/configure/240-maintenance-install.sh:
+    app_calls: 1
+  scripts/configure/74-heartbeat-status-install.sh:
+    app_calls: 2
+  scripts/configure/90-sabnzbd-usenet-install.sh:
+    app_calls: 1
+  scripts/install/02-flaresolverr.sh:
+    app_calls: 2
+  scripts/lib/ports.sh:
+    app_calls: 2
+  scripts/maint/app-upgrade-all.sh:
+    app_calls: 4
+  scripts/maint/lib/ports.py:
+    app_calls: 1
+  scripts/maint/lib/window.py:
+    app_calls: 1
+  scripts/maint/ucc-postgres-upgrade.sh:
+    app_calls: 9
+  scripts/mcp/app_status.py:
+    app_calls: 2
+  scripts/ops/finalize-purge-2026-05-11.sh:
+    app_calls: 1

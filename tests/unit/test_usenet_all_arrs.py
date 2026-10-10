@@ -54,12 +54,12 @@ def test_has_enabled_sab_client_none():
 # ===========================================================================
 
 def test_downloadclient_setv_tv_fields():
-    setv = uaa.build_sab_downloadclient_setv("tv", "sonarr2", "17007", "SABKEY")
+    setv = uaa.build_sab_downloadclient_setv("tv", "sonarr2", "17007", "SABKEY", "10.9.9.9")
     assert setv["tvCategory"] == "sonarr2"
     assert setv["recentTvPriority"] == -100
     assert setv["olderTvPriority"] == -100
     assert "movieCategory" not in setv
-    assert setv["host"] == "172.17.0.1"
+    assert setv["host"] == "10.9.9.9"      # injected, never a literal
     assert setv["port"] == 17007          # coerced to int
     assert setv["apiKey"] == "SABKEY"
     assert setv["removeCompletedDownloads"] is True
@@ -67,7 +67,7 @@ def test_downloadclient_setv_tv_fields():
 
 
 def test_downloadclient_setv_movie_fields():
-    setv = uaa.build_sab_downloadclient_setv("movie", "radarr2", "17007", "SABKEY")
+    setv = uaa.build_sab_downloadclient_setv("movie", "radarr2", "17007", "SABKEY", "10.9.9.9")
     assert setv["movieCategory"] == "radarr2"
     assert setv["recentMoviePriority"] == -100
     assert setv["olderMoviePriority"] == -100
@@ -75,7 +75,7 @@ def test_downloadclient_setv_movie_fields():
 
 
 def test_downloadclient_setv_port_is_int_type():
-    setv = uaa.build_sab_downloadclient_setv("movie", "radarr", "9999", "k")
+    setv = uaa.build_sab_downloadclient_setv("movie", "radarr", "9999", "k", "10.9.9.9")
     assert isinstance(setv["port"], int)
 
 
@@ -90,9 +90,9 @@ def _schema(*names):
 
 def test_apply_field_values_patches_matching_fields_only():
     schema = _schema("host", "port", "unrelatedField")
-    out = uaa._apply_field_values(schema, {"host": "172.17.0.1", "port": 9})
+    out = uaa._apply_field_values(schema, {"host": "10.9.9.9", "port": 9})
     values = {f["name"]: f["value"] for f in out["fields"]}
-    assert values["host"] == "172.17.0.1"
+    assert values["host"] == "10.9.9.9"
     assert values["port"] == 9
     assert values["unrelatedField"] is None
 
@@ -107,7 +107,7 @@ def test_apply_field_values_does_not_mutate_input():
 def test_build_sab_downloadclient_payload_sets_name_and_enable():
     schema = _schema("host", "port", "apiKey", "tvCategory",
                       "recentTvPriority", "olderTvPriority")
-    payload = uaa.build_sab_downloadclient_payload(schema, "tv", "sonarr2", "17007", "K")
+    payload = uaa.build_sab_downloadclient_payload(schema, "tv", "sonarr2", "17007", "K", "10.9.9.9")
     assert payload["name"] == "SABnzbd"
     assert payload["enable"] is True
     values = {f["name"]: f["value"] for f in payload["fields"]}

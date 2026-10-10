@@ -362,6 +362,30 @@ classes:
       offline: true
     waivers: []
 
+  - id: C-12
+    title: raw-host-literal-ratchet
+    detector: c12_raw_host_literals
+    test: tests/unit/audit/test_c12_raw_host_literals.py
+    status: enforced
+    enforced_kinds: [new-literal, literal-grew, allowlist-not-shrunk]
+    advisory_kinds: []
+    discovery:
+      date: 2026-10-09
+      provenance: >-
+        QFLX-15 spec F-16: the docker-gateway literal sat in 31 tracked files
+        and raw app-<x> panel calls were scattered through scripts, so a
+        non-Ultra host could not be expressed. QFLX-23 moved the gateway to the
+        net.app_host secret and baselined the remaining raw app calls.
+    rule: >-
+      A raw app-<x> call or the docker-gateway literal on an executable line is
+      a finding unless the file is baselined in manifest/raw-host-allowlist.yaml.
+      The allowlist is shrink-only: growing a budget, adding a file, or leaving
+      slack after a removal are all findings.
+    boundary:
+      description: Executable lines of tracked scripts/**/*.sh, scripts/**/*.py, scripts/data/*.tmpl and manifest/*.yaml (policy homes and REA fingerprint text excluded)
+      offline: true
+    waivers: []
+
   - id: L-01
     title: repo unit files vs deployed unit files
     status: residual

@@ -21,6 +21,12 @@ SEERR_KEY = (SECRETS / "seerr.key").read_text().strip()
 SEERR_BASE = "http://127.0.0.1:42011"
 
 
+def app_host() -> str:
+    """Host address containers use to reach host-side apps (secret net.app_host).
+    Read lazily; a missing secret raises rather than guessing an address."""
+    return (SECRETS / "net.app_host").read_text().strip()
+
+
 def seerr(method: str, path: str, body=None):
     req = ur.Request(
         SEERR_BASE + path,
@@ -88,8 +94,8 @@ def build_sonarr_payload(name, sonarr_info, *, root_kw, profile_kw,
     payload = {
         "name": name,
         # Seerr runs in Docker (bridge net) — host loopback is unreachable.
-        # 172.17.0.1 is the docker0 gateway → host. Same shape as Tautulli pms_url.
-        "hostname": "172.17.0.1",
+        # net.app_host (Ultra: the docker0 gateway) is the gateway → host. Same shape as Tautulli pms_url.
+        "hostname": app_host(),
         "port": sonarr_info["port"],
         "useSsl": False,
         "apiKey": sonarr_info["key"],
@@ -128,7 +134,7 @@ def build_radarr_payload(name, radarr_info, *, root_kw, profile_kw, is_default):
     root = pick_root(radarr_info["roots"], *root_kw)
     return {
         "name": name,
-        "hostname": "172.17.0.1",
+        "hostname": app_host(),
         "port": radarr_info["port"],
         "useSsl": False,
         "apiKey": radarr_info["key"],

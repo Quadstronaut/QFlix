@@ -304,10 +304,10 @@ def main():
 
     # Homarr — DECOMMISSIONED 2026-07-13 (uninstalled, replaced by qflix-dash).
 
-    # FlareSolverr — hostname is 172.17.0.1 not 127.0.0.1
+    # FlareSolverr — hostname is net.app_host (Ultra: docker gateway) not 127.0.0.1
     fp = _read("flaresolverr.port")
     if fp:
-        for host_try in ("172.17.0.1", "127.0.0.1"):
+        for host_try in (_read("net.app_host") or "127.0.0.1", "127.0.0.1"):
             code, body = _get(f"http://{host_try}:{fp}/")
             row(f"flaresolverr {host_try}", code, body[:60])
             if code == 200:

@@ -21,10 +21,11 @@ else
 fi
 
 secret_write flaresolverr.port "$PORT"
-log_info "FlareSolverr port: $PORT (on Docker gateway 172.17.0.1)"
+APP_HOST="$(secret_read net.app_host)"   # host address containers use (Ultra: docker gateway)
+log_info "FlareSolverr port: $PORT (on $APP_HOST)"
 
-log_info "Health-checking FlareSolverr at http://172.17.0.1:$PORT/ ..."
-body="$(sshm "curl -sf -m 5 http://172.17.0.1:$PORT/")" || die "FlareSolverr health endpoint did not respond on 172.17.0.1:$PORT"
+log_info "Health-checking FlareSolverr at http://$APP_HOST:$PORT/ ..."
+body="$(sshm "curl -sf -m 5 http://$APP_HOST:$PORT/")" || die "FlareSolverr health endpoint did not respond on $APP_HOST:$PORT"
 log_info "Response: $(printf '%s' "$body" | head -c 200)"
 printf '%s' "$body" | grep -qi flaresolverr || die "Health response doesn't mention FlareSolverr — wrong service on this port?"
 log_info "FlareSolverr is healthy."

@@ -38,3 +38,29 @@ def read_secret(name: str) -> str:
     so callers can decide whether to fall back or fail loudly."""
     path = secrets_dir() / name
     return path.read_text(encoding="utf-8").strip()
+
+
+APP_HOST_SECRET = "net.app_host"
+
+
+def app_host() -> str:
+    """Address containers (and host-side probes of bridge-bound apps) use to
+    reach host apps: secret net.app_host (Ultra: the docker gateway; generic
+    host: 127.0.0.1). A missing/empty secret RAISES; callers must not guess."""
+    host = read_secret(APP_HOST_SECRET)
+    if not host:
+        raise ValueError("secret %s is empty" % APP_HOST_SECRET)
+    return host
+
+
+def resolve_host(raw: dict) -> str:
+    """Probe host for a manifest health block: `hostname_ref: <secret>` reads
+    the host from that secret (QFLX-23), a plain `hostname:` is honoured, the
+    default is loopback. A ref'd secret that is missing/empty RAISES."""
+    ref = raw.get("hostname_ref")
+    if ref:
+        host = read_secret(ref)
+        if not host:
+            raise ValueError("hostname_ref secret %s is empty" % ref)
+        return host
+    return raw.get("hostname", "127.0.0.1")

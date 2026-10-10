@@ -11,6 +11,7 @@ OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 
 sed \
+  -e "s|{{APP_HOST}}|$(secret_read net.app_host)|g" \
   -e "s|{{SONARR_PORT}}|$(secret_read sonarr.port)|g" \
   -e "s|{{SONARR_BASE}}|$(secret_read sonarr.urlbase 2>/dev/null || echo sonarr)|g" \
   -e "s|{{SONARR_KEY}}|$(secret_read sonarr.key)|g" \

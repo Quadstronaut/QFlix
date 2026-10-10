@@ -9,7 +9,7 @@ PROW_KEY="$(secret_read prowlarr.key)"
 PROW_PORT="$(secret_read prowlarr.port)"
 PROW_BASE="$(secret_read prowlarr.urlbase 2>/dev/null || echo prowlarr)"
 FS_PORT="$(secret_read flaresolverr.port)"
-FS_HOST="172.17.0.1"  # docker0 gateway — see Phase 2 finding
+FS_HOST="$(secret_read net.app_host)"  # host address containers/Prowlarr use (Ultra: docker0 gateway)
 FS_URL="http://$FS_HOST:$FS_PORT/"
 
 # Run all curl calls remotely on manitoba — Prowlarr is bound 127.0.0.1 there, no tunnel needed.
