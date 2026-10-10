@@ -29,6 +29,8 @@ CLI:
   swapstate.py set SLUG key=value ...   (swap_date, soak_until, rollback_window, ucc_version)
   swapstate.py show SLUG
   swapstate.py diff SLUG [--ss-file F|-]   exit 0 same, 1 differs, 2 error
+  swapstate.py soak-check SLUG   exit 1 refused (inside soak), 0 ok
+  swapstate.py close-window SLUG first native upgrade closes rollback-to-UCC
   swapstate.py ucc-slugs [--manifest PATH]  active ucc slugs, one per line
 """
 from __future__ import annotations
@@ -248,6 +250,53 @@ def diff_listen(slug: str, ss_text: str) -> dict:
             "removed": sorted((set(rec) - set(cur)) - exc)}
 
 
+def _parse_when(v):
+    """ISO date or datetime (Z or offset) -> aware UTC datetime; None if bad."""
+    import datetime as _dt
+    if not isinstance(v, str) or not v.strip():
+        return None
+    t = v.strip().replace("Z", "+00:00")
+    try:
+        d = _dt.datetime.fromisoformat(t)
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=_dt.timezone.utc)
+
+
+def soak_gate(slug: str, now=None) -> dict:
+    """QFLX-21 soak gate (spec 5.7): {"refused": bool, "reason": str}.
+
+    Only a slug that actually swapped (swap_date set) is gated. A swapped slug
+    with a missing/unparseable soak_until FAILS CLOSED: a safety gate that
+    cannot read its own deadline must not wave an upgrade through."""
+    import datetime as _dt
+    st = load_state(slug)
+    if not st.get("swap_date"):
+        return {"refused": False, "reason": "not swapped"}
+    until = _parse_when(st.get("soak_until"))
+    if until is None:
+        return {"refused": True,
+                "reason": f"soak_until missing/unparseable ({st.get('soak_until')!r})"}
+    n = now or _dt.datetime.now(_dt.timezone.utc)
+    if n < until:
+        return {"refused": True, "reason": f"in soak until {st['soak_until']}"}
+    return {"refused": False, "reason": "soak elapsed"}
+
+
+def close_rollback_window(slug: str) -> bool:
+    """The first native upgrade closes rollback-to-UCC. True if it changed.
+
+    No-op (False, nothing created) for a slug that never swapped."""
+    d = _slug_dir(slug)
+    if not load_state(slug).get("swap_date"):
+        return False
+    with _Locked(d):
+        if load_state(slug).get("rollback_window") == "closed":
+            return False
+        _merge_state(d, {"rollback_window": "closed"})
+    return True
+
+
 def swapped_slugs() -> list[str]:
     """Slugs whose state carries a swap_date (a swap actually happened)."""
     base = swap_dir()
@@ -321,6 +370,10 @@ def main(argv=None) -> int:
     df = sub.add_parser("diff")
     df.add_argument("slug")
     df.add_argument("--ss-file", default="-")
+    sk = sub.add_parser("soak-check")      # exit 1 = refused (in soak), 0 = ok
+    sk.add_argument("slug")
+    cw = sub.add_parser("close-window")
+    cw.add_argument("slug")
     u = sub.add_parser("ucc-slugs")
     u.add_argument("--manifest")
     args = ap.parse_args(list(argv) if argv is not None else None)
@@ -355,6 +408,13 @@ def main(argv=None) -> int:
             d = diff_listen(args.slug, _read_ss(args.ss_file))
             print(json.dumps(d, sort_keys=True))
             return 1 if (d["added"] or d["removed"]) else 0
+        if args.cmd == "soak-check":
+            g = soak_gate(args.slug)
+            print(json.dumps(g, sort_keys=True))
+            return 1 if g["refused"] else 0
+        if args.cmd == "close-window":
+            print("closed" if close_rollback_window(args.slug) else "unchanged")
+            return 0
         if args.cmd == "ucc-slugs":
             apps = _manifest_apps(args.manifest or _default_manifest())
             for k in sorted(apps):
