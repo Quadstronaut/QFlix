@@ -574,6 +574,20 @@ canaries:
     kuma_monitor: "Canary VLogs Stall"
     script: "scripts/canaries/vlogs-stall.sh"
     schedule: "every-15min"
+  vlogs-time-integrity:
+    # Added 2026-10-10 (QFLX-44). Zone-less LOCAL stamps (CEST) were read by
+    # VictoriaLogs as UTC, so events landed 2h in the future (a 06:01 CEST
+    # listmonk restart stored as 06:01Z). logs.py now carries a per-source zone
+    # table; this canary is the continuous proof across EVERY app: no event
+    # with _time > now+2m, no active file whose newest stored _time lags its
+    # mtime by >30m (the UTC-read-as-local direction: tautulli/plex/seerr were
+    # 2h early on 2026-10-10), and no duplicate (app,_time,_msg) group in 24h
+    # (the exactly-once guarantee of the ingest cursors). Names offending
+    # apps, never log text. Own timer + own Kuma push monitor (born mute:
+    # wire channels 1+2 after bootstrap).
+    kuma_monitor: "Canary VLogs Time Integrity"
+    script: "scripts/canaries/vlogs-time-integrity.sh"
+    schedule: "hourly"
   qbit-stall:
     # Detect a wedged libtorrent engine (dl_info_speed=0 for ≥5min while
     # queuedDL > N). qBit's WebAPI stays responsive even when the engine

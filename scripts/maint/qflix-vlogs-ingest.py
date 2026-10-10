@@ -126,6 +126,12 @@ def _parse_with_carry(lines: list[str], *, source: str, last_ts: str | None) -> 
     """logs.parse_line + the same ts carry-forward logs.collect_for does,
     seeded from the cursor so a continuation line at the top of this batch
     inherits the previous batch's time instead of the ingest clock."""
+    # A cursor written before QFLX-44 holds a ZONE-LESS last_ts. Re-read it in
+    # the source's zone so a continuation line cannot inherit a stamp that
+    # vlogs would take as UTC (2h early/late for a LOCAL source).
+    if last_ts and not last_ts.endswith("Z"):
+        last_ts = logs_mod._normalize_ts(
+            last_ts, logs_mod._tz_for_policy(logs_mod.zone_policy_for(source)))
     out = []
     for line in lines:
         if not line.strip():
