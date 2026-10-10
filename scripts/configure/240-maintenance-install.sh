@@ -298,6 +298,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/55-kometa-install.sh \
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
+    scripts/configure/305-native-sonarr2-install.sh \
+    scripts/maint/native_sanitize.py \
     scripts/configure/301-native-flaresolverr-install.sh \
     scripts/configure/302-native-bazarr-install.sh \
     scripts/configure/303-native-prowlarr-install.sh \
@@ -473,6 +475,11 @@ chmod +x ~/scripts/configure/240-maintenance-install.sh
 cp -f   "$STG"/scripts/lib/native.sh ~/scripts/lib/native.sh
 cp -f   "$STG"/scripts/configure/300-native-unpackerr-install.sh ~/scripts/configure/300-native-unpackerr-install.sh
 chmod +x ~/scripts/configure/300-native-unpackerr-install.sh
+# QFLX-30 (A6 sonarr2): the proof sanitizes its VACUUM INTO copy with
+# native_sanitize.py, so it is deployed beside the installer (~/scripts/maint).
+cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py
+cp -f   "$STG"/scripts/configure/305-native-sonarr2-install.sh ~/scripts/configure/305-native-sonarr2-install.sh
+chmod +x ~/scripts/configure/305-native-sonarr2-install.sh
 cp -f   "$STG"/scripts/configure/301-native-flaresolverr-install.sh ~/scripts/configure/301-native-flaresolverr-install.sh
 chmod +x ~/scripts/configure/301-native-flaresolverr-install.sh
 # QFLX-27 (A3 bazarr): same shape, plus native_sanitize.py (the proof copy is
