@@ -67,8 +67,28 @@ apps:
       expect_status: 200
 
   radarr2:
-    class: ucc
+    # QFLX-29 (UCC divorce A5, the anime Radarr): converted to the native
+    # linux-core-x64 build run as qflix-radarr2.service by scripts/configure/
+    # 304-native-radarr2-install.sh (build pinned in versions.env
+    # RADARR2_VERSION + sha256 in the installer; the panel tool only reports
+    # 6.4.4, the API reports the full 6.4.4.10685). Port, bind address and the
+    # update mechanism come from the unit's env file (RADARR__SERVER__*,
+    # RADARR__UPDATE__*); config.xml stays what the container reads and the
+    # data stays in place (~/.apps/radarr2, database file radarr.db). The app
+    # binds the docker bridge (the arrs' callers reach it there) and a
+    # socket-activated forwarder (qflix-radarr2-fwd.socket) owns the loopback
+    # listener nginx and the canaries use. The UCC container stays installed and
+    # DORMANT as the rollback target (I-8). NOTE: the `radarr` container shares
+    # radarr2's process name; only the /config mount tells them apart.
+    # swap_state: pending-swap (spec 5.9 step 7) = this flip is merged and
+    # deployed but the swap has not run: the container still serves, so appctl
+    # and lifecycle dispatch it as UCC and require_unit_active is off. A
+    # follow-up PR removes the line right after the swap.
+    class: systemd
+    unit: qflix-radarr2.service
     ucc_slug: radarr2
+    ucc_dormant: true
+    swap_state: pending-swap
     kuma_monitor: "Radarr 2"
     health:
       kind: http_api
@@ -78,6 +98,22 @@ apps:
       port_secret: radarr2.port
       urlbase_secret: radarr2.urlbase
       expect_status: 200
+      require_unit_active: true
+    upgrade:
+      # Each release lands in bin/<ver>, then `current` flips atomically. The
+      # tarball's single top-level dir (Radarr/) is hoisted into bin/<ver>
+      # and the self-updater dir dropped. The soak gate (lib/swapstate.py)
+      # refuses it for 14 days after the swap and the first one closes the
+      # rollback-to-UCC window (I-10).
+      kind: tarball_swap
+      url_template: "https://github.com/Radarr/Radarr/releases/download/v{version}/Radarr.master.{version}.linux-core-x64.tar.gz"
+      target_dir: "~/.apps/radarr2/bin/{version}"
+      post_steps:
+        - "cd ~/.apps/radarr2/bin/{version} && mv Radarr .pkg && mv .pkg/* . && rmdir .pkg && rm -rf Radarr.Update && chmod 0755 Radarr"
+        - "ln -sfn {version} ~/.apps/radarr2/bin/.current.new && mv -Tf ~/.apps/radarr2/bin/.current.new ~/.apps/radarr2/bin/current"
+      version_pin:
+        source: versions.env
+        key: RADARR2_VERSION
 
   prowlarr:
     # QFLX-28 (UCC divorce A4, the first .NET app): converted to the native
