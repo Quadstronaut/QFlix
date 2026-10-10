@@ -298,6 +298,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/55-kometa-install.sh \
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
+    scripts/configure/301-native-flaresolverr-install.sh \
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
@@ -469,6 +470,8 @@ chmod +x ~/scripts/configure/240-maintenance-install.sh
 cp -f   "$STG"/scripts/lib/native.sh ~/scripts/lib/native.sh
 cp -f   "$STG"/scripts/configure/300-native-unpackerr-install.sh ~/scripts/configure/300-native-unpackerr-install.sh
 chmod +x ~/scripts/configure/300-native-unpackerr-install.sh
+cp -f   "$STG"/scripts/configure/301-native-flaresolverr-install.sh ~/scripts/configure/301-native-flaresolverr-install.sh
+chmod +x ~/scripts/configure/301-native-flaresolverr-install.sh
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # QFLX-29 (A5 radarr2): the proof sanitizes its VACUUM INTO copy with
 # native_sanitize.py, so it is deployed beside the installer (~/scripts/maint).
