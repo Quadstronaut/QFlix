@@ -626,7 +626,8 @@ def test_prove_sanitizes_before_boot_and_never_touches_live_data(box):
     assert env["RADARR__SERVER__PORT"] == "34567"
     assert env["RADARR__UPDATE__MECHANISM"] == "External"
     assert env["DOTNET_PROCESSOR_COUNT"] == "4" and env["MALLOC_ARENA_MAX"] == "2"
-    assert env["DOTNET_GCRegionRange"] == "80000000"   # CoreCLR under the slot AS cap (#59)
+    # Case-insensitive: Python upper-cases os.environ keys on Windows (Git Bash runs).
+    assert {k.upper(): v for k, v in env.items()}["DOTNET_GCREGIONRANGE"] == "80000000"  # #59
     assert boot["tz"] == "Europe/Amsterdam"
     assert boot["argv"] == ["-nobrowser", f"-data={proof_dir.as_posix()}"]
     # rows kept (flags flipped) except notifications, which are deleted

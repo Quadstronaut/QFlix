@@ -260,7 +260,7 @@ def _radarr2_post_swap_manifest(tmp_path: Path, name: str = "radarr2") -> Path:
 
 def test_radarr2_is_converted_with_a_full_build_pin():
     a = _converted()["radarr2"]
-    assert a["unit"] == "qflix-radarr2.service" and a["swap_state"] == "pending-swap"
+    assert a["unit"] == "qflix-radarr2.service" and "swap_state" not in a    # swapped 2026-10-10
     assert a["health"]["kind"] == "http_api" and a["health"]["require_unit_active"] is True
     assert a["upgrade"]["kind"] == "tarball_swap"
     assert _versions_env()["RADARR2_VERSION"].count(".") == 3        # 6.4.4.10685, not the panel's 6.4.4
@@ -326,11 +326,13 @@ def test_lifecycle_never_starts_the_radarr2_container_after_the_swap(tmp_path, f
 
 
 @pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart])
-def test_pending_swap_radarr2_is_still_lifecycled_as_the_container(tmp_path, fn):
-    """Before the swap the container is the live runtime: pusher recovery must
-    never `systemctl --user restart` the native unit beside it (I-6)."""
+def test_swapped_radarr2_is_lifecycled_as_the_native_unit(tmp_path, fn):
+    """Swapped 2026-10-10 (pending-swap dropped): the native unit is the live
+    runtime, so pusher recovery acts on it and never wakes the dormant
+    container through the panel tool (I-6)."""
     app = load_manifest(MANIFEST).app("radarr2")
     with patch("subprocess.run", return_value=CompletedProcess([], 0, "", "")) as run:
         fn(app)
     argv = [c[0][0] for c in run.call_args_list]
-    assert argv and all(a[0] == "app-radarr2" for a in argv), argv
+    assert argv and not any(a[0] == "app-radarr2" for a in argv), argv
+    assert any(a[0] == "systemctl" and "qflix-radarr2.service" in a for a in argv), argv
