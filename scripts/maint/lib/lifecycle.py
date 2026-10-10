@@ -110,8 +110,25 @@ def _run(args: list[str], timeout_s: float) -> LifecycleResult:
 # UCC dispatch
 # ---------------------------------------------------------------------------
 
+def _ucc_dormant(app: App) -> bool:
+    """I-9 (QFLX-17): a `ucc_dormant` app is a converted app whose container
+    stays installed and stopped as the rollback target. Fails closed: any value
+    other than absent/null/false counts (same rule as lib/ucc_skip.py)."""
+    v = app.raw.get("ucc_dormant")
+    return v is not None and v is not False
+
+
+def _dormant_refusal(app: App, verb: str) -> LifecycleResult:
+    slug = app.raw.get("ucc_slug") or app.name
+    return _fail(f"refused: {app.name} is ucc_dormant; app-{slug} {verb} would "
+                 f"wake the dormant container (I-9)")
+
+
 def _ucc_verb(app: App, verb: str, timeout_s: float) -> LifecycleResult:
     slug = app.raw.get("ucc_slug") or app.name
+    # Only `stop` may reach a dormant container (it can never wake one).
+    if verb != "stop" and _ucc_dormant(app):
+        return _dormant_refusal(app, verb)
     return _run(["app-" + slug, verb], timeout_s)
 
 
@@ -411,6 +428,8 @@ def _apply_zip_swap(app: App, target_version: str, timeout_s: float) -> Lifecycl
 
 def _apply_ucc_update(app: App, target_version: Optional[str], timeout_s: float) -> LifecycleResult:
     slug = app.raw.get("ucc_slug") or app.name
+    if _ucc_dormant(app):
+        return _dormant_refusal(app, "update")
     # Stop first; tolerate failure (app may already be stopped)
     _run(["app-" + slug, "stop"], timeout_s)
     return _run(["app-" + slug, "update"], timeout_s)
