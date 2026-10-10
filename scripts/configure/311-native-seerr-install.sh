@@ -86,7 +86,9 @@ SLUG=seerr
 VERSION="3.5.0"              # == versions.env SEERR_VERSION == `appctl version seerr` (test-pinned)
 COMMIT="e2f24cb46079746936516c723b09820360f95113"   # == versions.env SEERR_COMMIT == container COMMIT_TAG
 ARTIFACT_URL="https://github.com/Quadstronaut/QFlix/releases/download/seerr-v${VERSION}/seerr-${VERSION}-linux-x64.tar.gz"
-ARTIFACT_SHA256=""
+# sha256 of the asset published by seerr-artifact run 38044628810 (release
+# seerr-v3.5.0, never replaced; later runs verify the asset against this pin).
+ARTIFACT_SHA256="44eb1e87990a55abe7b4a055fd6079bb468dc5a5fa445afbfb15fbdd1e1129b0"
 NODE_VERSION="22.23.2"       # == versions.env SEERR_NODE_VERSION == the container's NODE_VERSION
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"
 NODE_SHA256="b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a"
