@@ -109,6 +109,41 @@ def test_container_cgroup_of_another_app_or_uid_is_ignored(healthy):
     assert rp.check(_app(), healthy, port=PORT) == []
 
 
+def _mountinfo(root: Path, pid: int, src_root: str):
+    (root / str(pid) / "mountinfo").write_text(
+        f"1234 1200 0:52 {src_root} /config rw,relatime - fuse.mergerfs x rw\n"
+        "1235 1200 0:53 / /proc rw - proc proc rw\n")
+
+
+def test_sibling_container_with_the_same_cmdline_is_not_our_container(healthy):
+    """sonarr2's container runs the IDENTICAL cmdline (and s6 svc-sonarr): its
+    /config bind mount names ~/.apps/sonarr2, so it is not sonarr woken."""
+    root = healthy.proc_root
+    _proc(root, 117021, cgroup="0::/user.slice/docker-s2.scope", cmdline="s6-supervise svc-sonarr")
+    _proc(root, 117134, cgroup="0::/user.slice/docker-s2.scope",
+          cmdline="/app/sonarr/bin/Sonarr -nobrowser -data=/config")
+    for pid in (117021, 117134):
+        _mountinfo(root, pid, "/quadstronaut/.apps/sonarr2")
+    assert rp.check(_app(), healthy, port=PORT) == []
+
+
+def test_our_own_container_mount_is_still_detected(healthy):
+    root = healthy.proc_root
+    _proc(root, 781, cgroup="0::/user.slice/docker-s1.scope",
+          cmdline="/app/sonarr/bin/Sonarr -nobrowser -data=/config")
+    _mountinfo(root, 781, "/quadstronaut/.apps/sonarr")
+    v = rp.check(_app(), healthy, port=PORT)
+    assert len(v) == 1 and "781" in v[0]
+
+
+def test_unreadable_mountinfo_keeps_the_hit(healthy):
+    """Fail toward red: no mountinfo = cannot prove it is the sibling."""
+    _proc(healthy.proc_root, 782, cgroup="0::/user.slice/docker-x.scope",
+          cmdline="/app/sonarr/bin/Sonarr -data=/config")
+    v = rp.check(_app(), healthy, port=PORT)
+    assert len(v) == 1 and "782" in v[0]
+
+
 def test_native_unit_cgroup_never_counts_as_container(healthy):
     # a cgroup path that contains BOTH the unit name and a marker word
     _proc(healthy.proc_root, 780, cgroup=f"0::/user.slice/docker.slice/{UNIT}",
@@ -148,6 +183,45 @@ def test_port_owned_by_a_child_of_mainpid_is_fine(healthy):
     _proc(healthy.proc_root, 501, cmdline="x", ppid=500)
     healthy.ss_out = _ss(501)
     assert rp.check(_app(), healthy, port=PORT) == []
+
+
+FWD = "qflix-sonarr-fwd.service"
+
+
+def _ss_two(app_pid, fwd_pid, port=PORT):
+    return 0, (f'LISTEN 0 512 172.17.0.1:{port} 0.0.0.0:* users:(("Sonarr",pid={app_pid},fd=9))\n'
+               f'LISTEN 0 4096 127.0.0.1:{port} 0.0.0.0:* '
+               f'users:(("systemd-socket-",pid={fwd_pid},fd=3))\n')
+
+
+def test_loopback_owned_by_the_apps_own_forwarder_is_fine(healthy, tmp_path):
+    # QFLX-28 box 2026-10-10: the app binds 172.17.0.1, qflix-x-fwd.socket owns
+    # 127.0.0.1; the proxyd in the -fwd.service cgroup is not a stranger.
+    _proc(tmp_path / "proc", 600, ppid=4942,
+          cgroup=f"0::/user.slice/user-{UID}.slice/user@{UID}.service/app.slice/{FWD}")
+    healthy.ss_out = _ss_two(500, 600)
+    assert rp.check(_app(), healthy, port=PORT) == []
+
+
+def test_loopback_held_by_the_user_manager_before_activation_is_fine(healthy, tmp_path):
+    _proc(tmp_path / "proc", 4942,
+          cgroup=f"0::/user.slice/user-{UID}.slice/user@{UID}.service/init.scope")
+    healthy.ss_out = _ss_two(500, 4942)
+    assert rp.check(_app(), healthy, port=PORT) == []
+
+
+def test_another_apps_forwarder_is_still_a_stranger(healthy, tmp_path):
+    _proc(tmp_path / "proc", 601, ppid=4942,
+          cgroup=f"0::/user.slice/user-{UID}.slice/user@{UID}.service/app.slice/qflix-radarr-fwd.service")
+    healthy.ss_out = _ss_two(500, 601)
+    v = rp.check(_app(), healthy, port=PORT)
+    assert any("owned by pid 601" in x for x in v)
+
+
+def test_fwd_unit_name():
+    assert rp.fwd_unit("qflix-prowlarr.service") == "qflix-prowlarr-fwd.service"
+    assert rp.fwd_unit("qflix-prowlarr-fwd.service") is None
+    assert rp.fwd_unit("x.socket") is None
 
 
 def test_listener_with_no_visible_owner_is_a_violation(healthy):

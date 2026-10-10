@@ -119,7 +119,8 @@ def test_render_unit_absolute_exe_is_used_verbatim(tmp_path):
 # --- env caps -------------------------------------------------------------------
 
 @pytest.mark.parametrize("fam,lines", [
-    ("dotnet", ["DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "MALLOC_ARENA_MAX=2"]),
+    ("dotnet", ["DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "DOTNET_GCRegionRange=80000000",
+                "MALLOC_ARENA_MAX=2"]),
     ("go", ["GOMAXPROCS=4", "MALLOC_ARENA_MAX=2"]),
     ("node", ["UV_THREADPOOL_SIZE=4", "MALLOC_ARENA_MAX=2"]),
     ("python", ["MALLOC_ARENA_MAX=2"]),
@@ -217,3 +218,18 @@ def test_listen_capture_then_compare_clean(tmp_path):
     r = _sh(tmp_path, "native_listen_capture sonarr 42050 && native_listen_compare sonarr")
     assert r.returncode == 0, r.stderr + r.stdout
     assert (tmp_path / "swap" / "sonarr" / "listen-set.before").read_text() == "127.0.0.1:42050\n"
+
+
+# --- prefix parity (QFLX-28: the panel truncates prowlarr's build) --------------------
+
+def test_prefix_parity_accepts_a_whole_dotted_prefix_only_when_asked(tmp_path):
+    assert _sh(tmp_path, "native_check_parity prowlarr 2.6.5.5623", ucc_version="2.6.5").returncode != 0
+    r = _sh(tmp_path, "NATIVE_PARITY=prefix native_check_parity prowlarr 2.6.5.5623", ucc_version="2.6.5")
+    assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize("panel", ["2.6.50", "2.6.4", "2.6.5.5620", "2.6.5.56", ""])
+def test_prefix_parity_still_refuses_everything_else(tmp_path, panel):
+    # "2.6.50" and "2.6.5.56" are string prefixes but not whole dotted components
+    r = _sh(tmp_path, "NATIVE_PARITY=prefix native_check_parity prowlarr 2.6.5.5623", ucc_version=panel)
+    assert r.returncode != 0

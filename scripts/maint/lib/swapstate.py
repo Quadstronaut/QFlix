@@ -26,7 +26,11 @@ namespace package; never add an __init__.py).
 
 CLI:
   swapstate.py capture SLUG [--port N | --manifest PATH] [--ss-file F|-] [--ucc-version V]
-  swapstate.py set SLUG key=value ...   (swap_date, soak_until, rollback_window, ucc_version)
+  swapstate.py add-exception SLUG ADDR:PORT... --reason TEXT
+                                 record operator-approved listen-set exceptions
+                                 (spec 5.4 / D-4; e.g. a dropped public-IP listener)
+  swapstate.py set SLUG key=value ...   (swap_date, soak_until, rollback_window, ucc_version,
+                                         exceptions=addr:port,addr:port)
   swapstate.py show SLUG
   swapstate.py diff SLUG [--ss-file F|-]   exit 0 same, 1 differs, 2 error
   swapstate.py soak-check SLUG   exit 1 refused (inside soak), 0 ok
@@ -52,7 +56,7 @@ except ImportError:  # non-POSIX workstation: lock degrades to no-op (fail open)
 LOCK_TIMEOUT_S = 10.0
 _SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ROLLBACK_WINDOWS = ("open", "closed")
-SETTABLE = ("swap_date", "soak_until", "rollback_window", "ucc_version")
+SETTABLE = ("swap_date", "soak_until", "rollback_window", "ucc_version", "exceptions")
 
 
 class SwapStateError(RuntimeError):
@@ -232,12 +236,48 @@ def update_state(slug: str, **fields) -> dict:
     bad = set(fields) - set(SETTABLE)
     if bad:
         raise SwapStateError(f"unsettable field(s): {sorted(bad)}")
+    exc = fields.get("exceptions")
+    if isinstance(exc, str):
+        # CLI form: comma-separated "addr:port" entries (D-4 listen-set exceptions).
+        exc = [x.strip() for x in exc.split(",") if x.strip()]
+        fields = dict(fields, exceptions=exc)
+    if exc is not None and not (isinstance(exc, list) and all(
+            isinstance(x, str) and re.match(r"^[0-9A-Za-z.:\[\]_-]+:\d{1,5}$", x) for x in exc)):
+        raise SwapStateError("exceptions must be addr:port entries")
     rw = fields.get("rollback_window")
     if rw is not None and rw not in ROLLBACK_WINDOWS:
         raise SwapStateError(f"rollback_window must be one of {ROLLBACK_WINDOWS}")
     d = _slug_dir(slug)
     with _Locked(d):
         return _merge_state(d, fields)
+
+
+_ADDR_RE = re.compile(r"^(\[[0-9A-Fa-f:.]+\]|[0-9A-Za-z.*-]+):[0-9]{1,5}$")
+
+
+def add_exceptions(slug: str, addrs: list[str], reason: str) -> dict:
+    """Record operator-approved listen-set exceptions (I-7, D-4) under flock.
+
+    Each address is excluded from diff_listen afterwards. The reason is kept
+    beside it (exception_reasons) so the audit trail says WHY an address may be
+    missing. Idempotent: an address already recorded is not duplicated."""
+    if not addrs:
+        raise SwapStateError("add-exception needs at least one ADDR:PORT")
+    bad = [a for a in addrs if not isinstance(a, str) or not _ADDR_RE.match(a)]
+    if bad:
+        raise SwapStateError(f"not ADDR:PORT: {bad}")
+    if not isinstance(reason, str) or not reason.strip():
+        raise SwapStateError("an exception needs a reason (operator approval)")
+    d = _slug_dir(slug)
+    with _Locked(d):
+        cur = _merge_state(d, {})
+        exc = [str(x) for x in (cur.get("exceptions") or [])]
+        reasons = dict(cur.get("exception_reasons") or {})
+        for a in addrs:
+            if a not in exc:
+                exc.append(a)
+            reasons[a] = reason.strip()
+        return _merge_state(d, {"exceptions": sorted(exc), "exception_reasons": reasons})
 
 
 def diff_listen(slug: str, ss_text: str) -> dict:
@@ -375,6 +415,10 @@ def main(argv=None) -> int:
     df = sub.add_parser("diff")
     df.add_argument("slug")
     df.add_argument("--ss-file", default="-")
+    ae = sub.add_parser("add-exception")
+    ae.add_argument("slug")
+    ae.add_argument("addrs", nargs="+")
+    ae.add_argument("--reason", required=True)
     sk = sub.add_parser("soak-check")      # exit 1 = refused (in soak), 0 = ok
     sk.add_argument("slug")
     cw = sub.add_parser("close-window")
@@ -403,6 +447,10 @@ def main(argv=None) -> int:
                     raise SwapStateError(f"expected key=value, got {pair!r}")
                 kv[k] = v
             print(json.dumps(update_state(args.slug, **kv), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "add-exception":
+            st = add_exceptions(args.slug, args.addrs, args.reason)
+            print(json.dumps(st.get("exceptions"), sort_keys=True))
             return 0
         if args.cmd == "show":
             print(json.dumps({"state": load_state(args.slug),
