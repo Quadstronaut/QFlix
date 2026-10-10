@@ -373,18 +373,20 @@ apps:
     # it); the container's public-IP and gateway listeners are dropped as
     # recorded listen-set exceptions (spec 5.4 resolution 2, D-4). The UCC
     # container stays installed and DORMANT as the rollback target (I-8).
-    # `swap_state: pending-swap` keeps the container the live runtime (appctl,
-    # lifecycle, health) until the swap runs; the follow-up PR drops it.
+    # Swapped to native 2026-10-10 (spec 5.9 steps 1-6); the `swap_state:
+    # pending-swap` line that held this flip inert until the swap ran is gone,
+    # so appctl / lifecycle / require_unit_active / runtime parity now treat the
+    # native unit as the live runtime. 14-day soak until 2026-10-24.
     class: systemd
     unit: qflix-tautulli.service
     ucc_slug: tautulli
     ucc_dormant: true
-    swap_state: pending-swap
     kuma_monitor: "Tautulli"
     health:
       kind: http_root
       port_secret: tautulli.port
       expect_status: 200
+      require_unit_active: true
     upgrade:
       # The GitHub tag archive wraps everything in Tautulli-<ver>/; the post
       # steps flatten it, build the venv from the release's pinned requirements
