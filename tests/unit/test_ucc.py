@@ -28,6 +28,32 @@ from lib.ucc import (
 
 
 # ---------------------------------------------------------------------------
+# I-9 probe guard isolation (QFLX-17): probe() refuses any slug that is not an
+# active ucc app in the deployed manifest. Every test in this module runs
+# against a fixture manifest (never the box copy, never the repo copy) in which
+# the slugs the older tests use are active ucc apps.
+# ---------------------------------------------------------------------------
+
+GUARD_MANIFEST = """\
+apps:
+  sonarr: {class: ucc, ucc_slug: sonarr}
+  plex: {class: ucc, ucc_slug: plex}
+  myapp: {class: ucc, ucc_slug: myapp}
+  radarr: {class: systemd, unit: qflix-radarr.service, ucc_slug: radarr, ucc_dormant: true}
+  tautulli: {class: ucc, ucc_slug: tautulli, ucc_dormant: true}
+  bazarr2: {class: systemd, unit: bazarr2.service}
+"""
+
+
+@pytest.fixture(autouse=True)
+def _guard_manifest(tmp_path, monkeypatch):
+    p = tmp_path / "guard-apps.yaml"
+    p.write_text(GUARD_MANIFEST, encoding="utf-8")
+    monkeypatch.setenv("MANITOBA_MANIFEST", str(p))
+    return p
+
+
+# ---------------------------------------------------------------------------
 # Classification tests (pure, no filesystem)
 # ---------------------------------------------------------------------------
 
@@ -176,16 +202,76 @@ class TestProbe:
         cmd = call_args[0][0]
         assert "myapp" in cmd or any("myapp" in str(a) for a in cmd)
 
-    def test_probe_falls_back_to_sonarr_when_no_secret(self):
+    def test_probe_falls_back_to_plex_when_no_secret(self):
+        # I-9 / review O-3: the default is plex (never converted on Ultra), so a
+        # missing secret can never turn into `app-sonarr start` every 5 minutes
+        # once sonarr is a dormant container.
         cp = MagicMock()
         cp.stdout = CLEAR_OUTPUT_TRUE
         cp.returncode = 0
         with patch("subprocess.run", return_value=cp) as mock_run, \
              patch("lib.secrets.read_secret", side_effect=FileNotFoundError("no secret")):
             classification, probe_op, raw = probe()
-        call_args = mock_run.call_args
-        cmd = call_args[0][0]
-        assert "sonarr" in cmd or any("sonarr" in str(a) for a in cmd)
+        assert mock_run.call_args[0][0] == ["app-plex", "start"]
+        assert probe_op == "app-plex start"
+
+    @pytest.mark.parametrize("exc", [
+        PermissionError("denied"), OSError("io"), ValueError("bad"), RuntimeError("x"),
+    ])
+    def test_any_secret_read_error_falls_back_to_plex(self, exc):
+        cp = MagicMock()
+        cp.stdout = CLEAR_OUTPUT_TRUE
+        cp.returncode = 0
+        with patch("subprocess.run", return_value=cp) as mock_run, \
+             patch("lib.secrets.read_secret", side_effect=exc):
+            probe()
+        assert mock_run.call_args[0][0] == ["app-plex", "start"]
+
+    def test_default_probe_app_constant_is_plex(self):
+        assert ucc_mod._DEFAULT_PROBE_APP == "plex"
+
+
+class TestProbeGuard:
+    """I-9: the probe never names a converted, dormant or non-ucc slug."""
+
+    @pytest.mark.parametrize("slug", ["radarr", "tautulli", "bazarr2", "nosuchapp"])
+    def test_explicit_non_ucc_slug_is_refused_without_running(self, slug):
+        with patch("subprocess.run") as mock_run:
+            classification, probe_op, raw = probe(probe_app=slug)
+        mock_run.assert_not_called()
+        assert classification == "probe-error"
+        assert probe_op == f"app-{slug} start"
+        assert raw.startswith("refused:")
+
+    def test_secret_naming_a_dormant_slug_is_refused(self, capsys):
+        with patch("subprocess.run") as mock_run, \
+             patch("lib.secrets.read_secret", return_value="radarr"):
+            classification, _op, raw = probe()
+        mock_run.assert_not_called()
+        assert classification == "probe-error" and raw.startswith("refused:")
+        assert "radarr" in capsys.readouterr().err
+
+    def test_unreadable_manifest_refuses_everything_but_the_default(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MANITOBA_MANIFEST", str(tmp_path / "absent.yaml"))
+        cp = MagicMock()
+        cp.stdout = CLEAR_OUTPUT_TRUE
+        cp.returncode = 0
+        with patch("subprocess.run", return_value=cp) as mock_run:
+            classification, _op, raw = probe(probe_app="sonarr")
+        mock_run.assert_not_called()
+        assert raw.startswith("refused:")
+        with patch("subprocess.run", return_value=cp) as mock_run:
+            classification, _op, _raw = probe(probe_app="plex")
+        assert mock_run.call_args[0][0] == ["app-plex", "start"]
+        assert classification == "clear"
+
+    def test_refusal_is_a_probe_error_so_detect_holds_state(self, tmp_path):
+        state_path = tmp_path / "ucc-window.json"
+        with patch("subprocess.run") as mock_run:
+            state = detect(state_path=state_path, probe_app="radarr")
+        mock_run.assert_not_called()
+        assert state["last_probe_result"] == "probe-error"
+        assert state["consecutive_error"] == 1
 
 
 # ---------------------------------------------------------------------------

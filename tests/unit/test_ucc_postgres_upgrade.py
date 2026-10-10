@@ -32,6 +32,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -40,6 +41,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 UPGRADE_ALL = REPO / "scripts" / "maint" / "app-upgrade-all.sh"
 PG_MODULE = REPO / "scripts" / "maint" / "ucc-postgres-upgrade.sh"
+UCC_SKIP = REPO / "scripts" / "maint" / "lib" / "ucc_skip.py"
 INSTALLER = REPO / "scripts" / "configure" / "240-maintenance-install.sh"
 CHANGELOG = REPO / "CHANGELOG.md"
 
@@ -208,6 +210,14 @@ class Box:
                   self.secrets, self.maint / "lib"):
             d.mkdir(parents=True, exist_ok=True)
         (self.maint / "lib" / "notify.py").write_text(NOTIFY_PY, encoding="utf-8")
+        # QFLX-17: the sweep generates its skip list from the deployed manifest
+        # via lib/ucc_skip.py and fails closed without one. The default fixture
+        # manifest lists every stubbed app as an active ucc app (empty
+        # generated list), so these tests see the pre-QFLX-17 behaviour.
+        shutil.copy(UCC_SKIP, self.maint / "lib" / "ucc_skip.py")
+        self.manifest = self.home / ".opt" / "maint" / "apps.yaml"
+        self.manifest.parent.mkdir(parents=True, exist_ok=True)
+        self.write_manifest({a: {"class": "ucc", "ucc_slug": a} for a in apps})
         self.notify = self.calls / "notify.capture"
         self.backup = self.home / ".apps" / "backup"
 
@@ -238,6 +248,14 @@ class Box:
         _exe(self.bin / "systemctl", SYSTEMCTL_STUB)
         self.set(pg_mode="ok", lm_mode="200", checkpointer=True)
 
+    def write_manifest(self, apps: dict) -> None:
+        lines = ["apps:"]
+        for name, fields in apps.items():
+            lines.append(f"  {name}:")
+            lines += [f"    {k}: {str(v).lower() if isinstance(v, bool) else v}"
+                      for k, v in fields.items()]
+        self.manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     def set(self, *, pg_mode=None, lm_mode=None, checkpointer=None):
         if pg_mode is not None:
             (self.calls / "pg_mode").write_text(pg_mode)
@@ -261,6 +279,7 @@ class Box:
             MANITOBA_SECRETS_DIR=str(self.secrets),
             MANITOBA_MAINT_DIR=str(self.maint),
             MANITOBA_UPGRADE_RESULTS=str(self.state / "last-upgrade.json"),
+            MANITOBA_PYTHON=sys.executable,
             PG_UPGRADE_TIMEOUT="20s",
             PG_HEALTH_TIMEOUT_S="2",
             LISTMONK_HEALTH_TIMEOUT_S="2",

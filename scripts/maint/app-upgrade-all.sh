@@ -7,6 +7,17 @@
 # command exists AND lists `upgrade` in its --help, AND isn't in the skip
 # list. Sequential per Ultra.cc FAQ (one upgrade at a time).
 #
+# Generated skip list (QFLX-17, UCC divorce spec I-9 / 5.7): a converted app
+# keeps BOTH its ~/.apps/<slug> dir (the native unit's data dir) and its
+# dormant app-<slug> wrapper, so discovery alone would `app-<slug> upgrade` a
+# container that must stay stopped next to the native unit. Every run therefore
+# generates, from the DEPLOYED manifest ($MANITOBA_MANIFEST, default
+# ~/.opt/maint/apps.yaml, written by 240), every slug whose class is not `ucc`
+# or that carries `ucc_dormant`, via lib/ucc_skip.py --list. It is joined to
+# DEFAULT_SKIP, checked before anything else touches app-<slug>, and is NOT
+# subject to --include/--only. If it cannot be generated the sweep fails closed
+# (exit 2 + warning notify, nothing upgraded). Never restate it by hand.
+#
 # Usage:
 #   app-upgrade-all.sh                  # live sweep, default skip list
 #   app-upgrade-all.sh --dry-run        # enumerate + show plan, do nothing
@@ -232,6 +243,28 @@ write_results_json() {
         > "$out" 2>/dev/null || echo "WARN: could not write results to $out" >&2
 }
 
+# Generated skip list (see header). Fail closed: a sweep that cannot tell which
+# apps are converted must not touch any of them.
+MAINT_DIR="${MANITOBA_MAINT_DIR:-$HOME/scripts/maint}"
+MANIFEST_FILE="${MANITOBA_MANIFEST:-$HOME/.opt/maint/apps.yaml}"
+PYTHON_BIN="${MANITOBA_PYTHON:-python3}"
+GEN_SKIP=()
+skip_fail() {
+    local msg="app-upgrade-all: cannot generate the converted/dormant skip list from ${MANIFEST_FILE} ($1) - NOTHING was upgraded (I-9: never wake a dormant app)"
+    echo "FATAL: $msg" >&2
+    notify warning "$msg"
+    exit 2
+}
+gen_out=$("$PYTHON_BIN" "$MAINT_DIR/lib/ucc_skip.py" --manifest "$MANIFEST_FILE" --list)
+gen_rc=$?
+(( gen_rc == 0 )) || skip_fail "ucc_skip.py rc=$gen_rc"
+while IFS= read -r line; do
+    line=${line%$'\r'}
+    [[ -z "$line" ]] && continue
+    [[ "$line" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || skip_fail "unsafe slug in output"
+    GEN_SKIP+=("$line")
+done <<<"$gen_out"
+
 # Discover installed apps
 mapfile -t INSTALLED < <(
     for d in "$HOME"/.apps/*/; do
@@ -244,6 +277,11 @@ TARGETS=()
 SKIPPED=()
 for name in "${INSTALLED[@]}"; do
     cmd="app-${name}"
+    # First, before any app-<name> probe; --include/--only cannot override it.
+    if in_list "$name" "${GEN_SKIP[@]}"; then
+        SKIPPED+=("$name: converted/dormant (manifest)")
+        continue
+    fi
     if ! command -v "$cmd" >/dev/null 2>&1; then
         SKIPPED+=("$name: no app-* wrapper")
         continue
@@ -285,6 +323,7 @@ echo "[$mode] app-upgrade-all sweep starting"
 echo "  installed=${#INSTALLED[@]} target=${#TARGETS[@]} skipped=${#SKIPPED[@]}"
 echo "  budget=${TOTAL_BUDGET_SECONDS}s per_app_timeout=${PER_APP_TIMEOUT}"
 echo "  skip_list=${SKIP[*]:-<empty>}"
+echo "  generated_skip=${GEN_SKIP[*]:-<empty>} (manifest=${MANIFEST_FILE})"
 if (( ${#TARGETS[@]} == 0 )); then
     echo "no apps to upgrade"
     for s in "${SKIPPED[@]}"; do echo "  skip: $s"; done

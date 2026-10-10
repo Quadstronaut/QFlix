@@ -31,7 +31,12 @@ scpm_to "$OUT" "/home/quadstronaut/.apps/unpackerr/unpackerr.conf"
 sshm 'chmod 600 ~/.apps/unpackerr/unpackerr.conf'
 
 log_info "Restarting unpackerr..."
-sshm 'app-unpackerr restart 2>&1 || app-unpackerr start 2>&1' | head -5
+# I-9 (QFLX-17): once unpackerr is converted (A1) its UCC container stays
+# installed and dormant; `restart || start` would wake it next to the native
+# unit. Ask the DEPLOYED manifest first; refuse unless unpackerr is still an
+# active ucc app. Exit 3 = converted/dormant/unknown, 2 = manifest unreadable:
+# both refuse (fail closed). The native unit is driven by appctl (F3), not here.
+sshm 'if python3 ~/scripts/maint/lib/ucc_skip.py --check unpackerr; then app-unpackerr restart 2>&1 || app-unpackerr start 2>&1; else echo "REFUSED: unpackerr is not an active ucc app in ~/.opt/maint/apps.yaml (I-9)"; exit 3; fi' | head -5
 sleep 8
 
 log_info "Service status:"
