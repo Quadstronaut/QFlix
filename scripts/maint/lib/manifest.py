@@ -354,6 +354,25 @@ def load(path: str | Path) -> Manifest:
         raw_health = app_data.get("health", {}) or {}
         health = _parse_health(raw_health, app_name=app_name)
 
+        # QFLX-20: swap_state / require_unit_active are validated at load so a
+        # typo cannot silently disable the converted-app guard.
+        swap_state = app_data.get("swap_state")
+        if swap_state is not None and swap_state != "pending-swap":
+            raise ManifestError(
+                f"App '{app_name}' swap_state must be absent or 'pending-swap', "
+                f"got {swap_state!r}"
+            )
+        rua = raw_health.get("require_unit_active")
+        if rua is not None:
+            if not isinstance(rua, bool):
+                raise ManifestError(
+                    f"App '{app_name}' health.require_unit_active must be a boolean"
+                )
+            if rua and not (raw_health.get("unit") or app_data.get("unit")):
+                raise ManifestError(
+                    f"App '{app_name}' sets health.require_unit_active without a unit"
+                )
+
         raw_upgrade = app_data.get("upgrade")
         upgrade = _parse_upgrade(raw_upgrade) if raw_upgrade else None
 

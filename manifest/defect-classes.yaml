@@ -447,3 +447,16 @@ classes:
       all three sat green on 36-38h-old beats. Only kuma.db can show it.
     live_detector: scripts/maint/qflix-audit-live.py
     residual_row: L-07
+
+  - id: L-08
+    title: listen set of a swapped app differs from the one recorded before its swap
+    status: residual
+    detector: null
+    test: null
+    why_not_offline: >-
+      The recorded listen set (~/.opt/maint/swap/<slug>/listen-set.before) and
+      the socket table are box state. The per-minute woken-container, two-tree
+      and port-owner predicates run in the pusher (lib/runtime_parity.py); this
+      is the slower diff against the pre-swap baseline (QFLX-20, spec 5.8).
+    live_detector: scripts/maint/qflix-audit-live.py
+    residual_row: L-08
