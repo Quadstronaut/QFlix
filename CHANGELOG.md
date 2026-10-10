@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-09 - Runtime parity detector + swap state (QFLX-20, UCC divorce F5)
+
+**A woken dormant container (or a second runtime) would have run up to 6h
+before the audit-live timer saw it, and "deploy-drift green" held even if a
+manifest flip was never deployed.** Ships before swap #1; nothing is converted
+yet, so every new check is a no-op on the live stack.
+
+- `lib/runtime_parity.py`, called from the per-minute pusher (no new timer or
+  monitor): woken-container (cgroup-scoped), two process trees (`pgrep -u
+  <uid>` on the unit ExecStart), port owner != unit MainPID. A violation pushes
+  DOWN and never auto-restarts the unit. Fails open if a predicate cannot run.
+- `health.require_unit_active: true`: a probe that answers 200 while the unit is
+  inactive is red. `swap_state: pending-swap` (manifest) switches it off and
+  makes `appctl` dispatch the app as the UCC app it still is.
+- `lib/swapstate.py` + `scripts/ops/qflix-listen-set.sh`: per-slug listen set,
+  ucc version, swap date, soak_until, rollback_window under flock.
+- audit-live leg L-08: only the listen-set diff vs the recorded set.
+- `deploy-drift` also compares the deployed `apps.yaml`, `jobs.yaml`,
+  `~/bin/appctl` and owned user units with the commit (`lib/deploy_parity.py`).
+
 ## 2026-10-09 - Nothing wakes a dormant UCC app (QFLX-17, UCC divorce F2)
 
 **A converted app keeps its `~/.apps/<slug>` dir and its dormant `app-<slug>`

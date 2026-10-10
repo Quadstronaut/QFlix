@@ -17,6 +17,8 @@ WHY THIS CANNOT BE PART OF qflix-audit.py
       L-04 declared secret keys exist with a sane mode
       L-05 every self-pusher has a PERSISTED push token (the born-mute class)
       L-06 quota / thread-ceiling headroom
+      L-08 listen set of every swapped app vs the one recorded before its swap
+           (QFLX-20; the per-minute runtime-parity predicates live in the pusher)
       L-07 stale-green push monitors (Kuma restart resets its push-timeout
            timers, so a monitor whose beat was already overdue at restart
            re-greens before it ever pages -- the missed run is invisible)
@@ -284,6 +286,50 @@ def _push_monitor_beats():
         return None
 
 
+def listen_set_findings(ss_text: str, slugs: list[str], differ) -> list[dict]:
+    """L-08 decision logic: one finding per swapped slug whose current listen set
+    differs from the one recorded before the swap (minus recorded exceptions).
+
+    `differ(slug, ss_text)` is swapstate.diff_listen; it raises when nothing was
+    recorded, which becomes a finding too: a swapped app with no baseline is a
+    gap, not a pass."""
+    out = []
+    for slug in slugs:
+        try:
+            d = differ(slug, ss_text)
+        except Exception as exc:                              # noqa: BLE001
+            out.append({"class_id": "L-08", "instance_id": slug,
+                        "detail": "listen-set-baseline-missing: " + str(exc)[:80]})
+            continue
+        if d["added"] or d["removed"]:
+            out.append({"class_id": "L-08", "instance_id": slug,
+                        "detail": "listen-set-changed +" + ",".join(d["added"])
+                                  + " -" + ",".join(d["removed"])})
+    return out
+
+
+def _listen_set_leg(findings: list, coverage: dict) -> None:
+    """L-08 (QFLX-20, spec 5.8): ONLY the listen-set diff lives here. The
+    woken-container / two-trees / port-owner predicates run per minute in the
+    pusher; this timer fires every 6h."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from lib import swapstate
+        slugs = swapstate.swapped_slugs()
+        if not slugs:
+            coverage["L-08"] = "checked"          # nothing swapped yet: vacuous, honestly
+            return
+        proc = subprocess.run(["ss", "-tlnH"], capture_output=True, text=True,
+                              check=False, timeout=15)
+        if proc.returncode != 0:
+            raise RuntimeError("ss exit " + str(proc.returncode))
+        findings.extend(listen_set_findings(proc.stdout, slugs, swapstate.diff_listen))
+        coverage["L-08"] = "checked"
+    except Exception as exc:                                  # noqa: BLE001
+        coverage["L-08"] = "unavailable"
+        print(f"qflix-audit-live: L-08 unavailable: {exc}", file=sys.stderr)
+
+
 def collect(expected_monitors: list[str]) -> dict:
     findings: list[dict] = []
     coverage: dict[str, str] = {}
@@ -373,6 +419,9 @@ def collect(expected_monitors: list[str]) -> dict:
         coverage["L-07"] = "checked"
         findings.extend(
             stale_green_pushers(beats, _dt.datetime.now(_dt.timezone.utc)))
+
+    # L-08 ---------------------------------------------------------------
+    _listen_set_leg(findings, coverage)
 
     return {"coverage": coverage, "findings": findings}
 

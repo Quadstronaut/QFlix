@@ -25,6 +25,7 @@ from lib import health as health_mod
 from lib import manifest as manifest_mod
 from lib import notify as notify_mod
 from lib import recovery as recovery_mod
+from lib import runtime_parity as parity_mod
 from lib import suppression as suppression_mod
 
 log = logging.getLogger(__name__)
@@ -212,6 +213,16 @@ def push_once(
             continue
 
         result = health_mod.probe(app)
+        # QFLX-20 runtime parity (spec 5.8): converted apps only, [] for every
+        # other app. A violation turns the push red even when the probe is
+        # green (a woken container answering 200 is exactly that case).
+        parity = parity_mod.check(app)
+        if parity:
+            detail = f"{parity_mod.PARITY_PREFIX} " + "; ".join(parity)
+            if not result.ok:
+                detail += f"; probe: {result.reason}"
+            result = health_mod.HealthResult(ok=False, latency_ms=result.latency_ms,
+                                             reason=detail)
         _probe_ok[app.name] = result.ok
         status = "up" if result.ok else "down"
         params: dict[str, object] = {
@@ -291,7 +302,14 @@ def push_once(
                 # is still pushed (above); we annotate the Kuma msg so the
                 # dashboard explains the held state. Do NOT increment toward
                 # permanent-failure (counter stays, but trigger skipped).
-                if suppression_mod.recovery_suppressed(app):
+                if result.reason.startswith(parity_mod.PARITY_PREFIX):
+                    # Restarting the native unit cannot fix a woken container
+                    # or a stray listener; it needs the operator (rollback
+                    # step 0: re-suppress + mask the container).
+                    params["msg"] = f"{result.reason} [strike {n}/{_STRIKE_THRESHOLD}] [parity: operator needed, no auto-restart]"
+                    log.warning("auto-heal %s: strike %d/%d -> recovery SKIPPED (runtime-parity violation)",
+                                app.name, n, _STRIKE_THRESHOLD)
+                elif suppression_mod.recovery_suppressed(app):
                     params["msg"] = f"{result.reason} [strike {n}/{_STRIKE_THRESHOLD}] [ucc-maint: recovery suppressed]"
                     log.info("auto-heal %s: strike %d/%d -> recovery SUPPRESSED (ucc maintenance active)",
                              app.name, n, _STRIKE_THRESHOLD)

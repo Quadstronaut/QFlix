@@ -125,7 +125,21 @@ if [ "$orphan" -gt 0 ]; then
   exit 1
 fi
 
-printf "PASS: deploy-drift - %d deployed files match %s (%s); %d generated skipped\n" \
+# QFLX-20 (spec 5.8, review O-6): the loops above only see *.py / *.sh under
+# ~/scripts. The deployed manifest + jobs ledger (~/.opt/maint), ~/bin/appctl
+# and the user units are outside that scope, so a UCC->native flip that was
+# never deployed read green. deploy_parity.py compares them to the same ref. It
+# is streamed from the git object store so the logic of the commit under test
+# always runs and the check needs no separate deploy step.
+PARITY_ERR=$(git -C "$SRC" show "$REF:scripts/maint/lib/deploy_parity.py" 2>/dev/null \
+  | python3 - --src "$SRC" --ref "$REF" 2>&1 >/dev/null)
+PRC=$?
+if [ "$PRC" -ne 0 ]; then
+  printf "%s\n" "$(printf "%s" "$PARITY_ERR" | grep -m1 "STAGE=" || echo "STAGE=deploy-parity-error msg=no-output")" >&2
+  exit 1
+fi
+
+printf "PASS: deploy-drift - %d deployed files match %s (%s); %d generated skipped; manifest+appctl+units match\n" \
   "$match" "$REF" "$REFSHA" "$skipped"
 ') || RC=$?
 RC=${RC:-0}

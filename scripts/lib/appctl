@@ -27,6 +27,9 @@
 # except `stop` exits 3 without touching anything. `stop` stays allowed so a
 # woken container can always be put back to sleep.
 #
+# PENDING-SWAP. `swap_state: pending-swap` on a class-systemd app (the manifest
+# flip merged, the swap not yet run) dispatches as the UCC app it still is.
+#
 # Exit codes: 0 ok | 1 the dispatched command failed / app down | 2 no
 # lifecycle, unreadable manifest or unresolvable host profile (fail closed) |
 # 3 dormant refusal | 64 usage.
@@ -54,7 +57,7 @@ die2() { echo "appctl: $*" >&2; exit 2; }
 _cr() { local s="$1"; printf '%s' "${s%$'\r'}"; }
 
 # Look the app up in the deployed manifest. Prints one line:
-#   name|class|slug|unit|dormant(0/1)|port_secret
+#   name|class|slug|unit|dormant(0/1)|port_secret|swap_state
 # Exit 4 = no such app, 5 = manifest unreadable.
 lookup() {
   "$PY" - "$MANIFEST" "$1" <<'PY'
@@ -82,6 +85,7 @@ print("|".join([
     # anything but absent/null/false is dormant (a typo must not wake it).
     "0" if a.get("ucc_dormant") in (None, False) else "1",
     str(h.get("port_secret") or ""),
+    str(a.get("swap_state") or ""),
 ]))
 PY
 }
@@ -184,7 +188,16 @@ case "$rc" in
      die2 "no lifecycle for $WANT (not in $MANIFEST)" ;;
   *) die2 "no lifecycle for $WANT (manifest $MANIFEST unreadable)" ;;
 esac
-IFS='|' read -r NAME CLASS SLUG UNIT DORMANT PSEC <<<"$(_cr "$row")"
+IFS='|' read -r NAME CLASS SLUG UNIT DORMANT PSEC SWAPSTATE <<<"$(_cr "$row")"
+
+# PENDING-SWAP (QFLX-20, spec 5.9 step 7). The manifest flip (class systemd,
+# ucc_dormant) merges BEFORE the swap runs, so for that window the UCC container
+# is still the live runtime and no native unit exists yet. Dispatch it as the
+# UCC app it still is, and do not apply the dormant refusal.
+if [ "$SWAPSTATE" = pending-swap ] && [ "$CLASS" = systemd ]; then
+  CLASS=ucc
+  DORMANT=0
+fi
 
 if [ "$VERB" = is-native ]; then
   if [ "$CLASS" = systemd ] || [ "$DORMANT" = 1 ]; then echo native; exit 0; fi

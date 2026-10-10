@@ -108,6 +108,9 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/oracle_state.py \
     scripts/maint/lib/regrab_ledger.py \
     scripts/maint/lib/ports.py \
+    scripts/maint/lib/swapstate.py \
+    scripts/maint/lib/runtime_parity.py \
+    scripts/maint/lib/deploy_parity.py \
     scripts/maint/prune-app-backups.sh \
     scripts/maint/qflix-collect.py \
     scripts/maint/qflix-entitlement.py \
@@ -245,6 +248,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/ucc-postgres-upgrade.sh \
     scripts/ops/heartbeat-maint-webhook.sh \
     scripts/ops/boot-listeners-snapshot.sh \
+    scripts/ops/qflix-listen-set.sh \
     scripts/lib/ssh.sh \
     scripts/lib/appctl \
     scripts/canaries/anime.sh \
@@ -424,6 +428,9 @@ cp -f   "$STG"/scripts/ops/heartbeat-maint-webhook.sh ~/scripts/ops/
 chmod +x ~/scripts/ops/heartbeat-maint-webhook.sh
 cp -f   "$STG"/scripts/ops/boot-listeners-snapshot.sh ~/scripts/ops/
 chmod +x ~/scripts/ops/boot-listeners-snapshot.sh
+# QFLX-20: records an app listen set before a UCC->native swap (record only).
+cp -f   "$STG"/scripts/ops/qflix-listen-set.sh ~/scripts/ops/
+chmod +x ~/scripts/ops/qflix-listen-set.sh
 mkdir -p ~/scripts/lib ~/scripts/canaries ~/scripts/configure
 cp -f   "$STG"/scripts/lib/ssh.sh                ~/scripts/lib/ssh.sh
 # ~/bin/appctl (QFLX-18): the one lifecycle shim. Callers use the ABSOLUTE
