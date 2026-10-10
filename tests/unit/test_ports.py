@@ -170,3 +170,63 @@ def test_no_installer_keeps_its_own_app_ports_filter():
         text = (REPO / "scripts/configure" / f).read_text()
         assert "app-ports free" not in text, f
         assert "claim_port" in text, f
+
+
+# ---- free(): the read-only view behind `appctl ports-free` (QFLX-18) ----
+def test_free_is_candidates_minus_claimed_minus_bound(tmp_path):
+    (tmp_path / "sonarr.port").write_text("17005\n")
+    got = ports.free(tmp_path, ports.parse_candidates(APP_PORTS), ports.parse_ss(SS))
+    assert got == [17006]
+
+
+def test_free_writes_nothing(tmp_path):
+    d = tmp_path / "s"
+    d.mkdir()
+    ports.free(d, [17005], set())
+    assert list(d.iterdir()) == []
+
+
+def _cli_free(tmp_path, *extra, env=None):
+    return subprocess.run(
+        [sys.executable, str(REPO / "scripts/maint/lib/ports.py"), "free",
+         "--secrets-dir", str(tmp_path), "--ss", SS, *extra],
+        capture_output=True, text=True, env=env)
+
+
+def test_cli_free_with_explicit_candidates(tmp_path):
+    r = _cli_free(tmp_path, "--candidates", APP_PORTS)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["17005", "17006"]
+
+
+def test_cli_free_reads_ss_from_stdin(tmp_path):
+    # On the shared slot `ss -tlnH` lists every tenant's listener and blew
+    # past ARG_MAX as an argv string ("Argument list too long", box
+    # 2026-10-10), so appctl pipes it in.
+    big = SS + "".join("LISTEN 0 128 127.0.0.1:%d 0.0.0.0:*\n" % p for p in range(20000, 40000))
+    r = subprocess.run(
+        [sys.executable, str(REPO / "scripts/maint/lib/ports.py"), "free",
+         "--secrets-dir", str(tmp_path), "--candidates", APP_PORTS, "--ss-file", "-"],
+        input=big, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["17005", "17006"]
+
+
+def test_cli_free_from_policy_fails_closed_without_profile(tmp_path):
+    import os
+    env = dict(os.environ, MANITOBA_SECRETS_DIR=str(tmp_path))
+    r = _cli_free(tmp_path, "--from-policy", env=env)
+    assert r.returncode == 2
+    assert r.stdout.strip() == ""
+
+
+def test_cli_free_from_policy_generic_range(tmp_path):
+    import os
+    (tmp_path / "host.profile").write_text("generic\n")
+    (tmp_path / "host.port-range").write_text("17003-17006\n")
+    (tmp_path / "x.port").write_text("17006\n")
+    # PATH without app-ports, so generic's detect() cross-check holds.
+    env = dict(os.environ, MANITOBA_SECRETS_DIR=str(tmp_path), PATH=str(tmp_path))
+    r = _cli_free(tmp_path, "--from-policy", env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["17005"]

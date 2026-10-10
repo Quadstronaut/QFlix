@@ -106,6 +106,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/payer_oracle.py \
     scripts/maint/lib/oracle_state.py \
     scripts/maint/lib/regrab_ledger.py \
+    scripts/maint/lib/ports.py \
     scripts/maint/prune-app-backups.sh \
     scripts/maint/qflix-collect.py \
     scripts/maint/qflix-entitlement.py \
@@ -244,6 +245,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/ops/heartbeat-maint-webhook.sh \
     scripts/ops/boot-listeners-snapshot.sh \
     scripts/lib/ssh.sh \
+    scripts/lib/appctl \
     scripts/canaries/anime.sh \
     scripts/canaries/kometa-deploy-drift.sh \
     scripts/canaries/kometa-libraries.sh \
@@ -423,6 +425,12 @@ cp -f   "$STG"/scripts/ops/boot-listeners-snapshot.sh ~/scripts/ops/
 chmod +x ~/scripts/ops/boot-listeners-snapshot.sh
 mkdir -p ~/scripts/lib ~/scripts/canaries ~/scripts/configure
 cp -f   "$STG"/scripts/lib/ssh.sh                ~/scripts/lib/ssh.sh
+# ~/bin/appctl (QFLX-18): the one lifecycle shim. Callers use the ABSOLUTE
+# path (systemd --user PATH has no ~/bin). Staged + renamed so a caller that
+# is mid-read of the old script never sees a half-written file.
+cp -f "$STG"/scripts/lib/appctl ~/bin/appctl.new
+chmod +x ~/bin/appctl.new
+mv -f ~/bin/appctl.new ~/bin/appctl
 cp -f   "$STG"/scripts/canaries/*.sh             ~/scripts/canaries/
 chmod +x ~/scripts/canaries/*.sh
 # kometa-deploy-drift canary reads this install script's heredoc to know
