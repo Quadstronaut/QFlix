@@ -178,7 +178,8 @@ def _process_uptime_s() -> int | None:
     since the process is missing entirely)."""
     try:
         proc = subprocess.run(
-            ["pgrep", "-o", "-f", "/app/flaresolverr.py"],
+            ["pgrep", "-o", "-f",
+             r"(/app/flaresolverr\.py|\.apps/flaresolverr/bin/current/flaresolverr)"],
             capture_output=True, text=True, timeout=5,
         )
         pid = proc.stdout.strip()
