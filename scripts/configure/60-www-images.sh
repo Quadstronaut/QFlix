@@ -81,7 +81,7 @@ REMOTE
 
 # ── Step 4: restart user-nginx ──────────────────────────────────────────────
 log_info "restarting user-nginx"
-sshm 'app-nginx restart'
+sshm '~/bin/appctl proxy-reload'
 sleep 5
 
 # ── Step 5: smoke tests ─────────────────────────────────────────────────────

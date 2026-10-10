@@ -131,7 +131,7 @@ plex_up() {       # Plex /identity returns 200 + MediaContainer, no token needed
 # Returns one of: started | gated | error:<text>
 attempt_start() {
   local out
-  out=$(app-tautulli start 2>&1)
+  out=$("$HOME/bin/appctl" start tautulli 2>&1)
   if printf '%s' "$out" | grep -qi 'maintenance'; then echo "gated"; return; fi
   if printf '%s' "$out" | grep -qE '"result":\s*true'; then echo "started"; return; fi
   echo "error:$out"
@@ -178,7 +178,7 @@ while true; do
         if (( now - last_heartbeat >= HEARTBEAT_SECONDS )); then
           log "still gated (heartbeat)"
           ping_discord "⏳ Still gated (manitoba)" \
-            "Ultra.cc lifecycle gate still up; \`app-tautulli start\` returns the maintenance message. No change. Still watching." \
+            "Ultra.cc lifecycle gate still up; \`~/bin/appctl start tautulli\` returns the maintenance message. No change. Still watching." \
             10197915 0
           last_heartbeat=$now
         else
@@ -187,15 +187,15 @@ while true; do
         ;;
       started)
         start_issued_at=$now
-        log "GATE LIFTED — issued app-tautulli start; awaiting web (grace ${START_GRACE}s)"
+        log "GATE LIFTED — issued ~/bin/appctl start tautulli; awaiting web (grace ${START_GRACE}s)"
         ping_discord "🔓 Gate lifted — starting Tautulli (manitoba)" \
-          "\`app-tautulli start\` was accepted (gate is down). Waiting for Tautulli to serve, then I'll confirm the Plex link." \
+          "\`~/bin/appctl start tautulli\` was accepted (gate is down). Waiting for Tautulli to serve, then I'll confirm the Plex link." \
           3447003 1
         ;;
       error:*)
         log "unexpected start response: ${res#error:}"
         ping_discord "❓ Unexpected start response (manitoba)" \
-          "\`app-tautulli start\` returned something other than gated/success:\n\`\`\`${res#error:}\`\`\`\nStill watching." \
+          "\`~/bin/appctl start tautulli\` returned something other than gated/success:\n\`\`\`${res#error:}\`\`\`\nStill watching." \
           15976736 1
         # back off so we don't spam on a persistent oddity
         start_issued_at=$now
@@ -208,7 +208,7 @@ while true; do
   if [ "$start_issued_at" != "0" ] && (( now - start_issued_at > START_GRACE )); then
     log "start issued ${START_GRACE}s ago but web still down — flagging, continuing to watch"
     ping_discord "⚠️ Start accepted but Tautulli not serving (manitoba)" \
-      "Issued \`app-tautulli start\` over $((START_GRACE/60))m ago; web still \`000\`. Container may be crash-looping. Needs eyes. Still watching." \
+      "Issued \`~/bin/appctl start tautulli\` over $((START_GRACE/60))m ago; web still \`000\`. Container may be crash-looping. Needs eyes. Still watching." \
       15976736 1
     start_issued_at=$now  # re-arm the grace so it re-flags every START_GRACE if needed
   fi
