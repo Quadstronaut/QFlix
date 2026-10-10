@@ -150,6 +150,45 @@ def test_port_owned_by_a_child_of_mainpid_is_fine(healthy):
     assert rp.check(_app(), healthy, port=PORT) == []
 
 
+FWD = "qflix-sonarr-fwd.service"
+
+
+def _ss_two(app_pid, fwd_pid, port=PORT):
+    return 0, (f'LISTEN 0 512 172.17.0.1:{port} 0.0.0.0:* users:(("Sonarr",pid={app_pid},fd=9))\n'
+               f'LISTEN 0 4096 127.0.0.1:{port} 0.0.0.0:* '
+               f'users:(("systemd-socket-",pid={fwd_pid},fd=3))\n')
+
+
+def test_loopback_owned_by_the_apps_own_forwarder_is_fine(healthy, tmp_path):
+    # QFLX-28 box 2026-10-10: the app binds 172.17.0.1, qflix-x-fwd.socket owns
+    # 127.0.0.1; the proxyd in the -fwd.service cgroup is not a stranger.
+    _proc(tmp_path / "proc", 600, ppid=4942,
+          cgroup=f"0::/user.slice/user-{UID}.slice/user@{UID}.service/app.slice/{FWD}")
+    healthy.ss_out = _ss_two(500, 600)
+    assert rp.check(_app(), healthy, port=PORT) == []
+
+
+def test_loopback_held_by_the_user_manager_before_activation_is_fine(healthy, tmp_path):
+    _proc(tmp_path / "proc", 4942,
+          cgroup=f"0::/user.slice/user-{UID}.slice/user@{UID}.service/init.scope")
+    healthy.ss_out = _ss_two(500, 4942)
+    assert rp.check(_app(), healthy, port=PORT) == []
+
+
+def test_another_apps_forwarder_is_still_a_stranger(healthy, tmp_path):
+    _proc(tmp_path / "proc", 601, ppid=4942,
+          cgroup=f"0::/user.slice/user-{UID}.slice/user@{UID}.service/app.slice/qflix-radarr-fwd.service")
+    healthy.ss_out = _ss_two(500, 601)
+    v = rp.check(_app(), healthy, port=PORT)
+    assert any("owned by pid 601" in x for x in v)
+
+
+def test_fwd_unit_name():
+    assert rp.fwd_unit("qflix-prowlarr.service") == "qflix-prowlarr-fwd.service"
+    assert rp.fwd_unit("qflix-prowlarr-fwd.service") is None
+    assert rp.fwd_unit("x.socket") is None
+
+
 def test_listener_with_no_visible_owner_is_a_violation(healthy):
     healthy.ss_out = (0, "LISTEN 0 4096 127.0.0.1:42050 0.0.0.0:*\n")
     v = rp.check(_app(), healthy, port=PORT)
