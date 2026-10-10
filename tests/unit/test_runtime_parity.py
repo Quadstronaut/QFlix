@@ -109,6 +109,41 @@ def test_container_cgroup_of_another_app_or_uid_is_ignored(healthy):
     assert rp.check(_app(), healthy, port=PORT) == []
 
 
+def _mountinfo(root: Path, pid: int, src_root: str):
+    (root / str(pid) / "mountinfo").write_text(
+        f"1234 1200 0:52 {src_root} /config rw,relatime - fuse.mergerfs x rw\n"
+        "1235 1200 0:53 / /proc rw - proc proc rw\n")
+
+
+def test_sibling_container_with_the_same_cmdline_is_not_our_container(healthy):
+    """sonarr2's container runs the IDENTICAL cmdline (and s6 svc-sonarr): its
+    /config bind mount names ~/.apps/sonarr2, so it is not sonarr woken."""
+    root = healthy.proc_root
+    _proc(root, 117021, cgroup="0::/user.slice/docker-s2.scope", cmdline="s6-supervise svc-sonarr")
+    _proc(root, 117134, cgroup="0::/user.slice/docker-s2.scope",
+          cmdline="/app/sonarr/bin/Sonarr -nobrowser -data=/config")
+    for pid in (117021, 117134):
+        _mountinfo(root, pid, "/quadstronaut/.apps/sonarr2")
+    assert rp.check(_app(), healthy, port=PORT) == []
+
+
+def test_our_own_container_mount_is_still_detected(healthy):
+    root = healthy.proc_root
+    _proc(root, 781, cgroup="0::/user.slice/docker-s1.scope",
+          cmdline="/app/sonarr/bin/Sonarr -nobrowser -data=/config")
+    _mountinfo(root, 781, "/quadstronaut/.apps/sonarr")
+    v = rp.check(_app(), healthy, port=PORT)
+    assert len(v) == 1 and "781" in v[0]
+
+
+def test_unreadable_mountinfo_keeps_the_hit(healthy):
+    """Fail toward red: no mountinfo = cannot prove it is the sibling."""
+    _proc(healthy.proc_root, 782, cgroup="0::/user.slice/docker-x.scope",
+          cmdline="/app/sonarr/bin/Sonarr -data=/config")
+    v = rp.check(_app(), healthy, port=PORT)
+    assert len(v) == 1 and "782" in v[0]
+
+
 def test_native_unit_cgroup_never_counts_as_container(healthy):
     # a cgroup path that contains BOTH the unit name and a marker word
     _proc(healthy.proc_root, 780, cgroup=f"0::/user.slice/docker.slice/{UNIT}",

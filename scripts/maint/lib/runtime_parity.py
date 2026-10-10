@@ -143,6 +143,29 @@ def is_descendant(pid: int, root: int, ppid_of, limit: int = 64) -> bool:
 # Predicates
 # ---------------------------------------------------------------------------
 
+_APPS_ROOT_RE = re.compile(r"/\.apps/([^/\s]+)/?$")
+
+
+def _mounts_sibling_config(host: Host, pid: int, slug: str) -> bool:
+    """True when *pid*'s container bind-mounts ANOTHER app's ~/.apps/<x> at
+    /config. sonarr and sonarr2 containers run the identical cmdline
+    (/app/sonarr/bin/Sonarr -data=/config, s6 "svc-sonarr"), so the cmdline
+    needle alone flags the live sibling as "sonarr woken" (box, 2026-10-10).
+    Only a POSITIVE identification of a different slug excludes the pid: an
+    unreadable mountinfo or no /config mount keeps the hit (fail toward red)."""
+    try:
+        text = host.read(pid, "mountinfo")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) > 4 and f[4] == "/config":
+            m = _APPS_ROOT_RE.search(f[3])
+            if m and m.group(1) != slug:
+                return True
+    return False
+
+
 def woken_container(host: Host, app, uid: int) -> list[str]:
     slug = app.raw["ucc_slug"]
     unit = app.raw["unit"]
@@ -162,7 +185,7 @@ def woken_container(host: Host, app, uid: int) -> list[str]:
             cmd = host.read(pid, "cmdline").replace("\0", " ").lower()
         except OSError:
             continue                      # process exited mid-scan
-        if any(n in cmd for n in needles):
+        if any(n in cmd for n in needles) and not _mounts_sibling_config(host, pid, slug):
             hits.append(pid)
     if hits:
         return [f"dormant container woken: {slug} pid(s) {','.join(map(str, hits[:5]))}"]
