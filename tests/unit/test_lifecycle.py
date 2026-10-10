@@ -408,6 +408,30 @@ def test_systemd_tarball_swap_upgrade_downloads_and_extracts():
     assert ["systemctl", "--user", "restart", "listmonk.service"] in [c.args[0] for c in mock_run.call_args_list]
 
 
+def test_systemd_tarball_swap_unpacks_a_deb_with_dpkg_deb():
+    """QFLX-37: native postgres upgrades from the PGDG server .deb."""
+    app = _systemd_app(unit="qflix-postgres.service", name="postgres")
+    _attach_upgrade(
+        app,
+        kind="tarball_swap",
+        url_template="https://example.invalid/postgresql-17_{version}_amd64.deb",
+        target_dir="/h/.apps/pg-native/bin/{version}",
+        post_steps=["/h/312-native-postgres-install.sh --post-upgrade {version} --execute"],
+    )
+
+    with patch("subprocess.run", return_value=_ok_cp()) as mock_run, \
+         patch("lib.lifecycle._post_health_probe", return_value=(True, "ok")):
+        result = upgrade(app, target_version="17.12-1.pgdg13+1")
+
+    assert result.ok is True
+    cmd_strs = [" ".join(c.args[0]) for c in mock_run.call_args_list]
+    assert any("dpkg-deb -x" in s and "/h/.apps/pg-native/bin/17.12-1.pgdg13+1" in s
+               for s in cmd_strs), cmd_strs
+    assert not any(" tar -x" in s for s in cmd_strs), cmd_strs
+    assert any("--post-upgrade 17.12-1.pgdg13+1 --execute" in s for s in cmd_strs), cmd_strs
+    assert ["systemctl", "--user", "restart", "qflix-postgres.service"] in [c.args[0] for c in mock_run.call_args_list]
+
+
 # ---- systemd zip_swap upgrade ---------------------------------------------
 
 def test_systemd_zip_swap_upgrade_downloads_and_unzips():
