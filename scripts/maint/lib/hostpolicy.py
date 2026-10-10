@@ -180,6 +180,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
       hostpolicy.py in-window [ISO8601]   exit 0 in window, 1 not, 3 bad input
       hostpolicy.py preflight             exit 0 ok, 2 profile missing/mismatch
+      hostpolicy.py task-ceiling          prints the task ceiling; exit 2 unknown
     """
     args = list(sys.argv[1:] if argv is None else argv)
     cmd = args[0] if args else ""
@@ -198,7 +199,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return EXIT_PROFILE
         print(pol.name)
         return 0
-    sys.stderr.write("usage: hostpolicy.py in-window [ISO8601] | preflight\n")
+    if cmd == "task-ceiling":
+        # QFLX-25: the per-user task ceiling the swap's 70% gate divides by
+        # (spec 5.9 step 2.4). Unknown is a refusal, never "unlimited".
+        try:
+            ceiling = load().task_ceiling()
+        except HostProfileError as exc:
+            sys.stderr.write("hostpolicy: %s\n" % exc)
+            return EXIT_PROFILE
+        if not isinstance(ceiling, int) or ceiling <= 0:
+            sys.stderr.write("hostpolicy: task ceiling unknown\n")
+            return EXIT_PROFILE
+        print(ceiling)
+        return 0
+    sys.stderr.write("usage: hostpolicy.py in-window [ISO8601] | preflight | task-ceiling\n")
     return 3
 
 

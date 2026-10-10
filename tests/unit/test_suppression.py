@@ -88,6 +88,16 @@ class TestRecoverySuppressed:
         with patch("lib.suppression.ucc_active", return_value=True):
             assert suppression.recovery_suppressed(app) is False
 
+    def test_pending_swap_systemd_app_is_still_gated_like_ucc(self):
+        """QFLX-25: a pending-swap app is still served by its UCC container."""
+        from lib import suppression
+        app = _make_app("systemd", name="unpackerr")
+        app.raw["swap_state"] = "pending-swap"
+        with patch("lib.suppression.ucc_active", return_value=True):
+            assert suppression.recovery_suppressed(app) is True
+        with patch("lib.suppression.ucc_active", return_value=False):
+            assert suppression.recovery_suppressed(app) is False
+
     def test_cron_class_always_false(self):
         """cron apps also unaffected by UCC gate."""
         from lib import suppression
