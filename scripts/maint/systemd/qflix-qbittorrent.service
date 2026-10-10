@@ -1,0 +1,20 @@
+[Unit]
+Description=QFlix qbittorrent (native)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.apps/qbittorrent
+Environment=PATH=%h/.apps/qbittorrent/bin/current:%h/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/qflix/qbittorrent.env
+ExecStart=%h/.apps/qbittorrent/bin/current/qbittorrent-nox
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=600
+StartLimitBurst=5
+TimeoutStopSec=120
+Nice=5
+UMask=0002
+
+[Install]
+WantedBy=default.target

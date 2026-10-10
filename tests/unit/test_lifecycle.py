@@ -408,6 +408,38 @@ def test_systemd_tarball_swap_upgrade_downloads_and_extracts():
     assert ["systemctl", "--user", "restart", "listmonk.service"] in [c.args[0] for c in mock_run.call_args_list]
 
 
+def test_tarball_swap_raw_binary_is_installed_not_untarred():
+    # QFLX-35: userdocs qbittorrent-nox ships one static binary, no archive.
+    app = _systemd_app(unit="qflix-qbittorrent.service", name="qbittorrent")
+    _attach_upgrade(
+        app,
+        kind="tarball_swap",
+        url_template="https://github.com/userdocs/qbittorrent-nox-static/releases/download/release-{version}_v1.2.19/x86_64-qbittorrent-nox",
+        target_dir="~/.apps/qbittorrent/bin/{version}",
+        binary_name="qbittorrent-nox",
+    )
+
+    with patch("subprocess.run", return_value=_ok_cp()) as mock_run, \
+         patch("lib.lifecycle._post_health_probe", return_value=(True, "ok")):
+        result = upgrade(app, target_version="5.0.4")
+
+    assert result.ok is True
+    cmd_strs = [" ".join(c.args[0]) for c in mock_run.call_args_list]
+    assert any("curl" in s and "release-5.0.4_v1.2.19" in s for s in cmd_strs), cmd_strs
+    assert not any(" tar " in s for s in cmd_strs), cmd_strs
+    assert any("install -m 0755" in s and "bin/5.0.4/qbittorrent-nox" in s for s in cmd_strs), cmd_strs
+
+
+def test_tarball_swap_raw_binary_name_must_be_bare():
+    app = _systemd_app(unit="qflix-qbittorrent.service", name="qbittorrent")
+    _attach_upgrade(app, kind="tarball_swap", url_template="https://x/{version}/nox",
+                    target_dir="~/.apps/qbittorrent/bin/{version}", binary_name="../evil")
+    with patch("subprocess.run", return_value=_ok_cp()), \
+         patch("lib.lifecycle._post_health_probe", return_value=(True, "ok")):
+        result = upgrade(app, target_version="5.0.4")
+    assert result.ok is False and "bare file name" in result.reason
+
+
 # ---- systemd zip_swap upgrade ---------------------------------------------
 
 def test_systemd_zip_swap_upgrade_downloads_and_unzips():

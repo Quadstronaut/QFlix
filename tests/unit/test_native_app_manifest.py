@@ -137,6 +137,7 @@ def test_generated_skip_list_carries_unpackerr():
     assert "bazarr" in r.stdout.split()
     assert "sabnzbd" in r.stdout.split()
     assert "tautulli" in r.stdout.split()
+    assert "qbittorrent" in r.stdout.split()
 
 
 # --- zero UCC starts after the swap (O-3 / F8 dependency) --------------------------
