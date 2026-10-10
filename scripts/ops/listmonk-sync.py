@@ -21,6 +21,7 @@ import traceback
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
 SECRETS = os.path.join(HOME, "secrets")
@@ -30,16 +31,15 @@ SSL_CTX = ssl.create_default_context()
 def log(msg, level="INFO"):
     """One stamped line to stderr (cron appends it to sync.log).
 
-    UTC with no suffix, in the Python-logging shape scripts/mcp/logs.py
-    already parses ("2026-10-09 02:00:06,858 listmonk-sync [INFO] msg").
-    vlogs reads a suffix-less time as UTC, so this lands at the exact instant.
+    ISO-8601 with an EXPLICIT UTC offset, in the Python-logging shape
+    scripts/mcp/logs.py parses ("2026-10-10T00:11:43.312+00:00 listmonk-sync
+    [INFO] msg"). A zone-less stamp was read as box-local (CEST) on ingest and
+    landed 2h early in VictoriaLogs; the explicit offset removes the guess.
     Before 2026-10-09 these lines carried no time at all, and a week-old 502
     traceback re-alerted as if it were current.
     """
-    now = time.gmtime()
-    ms = int(time.time() * 1000) % 1000
-    print(f"{time.strftime('%Y-%m-%d %H:%M:%S', now)},{ms:03d} listmonk-sync "
-          f"[{level}] {msg}", file=sys.stderr, flush=True)
+    stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    print(f"{stamp} listmonk-sync [{level}] {msg}", file=sys.stderr, flush=True)
 
 
 def s(name):

@@ -179,3 +179,55 @@ def test_journal_bootstrap_uses_show_cursor_not_cursor_file(tmp_path, monkeypatc
     assert cf.read_text() == "s=abc"
     assert mod._journal_new_lines("u", cf, window="6m", tail=10) == [
         "2026-10-09T02:00:01+0200 host x[1]: second"]
+
+
+# --- QFLX-13 (d): zone-bearing sync.log stamps -------------------------------
+
+def _load_listmonk_sync():
+    spec = importlib.util.spec_from_file_location(
+        "listmonk_sync", Path(__file__).resolve().parents[2] / "scripts" / "ops" / "listmonk-sync.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_listmonk_sync_log_has_explicit_utc_offset(capsys):
+    import re
+    mod = _load_listmonk_sync()
+    mod.log("hello", "WARN")
+    err = capsys.readouterr().err.strip()
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+00:00 listmonk-sync \[WARN\] hello$", err)
+
+
+def test_listmonk_sync_log_roundtrips_through_parse_line_as_utc(capsys):
+    from datetime import datetime, timezone
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "mcp"))
+    import logs
+    mod = _load_listmonk_sync()
+    before = datetime.now(timezone.utc)
+    mod.log("rt")
+    rec = logs.parse_line(capsys.readouterr().err, source="sync.log")
+    ts = datetime.strptime(rec["ts"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    assert abs((ts - before).total_seconds()) < 5
+    assert rec["level"] == "INFO" and rec["message"] == "rt"
+
+
+def test_format_change_does_not_reship_old_lines(tmp_path):
+    """Cursor is inode+offset, not content: old-format lines already shipped stay
+    shipped when new-format lines are appended after a format change."""
+    mod = _load_ingest()
+    f = tmp_path / "sync.log"
+    f.write_text("2026-10-10 00:11:43,312 listmonk-sync [INFO] old format\n")
+    raw, cur = mod._read_new_lines(str(f), None, tail=50)
+    assert raw is None                         # bootstrap: cursor starts at EOF
+    with open(f, "a") as fh:
+        fh.write("2026-10-10T00:12:00.000+00:00 listmonk-sync [INFO] new format\n")
+    raw, cur = mod._read_new_lines(str(f), cur, tail=50)
+    assert raw == ["2026-10-10T00:12:00.000+00:00 listmonk-sync [INFO] new format"]
+    raw, cur = mod._read_new_lines(str(f), cur, tail=50)
+    assert raw == []                           # nothing re-sent
+    with open(f, "a") as fh:
+        fh.write("2026-10-10T00:13:00.000+00:00 listmonk-sync [INFO] next\n")
+    raw, _ = mod._read_new_lines(str(f), cur, tail=50)
+    assert raw == ["2026-10-10T00:13:00.000+00:00 listmonk-sync [INFO] next"]

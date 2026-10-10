@@ -118,8 +118,10 @@ _TS_PATTERNS = [
         r"\s+.{0,80}?\[(?P<lvl>[A-Z]+)\]\s*(?P<msg>.*)$"
     ),
     # Python-logging form:  2026-05-15 04:30:13,104 mod:pid logger [INFO] message
+    # An optional explicit zone (Z, +00:00, +0200) is part of ts so
+    # _normalize_ts can convert it to UTC (listmonk-sync emits +00:00).
     re.compile(
-        r"^(?P<ts>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.,]\d+)"
+        r"^(?P<ts>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.,]\d+(?:Z|[+-]\d{2}:?\d{2})?)"
         r"\s+.{0,80}?\[(?P<lvl>[A-Z]+)\]\s*(?P<msg>.*)$"
     ),
     # Bracket-no-ts form (recyclarr): [INF] anime: All quality profiles ...
@@ -230,7 +232,31 @@ def _normalize_ts(raw: str | None) -> str | None:
         s = s.replace(" ", "T", 1)
     if "," in s:
         s = s.replace(",", ".", 1)
-    return s
+    return _to_utc_if_zoned(s)
+
+
+_ZONED = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:?\d{2})$")
+
+
+def _to_utc_if_zoned(s: str) -> str:
+    """A stamp with an explicit zone (Z / +HH:MM / +HHMM) is converted to UTC
+    and written as ...Z so the ingester stores the exact instant. Zone-less
+    stamps pass through untouched (their handling is a separate ticket)."""
+    m = _ZONED.match(s)
+    if not m:
+        return s
+    from datetime import datetime, timedelta, timezone
+    base, frac, zone = m.groups()
+    try:
+        dt = datetime.strptime(base, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return s
+    if zone != "Z":
+        sign = 1 if zone[0] == "+" else -1
+        digits = zone[1:].replace(":", "")
+        dt -= sign * timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+    dt = dt.replace(tzinfo=timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + (frac or "") + "Z"
 
 
 # Tdarr colourises its log FILE, not just its tty: every line begins with a raw
