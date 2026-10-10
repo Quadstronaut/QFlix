@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-10 - unpackerr.conf [[general]] trap guard + log-behind-journal detector (QFLX-46)
+
+**unpackerr.log sat dark 5 days (2026-10-05) because a panel regenerate wrapped
+the general keys in `[[general]]`, which unpackerr ignores (log_file included).**
+
+- `lib/unpackerr_conf.py check`: rejects a `[[general]]`/`[general]` header, a
+  non-top-level or missing `log_file`, a surviving `{{X}}`, invalid TOML.
+  `31-unpackerr.sh` runs it on the rendered config and refuses to push on failure.
+- `unpackerr.conf.tmpl` updated to the live shape: `protocols = "torrent,usenet"`
+  and the SABnzbd complete-dir paths (`{{SAB_COMPLETE}}`, secret `sabnzbd.complete`).
+  No secrets in the file. journald keeps its copy (unpackerr logs to both).
+- `stale-log-watchdog.sh` unpackerr leg (no new timer): reds when unpackerr.log
+  mtime is > 2h behind the newest journald unpackerr line, or the conf carries a
+  `[[general]]` header. No journal line (UCC era) passes.
+- Note: the UCC divorce spec 5.x row 1 says "keeping the `[[general]]` TOML
+  shape"; that is wrong, the shape is what silences the log.
+
 ## 2026-10-09 - Runtime parity detector + swap state (QFLX-20, UCC divorce F5)
 
 **A woken dormant container (or a second runtime) would have run up to 6h
