@@ -220,12 +220,22 @@ def _seerr(slug: str, d: Path) -> dict:
         lib["enabled"] = False
     path.write_text(json.dumps(s, indent=1), encoding="utf-8")
     b = json.loads(path.read_text(encoding="utf-8"))
-    return {
+    out = {
         "arr_servers": len(b.get("radarr") or []) + len(b.get("sonarr") or []),
         "notifications": sum(
             1 for a in ((b.get("notifications") or {}).get("agents") or {}).values() if a.get("enabled")),
         "plex_sync": sum(1 for lib in (b.get("plex") or {}).get("libraries") or [] if lib.get("enabled")),
     }
+    # QFLX-36: the per-user Plex watchlist sync AUTO-REQUESTS (plex-watchlist-sync
+    # job) from a booted copy. The db is optional: a copy without one boots on a
+    # fresh, empty db, which has nothing to sync.
+    db = d / "db" / "db.sqlite3"
+    if db.is_file():
+        out.update(_in_txn(db, lambda con: {"watchlist_sync": _flags_off(
+            con, "user_settings", [], ["watchlistSyncMovies", "watchlistSyncTv"])}))
+    else:
+        out["watchlist_sync"] = 0
+    return out
 
 
 # ----------------------------------------------------------------- tautulli

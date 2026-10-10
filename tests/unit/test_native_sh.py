@@ -116,6 +116,16 @@ def test_render_unit_absolute_exe_is_used_verbatim(tmp_path):
     assert "ExecStart=%h/.apps/bz/bin/current/x.py --a" + chr(10) in plain
 
 
+def test_render_unit_workdir_defaults_to_the_data_dir_and_takes_a_subdir(tmp_path):
+    """QFLX-36: seerr runs from bin/current (Next.js reads .next from the CWD)."""
+    dflt = _sh(tmp_path, "native_render_unit sr node x ''").stdout
+    assert "WorkingDirectory=%h/.apps/sr" + chr(10) in dflt
+    sub = _sh(tmp_path, "native_render_unit sr node x '' %h/.apps/sr/bin/current").stdout
+    assert "WorkingDirectory=%h/.apps/sr/bin/current" + chr(10) in sub
+    for bad in ("/tmp", "%h/.apps/other", "%h/.apps/sr/../x"):
+        assert _sh(tmp_path, f"native_render_unit sr node x '' '{bad}'").returncode != 0
+
+
 # --- env caps -------------------------------------------------------------------
 
 @pytest.mark.parametrize("fam,lines", [
