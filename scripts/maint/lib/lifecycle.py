@@ -477,11 +477,14 @@ def _apply_tarball_swap(app: App, target_version: str, timeout_s: float) -> Life
     r = _run(["bash", "-c", f"curl -fsSL '{url}' -o '{tmp}'"], timeout_s)
     if not r.ok:
         return r
-    tar_flag = _tar_flag_from_url(url)
-    r = _run(
-        ["bash", "-c", f"mkdir -p '{extract_dir}' && tar {tar_flag} '{tmp}' -C '{extract_dir}'"],
-        timeout_s,
-    )
+    if url.endswith(".deb"):
+        # QFLX-37: a .deb is an ar archive around a data tarball (native
+        # postgres ships as PGDG debs). `dpkg-deb -x` unpacks that tarball and
+        # runs no maintainer script: still a plain tarball swap, no new kind.
+        extract = f"mkdir -p '{extract_dir}' && dpkg-deb -x '{tmp}' '{extract_dir}'"
+    else:
+        extract = f"mkdir -p '{extract_dir}' && tar {_tar_flag_from_url(url)} '{tmp}' -C '{extract_dir}'"
+    r = _run(["bash", "-c", extract], timeout_s)
     if not r.ok:
         return r
     for step in cfg.get("post_steps", []) or []:

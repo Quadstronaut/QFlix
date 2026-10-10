@@ -25,28 +25,14 @@
 #   app-upgrade-all.sh --no-backup      # pass -n to each upgrade (saves disk)
 #   app-upgrade-all.sh --include nginx  # comma-separated names to UN-skip
 #
-# Postgres (since 2026-10-02) is NOT upgraded inline: it runs FIRST, via the
-# child ucc-postgres-upgrade.sh, which reads listmonk's DB password, tarballs
-# ~/.apps/postgres, runs `app-postgres upgrade -p <pw>` (never -n, even under
-# --no-backup: UCC's own backup is always kept) and verifies postgres +
-# listmonk afterwards. A fail-closed skip there counts as a FAILURE (loud).
-# Residual: app-postgres only takes the password in argv, so it is visible in
-# ps for the upgrade's duration; see the child's header. This script never
-# holds the password (and never reads the password key from config.toml); all
-# failure text is redacted before echo/notify/RESULTS.
-#
-# The child runs under `timeout -k $PG_OUTER_KILL_GRACE_S[90] $OUTER`,
-# OUTER = PG_BACKUP_TIMEOUT + PG_UPGRADE_TIMEOUT + PG_HEALTH_TIMEOUT_S +
-# LISTMONK_HEALTH_TIMEOUT_S + 60 (~24 min at defaults). PG_OUTER_TIMEOUT_S
-# (integer >= 1) replaces OUTER; both it and the grace are test seams. After an
-# outer rc 124/137 THIS script probes postgres itself (uid-scoped checkpointer +
-# TCP on the [db] port parsed from LISTMONK_CONFIG) and prints one line,
-# "postgres probe after outer timeout: ok|down". down forces the summary notify
-# to error and RESULTS[postgres]="error: postgres_unhealthy_after_timeout".
-# BOUNDED RESIDUAL: a child SIGKILLed by the outer -k can leave app-postgres
-# orphaned; it sits in its own process group under `timeout -k 30`, so its
-# lifetime is capped (PG_UPGRADE_TIMEOUT + 30 s), and it keeps the child's flock
-# (fd 9) while alive, so a second run cannot overlap it.
+# Postgres is NEVER upgraded here (QFLX-37). It runs native as
+# qflix-postgres.service (UCC divorce A13), and the ucc-postgres-upgrade.sh
+# child that drove `app-postgres upgrade -p <pw>` (password in argv, F-23) is
+# retired. A UCC `app-postgres upgrade` without -p ROTATES the listmonk
+# password, so the slug is refused before any probe, whatever the manifest,
+# --include or --only say. Native minor upgrades go through the manifest
+# upgrade block (lifecycle tarball_swap of the PGDG .deb); a major is a
+# manual pg_upgrade runbook.
 #
 # Every env knob is validated by regex BEFORE arithmetic; an invalid value
 # silently becomes its default (bad env never aborts the sweep).
@@ -57,9 +43,6 @@
 #   2 — fatal error before sweep (no installed apps, etc.)
 
 set -u
-# Never inherit a PW from the environment (redact() keys on it, and an exported
-# PW would reach app-postgres's environment through the child).
-unset PW
 shopt -u patsub_replacement 2>/dev/null
 shopt -s nullglob
 
@@ -97,19 +80,11 @@ dur_env() {
     printf -v "$name" '%s' "$n"
 }
 
-dur_env PG_UPGRADE_TIMEOUT 480
-dur_env PG_BACKUP_TIMEOUT 600
-int_env PG_HEALTH_TIMEOUT_S 0 86400 180
-int_env LISTMONK_HEALTH_TIMEOUT_S 0 86400 120
-int_env HEALTH_POLL_INTERVAL_S 1 3600 5
-int_env PG_OUTER_TIMEOUT_S 1 604800 ""
-int_env PG_OUTER_KILL_GRACE_S 1 3600 90
 # Total sweep budget. Default 3h30m (12600 s) for a standalone run; the window
 # orchestrator overrides it (MANITOBA_UPGRADE_BUDGET_S, ~2h30m) so the sweep +
 # green-poll fit inside the 4h window. Bailed apps are recorded so the budget is
 # observable.
 int_env MANITOBA_UPGRADE_BUDGET_S 1 604800 12600
-LISTMONK_CONFIG="${LISTMONK_CONFIG:-$HOME/.apps/listmonk/etc/config.toml}"
 
 PER_APP_TIMEOUT="8m"
 TOTAL_BUDGET_SECONDS="$MANITOBA_UPGRADE_BUDGET_S"
@@ -119,13 +94,14 @@ RESULTS_FILE="${MANITOBA_UPGRADE_RESULTS:-$HOME/.opt/maint/last-upgrade.json}"
 
 # Apps to never auto-upgrade by default — data risk, root-managed, or
 # operator-sensitive. Override with --include name1,name2.
-# postgres was removed 2026-10-02: skipping it let UCC age it into the
-# "older build" start/restart gate (listmonk down 2 days). It now upgrades
-# through ucc-postgres-upgrade.sh, which keeps its password stable.
+# postgres is not listed: it is refused outright below (NEVER_UCC_UPGRADE),
+# not merely skipped, so --include cannot un-skip it.
 DEFAULT_SKIP=(mariadb nginx tailscale openvpn wireguard)
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PG_MODULE="$SCRIPT_DIR/ucc-postgres-upgrade.sh"
+# QFLX-37: `app-postgres upgrade` rotates the listmonk DB password unless it
+# is handed the old one in argv (F-23). Native postgres is upgraded by the
+# manifest upgrade block instead; this sweep refuses the slug before any probe.
+NEVER_UCC_UPGRADE=(postgres)
 
 DRY_RUN=0
 NO_BACKUP=0
@@ -168,24 +144,12 @@ in_list() {
     return 1
 }
 
-# redact TEXT -> TEXT. (i) masks every JSON "password":"..." value: UCC's CLI
+# redact TEXT -> TEXT. Masks every JSON "password":"..." value: UCC's CLI
 # echoes credentials in plaintext JSON, and failure text flows to stdout
 # (journald), notify (Discord + notify.log) and RESULTS; the key is matched
-# case-insensitively, plus the cut-off-at-end-of-line form. (ii)-(iv) mask
-# literal $PW and its JSON-escaped / slash-escaped forms when set (this script
-# never holds one; the child has the same function). Bash expansions, so a
-# password never becomes a sed argv. Duplicated in ucc-postgres-upgrade.sh on
-# purpose: no sourced helper to ship.
+# case-insensitively, plus the cut-off-at-end-of-line form.
 redact() {
-    local s="$1" e f bs='\' dq='"' sl='/'
-    if [[ -n "${PW:-}" ]]; then
-        e=${PW//"$bs"/"$bs$bs"}
-        e=${e//"$dq"/"$bs$dq"}
-        f=${e//"$sl"/"$bs$sl"}
-        s=${s//"$f"/<redacted>}
-        s=${s//"$e"/<redacted>}
-        s=${s//"$PW"/<redacted>}
-    fi
+    local s="$1"
     printf '%s\n' "$s" | sed -E \
         -e 's/"password"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"/"password":"<redacted>"/gI' \
         -e 's/"password"[[:space:]]*:[[:space:]]*"[^"]*$/"password":"<redacted>/I'
@@ -282,6 +246,10 @@ for name in "${INSTALLED[@]}"; do
         SKIPPED+=("$name: converted/dormant (manifest)")
         continue
     fi
+    if in_list "$name" "${NEVER_UCC_UPGRADE[@]}"; then
+        SKIPPED+=("$name: never upgraded through app-$name (native, QFLX-37)")
+        continue
+    fi
     if ! command -v "$cmd" >/dev/null 2>&1; then
         SKIPPED+=("$name: no app-* wrapper")
         continue
@@ -305,14 +273,6 @@ for name in "${INSTALLED[@]}"; do
     fi
     TARGETS+=("$name")
 done
-
-# Postgres first: the budget can never starve it, and listmonk gets the most
-# time to recover before the window's "Maintenance Window Complete" campaign.
-if in_list postgres "${TARGETS[@]}"; then
-    _rest=()
-    for name in "${TARGETS[@]}"; do [[ "$name" == postgres ]] || _rest+=("$name"); done
-    TARGETS=(postgres "${_rest[@]}")
-fi
 
 # Declared before the early-exit so write_results_json always has them.
 declare -A RESULTS
@@ -343,116 +303,6 @@ upgrade_args=()
 
 start_epoch=$(date +%s)
 
-# The only RESULT tokens the parent will believe. Anything else (an off-list
-# token, a forged line, a missing line) is "no result".
-PG_TOKEN_RE='^(upgraded|would_upgrade|timeout|skipped:(no_config|no_password|short_password|unparseable_password|backup_failed|no_wrapper|locked|no_lock)|error:(upgrade_rc[0-9]{1,3}(:older_build)?|postgres_unhealthy|listmonk_unhealthy|interrupted|internal|bad_usage))$'
-PG_PROBE_DOWN=0   # set when the post-outer-timeout probe finds postgres down
-
-# [db] port from listmonk's config.toml — regex-only, and ONLY the port key: this
-# script never reads (or even matches) the password key. Default 42009.
-read_pg_port() {
-    local re_db='^[[:space:]]*\[db\][[:space:]]*(#.*)?$'
-    local re_tbl='^[[:space:]]*\['
-    local re_port='^[[:space:]]*port[[:space:]]*=[[:space:]]*([0-9]{1,5})[[:space:]]*(#.*)?$'
-    local line in_db=0 p
-    PG_PORT=42009
-    [[ -r "$LISTMONK_CONFIG" ]] || return 0
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line=${line%$'\r'}
-        if [[ $line =~ $re_db ]]; then in_db=1; continue; fi
-        if [[ $line =~ $re_tbl ]]; then in_db=0; continue; fi
-        if (( in_db )) && [[ $line =~ $re_port ]]; then
-            p=$(( 10#${BASH_REMATCH[1]} ))
-            (( p >= 1 && p <= 65535 )) && PG_PORT=$p
-        fi
-    done < "$LISTMONK_CONFIG"
-}
-
-# Parent-side postgres probe, independent of the child: uid-scoped checkpointer
-# AND a TCP connect to the [db] port, polled for up to min(PG_HEALTH_TIMEOUT_S, 60).
-pg_probe_after_timeout() {
-    local budget=$PG_HEALTH_TIMEOUT_S now rem
-    (( budget > 60 )) && budget=60
-    read_pg_port
-    local deadline=$(( $(date +%s) + budget ))
-    while :; do
-        if pgrep -u "$(id -u)" -f 'postgres: checkpointer' >/dev/null 2>&1 \
-           && timeout 5 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' _ "$PG_PORT" >/dev/null 2>&1; then
-            return 0
-        fi
-        now=$(date +%s)
-        (( now >= deadline )) && return 1
-        rem=$(( deadline - now ))
-        sleep $(( rem < HEALTH_POLL_INTERVAL_S ? rem : HEALTH_POLL_INTERVAL_S ))
-    done
-}
-
-# Postgres goes through the child module. Its stdout is never echoed raw: only
-# the mapped result, plus its progress lines after redact().
-run_postgres_module() {
-    local pg_args=() pg_out pg_rc token last_line body outer tag="DO "
-    (( DRY_RUN )) && { pg_args+=(--dry-run); tag="DRY"; }
-    echo "  [$tag] postgres (via ucc-postgres-upgrade.sh)"
-    if [[ ! -x "$PG_MODULE" ]]; then
-        echo "      FAIL: postgres module missing or not executable"
-        RESULTS[postgres]="error: postgres_module_missing"
-        failed=$((failed + 1))
-        return
-    fi
-    # Room for the tar backup + the upgrade + both health polls + slack.
-    if [[ -n "$PG_OUTER_TIMEOUT_S" ]]; then
-        outer=$PG_OUTER_TIMEOUT_S
-    else
-        outer=$(( PG_BACKUP_TIMEOUT + PG_UPGRADE_TIMEOUT + PG_HEALTH_TIMEOUT_S + LISTMONK_HEALTH_TIMEOUT_S + 60 ))
-    fi
-    pg_out=$(timeout -k "$PG_OUTER_KILL_GRACE_S" "${outer}s" "$PG_MODULE" "${pg_args[@]}" 2>&1)
-    pg_rc=$?
-    last_line="${pg_out##*$'\n'}"
-    last_line="${last_line%$'\r'}"
-    token=""
-    if [[ "$last_line" == RESULT=* ]]; then
-        token="${last_line#RESULT=}"
-        [[ "$token" =~ $PG_TOKEN_RE ]] || token=""
-    fi
-    if [[ "$pg_out" == *$'\n'* ]]; then
-        body="${pg_out%$'\n'*}"
-        redact "$body" | sed 's/^/      | /'
-    fi
-
-    # Outer timeout (124) or kill (137): the child may have died mid-upgrade, so
-    # ask postgres itself — never trust the child's last word.
-    PG_PROBE_DOWN=0
-    if (( pg_rc == 124 || pg_rc == 137 )); then
-        if pg_probe_after_timeout; then
-            echo "      postgres probe after outer timeout: ok"
-        else
-            echo "      postgres probe after outer timeout: down"
-            PG_PROBE_DOWN=1
-        fi
-    fi
-
-    if (( PG_PROBE_DOWN )); then
-        RESULTS[postgres]="error: postgres_unhealthy_after_timeout"
-        failed=$((failed + 1))
-    else
-        case "$token" in
-            upgraded)      RESULTS[postgres]="upgraded"; upgraded=$((upgraded + 1)) ;;
-            would_upgrade) RESULTS[postgres]="would_upgrade" ;;
-            skipped:*)     RESULTS[postgres]="skipped: fail-closed ${token#skipped:}"; failed=$((failed + 1)) ;;
-            timeout)       RESULTS[postgres]="timeout"; failed=$((failed + 1)) ;;
-            error:*)       RESULTS[postgres]="error: ${token#error:}"; failed=$((failed + 1)) ;;
-            *)
-                if (( pg_rc == 124 || pg_rc == 137 )); then
-                    RESULTS[postgres]="timeout"
-                else
-                    RESULTS[postgres]="error: postgres_no_result"
-                fi
-                failed=$((failed + 1)) ;;
-        esac
-    fi
-    echo "      -> ${RESULTS[postgres]}"
-}
-
 for name in "${TARGETS[@]}"; do
     elapsed=$(( $(date +%s) - start_epoch ))
     if (( elapsed > TOTAL_BUDGET_SECONDS )); then
@@ -461,10 +311,6 @@ for name in "${TARGETS[@]}"; do
         continue
     fi
     cmd="app-${name}"
-    if [[ "$name" == postgres ]]; then
-        run_postgres_module
-        continue
-    fi
     if (( DRY_RUN )); then
         echo "  [DRY] $cmd upgrade ${upgrade_args[*]:-}"
         RESULTS[$name]="would_upgrade"
@@ -503,8 +349,6 @@ for s in "${SKIPPED[@]}"; do echo "  skip: $s"; done
 
 level="info"
 (( failed > 0 || bailed > 0 )) && level="warning"
-# Postgres down after an outer timeout is an outage, not a warning.
-(( PG_PROBE_DOWN )) && level="error"
 # Unconditional (matches master): dry-run summary notify behaviour is unchanged.
 notify "$level" "${summary}"$'\n'"${detail}"
 

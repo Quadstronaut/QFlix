@@ -198,6 +198,25 @@ def test_systemd_version_reads_bin_current_symlink(tmp_path):
     assert r.stdout.strip() == "1.5.4"
 
 
+def test_systemd_version_reads_the_native_dir_when_set(tmp_path):
+    """QFLX-37: native postgres lives in ~/.apps/pg-native (the UCC ~/.apps/
+    postgres stays the rollback target), so `version` must read bin/current
+    there, never under the slug."""
+    man = MANIFEST + ("  pgflip:\n    class: systemd\n    ucc_slug: pgflip\n"
+                      "    unit: qflix-pgflip.service\n    ucc_dormant: true\n"
+                      "    native_dir: pg-native\n")
+    env = _env(tmp_path, manifest=man)
+    home = Path(env["HOME"])
+    (home / ".apps" / "pg-native" / "bin" / "17.11-1.pgdg13+2").mkdir(parents=True)
+    (home / ".apps" / "pg-native" / "bin" / "current").write_text("17.11-1.pgdg13+2\n")
+    (home / ".apps" / "pgflip" / "bin").mkdir(parents=True)
+    (home / ".apps" / "pgflip" / "bin" / "current").write_text("wrong\n")
+    r = subprocess.run(["bash", APPCTL.as_posix(), "version", "pgflip"], env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "17.11-1.pgdg13+2"
+
+
 def test_systemd_version_without_bin_current_fails(tmp_path):
     r, calls = _run(tmp_path, "version", "bazarr2")
     assert r.returncode == 1

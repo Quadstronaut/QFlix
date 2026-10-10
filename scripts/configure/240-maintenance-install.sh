@@ -247,7 +247,6 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/arr-audit.py \
     scripts/maint/arr-audit-run.sh \
     scripts/maint/app-upgrade-all.sh \
-    scripts/maint/ucc-postgres-upgrade.sh \
     scripts/ops/heartbeat-maint-webhook.sh \
     scripts/ops/boot-listeners-snapshot.sh \
     scripts/ops/qflix-listen-set.sh \
@@ -299,6 +298,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/301-native-flaresolverr-install.sh \
     scripts/configure/302-native-bazarr-install.sh \
     scripts/maint/native_sanitize.py \
+    scripts/configure/312-native-postgres-install.sh \
+    scripts/maint/pg_native.py \
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
@@ -315,11 +316,10 @@ cp -f "$STG"/scripts/maint/manitoba-maint        ~/scripts/maint/manitoba-maint
 chmod +x ~/scripts/maint/manitoba-maint
 cp -f "$STG"/scripts/maint/app-upgrade-all.sh ~/scripts/maint/app-upgrade-all.sh
 chmod +x ~/scripts/maint/app-upgrade-all.sh
-# Postgres upgrade child of app-upgrade-all.sh (2026-10-02). Staged AND copied
-# AND chmod'd: app-upgrade-all resolves it next to itself and reports
-# "error: postgres_module_missing" (loud) if it is absent or not executable.
-cp -f "$STG"/scripts/maint/ucc-postgres-upgrade.sh ~/scripts/maint/ucc-postgres-upgrade.sh
-chmod +x ~/scripts/maint/ucc-postgres-upgrade.sh
+# QFLX-37 retired the postgres upgrade child (it passed the listmonk DB
+# password in argv, F-23; postgres runs native now). Remove a deployed copy so
+# nothing can call it and deploy-drift does not see a stray script.
+rm -f ~/scripts/maint/ucc-postgres-upgrade.sh
 cp -f "$STG"/scripts/maint/arr-audit.py       ~/scripts/maint/arr-audit.py
 chmod +x ~/scripts/maint/arr-audit.py
 cp -f "$STG"/scripts/maint/arr-audit-run.sh   ~/scripts/maint/arr-audit-run.sh
@@ -478,6 +478,13 @@ cp -f   "$STG"/scripts/configure/302-native-bazarr-install.sh ~/scripts/configur
 chmod +x ~/scripts/configure/302-native-bazarr-install.sh
 cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py
 chmod +x ~/scripts/maint/native_sanitize.py
+# QFLX-37 (A13 postgres): the dump/restore installer + its tested helpers
+# (listmonk config, pgpass, listen set, counts, sanitizer SQL). Inert without
+# --execute.
+cp -f   "$STG"/scripts/configure/312-native-postgres-install.sh ~/scripts/configure/312-native-postgres-install.sh
+chmod +x ~/scripts/configure/312-native-postgres-install.sh
+cp -f   "$STG"/scripts/maint/pg_native.py ~/scripts/maint/pg_native.py
+chmod +x ~/scripts/maint/pg_native.py
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.

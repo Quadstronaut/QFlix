@@ -125,12 +125,17 @@ native_render_env() {
 
 # stdout: the unit (spec 5.3). ARGS is a raw string; %h specifiers pass through.
 native_render_unit() {
-  local slug="$1" fam="$2" exe="$3" args="${4:-}" stop=60 pre="" cmd
+  local slug="$1" fam="$2" exe="$3" args="${4:-}" stop=60 pre="" cmd kill=""
   _native_valid_slug "$slug" || { _native_err "bad slug: $slug"; return 1; }
   case "$fam" in
     dotnet|go|python) ;;
     node) pre="--disable-wasm-trap-handler " ;;   # CLI flag, never NODE_OPTIONS
-    db)   stop=120 ;;
+    # QFLX-37: postgres treats SIGTERM as a SMART shutdown, which waits for every
+    # client (listmonk holds a pool) and would sit out TimeoutStopSec, then eat
+    # a SIGKILL. SIGINT is postgres' FAST shutdown (clean checkpoint, clients
+    # cut). mixed: the signal goes to the postmaster only; it stops its own
+    # backends (upstream's documented unit shape).
+    db)   stop=120; kill=$'KillMode=mixed\nKillSignal=SIGINT\n' ;;
     *) _native_err "unknown family: $fam"; return 1 ;;
   esac
   # EXE is normally a file under bin/current. A %h/... or /... EXE is used
@@ -156,7 +161,7 @@ RestartSec=15
 StartLimitIntervalSec=600
 StartLimitBurst=5
 TimeoutStopSec=$stop
-Nice=5
+${kill}Nice=5
 UMask=0002
 
 [Install]
