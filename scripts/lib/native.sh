@@ -22,6 +22,8 @@
 #   native_listen_compare SLUG             diff live vs recorded (exit 1 = drift)
 #   native_soak_check SLUG                 exit 1 = inside the 14-day soak
 #   native_close_window SLUG               first native upgrade closes rollback-to-UCC
+#   native_require_generic_host            refuse unless host.profile resolves to generic (QFLX-41)
+#   native_link_current SLUG VER           atomic bin/current -> bin/VER, no UCC parity (QFLX-41)
 #
 # Families: dotnet (arrs, prowlarr) | go (unpackerr) | node (seerr) | python | db
 # Self-update stays OFF (I-10): arr UpdateMechanism=External and the bazarr
@@ -173,3 +175,24 @@ native_listen_compare() {
 # --- soak gate (swapstate.py) ---------------------------------------------------------
 native_soak_check()   { _native_swap soak-check "$1" >/dev/null; }
 native_close_window() { _native_swap close-window "$1" >/dev/null; }
+
+# --- generic-host gate + current-link (QFLX-41) --------------------------------------
+# Installers that must NEVER run on a shared Ultra slot (box-2 Kuma, the box-2
+# reverse proxy) call this first. Fails CLOSED: a missing/unknown/mismatched
+# host.profile secret is a refusal, exactly like an `ultra` one (I-12).
+native_require_generic_host() {
+  local out
+  out="$("${QFLIX_PYTHON:-python3}" "$_NATIVE_SELF_DIR/../maint/lib/hostpolicy.py" preflight 2>/dev/null)" \
+    || { _native_err "hostpolicy: host.profile unresolved; refusing"; return 1; }
+  [ "$out" = "generic" ] || { _native_err "hostpolicy: host.profile=$out; generic-host installer; refusing"; return 1; }
+}
+
+# Atomically point bin/current at bin/<ver> (the swap half of native_install_versioned,
+# without the UCC parity check: a box-2 app has no UCC twin to match).
+native_link_current() {
+  local slug="$1" ver="$2" bindir
+  _native_valid_slug "$slug" && _native_valid_ver "$ver" || { _native_err "bad slug/version"; return 1; }
+  bindir="$(_native_apps_dir)/$slug/bin"
+  [ -e "$bindir/$ver" ] || { _native_err "link_current: $bindir/$ver missing"; return 1; }
+  ln -sfn "$ver" "$bindir/.current.$$" && mv -Tf "$bindir/.current.$$" "$bindir/current"
+}
