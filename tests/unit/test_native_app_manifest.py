@@ -71,6 +71,15 @@ def test_converted_app_has_installer_pin_upgrade_and_unit(name):
     assert a.get("ucc_dormant") is True, "the UCC container must stay dormant (I-8)"
 
 
+def test_flaresolverr_is_converted_pending_swap():
+    a = _converted()["flaresolverr"]
+    assert a["swap_state"] == "pending-swap" and a["unit"] == "qflix-flaresolverr.service"
+    # The probe still targets the bridge gateway, not loopback (never widen the bind).
+    assert a["health"]["hostname_ref"] == "net.app_host"
+    # The release wraps everything in flaresolverr/: the upgrade must flatten it.
+    assert any("mv .fs-tmp/* ." in step for step in a["upgrade"]["post_steps"])
+
+
 def test_real_manifest_loads_with_the_flip():
     app = load_manifest(MANIFEST).app("unpackerr")
     assert app.class_ == "systemd" and app.upgrade.kind == "tarball_swap"
@@ -81,6 +90,7 @@ def test_generated_skip_list_carries_unpackerr():
                         "--manifest", str(MANIFEST)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert "unpackerr" in r.stdout.split()
+    assert "flaresolverr" in r.stdout.split()
 
 
 # --- zero UCC starts after the swap (O-3 / F8 dependency) --------------------------
