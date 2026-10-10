@@ -267,12 +267,40 @@ apps:
     # probe pattern `/unpackerr` matches both layouts (the old path ends in it),
     # so it survives a future image swap either way. The pusher pushes UP/DOWN
     # to Kuma monitor "Unpackerr" every 60s.
-    class: ucc
+    # QFLX-25 (UCC divorce A1, the pilot): converted to the native static binary
+    # run as qflix-unpackerr.service by scripts/configure/300-native-unpackerr-
+    # install.sh (version pinned in versions.env UNPACKERR_VERSION + sha256 in
+    # the installer). The native cmdline (~/.apps/unpackerr/bin/current/
+    # unpackerr -c ...) still matches `/unpackerr`. The UCC container stays
+    # installed and DORMANT as the rollback target (I-8): appctl / lifecycle
+    # refuse every verb but stop on it, and the generated app-upgrade-all skip
+    # list carries it (lib/ucc_skip.py).
+    # swap_state: pending-swap (spec 5.9 step 7) = this flip is merged and
+    # deployed but the swap has not run: the container still serves, so appctl
+    # and lifecycle dispatch it as UCC and require_unit_active is off. A
+    # follow-up PR removes the line right after the swap.
+    class: systemd
+    unit: qflix-unpackerr.service
     ucc_slug: unpackerr
+    ucc_dormant: true
+    swap_state: pending-swap
     kuma_monitor: "Unpackerr"
     health:
       kind: process_pattern
       pattern: "/unpackerr"
+      require_unit_active: true
+    upgrade:
+      # Each release lands in bin/<ver>, then `current` flips atomically. The
+      # soak gate (lib/swapstate.py) refuses it for 14 days after the swap and
+      # the first one closes the rollback-to-UCC window (I-10).
+      kind: tarball_swap
+      url_template: "https://github.com/Unpackerr/unpackerr/releases/download/v{version}/unpackerr_{version}_linux_amd64.tar.gz"
+      target_dir: "~/.apps/unpackerr/bin/{version}"
+      post_steps:
+        - "ln -sfn {version} ~/.apps/unpackerr/bin/.current.new && mv -Tf ~/.apps/unpackerr/bin/.current.new ~/.apps/unpackerr/bin/current"
+      version_pin:
+        source: versions.env
+        key: UNPACKERR_VERSION
 
   # --- systemd apps (managed by systemctl --user) ---
 
