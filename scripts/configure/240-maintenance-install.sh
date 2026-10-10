@@ -297,6 +297,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
     scripts/configure/301-native-flaresolverr-install.sh \
+    scripts/configure/302-native-bazarr-install.sh \
+    scripts/maint/native_sanitize.py \
     scripts/configure/310-native-qbittorrent-install.sh \
     manifest/apps.yaml \
     manifest/jobs.yaml \
@@ -471,6 +473,12 @@ cp -f   "$STG"/scripts/configure/300-native-unpackerr-install.sh ~/scripts/confi
 chmod +x ~/scripts/configure/300-native-unpackerr-install.sh
 cp -f   "$STG"/scripts/configure/301-native-flaresolverr-install.sh ~/scripts/configure/301-native-flaresolverr-install.sh
 chmod +x ~/scripts/configure/301-native-flaresolverr-install.sh
+# QFLX-27 (A3 bazarr): same shape, plus native_sanitize.py (the proof copy is
+# sanitized with it, spec 5.9 step 2.2). Inert without --execute.
+cp -f   "$STG"/scripts/configure/302-native-bazarr-install.sh ~/scripts/configure/302-native-bazarr-install.sh
+chmod +x ~/scripts/configure/302-native-bazarr-install.sh
+cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py
+chmod +x ~/scripts/maint/native_sanitize.py
 cp -f   "$STG"/scripts/configure/310-native-qbittorrent-install.sh ~/scripts/configure/310-native-qbittorrent-install.sh
 chmod +x ~/scripts/configure/310-native-qbittorrent-install.sh
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml

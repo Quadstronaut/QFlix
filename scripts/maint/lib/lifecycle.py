@@ -507,7 +507,9 @@ def _apply_zip_swap(app: App, target_version: str, timeout_s: float) -> Lifecycl
     cfg = app.upgrade.raw
     version_for_url = target_version.lstrip("v")
     url = cfg["url_template"].format(version=version_for_url)
-    target_dir = _expand(cfg.get("target_dir") or "")
+    # QFLX-27: `{version}` in target_dir / post_steps lets a native app land each
+    # release in ~/.apps/<slug>/bin/<ver> (same plain-replace rule as tarball_swap).
+    target_dir = _expand(_with_version(cfg.get("target_dir") or "", version_for_url))
     if not target_dir:
         return _fail("zip_swap missing target_dir")
     tmp = f"/tmp/manitoba-upgrade-{app.name}-{target_version}.zip"
@@ -521,7 +523,7 @@ def _apply_zip_swap(app: App, target_version: str, timeout_s: float) -> Lifecycl
     if not r.ok:
         return r
     for step in cfg.get("post_steps", []) or []:
-        r = _run(["bash", "-c", step], timeout_s)
+        r = _run(["bash", "-c", _with_version(step, version_for_url)], timeout_s)
         if not r.ok:
             return r
     return _ok()
