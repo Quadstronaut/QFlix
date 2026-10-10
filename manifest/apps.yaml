@@ -100,14 +100,14 @@ apps:
     # from). Data stays in place: --config ~/.apps/bazarr. The UCC container
     # stays installed and DORMANT as the rollback target (I-8). bazarr2-sync
     # keeps pinning bazarr2 to this instance's /api/system/status version.
-    # swap_state: pending-swap (spec 5.9 step 7) = flip merged + deployed, swap
-    # not yet run: the container still serves, appctl/lifecycle dispatch it as
-    # UCC and require_unit_active is off. A follow-up PR removes the line.
+    # Swapped to native 2026-10-10 (spec 5.9 steps 1-6); the `swap_state:
+    # pending-swap` line that held this flip inert until the swap ran is gone,
+    # so appctl / lifecycle / require_unit_active / runtime parity now treat the
+    # native unit as the live runtime. 14-day soak until 2026-10-24.
     class: systemd
     unit: qflix-bazarr.service
     ucc_slug: bazarr
     ucc_dormant: true
-    swap_state: pending-swap
     kuma_monitor: "Bazarr"
     health:
       kind: http_api
