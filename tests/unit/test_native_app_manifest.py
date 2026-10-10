@@ -55,6 +55,12 @@ def test_unpackerr_is_converted():
     assert "unpackerr" in _converted()
 
 
+def test_bazarr_is_converted():
+    """QFLX-27 (A3)."""
+    assert "bazarr" in _converted()
+    assert _converted()["bazarr"]["upgrade"]["kind"] == "zip_swap"
+
+
 @pytest.mark.parametrize("name", sorted(_converted()))
 def test_converted_app_has_installer_pin_upgrade_and_unit(name):
     a = _converted()[name]
@@ -97,6 +103,14 @@ def test_sabnzbd_is_converted_pending_swap():
 def test_real_manifest_loads_with_the_flip():
     app = load_manifest(MANIFEST).app("unpackerr")
     assert app.class_ == "systemd" and app.upgrade.kind == "tarball_swap"
+    bz = load_manifest(MANIFEST).app("bazarr")
+    assert bz.class_ == "systemd" and bz.upgrade.kind == "zip_swap"
+
+
+def test_bazarr2_is_untouched_by_the_bazarr_flip():
+    """bazarr2 stays the bare-python systemd app it was; it is not a UCC slug."""
+    a = _apps()["bazarr2"]
+    assert a["class"] == "systemd" and a["unit"] == "bazarr2.service" and not a.get("ucc_slug")
 
 
 def test_generated_skip_list_carries_unpackerr():
@@ -105,14 +119,15 @@ def test_generated_skip_list_carries_unpackerr():
     assert r.returncode == 0, r.stderr
     assert "unpackerr" in r.stdout.split()
     assert "flaresolverr" in r.stdout.split()
+    assert "bazarr" in r.stdout.split()
     assert "sabnzbd" in r.stdout.split()
 
 
 # --- zero UCC starts after the swap (O-3 / F8 dependency) --------------------------
 
-def _post_swap_manifest(tmp_path: Path) -> Path:
+def _post_swap_manifest(tmp_path: Path, slug: str = "unpackerr") -> Path:
     data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
-    data["apps"]["unpackerr"].pop("swap_state", None)
+    data["apps"][slug].pop("swap_state", None)
     p = tmp_path / "apps.yaml"
     p.write_text(yaml.safe_dump(data), encoding="utf-8")
     return p
@@ -122,12 +137,13 @@ _STUB = '#!/bin/sh\necho "$(basename "$0") $*" >> "$STUB_LOG"\nexit 0\n'
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("slug", ["unpackerr", "bazarr"])
 @pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
-def test_appctl_never_starts_the_ucc_container_after_the_swap(tmp_path, verb):
-    man = _post_swap_manifest(tmp_path)
+def test_appctl_never_starts_the_ucc_container_after_the_swap(tmp_path, verb, slug):
+    man = _post_swap_manifest(tmp_path, slug)
     binp = tmp_path / "bin"
     binp.mkdir()
-    for n in ("app-unpackerr", "systemctl"):
+    for n in (f"app-{slug}", "systemctl"):
         (binp / n).write_text(_STUB, newline="\n")
         (binp / n).chmod(0o755)
     log = tmp_path / "argv.log"
@@ -135,18 +151,19 @@ def test_appctl_never_starts_the_ucc_container_after_the_swap(tmp_path, verb):
                PATH=binp.as_posix() + os.pathsep + os.environ.get("PATH", ""),
                APPCTL_MANIFEST=man.as_posix(), APPCTL_PYTHON=Path(sys.executable).as_posix(),
                APPCTL_LIB=LIB.as_posix())
-    r = subprocess.run(["bash", APPCTL.as_posix(), verb, "unpackerr"], env=env,
+    r = subprocess.run(["bash", APPCTL.as_posix(), verb, slug], env=env,
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     argv = log.read_text() if log.exists() else ""
-    assert "app-unpackerr" not in argv
+    assert f"app-{slug}" not in argv
     want = "is-active" if verb == "status" else verb
-    assert f"systemctl --user {want} qflix-unpackerr.service" in argv
+    assert f"systemctl --user {want} qflix-{slug}.service" in argv
 
 
+@pytest.mark.parametrize("slug", ["unpackerr", "bazarr"])
 @pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
-def test_lifecycle_never_starts_the_ucc_container_after_the_swap(tmp_path, fn):
-    app = load_manifest(_post_swap_manifest(tmp_path)).app("unpackerr")
+def test_lifecycle_never_starts_the_ucc_container_after_the_swap(tmp_path, fn, slug):
+    app = load_manifest(_post_swap_manifest(tmp_path, slug)).app(slug)
     with patch("subprocess.run", return_value=CompletedProcess([], 0, "active\n", "")) as run:
         fn(app)
     for call in run.call_args_list:
