@@ -454,7 +454,7 @@ def test_installer_never_calls_the_panel_tool_or_the_gateway_directly():
 def test_manifest_flip_for_bazarr():
     a = yaml.safe_load((REPO / "manifest" / "apps.yaml").read_text(encoding="utf-8"))["apps"]["bazarr"]
     assert a["class"] == "systemd" and a["unit"] == UNIT and a["ucc_dormant"] is True
-    assert a["swap_state"] == "pending-swap"
+    assert "swap_state" not in a          # swapped 2026-10-10; the pending-swap hold is gone
     assert a["health"]["require_unit_active"] is True
     up = a["upgrade"]
     assert up["kind"] == "zip_swap" and "{version}" in up["target_dir"]
