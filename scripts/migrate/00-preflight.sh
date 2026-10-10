@@ -48,7 +48,7 @@ VER_RAW="$(sshb "for a in $APPS; do v=\$(~/bin/appctl version \$a 2>/dev/null | 
 VERSIONS_JSON="{"; first=1
 for a in $APPS; do
   v="$(printf '%s\n' "$VER_RAW" | awk -F'\t' -v a="$a" '$1==a{print $2}' | tr -d '\r')"
-  [ -n "$v" ] || degraded panel-version-probe-failed "no-version-for-$a"
+  [ -n "$v" ] || degraded version-probe-failed "no-version-for-$a"
   [ "$first" -eq 1 ] || VERSIONS_JSON+=","
   VERSIONS_JSON+="\"$a\": $(jstr "$v")"; first=0
 done

@@ -17,7 +17,7 @@
 #                                          (NATIVE_PARITY=prefix: a dotted prefix of VERSION is enough)
 #   native_install_versioned SLUG VER SRC  parity, then bin/<VER> + atomic `current` symlink
 #   native_render_env SLUG FAMILY VER [K=V..]   env-file body (thread caps + family hook)
-#   native_render_unit SLUG FAMILY EXE ARGS    qflix-<slug>.service body
+#   native_render_unit SLUG FAMILY EXE ARGS    qflix-<slug>.service body (EXE %h/... or /... = verbatim)
 #   native_write_secure PATH MODE          stdin -> PATH atomically, chmod MODE
 #   native_listen_capture SLUG PORT        record listen set (swapstate.py)
 #   native_listen_compare SLUG             diff live vs recorded (exit 1 = drift)
@@ -133,13 +133,20 @@ native_render_env() {
 
 # stdout: the unit (spec 5.3). ARGS is a raw string; %h specifiers pass through.
 native_render_unit() {
-  local slug="$1" fam="$2" exe="$3" args="${4:-}" stop=60 pre=""
+  local slug="$1" fam="$2" exe="$3" args="${4:-}" stop=60 pre="" cmd
   _native_valid_slug "$slug" || { _native_err "bad slug: $slug"; return 1; }
   case "$fam" in
     dotnet|go|python) ;;
     node) pre="--disable-wasm-trap-handler " ;;   # CLI flag, never NODE_OPTIONS
     db)   stop=120 ;;
     *) _native_err "unknown family: $fam"; return 1 ;;
+  esac
+  # EXE is normally a file under bin/current. A %h/... or /... EXE is used
+  # VERBATIM (QFLX-27: bazarr runs `venv/bin/python bin/current/bazarr.py`, the
+  # interpreter lives outside bin/current).
+  case "$exe" in
+    %h/*|/*) cmd="$exe" ;;
+    *)       cmd="%h/.apps/$slug/bin/current/$exe" ;;
   esac
   cat <<EOF
 [Unit]
@@ -151,7 +158,7 @@ Type=simple
 WorkingDirectory=%h/.apps/$slug
 Environment=PATH=%h/.apps/$slug/bin/current:%h/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/qflix/$slug.env
-ExecStart=%h/.apps/$slug/bin/current/$exe ${pre}${args}
+ExecStart=${cmd} ${pre}${args}
 Restart=on-failure
 RestartSec=15
 StartLimitIntervalSec=600
