@@ -67,7 +67,14 @@ jobs:
             -e SEERR_VERSION -e SEERR_COMMIT -e SEERR_NODE_VERSION -e SEERR_NODE_SHA256 \
             debian:bullseye bash -euo pipefail -s <<'EOS'
           export DEBIAN_FRONTEND=noninteractive
-          apt-get update -qq
+          # bullseye is past LTS: its pools moved to archive.debian.org (the
+          # deb.debian.org indexes still resolve but every .deb 404s).
+          printf '%s\n' \
+            'deb http://archive.debian.org/debian bullseye main' \
+            'deb http://archive.debian.org/debian-security bullseye-security main' \
+            > /etc/apt/sources.list
+          rm -f /etc/apt/sources.list.d/*
+          apt-get -o Acquire::Check-Valid-Until=false update -qq
           apt-get install -y -qq --no-install-recommends ca-certificates curl xz-utils \
             python3 make g++ >/dev/null
           echo "glibc: $(ldd --version | head -1)"
