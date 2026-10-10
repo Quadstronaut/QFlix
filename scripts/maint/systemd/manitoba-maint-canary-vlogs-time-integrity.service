@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - VictoriaLogs time integrity (no future-dated events, no duplicate rows; QFLX-44)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push vlogs-time-integrity
+StandardOutput=journal
+StandardError=journal

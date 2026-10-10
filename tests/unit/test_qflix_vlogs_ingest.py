@@ -130,15 +130,24 @@ def test_read_new_lines_backlog_capped_to_tail(tmp_path):
     assert raw == ["l7", "l8", "l9"]
 
 
+def _sync_log_path():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "mcp"))
+    import logs
+    return logs._FILE_LOGS["listmonk-sync"]
+
+
 def test_parse_with_carry_seeds_continuation_from_cursor():
     mod = _load_ingest()
     recs, last = mod._parse_with_carry(
         ["  File \"x.py\", line 1", "2026-10-09 02:00:06,858 listmonk-sync [ERROR] boom"],
-        source="sync.log", last_ts="2026-10-09T02:00:05.000")
-    assert recs[0]["ts"] == "2026-10-09T02:00:05.000"   # not the ingest clock
-    assert recs[1]["ts"] == "2026-10-09T02:00:06.858"
+        source=_sync_log_path(), last_ts="2026-10-09T02:00:05.000")
+    # Cursor written before QFLX-44 holds a zone-less stamp: sync.log is a
+    # ZONED/UTC source, so it is re-read as UTC, never as the ingest clock.
+    assert recs[0]["ts"] == "2026-10-09T02:00:05.000Z"
+    assert recs[1]["ts"] == "2026-10-09T02:00:06.858Z"
     assert recs[1]["level"] == "ERROR"
-    assert last == "2026-10-09T02:00:06.858"
+    assert last == "2026-10-09T02:00:06.858Z"
 
 
 def test_cursors_roundtrip_and_corrupt_file(tmp_path):

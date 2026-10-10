@@ -132,6 +132,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-mobile-ux.timer \
     scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.service \
     scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.timer \
+    scripts/maint/systemd/manitoba-maint-canary-vlogs-time-integrity.service \
+    scripts/maint/systemd/manitoba-maint-canary-vlogs-time-integrity.timer \
     scripts/maint/systemd/manitoba-maint-canary-qbit-stall.service \
     scripts/maint/systemd/manitoba-maint-canary-qbit-stall.timer \
     scripts/maint/systemd/manitoba-maint-canary-kometa-libraries.service \
@@ -260,6 +262,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/qbit-stall.sh \
     scripts/canaries/stale-log-watchdog.sh \
     scripts/canaries/vlogs-stall.sh \
+    scripts/canaries/vlogs-time-integrity.sh \
     scripts/canaries/prowlarr-indexer-health.sh \
     scripts/canaries/hardlink-integrity.sh \
     scripts/canaries/plex-transcoder.sh \
@@ -629,6 +632,8 @@ for unit in \
     manitoba-maint-canary-mobile-ux.timer \
     manitoba-maint-canary-vlogs-stall.service \
     manitoba-maint-canary-vlogs-stall.timer \
+    manitoba-maint-canary-vlogs-time-integrity.service \
+    manitoba-maint-canary-vlogs-time-integrity.timer \
     manitoba-maint-canary-qbit-stall.service \
     manitoba-maint-canary-qbit-stall.timer \
     manitoba-maint-canary-kometa-libraries.service \
@@ -751,6 +756,8 @@ systemctl --user enable --now manitoba-maint-canary-mobile-ux.timer
 # enable --now is safe even if vlogs isn't running yet — the canary script will
 # exit with vlogs-down/no-ingest and push the right status to Kuma.
 systemctl --user enable --now manitoba-maint-canary-vlogs-stall.timer
+# vlogs-time-integrity (QFLX-44): hourly; future-dated events + duplicate rows.
+systemctl --user enable --now manitoba-maint-canary-vlogs-time-integrity.timer
 # qbit-stall canary: detects libtorrent engine wedge (dl_info_speed=0 for
 # ≥5min + queuedDL>N). Same 15-min cadence as vlogs-stall.
 systemctl --user enable --now manitoba-maint-canary-qbit-stall.timer
@@ -1189,7 +1196,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched plex-intro-markers newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity seerr-arr-parity; do
+for canary in movie anime mobile-ux vlogs-stall vlogs-time-integrity qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched plex-intro-markers newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity seerr-arr-parity; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
