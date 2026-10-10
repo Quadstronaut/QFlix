@@ -352,7 +352,10 @@ case "$1" in
     [ -d "{P}/9002" ] && echo active && exit 0; echo inactive; exit 3 ;;
   show)
     case "$*" in
-      *NextElapseUSecRealtime*) echo "@$(( $(date +%s) + ${{FAKE_GATE_NEXT_S:-3600}} ))" ;;
+      *NextElapseUSecRealtime*) t=$(( $(date +%s) + ${{FAKE_GATE_NEXT_S:-3600}} ))
+        # systemd 257 prints this property human-readable even with --timestamp=unix
+        if [ "${{FAKE_GATE_NEXT_HUMAN:-0}}" = 1 ]; then date -u -d "@$t" '+%a %Y-%m-%d %H:%M:%S UTC'
+        else echo "@$t"; fi ;;
       *ExecStart*) if [ -f "{DR}" ] && grep -q -- --execute "{DR}"; then
                      echo "{{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 qflix-entitlement.py --execute ; }}"
                    else echo "{{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 qflix-entitlement.py ; }}"; fi ;;
@@ -862,9 +865,10 @@ def test_swap_with_no_drop_in_records_absent_and_never_creates_one(box):
     assert not box.dropin.exists()                                      # never arm what was not
 
 
-def test_swap_waits_out_an_imminent_gate_run(box):
+@pytest.mark.parametrize("human", ["0", "1"])
+def test_swap_waits_out_an_imminent_gate_run(box, human):
     box.proved()
-    r = box.run("--swap", "--execute", env={"FAKE_GATE_NEXT_S": "1"})
+    r = box.run("--swap", "--execute", env={"FAKE_GATE_NEXT_S": "2", "FAKE_GATE_NEXT_HUMAN": human})
     assert r.returncode == 0, r.stdout + r.stderr
     assert "waiting it out" in r.stdout
 

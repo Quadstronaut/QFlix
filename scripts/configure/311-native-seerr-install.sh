@@ -502,7 +502,9 @@ gate_idle() { ! sysd is-active "$GATE_UNIT" >/dev/null 2>&1; }
 # Seconds until the gate timer fires next (exit 1 = unknown).
 gate_next_in() {
   local n t
-  n="$(sysd show "$GATE_TIMER" -p NextElapseUSecRealtime --value --timestamp=unix 2>/dev/null)" || return 1
+  # Human form on the box ("Sat 2026-10-10 12:23:20 CEST", date -d parses it);
+  # an "@epoch" form is accepted too.
+  n="$(sysd show "$GATE_TIMER" -p NextElapseUSecRealtime --value 2>/dev/null)" || return 1
   n="${n%$'\r'}"; n="${n#@}"
   if [[ "$n" =~ ^[0-9]+$ ]]; then t="$n"
   else t="$(date -u -d "$n" +%s 2>/dev/null)" || return 1
