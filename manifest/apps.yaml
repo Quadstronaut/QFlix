@@ -93,8 +93,21 @@ apps:
       expect_status: 200
 
   bazarr:
-    class: ucc
+    # QFLX-27 (UCC divorce A3): converted to the native release zip run by a
+    # python3.11 venv as qflix-bazarr.service by scripts/configure/302-native-
+    # bazarr-install.sh (version pinned in versions.env BAZARR_VERSION + sha256
+    # in the installer; the unit's env sets BAZARR_VERSION, which bazarr reports
+    # from). Data stays in place: --config ~/.apps/bazarr. The UCC container
+    # stays installed and DORMANT as the rollback target (I-8). bazarr2-sync
+    # keeps pinning bazarr2 to this instance's /api/system/status version.
+    # swap_state: pending-swap (spec 5.9 step 7) = flip merged + deployed, swap
+    # not yet run: the container still serves, appctl/lifecycle dispatch it as
+    # UCC and require_unit_active is off. A follow-up PR removes the line.
+    class: systemd
+    unit: qflix-bazarr.service
     ucc_slug: bazarr
+    ucc_dormant: true
+    swap_state: pending-swap
     kuma_monitor: "Bazarr"
     health:
       kind: http_api
@@ -104,6 +117,21 @@ apps:
       port_secret: bazarr.port
       urlbase_secret: bazarr.urlbase
       expect_status: 200
+      require_unit_active: true
+    upgrade:
+      # The release zip carries the prebuilt web UI. lifecycle unzips it into
+      # bin/<ver>; the post step (the installer's --post-upgrade) patches
+      # server.py, updates the venv, flips `current` and rewrites
+      # BAZARR_VERSION in the env file. The soak gate refuses it for 14 days
+      # after the swap; the first one closes the rollback-to-UCC window (I-10).
+      kind: zip_swap
+      url_template: "https://github.com/morpheus65535/bazarr/releases/download/v{version}/bazarr.zip"
+      target_dir: "~/.apps/bazarr/bin/{version}"
+      post_steps:
+        - "~/scripts/configure/302-native-bazarr-install.sh --post-upgrade {version} --execute"
+      version_pin:
+        source: versions.env
+        key: BAZARR_VERSION
 
   bazarr2:
     # Second Bazarr instance for the anime *arr pair (Sonarr2 + Radarr2).

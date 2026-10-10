@@ -429,6 +429,28 @@ def test_systemd_zip_swap_upgrade_downloads_and_unzips():
     assert any("unzip" in s for s in cmd_strs)
 
 
+def test_systemd_zip_swap_substitutes_version_in_target_dir_and_post_steps():
+    """QFLX-27: native bazarr lands each release in bin/{version}."""
+    app = _systemd_app(unit="qflix-bazarr.service", name="bazarr")
+    _attach_upgrade(
+        app,
+        kind="zip_swap",
+        url_template="https://example.invalid/v{version}/bazarr.zip",
+        target_dir="/h/.apps/bazarr/bin/{version}",
+        post_steps=["/h/302-native-bazarr-install.sh --post-upgrade {version} --execute"],
+    )
+
+    with patch("subprocess.run", return_value=_ok_cp()) as mock_run, \
+         patch("lib.lifecycle._post_health_probe", return_value=(True, "ok")):
+        result = upgrade(app, target_version="v1.6.3")
+
+    assert result.ok is True
+    cmd_strs = [" ".join(c.args[0]) for c in mock_run.call_args_list]
+    assert any("unzip" in s and "/h/.apps/bazarr/bin/1.6.3" in s for s in cmd_strs), cmd_strs
+    assert any("--post-upgrade 1.6.3 --execute" in s for s in cmd_strs), cmd_strs
+    assert not any("{version}" in s for s in cmd_strs), cmd_strs
+
+
 # ---- cron upgrade (no service restart) ------------------------------------
 
 def test_cron_tarball_swap_upgrade_does_not_restart():
