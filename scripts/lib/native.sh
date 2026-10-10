@@ -27,6 +27,8 @@
 #   native_link_current SLUG VER           atomic bin/current -> bin/VER, no UCC parity (QFLX-41)
 #
 # Families: dotnet (arrs, prowlarr) | go (unpackerr) | node (seerr) | python | db
+#           | static (qbittorrent-nox: one self-contained C++ binary, no runtime
+#             thread knob; TimeoutStopSec 120 so libtorrent can flush resume data)
 # Self-update stays OFF (I-10): arr UpdateMechanism=External and the bazarr
 # no-update flag are per-app config, set by each 3NN installer.
 # TasksMax= is deliberately NEVER emitted (G-2) until the F6 box proof shows the
@@ -125,7 +127,7 @@ native_render_env() {
     dotnet) printf 'DOTNET_PROCESSOR_COUNT=4\nDOTNET_gcServer=0\nDOTNET_GCRegionRange=80000000\n' ;;
     go)     printf 'GOMAXPROCS=4\n' ;;
     node)   printf 'UV_THREADPOOL_SIZE=4\n' ;;
-    python|db) ;;
+    python|db|static) ;;
     *) _native_err "unknown family: $fam"; return 1 ;;
   esac
   printf 'MALLOC_ARENA_MAX=2\n'
@@ -144,7 +146,7 @@ native_render_unit() {
   case "$fam" in
     dotnet|go|python) ;;
     node) pre="--disable-wasm-trap-handler " ;;   # CLI flag, never NODE_OPTIONS
-    db)   stop=120 ;;
+    db|static) stop=120 ;;
     *) _native_err "unknown family: $fam"; return 1 ;;
   esac
   # EXE is normally a file under bin/current. A %h/... or /... EXE is used

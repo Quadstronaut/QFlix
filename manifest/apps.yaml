@@ -321,8 +321,24 @@ apps:
       expect_status: 200
 
   qbittorrent:
-    class: ucc
+    # QFLX-35 (UCC divorce A11, ADOPT): qBit never ran in a container; the panel
+    # runs the static userdocs qbittorrent-nox as the user unit
+    # qbittorrent.service. scripts/configure/310-native-qbittorrent-install.sh
+    # adopts the SAME build (version in versions.env QBITTORRENT_VERSION, sha256
+    # in the installer, equal to the panel binary's) onto the tracked unit
+    # qflix-qbittorrent.service with the same profile and listen set. The panel
+    # unit is stopped + disabled (backed up, never removed) and stays the
+    # rollback target; `ucc_dormant` keeps every panel verb but `stop` off it.
+    # `swap_state: pending-swap` keeps the panel unit the live runtime (appctl,
+    # lifecycle, health) until the swap runs; the follow-up PR drops it.
+    class: systemd
+    unit: qflix-qbittorrent.service
     ucc_slug: qbittorrent
+    ucc_dormant: true
+    swap_state: pending-swap
+    # The dormant runtime is the panel's USER unit, not a container: runtime
+    # parity flags any qbittorrent-nox in that unit's cgroup as a woken twin.
+    ucc_cgroup_markers: ["/qbittorrent.service"]
     kuma_monitor: "qBittorrent"
     # qBit binds its WebUI (port 17041) exactly ONCE at startup and never
     # retries; a boot-time port squatter can make it lose that race and run
@@ -337,6 +353,21 @@ apps:
       kind: http_root
       port_secret: qbittorrent.port
       expect_status: 200
+    upgrade:
+      # userdocs ships ONE static binary per release (no archive): binary_name
+      # installs the download as bin/<ver>/qbittorrent-nox, then `current` flips
+      # atomically. The tag carries the libtorrent line (1.2.x, the running
+      # build's); a libtorrent change is a deliberate edit of this template.
+      # The soak gate refuses it for 14 days after the swap.
+      kind: tarball_swap
+      url_template: "https://github.com/userdocs/qbittorrent-nox-static/releases/download/release-{version}_v1.2.19/x86_64-qbittorrent-nox"
+      target_dir: "~/.apps/qbittorrent/bin/{version}"
+      binary_name: qbittorrent-nox
+      post_steps:
+        - "ln -sfn {version} ~/.apps/qbittorrent/bin/.current.new && mv -Tf ~/.apps/qbittorrent/bin/.current.new ~/.apps/qbittorrent/bin/current"
+      version_pin:
+        source: versions.env
+        key: QBITTORRENT_VERSION
 
   plex:
     # Plex is the canonical media server (per project_plex-primary-jellyfin-trial).
