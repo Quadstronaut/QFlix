@@ -329,13 +329,15 @@ apps:
     # qflix-qbittorrent.service with the same profile and listen set. The panel
     # unit is stopped + disabled (backed up, never removed) and stays the
     # rollback target; `ucc_dormant` keeps every panel verb but `stop` off it.
-    # `swap_state: pending-swap` keeps the panel unit the live runtime (appctl,
-    # lifecycle, health) until the swap runs; the follow-up PR drops it.
+    # Swapped to the tracked unit 2026-10-10 (spec 5.9 steps 1-6); the
+    # `swap_state: pending-swap` line that held this flip inert until the swap
+    # ran is gone, so appctl / lifecycle / require_unit_active / runtime parity
+    # now treat qflix-qbittorrent.service as the live runtime. 14-day soak
+    # until 2026-10-24.
     class: systemd
     unit: qflix-qbittorrent.service
     ucc_slug: qbittorrent
     ucc_dormant: true
-    swap_state: pending-swap
     # The dormant runtime is the panel's USER unit, not a container: runtime
     # parity flags any qbittorrent-nox in that unit's cgroup as a woken twin.
     ucc_cgroup_markers: ["/qbittorrent.service"]
