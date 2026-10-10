@@ -16,13 +16,16 @@ Output: list of {ts, level, message, source_file}.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 HOME = Path.home()
 
@@ -124,6 +127,21 @@ _TS_PATTERNS = [
         r"^(?P<ts>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.,]\d+(?:Z|[+-]\d{2}:?\d{2})?)"
         r"\s+.{0,80}?\[(?P<lvl>[A-Z]+)\]\s*(?P<msg>.*)$"
     ),
+    # Seerr (winston) form: "2026-10-10T04:42:00.036Z [info][Jobs]: msg".
+    # Explicit Z. Before QFLX-44 this fell to the fallback pattern, whose ts
+    # class has no "." and so dropped the fraction + Z into the message.
+    re.compile(
+        r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)"
+        r"\s+\[(?P<lvl>[A-Za-z]+)\](?P<msg>.*)$"
+    ),
+    # Unpackerr form: "[INFO] 2026/10/05 13:15:32 [Radarr] msg". Zone-less
+    # Go-stdlib stamp AFTER the level; must precede the bracket-no-ts form or
+    # the date is swallowed into the message and the line is stamped with the
+    # ingest clock.
+    re.compile(
+        r"^\[(?P<lvl>[A-Z]{2,8})\]\s+(?P<ts>\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})"
+        r"\s+(?P<msg>.*)$"
+    ),
     # Bracket-no-ts form (recyclarr): [INF] anime: All quality profiles ...
     re.compile(r"^\[(?P<lvl>[A-Z]{2,8})\]\s*(?P<msg>.*)$"),
     # qBittorrent paren-letter form: (I) 2026-05-16T07:00:16 - WebAPI login...
@@ -197,6 +215,116 @@ def _normalize_level(raw: str | None) -> str:
     return _LEVEL_NORMALIZE.get(up, up)
 
 
+# -- Zone policy (QFLX-44) ----------------------------------------------------
+# VictoriaLogs reads a zone-less _time as UTC. Several apps write zone-less
+# LOCAL (box = Europe/Amsterdam, CEST +02:00) stamps, so every such line landed
+# 2h in the FUTURE (the 2026-10-09 listmonk restart: 06:01 CEST stored as
+# 06:01Z). Fix = say, per source, what a zone-less stamp MEANS, and convert to
+# true UTC here. A stamp that carries its own zone (Z, +02:00) always wins.
+#
+# Values: "UTC"   zone-less stamp is already UTC
+#         "LOCAL" zone-less stamp is box-local time (box_tz(), read once)
+#         "ZONED" every line carries an explicit zone; the value is only
+#                 consulted for a zone-less stray, which is read as UTC
+#         "none"  source writes no stamp; the ingest clock stamps the line
+# Classified 2026-10-10 by sampling each live file and comparing the last
+# stamp against `date -u` and the file mtime (tests/unit/test_log_zones.py
+# holds one fixture per format). nginx was EMPTY on the box that day; its
+# error.log is documented to use the server's local time.
+SOURCE_ZONE = {
+    # .NET *arr + bazarr: local wall clock, no zone token.
+    "sonarr": "LOCAL", "sonarr2": "LOCAL", "radarr": "LOCAL", "radarr2": "LOCAL",
+    "prowlarr": "LOCAL", "bazarr": "LOCAL", "bazarr2": "LOCAL",
+    # Python apps that log local time.
+    "kometa": "LOCAL", "buildarr": "LOCAL",
+    # Go / Node apps that log local time.
+    "listmonk": "LOCAL", "unpackerr": "LOCAL", "tdarr-server": "LOCAL",
+    "tdarr-node": "LOCAL", "qbittorrent": "LOCAL", "nginx": "LOCAL",
+    # Proven UTC: the stamp matched `date -u` / mtime.
+    "tautulli": "UTC", "plex": "UTC",
+    # Explicit zone on every line.
+    "seerr": "ZONED", "listmonk-sync": "ZONED",
+    "maint-pusher": "ZONED", "maint-webhook": "ZONED", "maint-window": "ZONED",
+    # No stamp in the file at all.
+    "recyclarr": "none",
+}
+# A source missing from the table is assumed to log box-local time: the common
+# case on this box, and a wrong guess is one the vlogs-time-integrity canary
+# reports by name.
+DEFAULT_ZONE = "LOCAL"
+
+_UTC = timezone.utc
+
+
+@functools.lru_cache(maxsize=1)
+def box_tz():
+    """The box's timezone, read ONCE per process.
+
+    Order: QFLIX_LOG_TZ (tests/override), /etc/timezone, the /etc/localtime
+    symlink target, timedatectl, $TZ. If none resolves we fall back to UTC and
+    say so on stderr: silently guessing is how the original bug happened.
+    """
+    cands = [os.environ.get("QFLIX_LOG_TZ")]
+    try:
+        cands.append(Path("/etc/timezone").read_text().strip())
+    except OSError:
+        pass
+    try:
+        tgt = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in tgt:
+            cands.append(tgt.split("zoneinfo/", 1)[1])
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["timedatectl", "show", "-p", "Timezone", "--value"],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            cands.append(out.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    cands.append(os.environ.get("TZ"))
+    for name in cands:
+        if not name:
+            continue
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            continue
+    print("logs.py: box timezone unresolved, assuming UTC", file=sys.stderr)
+    return _UTC
+
+
+def _app_for_source(source: str) -> str | None:
+    """Reverse-map a source (file path or 'journalctl:<unit>') to its app slug."""
+    for app, path in _FILE_LOGS.items():
+        if path == source:
+            return app
+    for app, unit in _SYSTEMD_LOGS.items():
+        if source == f"journalctl:{unit}":
+            return app
+    for app, pat in _GLOB_LOGS.items():
+        if source == str(HOME / pat):
+            return app
+    return None
+
+
+def zone_policy_for(source: str) -> str:
+    return SOURCE_ZONE.get(_app_for_source(source) or "", DEFAULT_ZONE)
+
+
+def _tz_for_policy(policy: str):
+    """tzinfo that a ZONE-LESS stamp under `policy` is expressed in. An IANA
+    name is accepted too, so a future source can say 'America/New_York'."""
+    if policy == "LOCAL":
+        return box_tz()
+    if policy in ("UTC", "ZONED", "none"):
+        return _UTC
+    try:
+        return ZoneInfo(policy)
+    except (ZoneInfoNotFoundError, ValueError):
+        return box_tz()
+
+
 _MONTH_ABBR = {
     "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
     "May": "05", "Jun": "06", "Jul": "07", "Aug": "08",
@@ -204,58 +332,76 @@ _MONTH_ABBR = {
 }
 
 
-def _normalize_ts(raw: str | None) -> str | None:
-    """Coerce assorted log timestamp shapes to ISO 8601 the vlogs ingester can
-    parse. Handles space-as-T, comma-millis, DD/MM/YYYY (maintainerr), and
-    'Mon DD, YYYY HH:MM:SS.fff' (Plex). Leaves already-ISO strings alone."""
+def _normalize_ts(raw: str | None, tz=None) -> str | None:
+    """Coerce assorted log timestamp shapes to ISO-8601 UTC (...Z).
+
+    Handles space-as-T, comma-millis, DD/MM/YYYY (maintainerr), 'Mon DD, YYYY
+    HH:MM:SS.fff' (Plex) and Go's YYYY/MM/DD. A stamp with an explicit zone is
+    converted exactly; a ZONE-LESS stamp is read in `tz` (default: box_tz())
+    and converted to UTC, so the stored _time is the instant it was written.
+    """
     if not raw:
         return None
     s = raw.strip()
     if not s:
         return None
-    # Plex: "May 20, 2026 16:48:34.248" → "2026-05-20T16:48:34.248"
+    # Plex: "May 20, 2026 16:48:34.248" -> "2026-05-20T16:48:34.248"
     m = re.match(r"^([A-Z][a-z]{2})\s+(\d{1,2}),\s+(\d{4})\s+(\d{2}:\d{2}:\d{2}\.\d{3})$", s)
     if m:
-        mon_name, dd, yyyy, hms = m.groups()
+        mon_name, day, yyyy, hms = m.groups()
         mm = _MONTH_ABBR.get(mon_name, "01")
-        return f"{yyyy}-{mm}-{int(dd):02d}T{hms}"
-    # Go stdlib (listmonk): "2026/08/23 02:00:04.753761" → "2026-08-23T02:00:04.753761"
+        return _to_utc(f"{yyyy}-{mm}-{int(day):02d}T{hms}", tz)
+    # Go stdlib (listmonk): "2026/08/23 02:00:04.753761" -> "2026-08-23T02:00:04.753761"
     m = re.match(r"^(\d{4})/(\d{2})/(\d{2})[T ](\d{2}:\d{2}:\d{2}.*)$", s)
     if m:
-        yyyy, mm, dd, rest = m.groups()
-        return f"{yyyy}-{mm}-{dd}T{rest}"
+        yyyy, mm, day, rest = m.groups()
+        return _to_utc(f"{yyyy}-{mm}-{day}T{rest}", tz)
     m = re.match(r"^(\d{2})/(\d{2})/(\d{4})[T ](\d{2}:\d{2}:\d{2})(.*)$", s)
     if m:
-        dd, mm, yyyy, hms, rest = m.groups()
-        s = f"{yyyy}-{mm}-{dd}T{hms}{rest}"
+        day, mm, yyyy, hms, rest = m.groups()
+        s = f"{yyyy}-{mm}-{day}T{hms}{rest}"
     if " " in s and "T" not in s:
         s = s.replace(" ", "T", 1)
     if "," in s:
         s = s.replace(",", ".", 1)
-    return _to_utc_if_zoned(s)
+    return _to_utc(s, tz)
 
 
 _ZONED = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:?\d{2})$")
+_NAIVE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?$")
 
 
-def _to_utc_if_zoned(s: str) -> str:
-    """A stamp with an explicit zone (Z / +HH:MM / +HHMM) is converted to UTC
-    and written as ...Z so the ingester stores the exact instant. Zone-less
-    stamps pass through untouched (their handling is a separate ticket)."""
+def _to_utc(s: str, tz=None) -> str:
+    """ISO-ish string -> '...Z' UTC. Explicit zone wins; zone-less is read in
+    `tz` (None -> box_tz()). Unparseable shapes pass through untouched.
+
+    DST: a zone-less local stamp in the spring-forward gap (02:30 on the
+    transition night) takes the pre-transition offset; one in the fall-back
+    overlap (02:30 occurs twice) takes the FIRST occurrence (fold=0, CEST).
+    Both are inherent to a zone-less wall clock; the canary's future and
+    duplicate checks bound the damage to one hour, once a year.
+    """
     m = _ZONED.match(s)
+    if m:
+        base, frac, zone = m.groups()
+        try:
+            dt = datetime.strptime(base, "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return s
+        if zone != "Z":
+            sign = 1 if zone[0] == "+" else -1
+            digits = zone[1:].replace(":", "")
+            dt -= sign * timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+        return dt.strftime("%Y-%m-%dT%H:%M:%S") + (frac or "") + "Z"
+    m = _NAIVE.match(s)
     if not m:
         return s
-    from datetime import datetime, timedelta, timezone
-    base, frac, zone = m.groups()
+    base, frac = m.groups()
     try:
         dt = datetime.strptime(base, "%Y-%m-%dT%H:%M:%S")
     except ValueError:
         return s
-    if zone != "Z":
-        sign = 1 if zone[0] == "+" else -1
-        digits = zone[1:].replace(":", "")
-        dt -= sign * timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
-    dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.replace(tzinfo=tz if tz is not None else box_tz()).astimezone(_UTC)
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + (frac or "") + "Z"
 
 
@@ -269,14 +415,16 @@ def _to_utc_if_zoned(s: str) -> str:
 _ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def parse_line(line: str, *, source: str) -> dict:
+def parse_line(line: str, *, source: str, zone: str | None = None) -> dict:
+    """`zone` overrides the per-source policy for ZONE-LESS stamps (tests)."""
+    tz = _tz_for_policy(zone or zone_policy_for(source))
     line = _ANSI_SGR.sub("", line.rstrip("\n"))
     for pat in _TS_PATTERNS:
         m = pat.match(line)
         if m:
             gd = m.groupdict()
             return {
-                "ts": _normalize_ts(gd.get("ts")),
+                "ts": _normalize_ts(gd.get("ts"), tz),
                 "level": _normalize_level(gd.get("lvl")),
                 "message": gd.get("msg") or "",
                 "source_file": source,

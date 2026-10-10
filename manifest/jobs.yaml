@@ -210,6 +210,11 @@ jobs:
   manitoba-maint-canary-vlogs-stall:
     timer: scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.timer
     kuma_monitor: "Canary VLogs Stall"
+  # Added 2026-10-10 (QFLX-44): future-dated events / duplicate rows in
+  # VictoriaLogs. Own timer, own Kuma push monitor (dead-man by heartbeat).
+  manitoba-maint-canary-vlogs-time-integrity:
+    timer: scripts/maint/systemd/manitoba-maint-canary-vlogs-time-integrity.timer
+    kuma_monitor: "Canary VLogs Time Integrity"
   manitoba-maint-canary-qbit-stall:
     timer: scripts/maint/systemd/manitoba-maint-canary-qbit-stall.timer
     kuma_monitor: "Canary qBit Stall"

@@ -66,3 +66,9 @@ def _no_real_secrets_or_notifications(tmp_path, monkeypatch):
     monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(isolated))
     monkeypatch.setenv("MANITOBA_SECRETS", str(isolated))
     monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path / "maint-state-isolated"))
+
+
+# QFLX-44: scripts/mcp/logs.py reads zone-less LOCAL stamps in the box's zone.
+# Pin it to the production box zone so the suite is identical on a Windows
+# workstation (no /etc/timezone) and the Linux CI runner (UTC).
+os.environ.setdefault("QFLIX_LOG_TZ", "Europe/Amsterdam")

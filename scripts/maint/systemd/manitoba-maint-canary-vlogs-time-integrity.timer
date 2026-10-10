@@ -1,0 +1,14 @@
+[Unit]
+Description=Manitoba canary - VictoriaLogs time integrity (hourly)
+
+[Timer]
+# Minute :15 chosen against every OnCalendar in this directory (the N/15 step
+# timers cover :2-:9 and :11-:14 mod 15; :15 is the residue left free).
+# Never :00 - see the 2026-09-12 Kuma connection-pool incident in
+# manitoba-maint-canary-vlogs-stall.timer.
+OnCalendar=*-*-* *:15:00 UTC
+RandomizedDelaySec=180
+Persistent=true
+
+[Install]
+WantedBy=timers.target

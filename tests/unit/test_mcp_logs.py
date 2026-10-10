@@ -63,7 +63,7 @@ def test_parse_line_tdarr_colourised_file():
     errors. Strip SGR and the existing Kometa bracket-ts pattern matches."""
     line = "\x1b[33m[2026-08-23T20:36:48.935] [WARN] Tdarr_Server - \x1b[39mExit approved."
     parsed = logs.parse_line(line, source="server.log")
-    assert parsed["ts"] == "2026-08-23T20:36:48.935"
+    assert parsed["ts"] == "2026-08-23T18:36:48.935Z"   # tdarr logs CEST
     assert parsed["level"] == "WARN"
     assert parsed["message"] == "Tdarr_Server - Exit approved."
 
@@ -75,7 +75,7 @@ def test_parse_line_go_stdlib_ts():
     emits none."""
     line = "2026/08/23 02:00:04.753761 maintenance.go:95: finished VACUUM"
     parsed = logs.parse_line(line, source="listmonk.log")
-    assert parsed["ts"] == "2026-08-23T02:00:04.753761"
+    assert parsed["ts"] == "2026-08-23T00:00:04.753761Z"   # listmonk logs CEST
     assert parsed["level"] == "unknown"
     assert "finished VACUUM" in parsed["message"]
 
@@ -207,7 +207,8 @@ def test_parse_line_z_suffix():
     assert parsed["level"] == "ERROR"
 
 
-def test_parse_line_zoneless_python_logging_unchanged():
-    """Zone-less handling is a separate ticket: output must stay as before."""
-    parsed = logs.parse_line("2026-10-10 00:11:43,312 listmonk-sync [INFO] m", source="s")
-    assert parsed["ts"] == "2026-10-10T00:11:43.312"
+def test_parse_line_zoneless_python_logging_follows_source_zone():
+    """QFLX-44: a zone-less stamp is read in the source's declared zone."""
+    line = "2026-10-10 00:11:43,312 x [INFO] m"
+    assert logs.parse_line(line, source="s", zone="UTC")["ts"] == "2026-10-10T00:11:43.312Z"
+    assert logs.parse_line(line, source="s", zone="LOCAL")["ts"] == "2026-10-09T22:11:43.312Z"
