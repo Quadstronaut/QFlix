@@ -836,3 +836,54 @@ def test_http_root_missing_basic_auth_secret_fails_loudly(tmp_path, monkeypatch)
     assert result.ok is False
     assert "htpasswd.password" in result.reason
     mock_get.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# hostname_ref (QFLX-23): the probe host comes from a secret, not a literal
+# ---------------------------------------------------------------------------
+
+def _root_app_with(extra: dict):
+    app = _make_app("http_root", path_template=None, auth_header=None,
+                    auth_secret=None, urlbase_secret=None)
+    app.health.raw.update(extra)
+    return app
+
+
+def test_http_root_hostname_ref_reads_secret(tmp_path, monkeypatch):
+    secrets_dir = tmp_path / "secrets"
+    _write_secret(secrets_dir, "myapp.port", "17002")
+    _write_secret(secrets_dir, "net.app_host", "10.9.9.9")
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(secrets_dir))
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    with patch("requests.get", return_value=mock_resp) as g:
+        result = probe(_root_app_with({"hostname_ref": "net.app_host"}))
+    assert result.ok is True
+    assert g.call_args[0][0].startswith("http://10.9.9.9:17002")
+
+
+def test_http_root_hostname_ref_missing_secret_is_config_error(tmp_path, monkeypatch):
+    secrets_dir = tmp_path / "secrets"
+    _write_secret(secrets_dir, "myapp.port", "17002")
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(secrets_dir))
+    with patch("requests.get") as g:
+        result = probe(_root_app_with({"hostname_ref": "net.app_host"}))
+    assert result.ok is False
+    assert "config error" in result.reason
+    g.assert_not_called()          # never guess a host
+
+
+def test_http_api_hostname_ref_reads_secret(tmp_path, monkeypatch):
+    secrets_dir = tmp_path / "secrets"
+    _write_secret(secrets_dir, "myapp.port", "17002")
+    _write_secret(secrets_dir, "myapp.urlbase", "myapp")
+    _write_secret(secrets_dir, "myapp.key", "K")
+    _write_secret(secrets_dir, "net.app_host", "10.9.9.9")
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(secrets_dir))
+    app = _make_app("http_api")
+    app.health.raw["hostname_ref"] = "net.app_host"
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    with patch("requests.get", return_value=mock_resp) as g:
+        probe(app)
+    assert g.call_args[0][0].startswith("http://10.9.9.9:17002")

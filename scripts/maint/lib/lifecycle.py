@@ -197,7 +197,13 @@ def _ucc_status(app: App, timeout_s: float) -> LifecycleResult:
         return LifecycleResult(ok=False, duration_s=result.duration_s, stdout=result.stdout,
                                stderr=result.stderr,
                                reason=f"version {version}; port secret {port_secret} unreadable: {exc}")
-    host = raw.get("hostname", "127.0.0.1")
+    try:
+        from lib.secrets import resolve_host
+        host = resolve_host(raw)
+    except (OSError, ValueError) as exc:
+        return LifecycleResult(ok=False, duration_s=result.duration_s, stdout=result.stdout,
+                               stderr=result.stderr,
+                               reason=f"version {version}; host unresolved: {exc}")
     if _port_listening(host, port):
         result.reason = f"version {version}; port {port} listening"
         return result

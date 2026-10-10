@@ -153,3 +153,30 @@ def test_dry_run_status_skips_probe(monkeypatch):
         r = status(_app(health_raw={"port_secret": "sonarr.port"}))
     assert r.ok is True
     run.assert_not_called()
+
+
+def test_ucc_status_hostname_ref_probes_the_secret_host(tmp_path, monkeypatch):
+    """QFLX-23: a bridge-bound app (flaresolverr) is probed on net.app_host,
+    not on loopback."""
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(tmp_path))
+    (tmp_path / "fs.port").write_text("17011")
+    (tmp_path / "net.app_host").write_text("10.9.9.9\n")
+    seen = []
+    monkeypatch.setattr(lifecycle, "_port_listening",
+                        lambda host, port, *a, **k: seen.append((host, port)) or True)
+    with patch("subprocess.run", return_value=_cp()):
+        r = status(_app(name="flaresolverr",
+                        health_raw={"port_secret": "fs.port",
+                                    "hostname_ref": "net.app_host"}))
+    assert r.ok is True
+    assert seen == [("10.9.9.9", 17011)]
+
+
+def test_ucc_status_hostname_ref_missing_secret_is_not_ok(tmp_path, monkeypatch):
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(tmp_path))
+    (tmp_path / "fs.port").write_text("17011")
+    with patch("subprocess.run", return_value=_cp()):
+        r = status(_app(name="flaresolverr",
+                        health_raw={"port_secret": "fs.port",
+                                    "hostname_ref": "net.app_host"}))
+    assert r.ok is False and "host unresolved" in r.reason
