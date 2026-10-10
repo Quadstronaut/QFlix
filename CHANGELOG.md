@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-09 - Nothing wakes a dormant UCC app (QFLX-17, UCC divorce F2)
+
+**A converted app keeps its `~/.apps/<slug>` dir and its dormant `app-<slug>`
+wrapper, so three things would have restarted the old container next to the
+native unit:** the Monday sweep (it walks `~/.apps`), the 5-minute UCC gate
+probe (`app-<probe_app> start`, falling back to `sonarr` on any secret read
+error), and `31-unpackerr.sh` (`restart || start`).
+
+- New `scripts/maint/lib/ucc_skip.py` derives, from the deployed manifest,
+  every slug whose class is not `ucc` or that has `ucc_dormant` (fails closed
+  on any non-false value). Never restated by hand.
+- `app-upgrade-all.sh` generates that list every run, checks it before
+  touching `app-<slug>`, ignores `--include`/`--only` for it, prints it as
+  `generated_skip=` (dry-run too), and fails closed (exit 2 + warning) when it
+  cannot be generated. 240 stages the module and prints the list at deploy.
+- `lib/ucc.py`: `_DEFAULT_PROBE_APP` is now `plex`; the probe refuses
+  (probe-error, no subprocess) any slug that is not an active ucc app.
+- `lib/lifecycle.py`: a `ucc_dormant` app refuses start/restart/ucc_update;
+  only `stop` reaches it. `31-unpackerr.sh` asks the manifest first.
+
 ## 2026-10-02 - Postgres was skipped until UCC locked it out
 
 **`app-upgrade-all.sh` had `postgres` in `DEFAULT_SKIP`, so the weekly
