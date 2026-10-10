@@ -14,6 +14,7 @@
 # Functions:
 #   native_fetch_verify URL SHA256 DEST    download + sha256 check (DEST removed on mismatch)
 #   native_check_parity SLUG VERSION       refuse unless VERSION == `appctl version SLUG`
+#                                          (NATIVE_PARITY=prefix: a dotted prefix of VERSION is enough)
 #   native_install_versioned SLUG VER SRC  parity, then bin/<VER> + atomic `current` symlink
 #   native_render_env SLUG FAMILY VER [K=V..]   env-file body (thread caps + family hook)
 #   native_render_unit SLUG FAMILY EXE ARGS    qflix-<slug>.service body
@@ -71,11 +72,18 @@ native_ucc_version() {
 }
 
 # I-10 exact-version parity. Fails CLOSED: an unreadable version is a refusal.
+# NATIVE_PARITY=prefix (QFLX-28): the panel tool reports a TRUNCATED version
+# (prowlarr: "2.6.5" for build 2.6.5.5623). The panel value must then be a whole
+# dotted prefix of the target ("2.6.5" of "2.6.5.5623", never "2.6" of "2.6.5.x"
+# matching "2.60"); the caller proves the full build another way (the app API).
 native_check_parity() {
   local slug="$1" want="${2#v}" have
   have="$(native_ucc_version "$slug")"; have="${have#v}"
   if [ -z "$have" ]; then
     _native_err "parity: cannot read 'appctl version $slug'; refusing"; return 1
+  fi
+  if [ "${NATIVE_PARITY:-exact}" = prefix ]; then
+    case "$want." in "$have."*) return 0 ;; esac
   fi
   if [ "$have" != "$want" ]; then
     _native_err "parity: target $want != app-$slug version $have; refusing"; return 1
