@@ -293,6 +293,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/plex-unmatched.sh \
     scripts/canaries/plex-intro-markers.sh \
     scripts/canaries/rea-liveness.sh \
+    scripts/configure/304-native-radarr2-install.sh \
+    scripts/maint/native_sanitize.py \
     scripts/configure/55-kometa-install.sh \
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
@@ -483,6 +485,11 @@ chmod +x ~/scripts/maint/native_sanitize.py
 cp -f   "$STG"/scripts/configure/303-native-prowlarr-install.sh ~/scripts/configure/303-native-prowlarr-install.sh
 chmod +x ~/scripts/configure/303-native-prowlarr-install.sh
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
+# QFLX-29 (A5 radarr2): the proof sanitizes its VACUUM INTO copy with
+# native_sanitize.py, so it is deployed beside the installer (~/scripts/maint).
+cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py
+cp -f   "$STG"/scripts/configure/304-native-radarr2-install.sh ~/scripts/configure/304-native-radarr2-install.sh
+chmod +x ~/scripts/configure/304-native-radarr2-install.sh
 # jobs.yaml is the timer<->dead-man ledger the timer-liveness canary reads. The
 # box has no repo checkout, so it must be staged flat like apps.yaml.
 cp -f   "$STG"/manifest/jobs.yaml                 ~/.opt/maint/jobs.yaml
