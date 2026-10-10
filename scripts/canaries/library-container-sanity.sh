@@ -354,8 +354,10 @@ export LCS_FORCE_WINDOW='${FORCE_WINDOW}'
 in_window() {
   [ "$LCS_FORCE_WINDOW" = "1" ] && { echo "forced-on"; return 0; }
   [ "$LCS_FORCE_WINDOW" = "0" ] && return 1
-  DOW=$(date -u +%u); HOUR=$(date -u +%H); HOUR=${HOUR#0}
-  if [ "$DOW" = "1" ] && [ "${HOUR:-0}" -ge 11 ] && [ "${HOUR:-0}" -lt 15 ]; then
+  # Wall-clock leg is the host policy (QFLX-16): exit 0 = inside the window.
+  # A missing file or any other exit falls through (fail open, lock leg below).
+  HP="$HOME/scripts/maint/lib/hostpolicy.py"
+  if [ -f "$HP" ] && python3 "$HP" in-window >/dev/null 2>&1; then
     echo "wallclock-mon-1100-1500-utc"; return 0
   fi
   LOCK=${MANITOBA_STATE_DIR:-$HOME/.opt/maint}/lock

@@ -123,6 +123,7 @@ for _p in (str(_HERE), str(_MCP_DIR)):
         sys.path.insert(0, _p)
 
 from lib.secrets import secrets_dir, read_secret  # noqa: E402
+from lib.hostpolicy import in_maintenance_window as _policy_window  # noqa: E402  (QFLX-16)
 
 ARR_VERSION = "v3"
 
@@ -321,7 +322,7 @@ def _push_kuma(status: str, msg: str) -> None:
 def in_maintenance_window(now=None) -> bool:
     if now is None:
         now = datetime.now(timezone.utc)
-    if now.weekday() == 0 and 11 <= now.hour < 15:   # Monday, 11:00-14:59 UTC
+    if _policy_window(now):   # host policy: Mon 11:00-14:59 UTC on Ultra
         return True
     # Also defer if the window orchestrator lockfile is present + alive.
     try:

@@ -28,7 +28,7 @@ surfaces:
     enumerability: offline, 100% enumerable
     note: >-
       Everything `git ls-files` returns. Fully deterministic at a commit SHA.
-      This is where all ten offline detectors operate.
+      This is where all eleven offline detectors operate.
 
   S2:
     title: repo-adjacent, untracked but load-bearing

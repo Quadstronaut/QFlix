@@ -88,6 +88,9 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/cli.py \
     scripts/maint/lib/pusher.py \
     scripts/maint/lib/secrets.py \
+    scripts/maint/lib/hostpolicy.py \
+    scripts/maint/lib/hostpolicy_ultra.py \
+    scripts/maint/lib/hostpolicy_generic.py \
     scripts/maint/lib/fleet.py \
     scripts/maint/lib/suppression.py \
     scripts/maint/lib/qbit.py \
@@ -546,8 +549,25 @@ fi
 log_info "deploying probe + notify secrets (*.port, *.key, *.urlbase, *.host, *.url, *.id) to ~/secrets/"
 ( cd "$REPO_ROOT/secrets" && tar -cf - \
     --exclude="*.json" \
-    $(ls *.port *.key *.urlbase *.host *.url *.id 2>/dev/null) \
-) | sshm 'tar -xf - -C ~/secrets/ && chmod 600 ~/secrets/*.port ~/secrets/*.key ~/secrets/*.urlbase ~/secrets/*.host ~/secrets/*.url ~/secrets/*.id 2>/dev/null; echo "secrets sync ok"'
+    $(ls *.port *.key *.urlbase *.host *.url *.id *.profile 2>/dev/null) \
+) | sshm 'tar -xf - -C ~/secrets/ && chmod 600 ~/secrets/*.port ~/secrets/*.key ~/secrets/*.urlbase ~/secrets/*.host ~/secrets/*.url ~/secrets/*.id ~/secrets/*.profile 2>/dev/null; echo "secrets sync ok"'
+
+# Host policy inputs (QFLX-16). host.profile (ultra|generic) is the explicit,
+# fail-closed profile secret; host.id is mirrored to the on-box marker that
+# ssh.sh _sshm_on_host reads. Both are optional HERE: deploying the code before
+# the secrets exist changes nothing (the window falls back to the restrictive
+# Ultra default), but the warnings below name the gap.
+if [ -f "$REPO_ROOT/secrets/host.id" ]; then
+  sshm 'mkdir -p ~/.config/qflix && cp -f ~/secrets/host.id ~/.config/qflix/host.id && chmod 600 ~/.config/qflix/host.id'
+  log_info "host.id marker written to ~/.config/qflix/host.id"
+else
+  log_warn "secrets/host.id absent: on-box marker NOT written (hostname fallback still applies)"
+fi
+if [ -f "$REPO_ROOT/secrets/host.profile" ]; then
+  sshm 'python3 ~/scripts/maint/lib/hostpolicy.py preflight' || die "hostpolicy preflight failed (host.profile missing or does not match this host)"
+else
+  log_warn "secrets/host.profile absent: window uses the restrictive Ultra default until it is written"
+fi
 
 # ── Step 6: symlink ~/bin/manitoba-maint ────────────────────────────────────
 sshm 'ln -sf ~/scripts/maint/manitoba-maint ~/bin/manitoba-maint'

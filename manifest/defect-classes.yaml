@@ -338,6 +338,30 @@ classes:
   # matching row in docs/audit-residual-risk.md; a test asserts the two ledgers
   # agree in both directions.
 
+  - id: C-11
+    title: hard-coded-maintenance-window
+    detector: c11_hardcoded_window
+    test: tests/unit/audit/test_c11_hardcoded_window.py
+    status: enforced
+    enforced_kinds: [hardcoded-monday-window]
+    advisory_kinds: []
+    discovery:
+      date: 2026-10-09
+      provenance: >-
+        QFLX-15 review finding O-5: lib/window.py has no clock; the Mon
+        11:00-15:00 UTC window was re-implemented as a weekday()==0 literal in
+        nine files, so a host with a different (or no) window could not be
+        expressed and the copies could drift. QFLX-16 moved it into
+        lib/hostpolicy*.py.
+    rule: >-
+      The maintenance window is answered by hostpolicy.in_maintenance_window(now)
+      only. A Monday-shaped weekday literal elsewhere is a finding unless it
+      carries a `window-ok: <reason>` adjudication (a cadence, not the window).
+    boundary:
+      description: Monday-shaped weekday literals in tracked scripts/maint, scripts/canaries, scripts/mcp, scripts/lib
+      offline: true
+    waivers: []
+
   - id: L-01
     title: repo unit files vs deployed unit files
     status: residual

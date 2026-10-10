@@ -358,6 +358,7 @@ fi
 # anyway and CI was red from the day this canary shipped -- invisible locally,
 # because the test is posix-only and skips on the Windows workstation.
 export QFLIX_CANARY_DASH_MAINT_LIB="${QFLIX_CANARY_DASH_MAINT_LIB-$ROOT/scripts/maint}"
+export QFLIX_CANARY_DASH_HOSTPOLICY="${QFLIX_CANARY_DASH_HOSTPOLICY-$ROOT/scripts/maint/lib/hostpolicy.py}"
 
 python3 - "$@" <<"PYEOF"
 import datetime as dt
@@ -435,6 +436,7 @@ NOW_OVERRIDE = _env("QFLIX_CANARY_DASH_NOW", "")
 FORCE_WINDOW = _env("QFLIX_CANARY_DASH_FORCE_WINDOW", "")
 UPTIME_OVERRIDE = _env("QFLIX_CANARY_DASH_UPTIME_S", "")
 MAINT_LIB = _env("QFLIX_CANARY_DASH_MAINT_LIB", "")
+HOSTPOLICY = os.environ.get("QFLIX_CANARY_DASH_HOSTPOLICY") or ""
 
 # The Monday maintenance window, UTC. The calendar is authoritative in the
 # units, not in python: scripts/maint/systemd/manitoba-maint-window.timer says
@@ -813,6 +815,26 @@ def _window_lock_is_leaked():
         return False
 
 
+def _policy_window(now):
+    """Wall-clock maintenance window from the host policy (QFLX-16). Loaded BY
+    PATH from HOSTPOLICY (default: next to this canary under scripts/maint/lib,
+    NOT under MAINT_LIB, so the wall-clock leg stays independent of it). Any failure answers
+    False (fail open): the lock legs still guard, and a canary that cannot
+    load the policy must not go quiet on its own say-so."""
+    if not HOSTPOLICY:
+        return False
+    try:
+        _p = Path(HOSTPOLICY)
+        _s = importlib.util.spec_from_file_location("_canary_hostpolicy", str(_p))
+        if _s is None or _s.loader is None:
+            return False
+        _m = importlib.util.module_from_spec(_s)
+        _s.loader.exec_module(_m)
+        return bool(_m.in_maintenance_window(now))
+    except Exception:                                  # noqa: BLE001 - boundary
+        return False
+
+
 def window_active():
     """(active, leg). Three OR-ed legs; see the header for why
     suppression.in_pause_window is the wrong predicate here."""
@@ -822,8 +844,7 @@ def window_active():
         return False, "forced-off"
 
     now = utcnow()
-    if (now.weekday() == 0
-            and WINDOW_START_HOUR_UTC <= now.hour < WINDOW_END_HOUR_UTC):
+    if _policy_window(now):
         return True, "wallclock-mon-%02d00-%02d00-utc" % (
             WINDOW_START_HOUR_UTC, WINDOW_END_HOUR_UTC)
 
