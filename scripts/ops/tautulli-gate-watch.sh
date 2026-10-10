@@ -46,7 +46,9 @@ WEBHOOK="$(tr -d '[:space:]' < "$SECRETS/discord-webhook.url" 2>/dev/null || tru
 OPERATOR_ID="$(tr -d '[:space:]' < "$SECRETS/discord-operator.id" 2>/dev/null || true)"
 TAUT_PORT="$(tr -d '[:space:]' < "$SECRETS/tautulli.port" 2>/dev/null || true)"
 PLEX_PORT="$(tr -d '[:space:]' < "$SECRETS/plex.port" 2>/dev/null || echo 17025)"
-PLEX_HOSTPORT="172.17.0.1:${PLEX_PORT}"
+APP_HOST="$(tr -d '[:space:]' < "$SECRETS/net.app_host" 2>/dev/null || true)"
+[ -n "$APP_HOST" ] || { echo "tautulli-gate-watch: secret net.app_host missing - refusing to guess a host" >&2; exit 78; }
+PLEX_HOSTPORT="${APP_HOST}:${PLEX_PORT}"
 
 log() { printf '%s  %s\n' "$(date -u +%FT%TZ)" "$*"; }
 

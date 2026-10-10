@@ -43,7 +43,8 @@ CFG=$HOME/.apps/tautulli/config.ini
 # 127.0.0.1 (which is the *container's* loopback, not the host's). Derived from
 # the gateway constant + secrets/plex.port — never from the possibly-drifted
 # pms_ip already in config. See the header for the 2026-05-20 incident.
-GATEWAY=172.17.0.1
+GATEWAY=$(tr -d '[:space:]' < ~/secrets/net.app_host)   # secret net.app_host (Ultra: docker gateway)
+[ -n "$GATEWAY" ] || { echo "secret net.app_host missing" >&2; exit 1; }
 PORT=$(cat ~/secrets/plex.port)
 WANT_URL="http://${GATEWAY}:${PORT}"
 

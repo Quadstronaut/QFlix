@@ -15,7 +15,7 @@ file_mode = "0644"
 dir_mode = "0755"
 
 [[sonarr]]
-url = "http://172.17.0.1:{{SONARR_PORT}}/{{SONARR_BASE}}"
+url = "http://{{APP_HOST}}:{{SONARR_PORT}}/{{SONARR_BASE}}"
 api_key = "{{SONARR_KEY}}"
 paths = ["/home/quadstronaut/downloads/qbittorrent/tv-sonarr"]
 protocols = "torrent"
@@ -23,7 +23,7 @@ timeout = "10s"
 delete_orig = false
 
 [[sonarr]]
-url = "http://172.17.0.1:{{SONARR2_PORT}}/{{SONARR2_BASE}}"
+url = "http://{{APP_HOST}}:{{SONARR2_PORT}}/{{SONARR2_BASE}}"
 api_key = "{{SONARR2_KEY}}"
 paths = ["/home/quadstronaut/downloads/qbittorrent/sonarr-anime"]
 protocols = "torrent"
@@ -31,7 +31,7 @@ timeout = "10s"
 delete_orig = false
 
 [[radarr]]
-url = "http://172.17.0.1:{{RADARR_PORT}}/{{RADARR_BASE}}"
+url = "http://{{APP_HOST}}:{{RADARR_PORT}}/{{RADARR_BASE}}"
 api_key = "{{RADARR_KEY}}"
 paths = ["/home/quadstronaut/downloads/qbittorrent/radarr"]
 protocols = "torrent"
@@ -39,7 +39,7 @@ timeout = "10s"
 delete_orig = false
 
 [[radarr]]
-url = "http://172.17.0.1:{{RADARR2_PORT}}/{{RADARR2_BASE}}"
+url = "http://{{APP_HOST}}:{{RADARR2_PORT}}/{{RADARR2_BASE}}"
 api_key = "{{RADARR2_KEY}}"
 paths = ["/home/quadstronaut/downloads/qbittorrent/radarr-anime"]
 protocols = "torrent"

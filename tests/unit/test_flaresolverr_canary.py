@@ -90,6 +90,7 @@ class TestNotSuppressedProceeds:
         # SECRETS_DIR is read at module import; override it on the loaded module.
         canary.SECRETS_DIR = tmp_path
         (tmp_path / "flaresolverr.port").write_text("17011")
+        (tmp_path / "net.app_host").write_text("10.9.9.9")
 
         probe_root = MagicMock(return_value=(True, "ready"))
         probe_v1 = MagicMock(return_value=(True, "ok"))
@@ -109,6 +110,7 @@ class TestNotSuppressedProceeds:
         monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
         canary.SECRETS_DIR = tmp_path
         (tmp_path / "flaresolverr.port").write_text("17011")
+        (tmp_path / "net.app_host").write_text("10.9.9.9")
         (tmp_path / "push-suppress.json").write_text("not json {{{", encoding="utf-8")
 
         probe_root = MagicMock(return_value=(True, "ready"))
@@ -118,3 +120,27 @@ class TestNotSuppressedProceeds:
 
         canary.run(dry_run=False)
         probe_root.assert_called_once()
+
+
+class TestAppHostSecret:
+    def test_probe_base_uses_net_app_host_secret(self, canary, tmp_path, monkeypatch):
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        canary.SECRETS_DIR = tmp_path
+        monkeypatch.setattr(canary, "FS_HOST", "")
+        (tmp_path / "flaresolverr.port").write_text("17011")
+        (tmp_path / "net.app_host").write_text("10.9.9.9")
+        seen = []
+        monkeypatch.setattr(canary, "_probe_root", lambda u: (seen.append(u) or (True, "ok")))
+        monkeypatch.setattr(canary, "_probe_v1", lambda u: (True, "ok"))
+        assert canary.run(dry_run=False) == 0
+        assert seen == ["http://10.9.9.9:17011/"]
+
+    def test_missing_secret_is_fatal_not_a_guess(self, canary, tmp_path, monkeypatch):
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        canary.SECRETS_DIR = tmp_path
+        monkeypatch.setattr(canary, "FS_HOST", "")
+        (tmp_path / "flaresolverr.port").write_text("17011")
+        probe = MagicMock()
+        monkeypatch.setattr(canary, "_probe_root", probe)
+        assert canary.run(dry_run=False) == 2
+        probe.assert_not_called()

@@ -18,7 +18,8 @@ set -euo pipefail
 
 APP="flaresolverr"
 PORT_SECRET="${HOME}/secrets/flaresolverr.port"
-HOSTNAME_OVERRIDE="172.17.0.1"
+HOSTNAME_OVERRIDE="$(tr -d '[:space:]' < "${HOME}/secrets/net.app_host" 2>/dev/null || true)"
+[ -n "$HOSTNAME_OVERRIDE" ] || { echo "flaresolverr-unsuppress: secret net.app_host missing - refusing to guess a host" >&2; exit 78; }
 UP_DEBOUNCE=2
 
 STATE_DIR="${MANITOBA_STATE_DIR:-${HOME}/.opt/maint}"

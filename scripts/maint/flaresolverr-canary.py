@@ -48,7 +48,7 @@ Schedule: systemd timer every 5 minutes
 (scripts/maint/systemd/manitoba-maint-flaresolverr-canary.timer).
 
 Reads creds: ~/secrets/flaresolverr.port + the Docker bridge IP
-(172.17.0.1 — Ultra.cc default; override via FS_HOST env var).
+(secret net.app_host; override via FS_HOST env var).
 """
 from __future__ import annotations
 
@@ -67,7 +67,8 @@ SECRETS_DIR = Path(os.environ.get("MANITOBA_SECRETS", str(Path.home() / "secrets
 STATE_DIR = Path(os.environ.get("MANITOBA_STATE_DIR", str(Path.home() / ".opt" / "maint")))
 STATE_FILE = STATE_DIR / "flaresolverr-canary-state.json"
 
-FS_HOST = os.environ.get("FS_HOST", "172.17.0.1")
+# Optional override only; the default comes from the net.app_host secret at run().
+FS_HOST = os.environ.get("FS_HOST", "")
 # Push-suppress registry key. The pusher mutes the "FlareSolverr" Kuma monitor
 # under this same key while flaresolverr is knowingly down (awaiting the
 # Ultra.cc cap_setuid ticket); this canary honors it too so it stops paging
@@ -288,7 +289,13 @@ def run(dry_run: bool) -> int:
               file=sys.stderr)
         return 2
 
-    base = f"http://{FS_HOST}:{port}"
+    host = FS_HOST or _read(SECRETS_DIR / "net.app_host")
+    if not host:
+        print("FATAL: ~/secrets/net.app_host missing or empty (and FS_HOST unset)",
+              file=sys.stderr)
+        return 2
+
+    base = f"http://{host}:{port}"
     print(f"--- flaresolverr-canary ({'DRY-RUN' if dry_run else 'LIVE'}) base={base} ---")
 
     ok_root, detail_root = _probe_root(f"{base}/")
