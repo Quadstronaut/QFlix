@@ -134,3 +134,57 @@ def test_cli_capture_and_diff_roundtrip(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     assert swapstate.main(["ucc-slugs", "--manifest", str(man)]) == 0
     assert capsys.readouterr().out.split() == ["sonarr", "unpackerr"]
+
+
+# --- QFLX-21: soak gate + rollback-window close --------------------------------
+
+import datetime as _dt
+
+_NOW = _dt.datetime(2026, 11, 1, 12, 0, tzinfo=_dt.timezone.utc)
+
+
+def test_soak_gate_open_when_never_swapped():
+    assert swapstate.soak_gate("sonarr", now=_NOW)["refused"] is False
+
+
+def test_soak_gate_refuses_inside_the_window():
+    swapstate.update_state("sonarr", swap_date="2026-10-25",
+                           soak_until="2026-11-08T00:00:00Z")
+    g = swapstate.soak_gate("sonarr", now=_NOW)
+    assert g["refused"] is True and "2026-11-08" in g["reason"]
+
+
+def test_soak_gate_allows_after_the_window_and_accepts_date_only():
+    swapstate.update_state("sonarr", swap_date="2026-10-01", soak_until="2026-10-15")
+    assert swapstate.soak_gate("sonarr", now=_NOW)["refused"] is False
+
+
+def test_soak_gate_fails_closed_on_unparseable_soak_until():
+    swapstate.update_state("sonarr", swap_date="2026-10-25", soak_until="soonish")
+    assert swapstate.soak_gate("sonarr", now=_NOW)["refused"] is True
+
+
+def test_soak_gate_fails_closed_when_swapped_without_soak_until():
+    swapstate.update_state("sonarr", swap_date="2026-10-25")
+    assert swapstate.soak_gate("sonarr", now=_NOW)["refused"] is True
+
+
+def test_close_rollback_window_is_idempotent_and_keeps_other_fields():
+    swapstate.update_state("sonarr", swap_date="2026-10-01", soak_until="2026-10-15")
+    assert swapstate.close_rollback_window("sonarr") is True    # changed
+    assert swapstate.close_rollback_window("sonarr") is False   # already closed
+    st = swapstate.load_state("sonarr")
+    assert st["rollback_window"] == "closed" and st["swap_date"] == "2026-10-01"
+
+
+def test_close_rollback_window_noop_for_unswapped_slug(tmp_path):
+    assert swapstate.close_rollback_window("sonarr") is False
+    assert not (tmp_path / "swap" / "sonarr").exists()
+
+
+def test_cli_soak_check_exit_codes(capsys):
+    swapstate.update_state("sonarr", swap_date="2026-10-25", soak_until="2999-01-01")
+    assert swapstate.main(["soak-check", "sonarr"]) == 1
+    assert swapstate.main(["soak-check", "nope"]) == 0
+    assert swapstate.main(["close-window", "sonarr"]) == 0
+    assert swapstate.load_state("sonarr")["rollback_window"] == "closed"
