@@ -438,10 +438,10 @@ def test_manifest_upgrade_template_matches_the_installer_pin():
     assert up["target_dir"] == "~/.apps/qbittorrent/bin/{version}"
 
 
-def test_manifest_flip_is_pending_swap_with_panel_cgroup_marker():
+def test_manifest_flip_is_swapped_with_panel_cgroup_marker():
     a = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))["apps"]["qbittorrent"]
     assert a["class"] == "systemd" and a["unit"] == UNIT
-    assert a["swap_state"] == "pending-swap" and a["ucc_dormant"] is True
+    assert "swap_state" not in a and a["ucc_dormant"] is True   # swapped 2026-10-10
     assert a["ucc_cgroup_markers"] == ["/qbittorrent.service"]
     assert a["kuma_monitor"] == "qBittorrent"                 # never renamed
     assert a["recovery_backoff_s"] == [30, 90, 180]           # bind-race backoff kept
