@@ -86,6 +86,20 @@ def test_flaresolverr_is_converted_pending_swap():
     assert any("mv .fs-tmp/* ." in step for step in a["upgrade"]["post_steps"])
 
 
+def test_sabnzbd_is_converted_pending_swap():
+    a = _converted()["sabnzbd"]
+    assert a["swap_state"] == "pending-swap" and a["unit"] == "qflix-sabnzbd.service"
+    # The probe stays on loopback (the forwarder) under the urlbase.
+    assert a["health"]["path_override"] == "/sabnzbd/" and "hostname_ref" not in a["health"]
+    steps = a["upgrade"]["post_steps"]
+    assert a["upgrade"]["version_pin"]["key"] == "SABNZBD_VERSION"
+    # The upgrade must carry the wrapper, the forwarder and the helpers forward,
+    # build the venv, and never delete an existing bin/<ver>.
+    assert any("current/qflix-tcpfwd.py current/par2 current/unrar current/7zz" in s for s in steps)
+    assert any("-m pip install" in s and "requirements.txt" in s for s in steps)
+    assert not any("rm -rf" in s for s in steps)
+
+
 def test_real_manifest_loads_with_the_flip():
     app = load_manifest(MANIFEST).app("unpackerr")
     assert app.class_ == "systemd" and app.upgrade.kind == "tarball_swap"
@@ -106,6 +120,7 @@ def test_generated_skip_list_carries_unpackerr():
     assert "unpackerr" in r.stdout.split()
     assert "flaresolverr" in r.stdout.split()
     assert "bazarr" in r.stdout.split()
+    assert "sabnzbd" in r.stdout.split()
 
 
 # --- zero UCC starts after the swap (O-3 / F8 dependency) --------------------------

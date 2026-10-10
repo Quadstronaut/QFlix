@@ -334,13 +334,99 @@ def _sab_count(lines: list[str]) -> dict:
     return {"servers": int(servers), "rss_feeds": int(feeds), "auto_update": upd}
 
 
+# QFLX-33: the copied ini still names the LIVE download/complete/watch dirs (host
+# paths on this slot). A proof boot must never scan, move into or write those, so
+# every data dir is pointed inside the proof copy and the post-processing script
+# dir is cleared. Notifiers (SAB can send a "startup" notification) go off too.
+_SAB_DIR_KEYS = ("download_dir", "complete_dir", "dirscan_dir", "nzb_backup_dir", "backup_dir")
+_SAB_CLEAR_KEYS = ("script_dir",)
+_SAB_SELF_KEYS = ("admin_dir", "log_dir")        # relative to the ini dir: fine if inside
+_SAB_NOTIFY_SECTIONS = ("apprise", "ntfosd", "nscript", "prowl", "pushover", "pushbullet",
+                        "growl", "ncenter", "acenter")
+_SAB_EMAIL_KEYS = ("email_endjob", "email_full", "email_rss")
+_KV = re.compile(r"^(\s*)(\w+)(\s*=\s*)(.*)$")
+
+
+def _sab_unquote(v: str) -> str:
+    v = v.strip()
+    return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'" else v
+
+
+def _sab_inside(d: Path, value: str) -> bool:
+    if not value:
+        return True
+    p = Path(value)
+    if not p.is_absolute():
+        p = d / p
+    try:
+        p.resolve().relative_to(d.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _sab_isolate(lines: list[str], d: Path) -> list[str]:
+    """Point every data dir into the copy, clear scripts, mute notifiers."""
+    out: list[str] = []
+    top, in_sub = "", False
+    for line in lines:
+        s = line.strip()
+        if s.startswith("[[") and s.endswith("]]"):
+            in_sub = True
+        elif s.startswith("[") and s.endswith("]"):
+            top, in_sub = s.strip("[]"), False
+        m = _KV.match(line)
+        if m and not in_sub and top == "misc":
+            k = m.group(2)
+            if k in _SAB_DIR_KEYS and _sab_unquote(m.group(4)):
+                target = d / "proof-dirs" / k
+                target.mkdir(parents=True, exist_ok=True)
+                line = f"{m.group(1)}{k}{m.group(3)}{target.as_posix()}"
+            elif k in _SAB_CLEAR_KEYS:
+                line = f'{m.group(1)}{k}{m.group(3)}""'
+            elif k in _SAB_EMAIL_KEYS:
+                line = f"{m.group(1)}{k}{m.group(3)}0"
+        elif m and top in _SAB_NOTIFY_SECTIONS and m.group(2).endswith("_enable"):
+            line = f"{m.group(1)}{m.group(2)}{m.group(3)}0"
+        out.append(line)
+    return out
+
+
+def _sab_isolation_count(lines: list[str], d: Path) -> dict:
+    top, in_sub, live, notify = "", False, 0, 0
+    for line in lines:
+        s = line.strip()
+        if s.startswith("[[") and s.endswith("]]"):
+            in_sub = True
+            continue
+        if s.startswith("[") and s.endswith("]"):
+            top, in_sub = s.strip("[]"), False
+            continue
+        m = _KV.match(line)
+        if not m:
+            continue
+        k, v = m.group(2), _sab_unquote(m.group(4))
+        if top == "misc" and not in_sub:
+            if k in _SAB_DIR_KEYS + _SAB_SELF_KEYS and not _sab_inside(d, v):
+                live += 1
+            if k in _SAB_CLEAR_KEYS and v:
+                live += 1
+            if k in _SAB_EMAIL_KEYS and v not in ("", "0"):
+                notify += 1
+        elif top in _SAB_NOTIFY_SECTIONS and k.endswith("_enable") and v not in ("", "0"):
+            notify += 1
+    return {"live_paths": live, "notifications": notify}
+
+
 def _sab(slug: str, d: Path) -> dict:
     ini = d / "sabnzbd.ini"
     if not ini.is_file():
         raise SanitizeError(f"missing {ini}")
     lines = ini.read_text(encoding="utf-8").splitlines()
-    ini.write_text("\n".join(_sab_rewrite(lines)) + "\n", encoding="utf-8")
-    return _sab_count(ini.read_text(encoding="utf-8").splitlines())
+    lines = _sab_isolate(_sab_rewrite(lines), d)
+    ini.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    back = ini.read_text(encoding="utf-8").splitlines()
+    return {**_sab_count(back), **_sab_isolation_count(back, d)}
 
 
 _DISPATCH = {"arr": _arr, "prowlarr": _prowlarr, "bazarr": _bazarr, "seerr": _seerr,

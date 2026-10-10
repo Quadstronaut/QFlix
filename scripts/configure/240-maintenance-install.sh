@@ -302,6 +302,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/306-native-radarr-install.sh \
     scripts/configure/301-native-flaresolverr-install.sh \
     scripts/configure/302-native-bazarr-install.sh \
+    scripts/configure/308-native-sabnzbd-install.sh \
+    scripts/lib/qflix-tcpfwd.py \
     scripts/configure/303-native-prowlarr-install.sh \
     scripts/configure/307-native-sonarr-install.sh \
     scripts/maint/native_sanitize.py \
@@ -492,6 +494,11 @@ cp -f   "$STG"/scripts/configure/302-native-bazarr-install.sh ~/scripts/configur
 chmod +x ~/scripts/configure/302-native-bazarr-install.sh
 cp -f   "$STG"/scripts/maint/native_sanitize.py ~/scripts/maint/native_sanitize.py
 chmod +x ~/scripts/maint/native_sanitize.py
+# QFLX-33: the sabnzbd installer also needs the loopback forwarder (copied into
+# bin/<ver>/ at install; SAB binds one host) (native_sanitize.py: see QFLX-27 above).
+cp -f   "$STG"/scripts/configure/308-native-sabnzbd-install.sh ~/scripts/configure/308-native-sabnzbd-install.sh
+chmod +x ~/scripts/configure/308-native-sabnzbd-install.sh
+cp -f   "$STG"/scripts/lib/qflix-tcpfwd.py ~/scripts/lib/qflix-tcpfwd.py
 # QFLX-28 (A4 prowlarr): same shape; reuses native_sanitize.py deployed above.
 cp -f   "$STG"/scripts/configure/303-native-prowlarr-install.sh ~/scripts/configure/303-native-prowlarr-install.sh
 chmod +x ~/scripts/configure/303-native-prowlarr-install.sh

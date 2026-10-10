@@ -467,14 +467,47 @@ apps:
     # expect_status: 200 a deterministic up-signal. Root "/" would risk a 404
     # against the urlbase. No sabnzbd.key secret exists, so this is an
     # unauthenticated liveness probe — deliberately no auth_header/auth_secret.
-    class: ucc
+    # QFLX-33 (UCC divorce A9): converted to the upstream SOURCE release in a
+    # python3 venv + pinned par2 (turbo) / unrar / 7zz in the same bin/<ver>
+    # (first on the unit PATH), run as qflix-sabnzbd.service by
+    # scripts/configure/308-native-sabnzbd-install.sh (version pinned in
+    # versions.env SABNZBD_VERSION + sha256s in the installer). Data stays in
+    # place (~/.apps/sabnzbd/sabnzbd.ini). SAB binds ONE host: net.app_host
+    # (the arrs dial it); scripts/lib/qflix-tcpfwd.py, a child of the unit,
+    # re-creates 127.0.0.1:<sabnzbd.port> (nginx, canaries, MCP, this probe).
+    # The container's public-IP listener is dropped as a recorded swap-state
+    # exception (D-4). The UCC container stays installed and DORMANT as the
+    # rollback target (I-8). `swap_state: pending-swap` keeps the container the
+    # live runtime (appctl, lifecycle, health) until the swap runs; the
+    # follow-up PR drops it.
+    class: systemd
+    unit: qflix-sabnzbd.service
     ucc_slug: sabnzbd
+    ucc_dormant: true
+    swap_state: pending-swap
     kuma_monitor: "SABnzbd"
     health:
       kind: http_root
       port_secret: sabnzbd.port
       path_override: "/sabnzbd/"
       expect_status: 200
+    upgrade:
+      # The source tarball unpacks to SABnzbd-<ver>/. Post steps: flatten it
+      # into bin/<ver>, build the venv from its pinned requirements.txt, carry
+      # the wrapper + forwarder + helper binaries over from the running release,
+      # then flip `current` atomically. The soak gate refuses it for 14 days
+      # after the swap.
+      kind: tarball_swap
+      url_template: "https://github.com/sabnzbd/sabnzbd/releases/download/{version}/SABnzbd-{version}-src.tar.gz"
+      target_dir: "~/.apps/sabnzbd/bin/.up-{version}"
+      post_steps:
+        - "cd ~/.apps/sabnzbd/bin && test ! -e {version} && mv .up-{version}/SABnzbd-{version} {version} && rmdir .up-{version}"
+        - "cd ~/.apps/sabnzbd/bin/{version} && python3 -m venv venv && venv/bin/python -m pip install --disable-pip-version-check --no-cache-dir --prefer-binary -q -r requirements.txt"
+        - "cd ~/.apps/sabnzbd/bin && cp -a current/qflix-sabnzbd current/qflix-tcpfwd.py current/par2 current/unrar current/7zz {version}/"
+        - "ln -sfn {version} ~/.apps/sabnzbd/bin/.current.new && mv -Tf ~/.apps/sabnzbd/bin/.current.new ~/.apps/sabnzbd/bin/current"
+      version_pin:
+        source: versions.env
+        key: SABNZBD_VERSION
 
   # maintainerr: DECOMMISSIONED 2026-06-20 — its Plex autodelete was unfixable
   # (docs/maintainerr-plex-id-resolution-bug.md); replaced by scripts/maint/
