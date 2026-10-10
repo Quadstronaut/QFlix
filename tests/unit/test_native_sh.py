@@ -99,10 +99,20 @@ def test_slug_traversal_refused(tmp_path):
     assert _sh(tmp_path, "native_render_unit ../evil go x ''").returncode != 0
 
 
+def test_render_unit_absolute_exe_is_used_verbatim(tmp_path):
+    """QFLX-27: an EXE starting %h/ or / replaces the bin/current prefix."""
+    out = _sh(tmp_path, "native_render_unit bz python "
+                        "%h/.apps/bz/venv/bin/python '%h/.apps/bz/bin/current/x.py --a'").stdout
+    assert "ExecStart=%h/.apps/bz/venv/bin/python %h/.apps/bz/bin/current/x.py --a" + chr(10) in out
+    plain = _sh(tmp_path, "native_render_unit bz python x.py '--a'").stdout
+    assert "ExecStart=%h/.apps/bz/bin/current/x.py --a" + chr(10) in plain
+
+
 # --- env caps -------------------------------------------------------------------
 
 @pytest.mark.parametrize("fam,lines", [
-    ("dotnet", ["DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "MALLOC_ARENA_MAX=2"]),
+    ("dotnet", ["DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "DOTNET_GCRegionRange=80000000",
+                "MALLOC_ARENA_MAX=2"]),
     ("go", ["GOMAXPROCS=4", "MALLOC_ARENA_MAX=2"]),
     ("node", ["UV_THREADPOOL_SIZE=4", "MALLOC_ARENA_MAX=2"]),
     ("python", ["MALLOC_ARENA_MAX=2"]),
