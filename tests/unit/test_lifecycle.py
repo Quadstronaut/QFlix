@@ -655,3 +655,58 @@ def test_timeout_uses_app_default_when_not_specified():
 
     kwargs = mock_run.call_args[1]
     assert kwargs.get("timeout") == 30.0
+
+
+# ---- I-9: nothing wakes a dormant app (QFLX-17) ----------------------------
+# A `ucc_dormant: true` entry is a converted app whose UCC container stays
+# installed and stopped as a rollback target. Only `stop` may reach it; start,
+# restart and the ucc_update upgrade kind (stop + update) must refuse WITHOUT
+# running anything.
+
+def _dormant_ucc_app(slug: str = "sonarr") -> App:
+    app = _ucc_app(ucc_slug=slug)
+    app.raw["ucc_dormant"] = True
+    return app
+
+
+@pytest.mark.parametrize("verb", [start, restart])
+def test_dormant_ucc_app_refuses_waking_verbs(verb):
+    with patch("subprocess.run") as mock_run:
+        result = verb(_dormant_ucc_app())
+    mock_run.assert_not_called()
+    assert result.ok is False
+    assert "dormant" in result.reason
+
+
+def test_dormant_ucc_app_still_stops():
+    with patch("subprocess.run", return_value=_ok_cp()) as mock_run:
+        result = stop(_dormant_ucc_app())
+    assert mock_run.call_args[0][0] == ["app-sonarr", "stop"]
+    assert result.ok is True
+
+
+def test_dormant_ucc_app_refuses_ucc_update():
+    with patch("subprocess.run") as mock_run, \
+         patch("lib.lifecycle._post_health_probe", return_value=(True, "ok")):
+        result = upgrade(_dormant_ucc_app(), target_version="1.0.0")
+    mock_run.assert_not_called()
+    assert result.ok is False
+    assert "dormant" in result.reason
+
+
+@pytest.mark.parametrize("value", [True, "yes", 1])
+def test_any_set_dormant_flag_fails_closed(value):
+    app = _ucc_app(ucc_slug="sonarr")
+    app.raw["ucc_dormant"] = value
+    with patch("subprocess.run") as mock_run:
+        assert start(app).ok is False
+    mock_run.assert_not_called()
+
+
+@pytest.mark.parametrize("value", [False, None])
+def test_unset_dormant_flag_still_starts(value):
+    app = _ucc_app(ucc_slug="sonarr")
+    app.raw["ucc_dormant"] = value
+    with patch("subprocess.run", return_value=_ok_cp()) as mock_run:
+        assert start(app).ok is True
+    assert mock_run.call_args[0][0] == ["app-sonarr", "start"]

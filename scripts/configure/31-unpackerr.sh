@@ -31,8 +31,11 @@ scpm_to "$OUT" "/home/quadstronaut/.apps/unpackerr/unpackerr.conf"
 sshm 'chmod 600 ~/.apps/unpackerr/unpackerr.conf'
 
 log_info "Restarting unpackerr..."
-# Through ~/bin/appctl (QFLX-18): once unpackerr is swapped to a native unit,
-# it restarts the unit and refuses to wake the dormant UCC container (I-9).
+# I-9 (QFLX-17/QFLX-18): once unpackerr is converted (A1) its UCC container
+# stays installed and dormant; a bare `app-unpackerr restart || start` would
+# wake it next to the native unit. ~/bin/appctl dispatches by the DEPLOYED
+# manifest: the native unit when converted, exit 3 (refused) for a dormant
+# ucc slug, exit 2 when unpackerr is unknown or the manifest is unreadable.
 sshm '~/bin/appctl restart unpackerr 2>&1 || ~/bin/appctl start unpackerr 2>&1' | head -5
 sleep 8
 

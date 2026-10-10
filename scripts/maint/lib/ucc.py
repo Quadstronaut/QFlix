@@ -7,7 +7,13 @@ pin Kuma incidents, or run heals.
 Probe
 -----
 Runs `app-<probe_app> start` via subprocess (timeout 15s). probe_app
-resolves from secret `ucc.probe_app` → fallback `sonarr`.
+resolves from secret `ucc.probe_app` → fallback `plex` on ANY read error.
+
+I-9 guard (QFLX-17): the probe refuses (no subprocess, classification
+``probe-error``, reason logged to stderr) any probe_app that is not an active,
+non-dormant ucc app in the deployed manifest (lib/ucc_skip.py). A `start` on a
+converted app's dormant container would run it next to the native unit (I-6).
+If the manifest itself cannot be read, only the pinned default may run.
 
 Classification
 --------------
@@ -74,12 +80,13 @@ UCC_PROBE_ERROR_CAP: int = 3
 # Probe subprocess timeout in seconds.
 _PROBE_TIMEOUT_S: int = 15
 
-# Default probe app when the secret is not set. kavita was decommissioned
-# 2026-08-16 with the rest of the books stack, so this repointed to sonarr. The
-# probe only needs an app the lifecycle CLI knows about, and sonarr is
-# load-bearing enough that it will never be the next thing uninstalled out from
-# under this detector.
-_DEFAULT_PROBE_APP: str = "sonarr"
+# Default probe app when the secret is not set OR cannot be read. kavita was
+# decommissioned 2026-08-16 (-> sonarr). The UCC divorce converts sonarr to a
+# native unit (A8) and leaves its container dormant, and probe() falls back to
+# this constant on ANY secret read error, so pinning only the secret would still
+# leave a latent `app-sonarr start` every 5 minutes (review O-3). plex is never
+# converted on Ultra (spec I-9), so it is the one slug this can always name.
+_DEFAULT_PROBE_APP: str = "plex"
 
 # State file name (under MANITOBA_STATE_DIR).
 _STATE_FILE = "ucc-window.json"
@@ -207,6 +214,29 @@ def classify(output: str, returncode: int = 0) -> str:
 # Probe
 # ---------------------------------------------------------------------------
 
+def _probe_refusal(probe_app: str) -> Optional[str]:
+    """Return why *probe_app* must not be started, or None when it may be.
+
+    Allowed: an active, non-dormant ucc slug in the deployed manifest. When the
+    manifest cannot be read, only _DEFAULT_PROBE_APP (plex, never converted on
+    Ultra) is allowed: refusing everything would freeze the gate on a manifest
+    hiccup, and plex is the one slug that can never be a dormant container.
+    """
+    try:
+        from lib import ucc_skip
+        if ucc_skip.probe_allowed(probe_app):
+            return None
+        return (f"'{probe_app}' is not an active ucc app in the deployed "
+                f"manifest (converted, ucc_dormant, or unknown); I-9 never "
+                f"wakes a dormant app. Pin secret ucc.probe_app to "
+                f"'{_DEFAULT_PROBE_APP}'.")
+    except Exception as exc:
+        if probe_app == _DEFAULT_PROBE_APP:
+            return None
+        return (f"manifest unreadable ({exc}); only the pinned default "
+                f"'{_DEFAULT_PROBE_APP}' may be probed")
+
+
 def probe(*, probe_app: Optional[str] = None) -> tuple[str, str, str]:
     """Run one `app-<probe_app> start` probe.
 
@@ -220,9 +250,15 @@ def probe(*, probe_app: Optional[str] = None) -> tuple[str, str, str]:
             probe_app = read_secret("ucc.probe_app")
         except (FileNotFoundError, Exception):
             probe_app = _DEFAULT_PROBE_APP
+    probe_app = str(probe_app).strip()
 
     cmd = ["app-" + probe_app, "start"]
     probe_op = " ".join(cmd)
+
+    refusal = _probe_refusal(probe_app)
+    if refusal is not None:
+        print(f"WARNING: ucc probe refused: {refusal}", file=sys.stderr)
+        return "probe-error", probe_op, f"refused: {refusal}"
 
     try:
         result = subprocess.run(

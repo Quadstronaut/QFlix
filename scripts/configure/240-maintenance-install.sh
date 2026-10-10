@@ -98,6 +98,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/ucc.py \
     scripts/maint/lib/ucc_incident.py \
     scripts/maint/lib/ucc_response.py \
+    scripts/maint/lib/ucc_skip.py \
     scripts/maint/lib/entitlement.py \
     scripts/maint/lib/access_state.py \
     scripts/maint/lib/plexshare.py \
@@ -464,6 +465,17 @@ STAGE
 
 # Render the port file (used by both webhook server and heartbeat script).
 sshm "echo -n '$WEBHOOK_PORT' > ~/.opt/maint/maintenance.port && chmod 600 ~/.opt/maint/maintenance.port"
+
+# QFLX-17 (UCC divorce I-9): app-upgrade-all.sh generates its converted/dormant
+# skip list (class != ucc or ucc_dormant) from the manifest deployed just above,
+# on every run. Generate it here too so the deploy log shows it and a manifest
+# the generator cannot read stops the deploy instead of failing the Monday
+# sweep closed four days later.
+if ! GEN_SKIP_OUT=$(sshm 'python3 ~/scripts/maint/lib/ucc_skip.py --list' 2>&1); then
+  log_error "ucc_skip.py --list failed on the deployed manifest: $GEN_SKIP_OUT"
+  exit 1
+fi
+log_info "app-upgrade-all generated skip list: $(printf '%s' "$GEN_SKIP_OUT" | tr '\n' ' ')"
 
 # ── Step 4.5: bootstrap Kuma monitors + push tokens (idempotent) ────────────
 # Creates one PUSH monitor per app/canary in manifest/apps.yaml that doesn't

@@ -112,20 +112,24 @@ def _run(args: list[str], timeout_s: float) -> LifecycleResult:
 # ---------------------------------------------------------------------------
 
 def _ucc_dormant(app: App) -> bool:
-    """I-9: after a swap the UCC container stays installed as a rollback
-    target but must never run again. Mirrors scripts/lib/appctl."""
-    return app.raw.get("ucc_dormant") is True
+    """I-9 (QFLX-17): a `ucc_dormant` app is a converted app whose container
+    stays installed and stopped as the rollback target. Fails closed: any value
+    other than absent/null/false counts (same rule as lib/ucc_skip.py)."""
+    v = app.raw.get("ucc_dormant")
+    return v is not None and v is not False
 
 
 def _dormant_refusal(app: App, verb: str) -> LifecycleResult:
-    return _fail(f"refused: {app.name} UCC runtime is dormant (ucc_dormant: true); "
-                 f"'{verb}' may not reach it, only 'stop'")
+    slug = app.raw.get("ucc_slug") or app.name
+    return _fail(f"refused: {app.name} is ucc_dormant; app-{slug} {verb} would "
+                 f"wake the dormant container (I-9)")
 
 
 def _ucc_verb(app: App, verb: str, timeout_s: float) -> LifecycleResult:
+    slug = app.raw.get("ucc_slug") or app.name
+    # Only `stop` may reach a dormant container (it can never wake one).
     if verb != "stop" and _ucc_dormant(app):
         return _dormant_refusal(app, verb)
-    slug = app.raw.get("ucc_slug") or app.name
     return _run(["app-" + slug, verb], timeout_s)
 
 

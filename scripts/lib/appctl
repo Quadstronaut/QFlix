@@ -78,7 +78,9 @@ print("|".join([
     str(a.get("class") or ""),
     str(a.get("ucc_slug") or name),
     str(a.get("unit") or ""),
-    "1" if a.get("ucc_dormant") is True else "0",
+    # Fail closed, same rule as lib/ucc_skip.py and lifecycle._ucc_dormant:
+    # anything but absent/null/false is dormant (a typo must not wake it).
+    "0" if a.get("ucc_dormant") in (None, False) else "1",
     str(h.get("port_secret") or ""),
 ]))
 PY

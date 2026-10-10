@@ -263,6 +263,25 @@ def test_dormant_ucc_refuses_every_verb_but_stop(tmp_path, verb):
     assert calls == []          # nothing at all reached UCC
 
 
+@pytest.mark.parametrize("value", ['"yes"', "1", '"false"'])
+def test_dormant_flag_fails_closed_like_ucc_skip(tmp_path, value):
+    # Same rule as lib/ucc_skip.py and lifecycle._ucc_dormant (QFLX-17): any
+    # value other than absent/null/false counts as dormant.
+    manifest = MANIFEST.replace("    ucc_slug: sonarr\n",
+                                "    ucc_slug: sonarr\n    ucc_dormant: %s\n" % value, 1)
+    r, calls = _run(tmp_path, "start", "sonarr", manifest=manifest)
+    assert r.returncode == 3
+    assert calls == []
+
+
+def test_dormant_false_is_not_dormant(tmp_path):
+    manifest = MANIFEST.replace("    ucc_slug: sonarr\n",
+                                "    ucc_slug: sonarr\n    ucc_dormant: false\n", 1)
+    r, calls = _run(tmp_path, "start", "sonarr", manifest=manifest)
+    assert r.returncode == 0, r.stderr
+    assert calls == ["app-sonarr start"]
+
+
 def test_dormant_ucc_stop_is_allowed(tmp_path):
     r, calls = _run(tmp_path, "stop", "unpackerr")
     assert r.returncode == 0, r.stderr
