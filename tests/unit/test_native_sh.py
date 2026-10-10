@@ -66,7 +66,7 @@ def test_render_unit_dotnet_matches_golden(tmp_path):
 
 @pytest.mark.parametrize("fam,slug", [("dotnet", "radarr"), ("go", "unpackerr"),
                                       ("node", "seerr"), ("python", "tautulli"),
-                                      ("db", "postgres")])
+                                      ("db", "postgres"), ("static", "qbittorrent")])
 def test_every_family_has_path_line_and_no_taskmax(tmp_path, fam, slug):
     r = _sh(tmp_path, f"native_render_unit {slug} {fam} exe '--x'")
     assert r.returncode == 0, r.stderr
@@ -81,6 +81,14 @@ def test_db_family_gets_120s_stop_timeout(tmp_path):
     out = _sh(tmp_path, "native_render_unit postgres db postgres '-D x'").stdout
     assert "TimeoutStopSec=120\n" in out
     assert "TimeoutStopSec=60\n" in _sh(tmp_path, "native_render_unit a go a ''").stdout
+
+
+def test_static_family_gets_120s_stop_and_no_thread_knob(tmp_path):
+    # qbittorrent-nox (QFLX-35): libtorrent flushes resume data on SIGTERM.
+    out = _sh(tmp_path, "native_render_unit qbittorrent static qbittorrent-nox ''").stdout
+    assert "TimeoutStopSec=120\n" in out
+    env = _sh(tmp_path, "native_render_env qbittorrent static 5.0.3").stdout.splitlines()
+    assert env == ["MALLOC_ARENA_MAX=2"]
 
 
 def test_node_wasm_flag_on_cli_never_in_node_options(tmp_path):
@@ -121,10 +129,12 @@ def test_render_unit_workdir_defaults_to_the_data_dir_and_takes_a_subdir(tmp_pat
 # --- env caps -------------------------------------------------------------------
 
 @pytest.mark.parametrize("fam,lines", [
-    ("dotnet", ["DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "MALLOC_ARENA_MAX=2"]),
+    ("dotnet", ["DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "DOTNET_GCRegionRange=80000000",
+                "MALLOC_ARENA_MAX=2"]),
     ("go", ["GOMAXPROCS=4", "MALLOC_ARENA_MAX=2"]),
     ("node", ["UV_THREADPOOL_SIZE=4", "MALLOC_ARENA_MAX=2"]),
     ("python", ["MALLOC_ARENA_MAX=2"]),
+    ("static", ["MALLOC_ARENA_MAX=2"]),
 ])
 def test_env_caps_per_family(tmp_path, fam, lines):
     out = _sh(tmp_path, f"native_render_env app {fam} 1.0").stdout.splitlines()
@@ -218,3 +228,18 @@ def test_listen_capture_then_compare_clean(tmp_path):
     r = _sh(tmp_path, "native_listen_capture sonarr 42050 && native_listen_compare sonarr")
     assert r.returncode == 0, r.stderr + r.stdout
     assert (tmp_path / "swap" / "sonarr" / "listen-set.before").read_text() == "127.0.0.1:42050\n"
+
+
+# --- prefix parity (QFLX-28: the panel truncates prowlarr's build) --------------------
+
+def test_prefix_parity_accepts_a_whole_dotted_prefix_only_when_asked(tmp_path):
+    assert _sh(tmp_path, "native_check_parity prowlarr 2.6.5.5623", ucc_version="2.6.5").returncode != 0
+    r = _sh(tmp_path, "NATIVE_PARITY=prefix native_check_parity prowlarr 2.6.5.5623", ucc_version="2.6.5")
+    assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize("panel", ["2.6.50", "2.6.4", "2.6.5.5620", "2.6.5.56", ""])
+def test_prefix_parity_still_refuses_everything_else(tmp_path, panel):
+    # "2.6.50" and "2.6.5.56" are string prefixes but not whole dotted components
+    r = _sh(tmp_path, "NATIVE_PARITY=prefix native_check_parity prowlarr 2.6.5.5623", ucc_version=panel)
+    assert r.returncode != 0

@@ -1,0 +1,20 @@
+[Unit]
+Description=QFlix radarr (native)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.apps/radarr
+Environment=PATH=%h/.apps/radarr/bin/current:%h/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/qflix/radarr.env
+ExecStart=%h/.apps/radarr/bin/current/Radarr -nobrowser -data=%h/.apps/radarr
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=600
+StartLimitBurst=5
+TimeoutStopSec=60
+Nice=5
+UMask=0002
+
+[Install]
+WantedBy=default.target

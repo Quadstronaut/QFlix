@@ -269,6 +269,59 @@ def test_sab_servers_and_rss_off(tmp_path):
     assert "host = news.frugal.example" in out
 
 
+# The shape of the live ini (QFLX-33 box read, 2026-10-10): absolute HOST paths for
+# the data dirs, relative admin/log dirs, a notifier section, one server.
+SAB_LIVE_INI = """__version__ = 19
+[misc]
+check_new_rel = 1
+host = ::
+port = 8080
+api_key = 0123456789abcdef0123456789abcdef
+download_dir = /home/someone/downloads/sabnzbd/incomplete
+complete_dir = /home/someone/downloads/sabnzbd/complete
+script_dir = /home/someone/scripts/pp
+dirscan_dir = ""
+nzb_backup_dir = ""
+admin_dir = admin
+log_dir = logs
+email_endjob = 1
+[servers]
+[[news.example]]
+enable = 1
+[apprise]
+apprise_enable = 1
+apprise_urls = discord://x
+[categories]
+[[sonarr]]
+dir = sonarr
+"""
+
+
+def test_sab_proof_copy_never_touches_live_dirs_or_notifies(tmp_path):
+    d = tmp_path / "sabnzbd"
+    d.mkdir()
+    (d / "sabnzbd.ini").write_text(SAB_LIVE_INI)
+    counts = ns.sanitize("sabnzbd", d)
+    assert counts == {"servers": 0, "rss_feeds": 0, "auto_update": 0,
+                      "live_paths": 0, "notifications": 0}
+    out = (d / "sabnzbd.ini").read_text()
+    assert "/home/someone" not in out
+    assert f"download_dir = {(d / 'proof-dirs' / 'download_dir').as_posix()}" in out
+    assert (d / "proof-dirs" / "complete_dir").is_dir()
+    assert 'script_dir = ""' in out and "apprise_enable = 0" in out and "email_endjob = 0" in out
+    # untouched: what the boot needs, and the empty (unused) dirs
+    assert "admin_dir = admin" in out and "port = 8080" in out and 'dirscan_dir = ""' in out
+    assert "api_key = 0123456789abcdef0123456789abcdef" in out
+
+
+def test_sab_counts_an_absolute_admin_dir_outside_the_copy(tmp_path):
+    d = tmp_path / "sabnzbd"
+    d.mkdir()
+    (d / "sabnzbd.ini").write_text(SAB_INI.replace("[misc]\n", "[misc]\nadmin_dir = /elsewhere/admin\n"))
+    with pytest.raises(ns.SanitizeError, match="live_paths"):
+        ns.sanitize("sabnzbd", d)
+
+
 # ------------------------------------------------------- refusal & misc
 def _home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
