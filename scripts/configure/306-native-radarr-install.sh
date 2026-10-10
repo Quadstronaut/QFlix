@@ -502,8 +502,11 @@ PY
   before="$(user_tasks)"
   [[ "$before" =~ ^[0-9]+$ ]] || die "cannot count tasks"
   # Port/bind/update come from the ENVIRONMENT, exactly as in the real unit:
-  # config.xml still says Port 9696, so a green status here proves the override.
-  env DOTNET_PROCESSOR_COUNT=4 DOTNET_gcServer=0 MALLOC_ARENA_MAX=2 COMPlus_EnableDiagnostics=0 \
+  # config.xml still says Port 7878, so a green status here proves the override.
+  # DOTNET_GCRegionRange: same as the env file (native.sh); without it CoreCLR
+  # cannot reserve its GC range under the slot's ~10 GB address-space cap
+  # ("GC heap initialization failed 0x8007000E", seen on the box 2026-10-10).
+  env DOTNET_PROCESSOR_COUNT=4 DOTNET_gcServer=0 DOTNET_GCRegionRange=80000000 MALLOC_ARENA_MAX=2 COMPlus_EnableDiagnostics=0 \
       "$TZ_ENV" RADARR__SERVER__BINDADDRESS="$LOOPBACK" RADARR__SERVER__PORT="$pport" \
       RADARR__UPDATE__MECHANISM=External RADARR__UPDATE__AUTOMATICALLY=false \
       "$APPDIR/bin/current/$EXE" -nobrowser "-data=$PROVE" >"$PROVE/stdout.log" 2>&1 &
