@@ -30,6 +30,12 @@ def test_parse_ss_collects_every_local_port():
     assert ports.parse_ss(SS) == {17001, 17002, 17003, 17004}
 
 
+def test_parse_ss_accepts_rows_without_state_column():
+    # Same layouts as swapstate.parse_listen: an empty set would read as "all free".
+    rows = "0 128 127.0.0.1:17001 0.0.0.0:*\n0 128 [::]:17003 [::]:*\n"
+    assert ports.parse_ss(rows) == {17001, 17003}
+
+
 def test_parse_candidates_keeps_only_numeric_lines_in_order():
     assert ports.parse_candidates(APP_PORTS) == [17001, 17002, 17003, 17004, 17005, 17006]
 
@@ -131,6 +137,15 @@ def test_cli_exhausted_exits_nonzero(tmp_path):
     assert r.returncode != 0 and r.stdout.strip() == ""
 
 
+def test_cli_claim_reads_ss_from_stdin(tmp_path):
+    r = subprocess.run(
+        [sys.executable, str(REPO / "scripts/maint/lib/ports.py"), "claim", "vlogs.port",
+         "--secrets-dir", str(tmp_path), "--app-ports", APP_PORTS, "--ss-file", "-"],
+        input=SS, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "17005"
+
+
 # ---- shell wrapper: scripts/lib/ports.sh claim_port, with a fake sshm ----
 def _run_sh(tmp_path, secret):
     (tmp_path / "ap.txt").write_text(APP_PORTS)
@@ -155,6 +170,26 @@ def test_shell_claim_port_writes_secret(tmp_path):
     r = _run_sh(tmp_path, "vlogs.port")
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "17005"
+
+
+def test_shell_claim_port_dies_when_ss_fails(tmp_path):
+    # A failed ss is a refusal, never "everything is free" (appctl ports-free law).
+    (tmp_path / "ap.txt").write_text(APP_PORTS)
+    script = f"""
+set -euo pipefail
+die() {{ echo "DIE: $*" >&2; exit 9; }}
+log_info() {{ :; }}
+SECRETS_DIR='{tmp_path.as_posix()}'
+sshm() {{ case "$1" in
+  *app-ports*) cat '{tmp_path.as_posix()}/ap.txt' ;;
+  *) return 255 ;;
+esac; }}
+source '{(REPO / "scripts/lib/ports.sh").as_posix()}'
+claim_port vlogs.port
+"""
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert r.returncode == 9 and "DIE" in r.stderr
+    assert not (tmp_path / "vlogs.port").exists()
 
 
 def test_shell_claim_port_existing_secret_unchanged_without_ssh(tmp_path):

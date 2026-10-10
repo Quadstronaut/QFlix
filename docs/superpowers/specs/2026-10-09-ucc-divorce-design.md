@@ -725,4 +725,25 @@ Cross-vendor review folded in (QFLX-15). One line per finding.
 | O-7 | accept | Tracked units are `qflix-<slug>.service` (manifest `unit:` matches); panel qbittorrent unit backed up before A11; `render_unit` per-family extra-env hook (`BAZARR_VERSION`) |
 | O-8 | accept | 5.9 step 4 suppresses the app plus its listed canaries, unsuppressed together at step 9; confirm the flaresolverr unsuppress watcher is gone before A2 |
 
+### 13.1 Second review (QFLX-45)
+
+Second cross-vendor pass over the merged framework code (QFLX-16..22). Ids are
+prefixed `R2-` so they do not collide with the table above; `R2-O*` are our own
+findings.
+
+| Id | Verdict | What changed |
+|---|---|---|
+| R2-G1 | accept | `deploy_parity.py` parses and reads the deployed bytes at line 86; the report was a chunk-boundary false positive. No change |
+| R2-G2 | accept | `ucc_skip.py` exists (QFLX-17, da8ce77). False positive. No change |
+| R2-G3 | accept | `swapstate.py` parses; no stray token. No change |
+| R2-G4 | accept | Writes are mkstemp + fsync + replace, so corruption is never from a torn write; fail-open on a corrupt file is covered by R2-O4. No change |
+| R2-G5 | partial | `ports.parse_ss` gains the no-State-column branch `swapstate.parse_listen` already had, so an empty bound set can no longer come from a layout mismatch. Test added |
+| R2-G6 | accept | `health._resolve_port` exists at health.py:61. False positive. No change |
+| R2-G7 | accept (optional action taken) | `UltraPolicy.port_candidates` prints a stderr warning when `app-ports free` yields nothing; the refusal stays in `ports.claim`. Test added |
+| R2-G8 | accept | `native_sanitize.py` parses. False positive. No change |
+| R2-O1 | fixed | `ports.sh claim_port` dies when `ss` fails instead of treating it as "nothing bound" (same law as `appctl ports-free`). Test added |
+| R2-O2 | fixed | `ports.py claim` gains `--ss-file` (`-` = stdin) and `claim_port` pipes `ss` in, avoiding the ARG_MAX overflow. Test added |
+| R2-O3 | fixed | Same change as R2-G5 (parser symmetry) |
+| R2-O4 | fixed | `swapstate._merge_state` raises `SwapStateError` on an unreadable or non-object `state.json` instead of merging onto `{}` and erasing `swap_date`; a missing file is still fine. Test added |
+
 The operator-decision list (section 11, D-1..D-8) is unchanged.

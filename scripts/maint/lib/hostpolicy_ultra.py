@@ -46,8 +46,13 @@ class UltraPolicy(_base().HostPolicy):
             out = subprocess.run(["app-ports", "free"], capture_output=True,
                                  text=True, timeout=30, check=False).stdout
         except (OSError, subprocess.SubprocessError):
-            return []
-        return [int(t) for t in out.split() if t.isdigit()]
+            out = ""
+        cands = [int(t) for t in out.split() if t.isdigit()]
+        if not cands:
+            # Empty is a visible refusal downstream (ports.claim raises); say why.
+            print("hostpolicy_ultra: app-ports free yielded no candidates",
+                  file=sys.stderr)
+        return cands
 
     def proxy_reload(self) -> Optional[List[str]]:
         return ["app-nginx", "reload"]
