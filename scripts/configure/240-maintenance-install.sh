@@ -306,6 +306,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/lib/qflix-tcpfwd.py \
     scripts/configure/303-native-prowlarr-install.sh \
     scripts/configure/307-native-sonarr-install.sh \
+    scripts/configure/309-native-tautulli-install.sh \
     scripts/maint/native_sanitize.py \
     manifest/apps.yaml \
     manifest/jobs.yaml \
@@ -505,6 +506,8 @@ chmod +x ~/scripts/configure/303-native-prowlarr-install.sh
 # QFLX-32 (A8 sonarr): same shape; reuses native_sanitize.py deployed above.
 cp -f   "$STG"/scripts/configure/307-native-sonarr-install.sh ~/scripts/configure/307-native-sonarr-install.sh
 chmod +x ~/scripts/configure/307-native-sonarr-install.sh
+cp -f   "$STG"/scripts/configure/309-native-tautulli-install.sh ~/scripts/configure/309-native-tautulli-install.sh
+chmod +x ~/scripts/configure/309-native-tautulli-install.sh
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # QFLX-29 (A5 radarr2): the proof sanitizes its VACUUM INTO copy with
 # native_sanitize.py, so it is deployed beside the installer (~/scripts/maint).
