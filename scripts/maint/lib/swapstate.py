@@ -192,12 +192,17 @@ def _now_iso(now=None) -> str:
 
 def _merge_state(d: Path, updates: dict) -> dict:
     """Read-modify-write of state.json. CALLER holds the lock."""
+    sj = d / "state.json"
     try:
-        cur = json.loads((d / "state.json").read_text(encoding="utf-8"))
-        if not isinstance(cur, dict):
-            cur = {}
-    except (OSError, ValueError):
+        cur = json.loads(sj.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         cur = {}
+    except (OSError, ValueError) as exc:
+        # Writes are atomic, so this is external corruption. Merging onto {}
+        # would erase swap_date/soak_until and make soak_gate read "not swapped".
+        raise SwapStateError(f"{sj} unreadable ({exc}); refusing to overwrite") from exc
+    if not isinstance(cur, dict):
+        raise SwapStateError(f"{sj} is not a JSON object; refusing to overwrite")
     cur.setdefault("rollback_window", "open")
     cur.setdefault("swap_date", None)
     cur.setdefault("soak_until", None)

@@ -188,3 +188,13 @@ def test_cli_soak_check_exit_codes(capsys):
     assert swapstate.main(["soak-check", "nope"]) == 0
     assert swapstate.main(["close-window", "sonarr"]) == 0
     assert swapstate.load_state("sonarr")["rollback_window"] == "closed"
+
+
+def test_merge_refuses_corrupt_state_instead_of_erasing_swap_record(tmp_path):
+    swapstate.capture("sonarr", SS, 42050)
+    swapstate.update_state("sonarr", swap_date="2026-10-20", soak_until="2026-11-03")
+    sj = tmp_path / "swap" / "sonarr" / "state.json"
+    sj.write_text("{not json")
+    with pytest.raises(swapstate.SwapStateError):
+        swapstate.update_state("sonarr", rollback_window="closed")
+    assert sj.read_text() == "{not json"      # left for the operator, not overwritten
