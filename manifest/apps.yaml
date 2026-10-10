@@ -28,8 +28,27 @@ apps:
   # --- UCC apps (managed by Ultra.cc app-<slug> commands) ---
 
   sonarr:
-    class: ucc
+    # QFLX-32 (UCC divorce A8): converted to the native Sonarr v4 linux-x64 build
+    # run as qflix-sonarr.service by scripts/configure/307-native-sonarr-install.sh
+    # (build pinned in versions.env SONARR_VERSION + sha256 in the installer; the
+    # panel tool only reports 4.0.20, the API reports the full 4.0.20.3014).
+    # Port, bind address and the update mechanism come from the unit's env file
+    # (SONARR__SERVER__*, SONARR__UPDATE__*); config.xml stays what the container
+    # reads. The app binds the docker bridge (Seerr and Prowlarr call it there)
+    # and a socket-activated forwarder (qflix-sonarr-fwd.socket) owns the
+    # loopback listener nginx and the canaries use. The UCC container stays
+    # installed and DORMANT as the rollback target (I-8). NOTE: the sonarr2
+    # container runs the identical cmdline; the installer tells them apart by
+    # the /config bind mount.
+    # swap_state: pending-swap (spec 5.9 step 7) = this flip is merged and
+    # deployed but the swap has not run: the container still serves, so appctl
+    # and lifecycle dispatch it as UCC and require_unit_active is off. A
+    # follow-up PR removes the line right after the swap.
+    class: systemd
+    unit: qflix-sonarr.service
     ucc_slug: sonarr
+    ucc_dormant: true
+    swap_state: pending-swap
     kuma_monitor: "Sonarr"
     health:
       kind: http_api
@@ -39,6 +58,22 @@ apps:
       port_secret: sonarr.port
       urlbase_secret: sonarr.urlbase
       expect_status: 200
+      require_unit_active: true
+    upgrade:
+      # Each release lands in bin/<ver>, then `current` flips atomically. The
+      # tarball's single top-level dir (Sonarr/) is hoisted into bin/<ver> and
+      # the self-updater dir dropped. The soak gate (lib/swapstate.py) refuses it
+      # for 14 days after the swap and the first one closes the rollback-to-UCC
+      # window (I-10).
+      kind: tarball_swap
+      url_template: "https://github.com/Sonarr/Sonarr/releases/download/v{version}/Sonarr.main.{version}.linux-x64.tar.gz"
+      target_dir: "~/.apps/sonarr/bin/{version}"
+      post_steps:
+        - "cd ~/.apps/sonarr/bin/{version} && mv Sonarr .pkg && mv .pkg/* . && rmdir .pkg && rm -rf Sonarr.Update && chmod 0755 Sonarr"
+        - "ln -sfn {version} ~/.apps/sonarr/bin/.current.new && mv -Tf ~/.apps/sonarr/bin/.current.new ~/.apps/sonarr/bin/current"
+      version_pin:
+        source: versions.env
+        key: SONARR_VERSION
 
   sonarr2:
     # QFLX-30 (UCC divorce A6): converted to the native Sonarr v4 linux-x64 build

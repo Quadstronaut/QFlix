@@ -59,9 +59,12 @@ def test_sonarr2_is_converted_but_pending_swap_and_dormant():
     assert a["health"]["path_template"] == "/{urlbase}/api/v3/system/status"
 
 
-def test_primary_sonarr_is_still_a_ucc_container():
+def test_primary_sonarr_is_its_own_conversion_never_sonarr2s_unit():
+    """The primary sonarr converts on its own ticket (QFLX-32): separate unit,
+    separate slug, so neither flip can drive the other's runtime."""
     prim = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))["apps"]["sonarr"]
-    assert prim["class"] == "ucc"
+    assert prim["unit"] == "qflix-sonarr.service" and prim["ucc_slug"] == "sonarr"
+    assert prim["unit"] != _app()["unit"]
 
 
 def test_pin_is_the_four_part_build_and_matches_installer_and_manifest():
@@ -82,13 +85,13 @@ def test_manifest_loads_with_the_flip():
     assert app.class_ == "systemd" and app.upgrade.kind == "tarball_swap"
 
 
-def test_generated_skip_list_carries_sonarr2_but_not_the_primary_sonarr():
+def test_generated_skip_list_carries_sonarr2_and_the_primary_sonarr():
     r = subprocess.run([sys.executable, str(LIB / "ucc_skip.py"), "--list",
                         "--manifest", str(MANIFEST)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     names = r.stdout.split()
     assert "sonarr2" in names
-    assert "sonarr" not in names
+    assert "sonarr" in names            # converted on its own ticket (QFLX-32)
 
 
 def test_post_swap_post_steps_hoist_the_tarball_dir_and_flip_current():
