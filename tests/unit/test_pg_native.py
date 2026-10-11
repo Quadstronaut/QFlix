@@ -273,3 +273,16 @@ def test_newsletter_hour_matches_the_timer():
 def test_bad_usage_is_2():
     assert cli("frobnicate").returncode == 2
     assert cli("sql", "nope").returncode == 2
+
+
+def test_sanitize_check_qualifies_value_against_the_srf_column():
+    """Box 2026-10-11 (first --prove): jsonb_array_elements() names its output
+    column `value`, the same as settings.value, so an unqualified `value` in the
+    lateral join is `column reference "value" is ambiguous`. The fakes answer by
+    tag and never parse SQL, so pin the shape here."""
+    sql = pg.SQL["sanitize-check"]
+    assert "from settings s, jsonb_array_elements(" in sql
+    assert "jsonb_array_elements(value)" not in sql.split("+")[0]
+    assert "e.value->>'enabled'" in sql
+    # a non-array settings value never reaches the set-returning function
+    assert "case when jsonb_typeof(s.value) = 'array' then s.value else '[]'::jsonb end" in sql
