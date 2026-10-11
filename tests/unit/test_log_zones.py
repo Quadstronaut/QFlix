@@ -44,8 +44,9 @@ FORMATS = [
     ("tdarr-server", "\x1b[91m[2026-10-10T06:44:28.251] [ERROR] Tdarr_Server - \x1b[39mx", "2026-10-10T04:44:28.251Z"),
     ("tdarr-node", "\x1b[32m[2026-10-10T06:44:28.855] [INFO] Tdarr_Node - \x1b[39mx", "2026-10-10T04:44:28.855Z"),
     ("nginx", "2026/10/10 06:44:28 [error] 1#1: x", "2026-10-10T04:44:28Z"),
+    # tautulli native (QFLX-34) logs box-local time
+    ("tautulli", "2026-10-10 06:44:28 - DEBUG   :: Thread-18 (run) : x", "2026-10-10T04:44:28Z"),
     # zone-less UTC (proven)
-    ("tautulli", "2026-10-10 04:44:28 - DEBUG   :: Thread-18 (run) : x", "2026-10-10T04:44:28Z"),
     ("plex", "Oct 10, 2026 04:44:28.832 [139931718089528] INFO - x", "2026-10-10T04:44:28.832Z"),
     # explicit zone
     ("seerr", "2026-10-10T04:44:28.036Z [info][Jobs]: Starting scheduled job", "2026-10-10T04:44:28.036Z"),

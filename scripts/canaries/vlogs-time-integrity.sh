@@ -9,10 +9,13 @@
 #               fingerprint of a zone-less LOCAL stamp read as UTC (CEST is
 #               +02:00: such lines land two hours ahead). This is the exact
 #               2026-10-09 listmonk bug, caught for every app, not one.
-#   DUPLICATE   any (app, _time, _msg) group with more than one row in the
-#               last 24h. The ingester keeps a byte-offset / journal cursor so
-#               a line ships once; a duplicate means the cursor reset, a
-#               format change re-read a file, or two ingesters ran.
+#   DUPLICATE   any (app, source_file, line_id) group with more than one row in
+#               the last 24h. line_id is inode:byte-offset of the physical
+#               line, stamped by the ingester (QFLX-51); the same id twice is
+#               one line shipped twice: the cursor reset, a format change
+#               re-read a file, or two ingesters ran. Identical TEXT at
+#               different offsets is the app repeating itself, not a duplicate.
+#               File-sourced rows only (journald lines carry no offset).
 #
 #   SKEW        an actively written file whose newest stored _time is more than
 #               SKEW_MIN minutes BEHIND the file's mtime. This is the other
@@ -182,7 +185,11 @@ if future_apps:
                      f"events-after-now+{FUTURE_MIN}m apps={names}{ahead}"))
 
 # DUPLICATE: same app + instant + text more than once, last 24h.
-dup = query("* | stats by (app, _time, _msg) count() as n | filter n:>1"
+# Keyed on line_id (inode:byte-offset stamped by qflix-vlogs-ingest, QFLX-51),
+# NOT on text: a line an app genuinely wrote twice in one second (radarr "Found 0
+# existing subtitle files" x3, kometa banner rows) has two offsets, a re-shipped
+# line has one. Rows from before QFLX-51 carry no line_id and are not judged.
+dup = query("line_id:* | stats by (app, source_file, line_id) count() as n | filter n:>1"
             " | stats by (app) count() as groups, sum(n) as rows",
             start=iso(now - timedelta(hours=24)), end=iso(now + timedelta(minutes=FUTURE_MIN)))
 if dup is None:

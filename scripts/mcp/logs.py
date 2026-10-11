@@ -240,8 +240,12 @@ SOURCE_ZONE = {
     # Go / Node apps that log local time.
     "listmonk": "LOCAL", "unpackerr": "LOCAL", "tdarr-server": "LOCAL",
     "tdarr-node": "LOCAL", "qbittorrent": "LOCAL", "nginx": "LOCAL",
+    # tautulli: the container build logged UTC; the native build (QFLX-34, swap
+    # 2026-10-10 ~18:31Z) logs box-local. Stamp 10:32:27 at 08:32Z, mtime
+    # 10:32:47+0200 (QFLX-51).
+    "tautulli": "LOCAL",
     # Proven UTC: the stamp matched `date -u` / mtime.
-    "tautulli": "UTC", "plex": "UTC",
+    "plex": "UTC",
     # Explicit zone on every line.
     "seerr": "ZONED", "listmonk-sync": "ZONED",
     "maint-pusher": "ZONED", "maint-webhook": "ZONED", "maint-window": "ZONED",
