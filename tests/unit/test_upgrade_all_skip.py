@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.test_ucc_postgres_upgrade import Box, posix_only
+from tests.unit.test_app_upgrade_all import Box, posix_only
 
 REPO = Path(__file__).resolve().parents[2]
 UPGRADE_ALL = REPO / "scripts" / "maint" / "app-upgrade-all.sh"
@@ -63,8 +63,8 @@ def test_converted_slug_is_skipped_even_with_dir_and_wrapper(convbox):
     assert (convbox.bin / "app-radarr").exists()
     cp = convbox.sweep()
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    # order.log also carries the postgres child's own lines; only the generic
-    # app-* stubs matter here.
+    # postgres (class ucc here) is refused outright since QFLX-37; only the
+    # generic app-* stubs matter here.
     upgraded = set(_upgraded(convbox))
     assert {"sonarr", "bazarr"} <= upgraded
     assert not upgraded & {"radarr", "tautulli"}
@@ -92,7 +92,7 @@ def test_include_and_only_cannot_unskip_a_generated_slug(convbox):
 
 
 @posix_only
-def test_converted_postgres_never_reaches_the_child(convbox):
+def test_converted_postgres_is_never_upgraded(convbox):
     convbox.write_manifest({
         "postgres": {"class": "systemd", "unit": "qflix-postgres.service",
                      "ucc_slug": "postgres", "ucc_dormant": True},
@@ -101,7 +101,7 @@ def test_converted_postgres_never_reaches_the_child(convbox):
     cp = convbox.sweep()
     assert convbox.pg_calls() == []
     assert "skip: postgres: converted/dormant" in cp.stdout
-    assert "via ucc-postgres-upgrade.sh" not in cp.stdout
+    assert "ucc-postgres-upgrade" not in cp.stdout
 
 
 @posix_only
