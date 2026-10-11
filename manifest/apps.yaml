@@ -394,10 +394,10 @@ apps:
     # The UCC seerr app is DORMANT FOREVER, never uninstalled: it owns the
     # seerr-<slot> vhost (I-8). The swap pauses the entitlement gate by parking
     # its execute.conf drop-in (I-13), reinstalled by --finish / --rollback.
-    # Swapped to native 2026-10-10 (spec 5.9 steps 1-6); the `swap_state:
+    # Swapped to native 2026-10-11 04:39 UTC (spec 5.9 steps 1-6); the `swap_state:
     # pending-swap` line that held this flip inert until the swap ran is gone,
     # so appctl / lifecycle / require_unit_active / runtime parity now treat
-    # qflix-seerr.service as the live runtime. 14-day soak until 2026-10-24.
+    # qflix-seerr.service as the live runtime. 14-day soak until 2026-10-25.
     class: systemd
     unit: qflix-seerr.service
     ucc_slug: seerr
@@ -658,15 +658,48 @@ apps:
   # --- systemd apps (managed by systemctl --user) ---
 
   postgres:
-    # Database backend for Listmonk. UCC runs Postgres under supervisord;
-    # process_pattern matches the checkpointer subprocess (only present when
-    # Postgres is healthy and accepting writes).
-    class: ucc
+    # Database backend for Listmonk. process_pattern matches the checkpointer
+    # subprocess (only present when Postgres is healthy and accepting writes).
+    # QFLX-37 (UCC divorce A13): converted to the PGDG debs of the container's
+    # exact build (versions.env POSTGRES_VERSION + two sha256 pins in the
+    # installer), unpacked into ~/.apps/pg-native/bin/<ver> and run as
+    # qflix-postgres.service on a fresh cluster in ~/.apps/pg-native/data by
+    # scripts/configure/312-native-postgres-install.sh. The data is COPIED
+    # (pg_dumpall --globals-only + pg_dump -Fc, counts + sequences compared);
+    # the UCC data dir stays untouched and the container DORMANT as the
+    # rollback target (I-8). native_dir: appctl reads bin/current there.
+    # Swapped to qflix-postgres.service 2026-10-11 (the A13 dump/restore
+    # sequence: counts + sequences equal, listmonk /health 200, same listen
+    # set); the `swap_state: pending-swap` line that held this flip inert until
+    # the swap ran is gone, so appctl / lifecycle / require_unit_active /
+    # runtime parity treat the unit as the live runtime. 14-day soak until
+    # 2026-10-25.
+    class: systemd
+    unit: qflix-postgres.service
     ucc_slug: postgres
+    ucc_dormant: true
+    native_dir: pg-native
     kuma_monitor: "Postgres"
     health:
       kind: process_pattern
       pattern: "postgres: checkpointer"
+      require_unit_active: true
+    upgrade:
+      # MINOR versions only (version_pin.max): a major needs pg_upgrade, which
+      # is a manual runbook. lifecycle unpacks the server .deb (dpkg-deb -x)
+      # into bin/<ver>; the post step gates it (same major as the cluster,
+      # ldd, --version), carries the client tools over and flips `current`.
+      # The soak gate refuses it for 14 days after the swap.
+      kind: tarball_swap
+      url_template: "https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-17/postgresql-17_{version}_amd64.deb"
+      target_dir: "~/.apps/pg-native/bin/{version}"
+      post_steps:
+        - "~/scripts/configure/312-native-postgres-install.sh --post-upgrade {version} --execute"
+      version_pin:
+        source: versions.env
+        key: POSTGRES_VERSION
+        max: "17.999"
+        max_reason: "a postgres major is a manual pg_upgrade runbook, never a sweep"
 
 
   listmonk:

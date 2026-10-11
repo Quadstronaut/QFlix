@@ -64,7 +64,7 @@ def test_bazarr_is_converted():
 def test_seerr_is_converted_swapped_and_stays_dormant():
     """QFLX-36 (A12): the UCC seerr app owns the vhost, so it is dormant forever."""
     a = _converted()["seerr"]
-    assert "swap_state" not in a and a["unit"] == "qflix-seerr.service"   # swapped 2026-10-10
+    assert "swap_state" not in a and a["unit"] == "qflix-seerr.service"   # swapped 2026-10-11
     assert a["ucc_dormant"] is True and a["kuma_monitor"] == "Seerr"
     assert a["health"]["require_unit_active"] is True
     up = a["upgrade"]
@@ -87,6 +87,25 @@ def test_converted_app_has_installer_pin_upgrade_and_unit(name):
     assert vp.get("source") == "versions.env"
     assert vp.get("key") in _versions_env(), vp
     assert a.get("ucc_dormant") is True, "the UCC container must stay dormant (I-8)"
+
+
+def test_postgres_is_converted_and_swapped():
+    """QFLX-37 (A13): native tree in ~/.apps/pg-native (data COPIED, the UCC dir
+    is the rollback target); minor-only .deb upgrades; the version pin is the
+    container's PGDG build string."""
+    a = _converted()["postgres"]
+    assert "swap_state" not in a and a["unit"] == "qflix-postgres.service"   # swapped 2026-10-11
+    assert a["native_dir"] == "pg-native"
+    assert a["health"]["require_unit_active"] is True
+    up = a["upgrade"]
+    assert up["kind"] == "tarball_swap" and up["url_template"].endswith("_{version}_amd64.deb")
+    assert up["target_dir"] == "~/.apps/pg-native/bin/{version}"
+    assert up["version_pin"]["max"] == "17.999"
+    assert any("312-native-postgres-install.sh --post-upgrade {version} --execute" in s
+               for s in up["post_steps"])
+    assert _versions_env()["POSTGRES_VERSION"] == "17.11-1.pgdg13+2"
+    text = (REPO / "scripts" / "configure" / "312-native-postgres-install.sh").read_text(encoding="utf-8")
+    assert 'VERSION="17.11-1.pgdg13+2"' in text
 
 
 def test_flaresolverr_is_converted_pending_swap():
@@ -147,6 +166,7 @@ def test_generated_skip_list_carries_unpackerr():
     assert "unpackerr" in r.stdout.split()
     assert "flaresolverr" in r.stdout.split()
     assert "bazarr" in r.stdout.split()
+    assert "postgres" in r.stdout.split()
     assert "sabnzbd" in r.stdout.split()
     assert "tautulli" in r.stdout.split()
     assert "qbittorrent" in r.stdout.split()
@@ -167,7 +187,7 @@ _STUB = '#!/bin/sh\necho "$(basename "$0") $*" >> "$STUB_LOG"\nexit 0\n'
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-@pytest.mark.parametrize("slug", ["unpackerr", "bazarr", "seerr"])
+@pytest.mark.parametrize("slug", ["unpackerr", "bazarr", "seerr", "postgres"])
 @pytest.mark.parametrize("verb", ["start", "restart", "status", "stop"])
 def test_appctl_never_starts_the_ucc_container_after_the_swap(tmp_path, verb, slug):
     man = _post_swap_manifest(tmp_path, slug)
@@ -189,8 +209,7 @@ def test_appctl_never_starts_the_ucc_container_after_the_swap(tmp_path, verb, sl
     want = "is-active" if verb == "status" else verb
     assert f"systemctl --user {want} qflix-{slug}.service" in argv
 
-
-@pytest.mark.parametrize("slug", ["unpackerr", "bazarr", "seerr"])
+@pytest.mark.parametrize("slug", ["unpackerr", "bazarr", "seerr", "postgres"])
 @pytest.mark.parametrize("fn", [lifecycle.start, lifecycle.restart, lifecycle.status])
 def test_lifecycle_never_starts_the_ucc_container_after_the_swap(tmp_path, fn, slug):
     app = load_manifest(_post_swap_manifest(tmp_path, slug)).app(slug)

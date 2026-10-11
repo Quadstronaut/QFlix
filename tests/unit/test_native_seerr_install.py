@@ -33,6 +33,7 @@ import subprocess
 import sys
 import tarfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -232,6 +233,8 @@ class Box:
                 self.end_headers(); self.wfile.write(b)
 
             def do_GET(self):
+                if not box.bound():
+                    return self._send(503, {})
                 if self.path == "/api/v1/status":
                     return self._send(200, {"version": box.api_version})
                 if self.path == "/api/v1/auth/me" and box.auth_ok \
@@ -263,6 +266,14 @@ class Box:
 
     def native_running(self) -> bool:
         return (self.proc / "9002").exists()
+
+    def bound(self) -> bool:
+        """False while a native seerr started with FAKE_NATIVE_BIND_DELAY_S has not bound yet."""
+        p = self.proc / "9002" / "bound_at"
+        try:
+            return time.time() >= int(p.read_text().strip())
+        except (OSError, ValueError):
+            return True
 
     def set_manifest(self, *, cls="systemd", swap_state=None, dormant=True):
         lines = ["apps:", "  seerr:", f"    class: {cls}", "    ucc_slug: seerr"]
@@ -373,6 +384,8 @@ case "$1" in
             printf 'Name:\\tx\\nUid:\\t%s\\t%s\\n' "$(id -u)" "$(id -u)" > "{P}/9002/status"
             echo "0::/user.slice/user-1.slice/app.slice/$3" > "{P}/9002/cgroup"
             printf '/h/.apps/seerr/bin/node/bin/node\\0--require\\0x.cjs\\0/h/.apps/seerr/bin/current/dist/index.js\\0' > "{P}/9002/cmdline"
+            # Real Seerr binds only once Next.js is ready (~28 s on the slot).
+            echo $(( $(date +%s) + ${{FAKE_NATIVE_BIND_DELAY_S:-0}} )) > "{P}/9002/bound_at"
           fi ;;
   stop) [ "$2" = "{UNIT}" ] && rm -rf "{P}/9002" ;;
   mask) [ -s "{U}/$2" ] && [ ! -L "{U}/$2" ] && {{ echo "Failed to mask unit: File {U}/$2 already exists." >&2; exit 1; }}
@@ -386,7 +399,9 @@ case "$*" in
   *sport*) [ -d "{P}/9001" ] && cat "$rows" ;;
   *) if [ -d "{P}/9001" ]; then cat "$rows"
      elif [ -d "{P}/9002" ]; then
-       if [ "${{FAKE_NATIVE_LISTEN_DIFF:-0}}" = 1 ]; then head -n 1 "$rows"; else cat "$rows"; fi
+       if [ -f "{P}/9002/bound_at" ] && [ "$(date +%s)" -lt "$(cat "{P}/9002/bound_at")" ]; then
+         tail -n 1 "$rows"                      # not bound yet: only the unrelated :9999 row
+       elif [ "${{FAKE_NATIVE_LISTEN_DIFF:-0}}" = 1 ]; then head -n 1 "$rows"; else cat "$rows"; fi
      fi ;;
 esac
 exit 0
@@ -418,7 +433,7 @@ esac
                     where=self.canaries)
 
     # --- run -----------------------------------------------------------------
-    def run(self, *args, env=None, timeout=180):
+    def run(self, *args, env=None, timeout=180, installer=None):
         marker = self.tmp / "host.id"
         marker.write_text("test-slot\n")
         e = dict(os.environ,
@@ -441,7 +456,7 @@ esac
                  QFLIX_PROOF_TIMEOUT_S="20", QFLIX_STATUS_TIMEOUT_S="5",
                  QFLIX_GATE_GAP_S="5", QFLIX_GATE_RUN_TIMEOUT_S="3")
         e.update(env or {})
-        return subprocess.run(["bash", _posix(INSTALLER), *args], env=e,
+        return subprocess.run(["bash", _posix(installer or INSTALLER), *args], env=e,
                               capture_output=True, text=True, timeout=timeout)
 
     def installed(self):
@@ -539,7 +554,7 @@ def test_installer_never_calls_the_panel_tool_the_gateway_or_the_rail():
 def test_manifest_flip_for_seerr():
     a = yaml.safe_load((REPO / "manifest" / "apps.yaml").read_text(encoding="utf-8"))["apps"]["seerr"]
     assert a["class"] == "systemd" and a["unit"] == UNIT and a["ucc_dormant"] is True
-    assert "swap_state" not in a and a["ucc_slug"] == "seerr"   # swapped 2026-10-10
+    assert "swap_state" not in a and a["ucc_slug"] == "seerr"   # swapped 2026-10-11
     up = a["upgrade"]
     assert up["kind"] == "tarball_swap" and "{version}" in up["target_dir"]
     assert any("311-native-seerr-install.sh --post-upgrade {version} --execute" in s
@@ -913,6 +928,75 @@ def test_swap_post_start_failures_keep_suppression_and_the_gate_paused(box, env,
     assert "seerr" in box.suppressed()
     assert not box.dropin.exists()
     assert (box.swap / "seerr" / "gate" / "execute.conf").read_text() == DROPIN
+
+
+# --- late bind (QFLX-36 swap 2026-10-10 rolled back on a race) --------------------
+# The verify order that shipped in a946f7c: listen compare ONCE at SETTLE, then
+# status. Kept verbatim so the regression test can prove it fails a late bind.
+OLD_VERIFY = r"""verify_native() {
+  local n ver vv start
+  sleep "$SETTLE"
+  sysd is-active "$UNIT" >/dev/null 2>&1 || { echo "unit not active" >&2; return 1; }
+  [ -z "$(scan_pids container)" ] || { echo "a container process is running" >&2; return 1; }
+  n="$(scan_pids native | wc -l | tr -d ' ')"
+  [ "$n" -ge 1 ] || { echo "no native process" >&2; return 1; }
+  native_listen_compare "$SLUG" >/dev/null || { echo "listen set differs from listen-set.before" >&2; return 1; }
+  start=$SECONDS
+  while :; do
+    ver="$(status_probe "$PROBE_PORT")" && [ -n "$ver" ] && break
+    ver=""
+    [ $((SECONDS - start)) -ge "$STATUS_TIMEOUT" ] && { echo "/api/v1/status never answered 200" >&2; return 1; }
+    sleep "$POLL"
+  done
+  [ "$ver" = "$VERSION" ] || { echo "status reports $ver, want $VERSION" >&2; return 1; }
+  auth_probe "$SETTINGS" "$PROBE_PORT" || { echo "login (/api/v1/auth/me) failed" >&2; return 1; }
+  vv="$(vhost_probe)" || { echo "the seerr vhost does not answer" >&2; return 1; }
+  [ "$vv" = "$VERSION" ] || { echo "the seerr vhost reports '$vv', want $VERSION" >&2; return 1; }
+}
+"""
+
+
+def _old_order_installer(tmp: Path) -> Path:
+    """A copy of the installer with the a946f7c verify_native, beside the libs it sources."""
+    root = tmp / "oldorder" / "scripts"
+    for sub in ("lib", "maint", "data"):
+        shutil.copytree(REPO / "scripts" / sub, root / sub,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+    text = INSTALLER.read_text(encoding="utf-8")
+    new, n = re.subn(r"(?ms)^verify_native\(\) \{\n.*?^\}\n", lambda _m: OLD_VERIFY, text, count=1)
+    assert n == 1 and 'native_listen_compare "$SLUG" >/dev/null ||' in new
+    out = root / "configure" / INSTALLER.name
+    out.parent.mkdir(parents=True)
+    out.write_text(new, encoding="utf-8", newline="\n")
+    return out
+
+
+LATE = {"FAKE_NATIVE_BIND_DELAY_S": "2", "QFLIX_STATUS_TIMEOUT_S": "8"}
+
+
+def test_swap_tolerates_a_late_bind_by_polling_status_before_comparing(box):
+    r = box.swapped(env=LATE)                         # bind lands ~2 s after SETTLE (0.3 s)
+    assert "status 200 after" in r.stdout and "SWAPPED to native" in r.stdout
+    assert box.native_running() and not box.container_running()
+
+
+@pytest.mark.parametrize("delay,ok", [("0", True), ("2", False)])
+def test_the_old_verify_order_fails_a_late_bind(box, tmp_path, delay, ok):
+    """Control (bind at once) passes; a late bind fails at the single early compare."""
+    old = _old_order_installer(tmp_path)
+    box.proved()
+    r = box.run("--swap", "--execute", env=dict(LATE, FAKE_NATIVE_BIND_DELAY_S=delay),
+                installer=old)
+    if ok:
+        assert r.returncode == 0, r.stdout + r.stderr
+    else:
+        assert r.returncode != 0 and "listen set differs" in r.stderr, r.stdout + r.stderr
+
+
+def test_swap_still_fails_a_listen_set_that_never_converges(box):
+    box.proved()
+    r = box.run("--swap", "--execute", env={"FAKE_NATIVE_LISTEN_DIFF": "1"})
+    assert r.returncode != 0 and '"removed"' in r.stderr          # the diff is reported
 
 
 def test_swap_wrong_reported_version_fails_parity(box):
