@@ -54,6 +54,26 @@ renamed, the computed
 not a flag, and not overridable -- there is no legitimate caller in this system,
 and the one illegitimate caller is a typo in a section title.
 
+DOWNLOADS (allowSync) -- QFLX-49, 2026-10-10
+--------------------------------------------
+Every SharedServer also carries `allowSync`: "1" lets that friend download
+(Plex calls it sync) from this server, "0" hides the Download button. It is a
+per-share flag, not a server setting, and it is NOT carried by the
+library_section_ids PUT above -- that write leaves it untouched either way.
+
+Its default is OFF at every way a share is born: the Plex web invite dialog
+leaves "Allow Downloads" unticked, and plexapi's `inviteFriend()` defaults to
+`allowSync=False`. Operator policy is that every member may download, so a
+share born with the default is drift, and set_allow_sync() is the corrector.
+
+The write is a different endpoint keyed by the friend's plex.tv USER id, not
+the shared_server id (plexapi 4.18.1 `updateFriend`, FRIENDUPDATE):
+
+  PUT  /api/v2/sharings/<userID>?allowSync=1
+
+Only the query args named are changed; the library set, camera upload and
+channel flags are left as they are.
+
 ACCESS TOKENS
 -------------
 Each SharedServer carries an `accessToken` that grants access to this server as
@@ -74,6 +94,9 @@ import xml.etree.ElementTree as ET
 PLEX_TV = "https://plex.tv"
 TIMEOUT = 30
 UA = "qflix-entitlement-gate/1.0"
+# The /api/v2 endpoints want a client identity on every call (plexapi always
+# sends one). Harmless on the v1 endpoints, so it is sent everywhere.
+CLIENT_ID = "qflix-entitlement-gate"
 
 
 class PlexShareError(Exception):
@@ -108,6 +131,9 @@ class Share:
     all_libraries: bool = False
     accepted_at: Optional[dt.datetime] = None
     invited_at: Optional[dt.datetime] = None
+    # None = plex.tv did not report the attribute at all. Never treat that as
+    # False: "unknown" must not trigger a write, and must not page.
+    allow_sync: Optional[bool] = None
 
     @property
     def accepted(self) -> bool:
@@ -135,6 +161,15 @@ def _ts(value: Optional[str]) -> Optional[dt.datetime]:
         return dt.datetime.fromtimestamp(n, tz=dt.timezone.utc)
     except (OverflowError, OSError, ValueError):
         return None
+
+
+def _flag(value: Optional[str]) -> Optional[bool]:
+    """plex.tv "1"/"0" -> True/False; absent or anything else -> None."""
+    if value == "1":
+        return True
+    if value == "0":
+        return False
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +240,7 @@ def parse_shares(xml_text: str) -> List[Share]:
             all_libraries=elem.get("allLibraries") == "1",
             accepted_at=_ts(elem.get("acceptedAt")),
             invited_at=_ts(elem.get("invitedAt")),
+            allow_sync=_flag(elem.get("allowSync")),
         ))
     return shares
 
@@ -228,11 +264,15 @@ class PlexShareClient:
 
     # -- transport ----------------------------------------------------------
 
-    def _request(self, method: str, path: str, body: Optional[dict] = None) -> str:
-        url = "%s%s?%s" % (self.base_url, path,
-                           urllib.parse.urlencode({"X-Plex-Token": self.token}))
+    def _request(self, method: str, path: str, body: Optional[dict] = None,
+                 query: Optional[Dict[str, str]] = None) -> str:
+        q = dict(query or {})
+        q["X-Plex-Token"] = self.token
+        url = "%s%s?%s" % (self.base_url, path, urllib.parse.urlencode(q))
         data = None
-        headers = {"Accept": "application/xml", "User-Agent": UA}
+        headers = {"Accept": "application/xml", "User-Agent": UA,
+                   "X-Plex-Client-Identifier": CLIENT_ID,
+                   "X-Plex-Product": CLIENT_ID}
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -256,7 +296,23 @@ class PlexShareClient:
         return parse_shares(self._request(
             "GET", "/api/servers/%s/shared_servers" % self.machine_id))
 
-    # -- the only write -----------------------------------------------------
+    # -- writes -------------------------------------------------------------
+
+    def set_allow_sync(self, share: Share, allow: bool = True) -> None:
+        """Set the friend's Download permission (allowSync) on this server.
+
+        Keyed by plex.tv user id, not shared_server id -- see the module
+        docstring's DOWNLOADS section. Idempotent: writing the value a share
+        already holds is a no-op on plex.tv.
+        """
+        if share.user_id <= 0:
+            raise PlexShareError(
+                "refusing to set allowSync on shared_server %s: no plex.tv user "
+                "id (a pending invite by email has none to address)"
+                % share.shared_server_id)
+        self._request("PUT", "/api/v2/sharings/%d" % share.user_id,
+                      query={"allowSync": "1" if allow else "0"})
+
 
     def set_sections(self, share: Share, section_ids: Sequence[int]) -> None:
         """Replace the set of sections a friend can see.
@@ -381,6 +437,18 @@ def minimum_access_ids(sections: Sequence[Section], welcome_title: str,
         if extra is not None:
             ids.add(extra.id)
     return sorted(ids)
+
+
+def shares_without_downloads(shares: Sequence[Share]) -> List[Share]:
+    """Accepted shares whose allowSync is explicitly OFF.
+
+    Policy (QFLX-49): every member may download, floor and tagalong shares
+    included -- downloads are a playback permission, not a library grant, so
+    this never widens what anybody can SEE. Pending invites are skipped: they
+    have no accepted user to address yet and are picked up on the first run
+    after acceptance. An unreported flag (None) is not drift.
+    """
+    return [s for s in shares if s.accepted and s.allow_sync is False]
 
 
 def missing_floor_titles(sections: Sequence[Section],

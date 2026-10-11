@@ -44,6 +44,15 @@
 #                  This leg makes it audible.
 #   5. oracle      has the money path EVER demonstrated a success, per SPEC
 #                  section 3's verdict table (lib/payer_oracle.judge()).
+#   6. downloads   (QFLX-49) every ACCEPTED Plex share has Download
+#                  (allowSync) ON. Operator policy: every member may
+#                  download. Shares are born with it OFF and the gate corrects
+#                  that each run, so a share still OFF here means the gate's
+#                  correction is failing or not running. Delegates to
+#                  `qflix-entitlement.py --downloads-check` (plex.tv read
+#                  only, COUNTS only -- never a member identity). Lives here
+#                  rather than in a new canary because a new canary needs an
+#                  operator Kuma bootstrap; it shares this canary's monitor.
 #
 # LEGS 2, 3 AND 4 USE A SYNTHETIC ADDRESS, NEVER A MEMBER'S. `.invalid` is
 # reserved by RFC 2606 and can never be a real patron, so the probes prove
@@ -85,7 +94,7 @@
 #       DORMANT / SETTLING)
 #   1 - service down / auth failed either direction / contract violated / the
 #       payer oracle reads a red verdict (DEAD / MISMATCH / UNPROVEN_BLIND /
-#       UNPROVEN_EMPTY)
+#       UNPROVEN_EMPTY) / any accepted Plex share has downloads OFF
 #   2 - could not assert: no key on the box, curl missing, or
 #       qflix-entitlement.py --oracle-check itself could not run (bad roster,
 #       no entitlement client)
@@ -220,19 +229,40 @@ if [ ! -r "$GATE" ]; then
   exit 2
 fi
 
+# --- leg 6: downloads ---------------------------------------------------
+# Run BEFORE the oracle so a red oracle cannot hide it; its verdict is folded
+# into whichever line this canary ends on. A plex.tv read failure is noted,
+# not paged: the gate own monitor already goes red on "Plex unavailable".
+DL_OUT=$(python3 "$GATE" --downloads-check 2>&1)
+DL_RC=$?
+DL_OFF=$(printf "%s\n" "$DL_OUT" | grep "^DOWNLOADS_OFF=" | head -1)
+DL_OFF=${DL_OFF#DOWNLOADS_OFF=}
+DL_ON=$(printf "%s\n" "$DL_OUT" | grep "^DOWNLOADS_ON=" | head -1)
+DL_ON=${DL_ON#DOWNLOADS_ON=}
+case "$DL_RC" in
+  0) DL_RED=0; DL_NOTE="downloads ON for ${DL_ON:-?} share(s)" ;;
+  2) DL_RED=1; DL_NOTE="${DL_OFF:-?}-accepted-Plex-share(s)-have-downloads-OFF-gate-allowSync-reconcile-is-failing" ;;
+  *) DL_RED=0; DL_NOTE="downloads leg could not read plex.tv (rc $DL_RC)" ;;
+esac
+
 ORACLE_OUT=$(python3 "$GATE" --oracle-check --settle-days 2 2>&1)
 ORACLE_RC=$?
 
 case "$ORACLE_RC" in
   0)
     VERDICT_LINE=$(printf "%s\n" "$ORACLE_OUT" | grep "^VERDICT=" | head -1)
-    printf "PASS: entitlement-service - alive, authenticated both ways, contract OK; oracle %s\n" \
-      "${VERDICT_LINE#VERDICT=}"
+    if [ "$DL_RED" -eq 1 ]; then
+      printf "STAGE=ent-downloads-off msg=%s\n" "$DL_NOTE" >&2
+      exit 1
+    fi
+    printf "PASS: entitlement-service - alive, authenticated both ways, contract OK; oracle %s; %s\n" \
+      "${VERDICT_LINE#VERDICT=}" "$DL_NOTE"
     exit 0 ;;
   2)
     VERDICT_LINE=$(printf "%s\n" "$ORACLE_OUT" | grep "^VERDICT=" | head -1)
     DETAIL_LINE=$(printf "%s\n" "$ORACLE_OUT" | grep "^DETAIL=" | head -1)
     DETAIL_FLAT=$(printf "%s" "${DETAIL_LINE#DETAIL=}" | tr " " "-")
+    [ "$DL_RED" -eq 1 ] && DETAIL_FLAT="$DETAIL_FLAT-ALSO-$DL_NOTE"
     printf "STAGE=ent-oracle-red msg=%s-%s\n" "${VERDICT_LINE#VERDICT=}" "$DETAIL_FLAT" >&2
     exit 1 ;;
   *)

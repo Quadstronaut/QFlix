@@ -56,8 +56,10 @@ class Acct:
     def pendingInvites(self, includeSent=True, includeReceived=True):
         return [NS(email=e, username=None) for e in self.pending]
 
-    def inviteFriend(self, user, server, sections):
+    def inviteFriend(self, user, server, sections, allowSync=False):
         assert server == NEW
+        # QFLX-49: every member may download; plexapi defaults this to False.
+        assert allowSync is True, "invites must carry allowSync=True"
         self.calls.append(("invite", user, tuple(sections)))
         if self.invite_creates:
             self.pending.add(user)

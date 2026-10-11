@@ -997,6 +997,59 @@ class Outcome:
     failed: List[str] = field(default_factory=list)
 
 
+def reconcile_downloads(plex: "PS.PlexShareClient", shares: Sequence["PS.Share"],
+                        execute: bool) -> Outcome:
+    """Turn Download (allowSync) ON for every accepted share that has it off.
+
+    QFLX-49. Operator policy: every member may download. Every share is born
+    with downloads OFF (Plex web invite default; plexapi inviteFriend default),
+    and the library writes in apply_plan() never touch the flag, so without
+    this step a new member silently cannot download, forever. Runs over ALL
+    accepted shares -- entitled, floor, exempt, plex_only tagalongs -- because
+    allowSync is a playback permission, not a library grant: it never widens
+    which sections anybody can see.
+
+    Idempotent (only shares explicitly at "0" are written) and outside the
+    mutation budget: it is not an access decision, and the budget exists to
+    slow down REDUCTIONS. Report-only when not executing, exactly like plans.
+    """
+    out = Outcome()
+    for share in PS.shares_without_downloads(shares):
+        who = mask(share.email) if share.email else "user#%d" % share.user_id
+        if not execute:
+            out.deferred.append("would enable downloads for %s" % who)
+            continue
+        try:
+            plex.set_allow_sync(share, True)
+            out.applied.append("downloads enabled for %s" % who)
+        except PS.PlexShareError as e:
+            out.failed.append("downloads for %s: %s" % (who, e))
+    return out
+
+
+def _downloads_check(args) -> int:
+    """`--downloads-check`: read-only count of accepted shares with downloads
+    OFF. No Seerr, no entitlement API, no state, no Kuma, no notify. Used by
+    the entitlement-service canary's downloads leg. Prints COUNTS ONLY -- the
+    canary message is a public-ish surface and member identity never goes in
+    it. Exit EXIT_ARM_CHECK_RED when any share is off, EXIT_OK when none,
+    EXIT_MEDIA_STACK_UNAVAILABLE when plex.tv could not be read."""
+    try:
+        token = (_secrets_dir() / "plex.token").read_text(encoding="utf-8").strip()
+        plex = PS.PlexShareClient(token=token, machine_id=_plex_machine_id(args.machine_id))
+        shares = plex.shares()
+    except (PS.PlexShareError, OSError, ValueError) as e:
+        print("DOWNLOADS=unreadable %s" % type(e).__name__)
+        return EXIT_MEDIA_STACK_UNAVAILABLE
+    accepted = [s for s in shares if s.accepted]
+    off = PS.shares_without_downloads(shares)
+    on = sum(1 for s in accepted if s.allow_sync is True)
+    print("DOWNLOADS_ON=%d" % on)
+    print("DOWNLOADS_OFF=%d" % len(off))
+    print("ACCEPTED=%d" % len(accepted))
+    return EXIT_ARM_CHECK_RED if off else EXIT_OK
+
+
 def apply_plan(plan: Plan, *, plex: "PS.PlexShareClient", share: "PS.Share",
                seerr: "SU.SeerrClient", seerr_user: Optional["SU.SeerrUser"],
                state: "ST.AccessState", execute: bool) -> Tuple[List[str], List[str]]:
@@ -1225,6 +1278,11 @@ def build_args(argv=None):
                         "section 3), no Plex/Seerr I/O at all. Used by the "
                         "entitlement-service canary's oracle leg. Exits %d on a "
                         "red verdict." % EXIT_ARM_CHECK_RED)
+    p.add_argument("--downloads-check", action="store_true",
+                   help="read-only: count accepted Plex shares with Download "
+                        "(allowSync) OFF. plex.tv read only, counts only. Used "
+                        "by the entitlement-service canary. Exits %d if any "
+                        "share is off." % EXIT_ARM_CHECK_RED)
     p.add_argument("--settle-days", type=int, default=DEFAULT_SETTLE_DAYS,
                    help="payer_oracle settle window in days (default %d)"
                         % DEFAULT_SETTLE_DAYS)
@@ -1435,6 +1493,8 @@ def main(argv=None) -> int:
         return _oracle_check(args, now)
     if args.arm_check:
         return _arm_check(args, now)
+    if args.downloads_check:
+        return _downloads_check(args)
 
     state_dir = (Path(args.state_dir) if args.state_dir
                  else ST.default_state_path().parent)
@@ -1729,6 +1789,17 @@ def main(argv=None) -> int:
         out.failed.extend(failed)
         if applied or failed:
             budget -= 1
+
+    # ---- downloads (allowSync) reconcile, QFLX-49 -------------------------
+    # After the plans, so a share whose libraries moved this run is still
+    # addressed by the same (unchanged) user id. Failures join out.failed and
+    # turn the run red: a member who cannot download is the drift this exists
+    # to close, and a silent failure here would re-open it.
+    dl = reconcile_downloads(plex, shares, execute)
+    out.applied.extend(dl.applied)
+    out.failed.extend(dl.failed)
+    for line in dl.deferred:
+        log("REPORT-ONLY " + line)
 
     for line in out.applied:
         log("APPLIED " + line)
