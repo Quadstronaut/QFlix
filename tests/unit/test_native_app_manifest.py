@@ -89,12 +89,12 @@ def test_converted_app_has_installer_pin_upgrade_and_unit(name):
     assert a.get("ucc_dormant") is True, "the UCC container must stay dormant (I-8)"
 
 
-def test_postgres_is_converted_pending_swap():
+def test_postgres_is_converted_and_swapped():
     """QFLX-37 (A13): native tree in ~/.apps/pg-native (data COPIED, the UCC dir
     is the rollback target); minor-only .deb upgrades; the version pin is the
     container's PGDG build string."""
     a = _converted()["postgres"]
-    assert a["swap_state"] == "pending-swap" and a["unit"] == "qflix-postgres.service"
+    assert "swap_state" not in a and a["unit"] == "qflix-postgres.service"   # swapped 2026-10-11
     assert a["native_dir"] == "pg-native"
     assert a["health"]["require_unit_active"] is True
     up = a["upgrade"]
