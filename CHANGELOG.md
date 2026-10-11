@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-10-10 - Postgres goes native by dump/restore; the upgrade child is retired (QFLX-37)
+
+**UCC divorce A13.** `scripts/configure/312-native-postgres-install.sh` moves
+listmonk's database off the container onto `qflix-postgres.service`: the PGDG
+trixie debs of exactly the container's build (`17.11-1.pgdg13+2`, read from the
+container postmaster's `PG_VERSION` env because `app-postgres` has no `version`
+verb), both sha256-pinned, `dpkg-deb -x` into `~/.apps/pg-native/bin/<ver>`, a
+fresh C.UTF-8 cluster in `~/.apps/pg-native/data`. Inert without `--execute`.
+
+- **Data is copied, never used in place.** `pg_dumpall --globals-only` (roles +
+  SCRAM verifiers; the bootstrap `CREATE ROLE` is filtered) + `pg_dump -Fc` of
+  every database, per-table row counts and sequence values before and after the
+  dump (equal = no writer left) and after the restore (equal = nothing lost).
+  The UCC data dir is never opened: rollback restores nothing.
+- **The writers stop first:** listmonk.service, plus the heartbeat-listmonk and
+  listmonk-sync crontab lines (held with a marker, released verbatim). Refused
+  within 24h of the Monday 15:00 UTC newsletter or while a campaign runs.
+- Restore runs socket-only; the unit then binds exactly the recorded listen set
+  (all three addresses; a wildcard is refused). Every TCP client, loopback
+  included, needs the password (shared slot).
+- `--prove`: the same restore into a scratch cluster on a free loopback port,
+  its listmonk db sanitized (SMTP, messengers, bounce mailboxes off; nothing
+  running/scheduled; zero asserted), a scratch listmonk reads `/api/campaigns`.
+- `--rollback` keeps any post-cutover native writes as `-Fc` dumps before it
+  stops the unit, then returns to UCC.
+- `native.sh`: db-family units stop with `KillSignal=SIGINT` + `KillMode=mixed`
+  (postgres FAST shutdown; SIGTERM is SMART and waits for listmonk's pool).
+- `appctl version` reads the manifest `native_dir` (postgres: `pg-native`).
+- lifecycle `tarball_swap` unpacks a `.deb` with `dpkg-deb -x`; the postgres
+  upgrade block is minor-only (`version_pin.max: 17.999`).
+- **`scripts/maint/ucc-postgres-upgrade.sh` is retired** (it passed the listmonk
+  DB password in argv, F-23). `app-upgrade-all.sh` never upgrades postgres
+  through `app-postgres` again, whatever the manifest, `--include` or `--only`
+  say; 240 deletes a deployed copy.
+
 ## 2026-10-10 - unpackerr.conf [[general]] trap guard + log-behind-journal detector (QFLX-46)
 
 **unpackerr.log sat dark 5 days (2026-10-05) because a panel regenerate wrapped

@@ -37,8 +37,6 @@ files:
     app_calls: 1
   scripts/maint/lib/window.py:
     app_calls: 1
-  scripts/maint/ucc-postgres-upgrade.sh:
-    app_calls: 9
   scripts/mcp/app_status.py:
     app_calls: 2
   scripts/ops/finalize-purge-2026-05-11.sh:

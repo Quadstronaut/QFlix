@@ -83,6 +83,15 @@ def test_db_family_gets_120s_stop_timeout(tmp_path):
     assert "TimeoutStopSec=60\n" in _sh(tmp_path, "native_render_unit a go a ''").stdout
 
 
+def test_db_family_fast_shutdown_on_the_postmaster_only(tmp_path):
+    """QFLX-37: SIGTERM is postgres' SMART shutdown (waits for listmonk's pool,
+    then SIGKILL at the timeout). SIGINT = FAST; mixed = postmaster only."""
+    out = _sh(tmp_path, "native_render_unit pg-native db postgres '-D x'").stdout
+    assert "TimeoutStopSec=120\nKillMode=mixed\nKillSignal=SIGINT\nNice=5\n" in out
+    for fam in ("go", "dotnet", "python", "node"):
+        assert "KillSignal" not in _sh(tmp_path, f"native_render_unit a {fam} a ''").stdout
+
+
 def test_static_family_gets_120s_stop_and_no_thread_knob(tmp_path):
     # qbittorrent-nox (QFLX-35): libtorrent flushes resume data on SIGTERM.
     out = _sh(tmp_path, "native_render_unit qbittorrent static qbittorrent-nox ''").stdout

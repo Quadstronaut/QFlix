@@ -486,6 +486,11 @@ def _apply_tarball_swap(app: App, target_version: str, timeout_s: float) -> Life
             return _fail(f"tarball_swap binary_name must be a bare file name: {binary_name!r}")
         cmd = (f"mkdir -p '{extract_dir}' && "
                f"install -m 0755 '{tmp}' '{extract_dir}/{binary_name}'")
+    elif url.endswith(".deb"):
+        # QFLX-37: a .deb is an ar archive around a data tarball (native
+        # postgres ships as PGDG debs). `dpkg-deb -x` unpacks that tarball and
+        # runs no maintainer script: still a plain tarball swap, no new kind.
+        cmd = f"mkdir -p '{extract_dir}' && dpkg-deb -x '{tmp}' '{extract_dir}'"
     else:
         cmd = (f"mkdir -p '{extract_dir}' && "
                f"tar {_tar_flag_from_url(url)} '{tmp}' -C '{extract_dir}'")

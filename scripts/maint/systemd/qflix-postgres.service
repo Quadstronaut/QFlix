@@ -1,0 +1,22 @@
+[Unit]
+Description=QFlix pg-native (native)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.apps/pg-native
+Environment=PATH=%h/.apps/pg-native/bin/current:%h/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/qflix/pg-native.env
+ExecStart=%h/.apps/pg-native/bin/current/usr/lib/postgresql/17/bin/postgres -D %h/.apps/pg-native/data
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=600
+StartLimitBurst=5
+TimeoutStopSec=120
+KillMode=mixed
+KillSignal=SIGINT
+Nice=5
+UMask=0002
+
+[Install]
+WantedBy=default.target

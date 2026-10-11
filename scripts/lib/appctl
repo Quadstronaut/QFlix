@@ -57,7 +57,7 @@ die2() { echo "appctl: $*" >&2; exit 2; }
 _cr() { local s="$1"; printf '%s' "${s%$'\r'}"; }
 
 # Look the app up in the deployed manifest. Prints one line:
-#   name|class|slug|unit|dormant(0/1)|port_secret|swap_state
+#   name|class|slug|unit|dormant(0/1)|port_secret|swap_state|native_dir
 # Exit 4 = no such app, 5 = manifest unreadable.
 lookup() {
   "$PY" - "$MANIFEST" "$1" <<'PY'
@@ -86,6 +86,9 @@ print("|".join([
     "0" if a.get("ucc_dormant") in (None, False) else "1",
     str(h.get("port_secret") or ""),
     str(a.get("swap_state") or ""),
+    # QFLX-37: postgres' native tree is ~/.apps/pg-native (its data moves by
+    # dump/restore, the UCC dir stays the rollback target). Default: the slug.
+    str(a.get("native_dir") or a.get("ucc_slug") or name),
 ]))
 PY
 }
@@ -188,7 +191,7 @@ case "$rc" in
      die2 "no lifecycle for $WANT (not in $MANIFEST)" ;;
   *) die2 "no lifecycle for $WANT (manifest $MANIFEST unreadable)" ;;
 esac
-IFS='|' read -r NAME CLASS SLUG UNIT DORMANT PSEC SWAPSTATE <<<"$(_cr "$row")"
+IFS='|' read -r NAME CLASS SLUG UNIT DORMANT PSEC SWAPSTATE NDIR <<<"$(_cr "$row")"
 
 # PENDING-SWAP (QFLX-20, spec 5.9 step 7). The manifest flip (class systemd,
 # ucc_dormant) merges BEFORE the swap runs, so for that window the UCC container
@@ -211,7 +214,7 @@ case "$CLASS" in
     case "$VERB" in
       start|stop|restart) exec systemctl --user "$VERB" "$UNIT" ;;
       status)  exec systemctl --user is-active "$UNIT" ;;
-      version) native_version "$SLUG"; exit $? ;;
+      version) native_version "${NDIR:-$SLUG}"; exit $? ;;
       upgrade) exec "$HOME/bin/manitoba-maint" upgrade "$NAME" "$@" ;;
     esac ;;
   ucc)
