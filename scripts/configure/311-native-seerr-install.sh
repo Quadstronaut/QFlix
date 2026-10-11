@@ -731,22 +731,32 @@ PY
   info "PROOF OK: status 200, version $ver, login ok, sanitized copy inert; before=$before delta=$delta ceiling=$ceiling. Next: --swap --execute"
 }
 
+# Order matters (QFLX-36, swap 2026-10-10): Seerr binds its port only once
+# Next.js is ready, ~28 s after the unit starts on the slot. A listen-set compare
+# taken at SETTLE sees nothing bound and fails a healthy runtime. So: poll
+# /api/v1/status until it answers 200 (or STATUS_TIMEOUT), THEN compare the
+# listen set, retrying the compare inside the same budget (the preload binds the
+# other addresses moments after the first).
 verify_native() {
-  local n ver vv start
+  local n ver vv start d
   sleep "$SETTLE"
   sysd is-active "$UNIT" >/dev/null 2>&1 || { echo "unit not active" >&2; return 1; }
   [ -z "$(scan_pids container)" ] || { echo "a container process is running" >&2; return 1; }
   n="$(scan_pids native | wc -l | tr -d ' ')"
   [ "$n" -ge 1 ] || { echo "no native process" >&2; return 1; }
-  native_listen_compare "$SLUG" >/dev/null || { echo "listen set differs from listen-set.before" >&2; return 1; }
   start=$SECONDS
-  while :; do
-    ver="$(status_probe "$PROBE_PORT")" && [ -n "$ver" ] && break
+  until ver="$(status_probe "$PROBE_PORT")" && [ -n "$ver" ]; do
     ver=""
-    [ $((SECONDS - start)) -ge "$STATUS_TIMEOUT" ] && { echo "/api/v1/status never answered 200" >&2; return 1; }
+    [ $((SECONDS - start)) -ge "$STATUS_TIMEOUT" ] && { echo "/api/v1/status never answered 200 within ${STATUS_TIMEOUT}s" >&2; return 1; }
     sleep "$POLL"
   done
+  info "status 200 after $((SECONDS - start))s past settle"
   [ "$ver" = "$VERSION" ] || { echo "status reports $ver, want $VERSION" >&2; return 1; }
+  # At least one compare always runs, even when status used the whole budget.
+  until d="$(native_listen_compare "$SLUG")"; do
+    [ $((SECONDS - start)) -ge "$STATUS_TIMEOUT" ] && { echo "listen set differs from listen-set.before: $d" >&2; return 1; }
+    sleep "$POLL"
+  done
   auth_probe "$SETTINGS" "$PROBE_PORT" || { echo "login (/api/v1/auth/me) failed" >&2; return 1; }
   vv="$(vhost_probe)" || { echo "the seerr vhost does not answer" >&2; return 1; }
   [ "$vv" = "$VERSION" ] || { echo "the seerr vhost reports '$vv', want $VERSION" >&2; return 1; }
