@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -86,6 +87,39 @@ def _operator_id() -> Optional[str]:
     return None
 
 
+# Longest Discord Retry-After (seconds) worth waiting out inline. notify() is
+# called from inside the pusher cycle, whose slack inside Kuma's 90s push
+# window is ~25s; one bounded wait cannot cost a heartbeat, a long one could.
+_RATE_LIMIT_MAX_WAIT_S = 5.0
+
+
+def _retry_after_s(resp) -> Optional[float]:
+    """Seconds to wait before ONE retry of a 429, or None (no retry).
+
+    Discord sends the wait both as a `Retry-After` header and a JSON
+    `retry_after` field; either is accepted. Missing, unparseable, negative or
+    longer than _RATE_LIMIT_MAX_WAIT_S -> None, and the 429 fails as before."""
+    if getattr(resp, "status_code", None) != 429:
+        return None
+    raw = None
+    try:
+        raw = resp.headers.get("Retry-After")
+    except Exception:
+        raw = None
+    if raw is None:
+        try:
+            raw = resp.json().get("retry_after")
+        except Exception:
+            raw = None
+    try:
+        wait = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if wait < 0 or wait > _RATE_LIMIT_MAX_WAIT_S:
+        return None
+    return wait
+
+
 def _post_discord(webhook_url: str, message: str, level: str) -> tuple[bool, str]:
     """POST a Discord-shaped embed payload directly to a webhook URL.
     Returns (ok, error_msg). Never raises."""
@@ -105,6 +139,16 @@ def _post_discord(webhook_url: str, message: str, level: str) -> tuple[bool, str
             payload["allowed_mentions"] = {"users": [op_id]}
     try:
         resp = requests.post(webhook_url, json=payload, timeout=5)
+        # QFLX-48: Discord answers 429 when the webhook's bucket is drained -
+        # on 2026-10-11 Kuma's per-monitor DOWN/UP posts on the same channel
+        # drained it and the pusher's single "Fleet storm cleared" page was
+        # dropped. Honour a SHORT Retry-After once; a long one fails as before
+        # (this runs inline in the pusher cycle, so the wait must stay bounded
+        # far below Kuma's 90s push window).
+        wait = _retry_after_s(resp)
+        if wait is not None:
+            time.sleep(wait)
+            resp = requests.post(webhook_url, json=payload, timeout=5)
         resp.raise_for_status()
         return True, ""
     except requests.Timeout as exc:

@@ -679,6 +679,27 @@ sshm 'ln -sf ~/scripts/maint/manitoba-maint ~/bin/manitoba-maint'
 # ── Step 7: install user-systemd units ──────────────────────────────────────
 sshm 'bash -s' <<'UNITSCRIPT'
 set -euo pipefail
+# QFLX-48: TWO daemon-reloads per deploy, not forty.
+# `systemctl enable` and `disable` each imply a full user-manager daemon-reload
+# unless given --no-reload. This step enables ~40 units, and on this box (220
+# unit files) every reload takes 4-8s, during which the manager answers no
+# `systemctl show`/`is-active` query. The 2026-10-11 02:06:28-02:12:18 deploy
+# ran 39 back-to-back reloads (5m50s of a wedged manager): the pusher's
+# runtime-parity and health probes each blocked 5s, its cycle grew from ~6s to
+# 106-119s, and 33 Kuma push monitors (90s window) went DOWN with "No
+# heartbeat in the time window" - a fleet storm page manufactured by a deploy.
+# The shim below adds --no-reload to every enable/disable in this heredoc. The
+# unit files are loaded by the explicit daemon-reload after the cp loop, and
+# the closing daemon-reload before the service restarts makes the manager's
+# view of the new .wants/ symlinks match disk. Pinned by
+# tests/unit/test_240_reload_storm.py, which replays this heredoc.
+systemctl() {
+  if [ "${1:-}" = "--user" ] && { [ "${2:-}" = "enable" ] || [ "${2:-}" = "disable" ]; }; then
+    command systemctl --user "$2" --no-reload "${@:3}"
+  else
+    command systemctl "$@"
+  fi
+}
 mkdir -p ~/.config/systemd/user
 for unit in \
     manitoba-maint-entitlement.service \
@@ -801,10 +822,11 @@ for unit in \
   fi
   cp -f ~/scripts/maint/systemd/$unit ~/.config/systemd/user/$unit
 done
-systemctl --user daemon-reload
 # Retire the cp-upgrade timer (folded into the window orchestrator 2026-06-28).
 # On boxes provisioned before the fold-in, disable + remove it so it can't fire a
 # second, UNLOCKED sweep at 11:30. The .service unit stays (manual sweeps only).
+# Done BEFORE the reload so one reload covers both the new unit files and the
+# removed timer (QFLX-48).
 systemctl --user disable --now manitoba-maint-cp-upgrade.timer 2>/dev/null || true
 rm -f ~/.config/systemd/user/manitoba-maint-cp-upgrade.timer
 systemctl --user daemon-reload
@@ -1126,6 +1148,9 @@ systemctl --user enable --now manitoba-maint-entitlement.timer
 # memory qbit-webui-boot-bind-race). Plain `enable` (NOT --now): it's a ~3min
 # sampling oneshot, so --now would block this installer; it fires on next boot.
 systemctl --user enable manitoba-maint-boot-listeners.service
+# The enables above ran with --no-reload (shim at the top of this heredoc);
+# this single reload publishes their .wants/ symlinks to the manager (QFLX-48).
+systemctl --user daemon-reload
 # Restart long-running services so they pick up code/manifest changes
 # (enable --now doesn't restart an already-running unit). Window timers
 # don't need a restart — next fire uses the latest code.
