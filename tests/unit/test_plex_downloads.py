@@ -96,14 +96,14 @@ def test_only_accepted_shares_explicitly_off_are_drift():
 
 
 def test_set_allow_sync_wire_format():
-    """plexapi 4.18.1 updateFriend: PUT /api/v2/sharings/<userID>?allowSync=1,
-    keyed by plex.tv USER id, no body."""
+    """PUT /api/friends/<userID>?allowSync=1, keyed by plex.tv USER id, no
+    body. Verified live 2026-10-10; /api/v2/sharings/<userID> 404s on PUT."""
     rec = Recorder()
     share = PS.parse_shares(XML)[1]
     client(rec).set_allow_sync(share, True)
     (method, path, query, body), = rec.calls
     assert method == "PUT"
-    assert path == "/api/v2/sharings/102"
+    assert path == "/api/friends/102"
     assert query["allowSync"] == "1"
     assert body is None
 
@@ -120,7 +120,7 @@ def test_reconcile_corrects_the_member_with_downloads_off():
     rec = Recorder()
     out = G.reconcile_downloads(client(rec), PS.parse_shares(XML), execute=True)
     assert [(m, p, q.get("allowSync")) for m, p, q, _ in rec.calls] == [
-        ("PUT", "/api/v2/sharings/102", "1")]
+        ("PUT", "/api/friends/102", "1")]
     assert len(out.applied) == 1 and not out.failed
     assert "off@example.com" not in out.applied[0], "addresses are masked"
 
