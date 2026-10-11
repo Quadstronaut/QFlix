@@ -67,12 +67,16 @@ leaves "Allow Downloads" unticked, and plexapi's `inviteFriend()` defaults to
 share born with the default is drift, and set_allow_sync() is the corrector.
 
 The write is a different endpoint keyed by the friend's plex.tv USER id, not
-the shared_server id (plexapi 4.18.1 `updateFriend`, FRIENDUPDATE):
+the shared_server id:
 
-  PUT  /api/v2/sharings/<userID>?allowSync=1
+  PUT  /api/friends/<userID>?allowSync=1
 
-Only the query args named are changed; the library set, camera upload and
-channel flags are left as they are.
+Verified live 2026-10-10 against a real allowSync=0 share: 200, allowSync
+flipped, library set and every other sharingSettings flag unchanged (read back
+from GET /api/v2/shared_servers/<id>). This is the endpoint older plexapi
+used. Do NOT "upgrade" it to plexapi 4.18.1's FRIENDUPDATE
+(`PUT /api/v2/sharings/<userID>?allowSync=1`): that answered HTTP 404 for the
+same user on the same day, even though GET on that URL returns 200.
 
 ACCESS TOKENS
 -------------
@@ -310,7 +314,7 @@ class PlexShareClient:
                 "refusing to set allowSync on shared_server %s: no plex.tv user "
                 "id (a pending invite by email has none to address)"
                 % share.shared_server_id)
-        self._request("PUT", "/api/v2/sharings/%d" % share.user_id,
+        self._request("PUT", "/api/friends/%d" % share.user_id,
                       query={"allowSync": "1" if allow else "0"})
 
 
