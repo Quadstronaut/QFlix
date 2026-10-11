@@ -48,7 +48,7 @@ class Fake:
                 qs = {k: v[0] for k, v in parse_qs(u.query).items()}
                 q = qs.get("query", "")
                 fake.queries.append((q, qs))
-                if "_msg" in q and "filter n:>1" in q:
+                if "filter n:>1" in q:
                     kind, rows = "dup", fake.dups
                 elif "max(_time)" in q:
                     kind, rows = "skew", fake.latest
@@ -218,3 +218,10 @@ def test_skew_query_failure_is_red(fake, tmp_path):
     fake.fail = {"skew"}
     r = run(fake, tmp_path)
     assert r.returncode == 1 and "STAGE=vlti-query-fail" in r.stderr
+
+
+def test_duplicate_query_keys_on_line_id_not_text(fake, tmp_path):
+    """QFLX-51: identical text at different offsets is the app repeating itself."""
+    run(fake, tmp_path)
+    dq = [q for q, _ in fake.queries if "filter n:>1" in q]
+    assert dq and "line_id" in dq[0] and "_msg" not in dq[0]

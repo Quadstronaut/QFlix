@@ -87,7 +87,8 @@ def _save_cursors(path: Path, cursors: dict) -> None:
     os.replace(tmp, path)
 
 
-def _read_new_lines(path: str, cur: dict | None, *, tail: int) -> tuple[list[str] | None, dict]:
+def _read_new_lines(path: str, cur: dict | None, *, tail: int,
+                    ids: list | None = None) -> tuple[list[str] | None, dict]:
     """Lines appended to `path` since `cur`, plus the advanced cursor.
 
     Returns (None, cur) when there is no cursor yet: the caller falls back to
@@ -95,6 +96,11 @@ def _read_new_lines(path: str, cur: dict | None, *, tail: int) -> tuple[list[str
     Only complete lines are consumed; a half-written last line stays for the
     next cycle. If the file was rotated (new inode) or truncated (size below
     the offset), reading restarts at byte 0 of the new file.
+
+    `ids` (optional out-param, QFLX-51): when a list is passed it is filled,
+    parallel to the returned lines, with "<inode>:<byte offset of line start>".
+    That pair is unique per physical line, so the time-integrity canary can tell
+    a re-shipped line (same id twice) from a line the app genuinely wrote twice.
     """
     try:
         st = os.stat(path)
@@ -115,14 +121,22 @@ def _read_new_lines(path: str, cur: dict | None, *, tail: int) -> tuple[list[str
     if end < 0:
         return [], new
     new["offset"] = offset + end + 1
-    lines = [ln.rstrip("\r") for ln in
-             chunk[:end].decode("utf-8", errors="ignore").split("\n")]
+    raw_lines = chunk[:end].split(b"\n")
+    lines = [ln.decode("utf-8", errors="ignore").rstrip("\r") for ln in raw_lines]
+    if ids is not None:
+        pos = offset
+        all_ids = []
+        for rl in raw_lines:
+            all_ids.append(f"{st.st_ino}:{pos}")
+            pos += len(rl) + 1
+        ids[:] = all_ids[-tail:]
     # A backlog bigger than --tail (ingest down for hours) keeps the newest
     # lines, same cap the old tail read had.
     return lines[-tail:], new
 
 
-def _parse_with_carry(lines: list[str], *, source: str, last_ts: str | None) -> tuple[list[dict], str | None]:
+def _parse_with_carry(lines: list[str], *, source: str, last_ts: str | None,
+                      ids: list | None = None) -> tuple[list[dict], str | None]:
     """logs.parse_line + the same ts carry-forward logs.collect_for does,
     seeded from the cursor so a continuation line at the top of this batch
     inherits the previous batch's time instead of the ingest clock."""
@@ -133,10 +147,12 @@ def _parse_with_carry(lines: list[str], *, source: str, last_ts: str | None) -> 
         last_ts = logs_mod._normalize_ts(
             last_ts, logs_mod._tz_for_policy(logs_mod.zone_policy_for(source)))
     out = []
-    for line in lines:
+    for i, line in enumerate(lines):
         if not line.strip():
             continue
         rec = logs_mod.parse_line(line, source=source)
+        if ids is not None and i < len(ids):
+            rec["line_id"] = ids[i]
         if rec["ts"] is None:
             rec["ts"] = last_ts
         else:
@@ -194,6 +210,7 @@ def _post_jsonline(port: int, app: str, lines: list[dict]) -> tuple[bool, str]:
             "app":         app,
             "source_file": ln.get("source_file") or "",
             "host":        "seedbox",
+            **({"line_id": ln["line_id"]} if ln.get("line_id") else {}),
         }))
     if not payload_lines:
         return True, "0 non-empty"
@@ -253,7 +270,8 @@ def main() -> int:
                     # Route moved (glob resolved to a newer file): the old
                     # offset means nothing in the new file.
                     cur = None
-                raw, new_cur = _read_new_lines(path, cur, tail=args.tail)
+                line_ids: list = []
+                raw, new_cur = _read_new_lines(path, cur, tail=args.tail, ids=line_ids)
                 new_cur["path"] = path
                 if raw is None:
                     # First sight of this app: one last window/tail read so the
@@ -269,7 +287,8 @@ def main() -> int:
                     if not raw:
                         skipped_dormant += 1
                     lines, new_cur["last_ts"] = _parse_with_carry(
-                        raw, source=path, last_ts=new_cur.get("last_ts"))
+                        raw, source=path, last_ts=new_cur.get("last_ts"),
+                        ids=line_ids)
             elif plan.get("kind") == "journalctl":
                 jcur_file = STATE_DIR / f"{app}.journal-cursor"
                 jcur_prev = jcur_file.read_text() if jcur_file.exists() else None

@@ -240,3 +240,28 @@ def test_format_change_does_not_reship_old_lines(tmp_path):
         fh.write("2026-10-10T00:13:00.000+00:00 listmonk-sync [INFO] next\n")
     raw, _ = mod._read_new_lines(str(f), cur, tail=50)
     assert raw == ["2026-10-10T00:13:00.000+00:00 listmonk-sync [INFO] next"]
+
+
+def test_line_ids_distinguish_repeated_text_and_follow_tail(tmp_path):
+    """QFLX-51: identical text at two offsets gets two ids; the ids stay
+    parallel to the returned lines when --tail trims the backlog, and reach the
+    parsed records (blank lines are skipped but do not shift the ids)."""
+    mod = _load_ingest()
+    f = tmp_path / "radarr.txt"
+    f.write_text("seed\n")
+    _, cur = mod._read_new_lines(str(f), None, tail=50)
+    with open(f, "a") as fh:
+        fh.write("2026-10-10 06:44:28.2|Info|X|same\n\n2026-10-10 06:44:28.2|Info|X|same\n")
+    ids: list = []
+    raw, cur = mod._read_new_lines(str(f), cur, tail=50, ids=ids)
+    assert len(raw) == len(ids) == 3
+    assert len(set(ids)) == 3
+    recs, _ = mod._parse_with_carry(raw, source=str(f), last_ts=None, ids=ids)
+    assert [r["line_id"] for r in recs] == [ids[0], ids[2]]
+    # tail trims both lists the same way
+    with open(f, "a") as fh:
+        fh.write("a\nb\nc\n")
+    ids2: list = []
+    raw2, _ = mod._read_new_lines(str(f), cur, tail=2, ids=ids2)
+    assert raw2 == ["b", "c"] and len(ids2) == 2
+    assert ids2[1].split(":")[1] == str(f.read_bytes().rindex(b"c"))
