@@ -158,7 +158,6 @@ def test_real_allowlist_total_never_exceeds_the_ceiling(repo):
 def test_converted_files_carry_no_gateway_literal(repo):
     """The QFLX-23 conversion list: each of these now reads net.app_host."""
     converted = [
-        "scripts/configure/03-prowlarr-flaresolverr.sh",
         "scripts/configure/09-phase5-arr-connects-and-sync.py",
         "scripts/configure/09-phase5-arr-connects-and-sync.sh",
         "scripts/configure/30-seerr-arrs.py",
@@ -166,9 +165,6 @@ def test_converted_files_carry_no_gateway_literal(repo):
         "scripts/configure/90-sabnzbd-usenet-install.sh",
         "scripts/configure/90b-usenet-all-arrs.py",
         "scripts/data/unpackerr.conf.tmpl",
-        "scripts/install/02-flaresolverr.sh",
-        "scripts/maint/flaresolverr-canary.py",
-        "scripts/maint/flaresolverr-unsuppress-watch.sh",
         "scripts/maint/functional-audit.py",
         "scripts/ops/tautulli-gate-watch.sh",
         "scripts/smoke/arr-audit-fixes.py",

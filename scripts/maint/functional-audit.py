@@ -241,7 +241,7 @@ def main():
     # (replaced by scripts/maint/qflix-reaper.py). The reaper self-pushes the
     # "QFlix Reaper" Kuma monitor; there is no HTTP feature surface to probe.
 
-    section("PLEX-ADJACENT (Tautulli / Seerr / FlareSolverr)")
+    section("PLEX-ADJACENT (Tautulli / Seerr)")
     # Tautulli — api_v2 with api_key
     tp = _read("tautulli.port")
     if not tp:
@@ -304,24 +304,7 @@ def main():
 
     # Homarr — DECOMMISSIONED 2026-07-13 (uninstalled, replaced by qflix-dash).
 
-    # FlareSolverr — hostname is net.app_host (Ultra: docker gateway) not 127.0.0.1
-    fp = _read("flaresolverr.port")
-    if fp:
-        for host_try in (_read("net.app_host") or "127.0.0.1", "127.0.0.1"):
-            code, body = _get(f"http://{host_try}:{fp}/")
-            row(f"flaresolverr {host_try}", code, body[:60])
-            if code == 200:
-                # Try /v1 with a dummy request
-                req_body = json.dumps({"cmd": "sessions.list"}).encode()
-                code, body = _get(f"http://{host_try}:{fp}/v1",
-                                  {"Content-Type": "application/json"},
-                                  data=req_body, method="POST")
-                try:
-                    d = json.loads(body) if code == 200 else {}
-                    row("flaresolverr v1", code, f"status={d.get('status', '?')} msg={d.get('message', '')[:40]}")
-                except Exception:
-                    row("flaresolverr v1", code, body[:60])
-                break
+    # FlareSolverr — RETIRED 2026-10-11 (QFLX-26; uninstalled, 0 use).
 
     section("TDARR")
     tdp = _read("tdarr.server_port")

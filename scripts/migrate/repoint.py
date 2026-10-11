@@ -3,7 +3,8 @@
 
 The data copied from blue carries blue's view of the network: Prowlarr's
 Applications point at the arrs, Seerr points at sonarr/radarr, every arr points
-at qBittorrent/SABnzbd, Prowlarr's FlareSolverr proxy points at FlareSolverr.
+at qBittorrent/SABnzbd, Prowlarr's indexer proxies point at their proxy host
+(none since FlareSolverr was retired 2026-10-11).
 On Ultra those links go through the docker gateway (spec F-17). Spec section 8
 says re-point PUTs happen ONLY when needed, so this rewrites exactly two
 things and leaves every other byte alone:

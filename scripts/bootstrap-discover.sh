@@ -74,7 +74,8 @@ tautulli_port="$(discover_port_via_nginx tautulli)"
 # The four books-stack apps were dropped from this loop 2026-08-16 when they
 # were decommissioned; their nginx proxy.d confs are gone, so discovery here
 # would find nothing anyway.
-for app in seerr flaresolverr unpackerr uptimekuma; do
+# FlareSolverr was retired 2026-10-11 (QFLX-26) and dropped from it too.
+for app in seerr unpackerr uptimekuma; do
   port="$(discover_port_via_nginx "$app")"
   [ -n "$port" ] && secret_write "$app.port" "$port"
 done

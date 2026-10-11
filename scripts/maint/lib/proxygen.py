@@ -13,7 +13,7 @@ Routing (mirrors the Ultra panel layout):
   * seerr               -> its OWN vhost  seerr.<domain>  (Seerr has no base path)
   * apps with a urlbase -> `/<urlbase>/` passed through unchanged (arrs, bazarr..)
   * other apps with a port -> `/<slug>/` with the prefix stripped
-  * never proxied: plex (clients hit it directly), flaresolverr and victorialogs
+  * never proxied: plex (clients hit it directly) and victorialogs
     (internal only). Apps without a port_secret have no route.
 A missing/invalid port secret is a HARD error: a silently dropped route is an
 outage nobody notices until a member does.
@@ -33,7 +33,7 @@ from typing import List, Optional, Tuple
 import yaml
 
 FLAVORS = ("caddy", "nginx")
-NEVER_PROXIED = frozenset({"plex", "flaresolverr", "victorialogs"})
+NEVER_PROXIED = frozenset({"plex", "victorialogs"})   # flaresolverr retired 2026-10-11
 DASH = "qflix-dash"
 VHOST_APPS = frozenset({"seerr"})
 # Apps whose urlbase is built into the app but not declared as a urlbase_secret.

@@ -536,7 +536,7 @@ def _cmd_canary_push(args: argparse.Namespace, manifest) -> int:
     # with a note and skip the (often heavyweight) script run entirely. Keyed
     # "canary-<name>" to share the registry namespace with the push token key.
     # Used to mute a canary that's a known downstream symptom of an already-
-    # suppressed app (e.g. prowlarr-indexer-health while flaresolverr is down).
+    # suppressed app (e.g. prowlarr-indexer-health while prowlarr is down).
     from lib import suppression as _suppression_mod
     sup_reason = _suppression_mod.push_suppressed(f"canary-{args.name}")
     if sup_reason:

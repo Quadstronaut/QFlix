@@ -22,7 +22,7 @@
 # pin broke, and it stormed `Connection refused` for three days. Ultra.cc
 # confirmed 172.17.0.1:<plex.port> is the binding "going forward". The gateway
 # is stable across container reassignment (unlike a per-container IP), and is
-# the same address the manifest already uses for FlareSolverr. So we derive the
+# the same gateway address the manifest's net.app_host probes use. So we derive the
 # target from the gateway + secrets/plex.port, never from the live config.
 #
 # Idempotent: detects an already-correct config and exits 0.

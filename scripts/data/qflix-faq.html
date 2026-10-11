@@ -813,7 +813,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
         </ol>
         <details class="deep"><summary>Probe-kind cheat sheet</summary>
           <p><strong>http_api</strong> &mdash; for *arr-style apps with an <code>X-Api-Key</code> header. Needs <code>port_secret</code>, <code>auth_secret</code>, <code>path_template</code>, optional <code>urlbase_secret</code>.</p>
-          <p><strong>http_root</strong> &mdash; plain GET to <code>/</code> on a port. Optional <code>hostname</code> override for Docker-bridge-only services (e.g. FlareSolverr at <code>172.17.0.1:17011</code>).</p>
+          <p><strong>http_root</strong> &mdash; plain GET to <code>/</code> on a port. Optional <code>hostname</code> override (<code>hostname_ref: net.app_host</code>) for services that bind only the Docker bridge address, not loopback.</p>
           <p><strong>systemd_only</strong> &mdash; just checks the systemd unit is <code>active (running)</code>.</p>
           <p><strong>port_listen</strong> &mdash; TCP connect to <code>localhost:&lt;port&gt;</code>.</p>
           <p><strong>import_check</strong> &mdash; for Python libraries: <code>venv_python -c &quot;import X&quot;</code>. Tilde-expanded.</p>
@@ -939,7 +939,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
 
     <section class="deck" id="sec-arr">
       <h2><span class="num">11</span>The *arr stack</h2>
-      <p class="deck-sub">Sonarr / Sonarr2 / Radarr / Radarr2 / Prowlarr / Bazarr / Bazarr 2 / FlareSolverr.</p>
+      <p class="deck-sub">Sonarr / Sonarr2 / Radarr / Radarr2 / Prowlarr / Bazarr / Bazarr 2.</p>
 
       <article class="card tut" id="q-arr-split" data-tags="sonarr radarr cinema anime split branch naming">
         <h3>Why two Sonarrs and two Radarrs? <a class="qhash" href="#q-arr-split">#</a></h3>
@@ -952,14 +952,14 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
         </ul>
       </article>
 
-      <article class="card tut warn" id="q-cloudflare" data-tags="flaresolverr cloudflare 403 walled indexer prowlarr 172.17.0.1">
+      <article class="card tut warn" id="q-cloudflare" data-tags="cloudflare 403 walled indexer prowlarr disabled">
         <h3>An indexer is returning 403 / Cloudflare-walled <a class="qhash" href="#q-cloudflare">#</a></h3>
         <p>
-          Prowlarr is configured to route Cloudflare-protected indexers through FlareSolverr. FlareSolverr listens on <code>172.17.0.1:&lt;flaresolverr.port&gt;</code> (Docker bridge), not host loopback.
+          QFlix no longer routes anything through a Cloudflare solver. FlareSolverr was retired 2026-10-11: it could not run under the slot's address-space cap, and it had carried 0 queries and 0 grabs in the 30 days before (the only two indexers tagged for it were already disabled). A walled indexer is left disabled in Prowlarr.
         </p>
         <ul>
-          <li><strong>Verify FlareSolverr is up:</strong> Kuma monitor &ldquo;FlareSolverr&rdquo; pushes every 60 s. If red, pusher will restart up to 3 times.</li>
-          <li><strong>Verify Prowlarr points at it:</strong> Settings &rarr; Indexers &rarr; FlareSolverr &rarr; URL should be <code>http://172.17.0.1:17011</code> (use the real port from <code>secrets/flaresolverr.port</code>).</li>
+          <li><strong>Check Prowlarr:</strong> Indexers &rarr; the failing one &rarr; Test. If it is walled, disable it rather than retrying it; the <em>Canary Prowlarr Indexer Health</em> monitor catches the 429 cascade a failing indexer causes downstream.</li>
+          <li><strong>Replace, don't bypass:</strong> add an un-walled indexer that covers the same content instead.</li>
           <li><strong>Smoke test:</strong> <code>scripts/smoke-test.sh</code> step 1 asserts &ge; 5 indexers + a search round-trip works.</li>
         </ul>
       </article>
@@ -1158,9 +1158,9 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
         <p>The Q2 import_check probe crashed for weeks because <code>subprocess.run([&quot;~/.apps/python-plexapi/venv/bin/python&quot;, ...])</code> doesn't tilde-expand. Always <code>os.path.expanduser()</code> first.</p>
       </article>
 
-      <article class="card warn" id="q-pitfall-9" data-tags="docker bridge hostname 172.17.0.1 flaresolverr loopback bind">
+      <article class="card warn" id="q-pitfall-9" data-tags="docker bridge hostname 172.17.0.1 loopback bind">
         <h3>9. Probing a Docker-bridge service on <code>127.0.0.1</code> <a class="qhash" href="#q-pitfall-9">#</a></h3>
-        <p>FlareSolverr binds <code>172.17.0.1:17011</code>, not loopback. Use the <code>hostname</code> override on the manifest health probe. The health probe now supports this; remember to set it.</p>
+        <p>A service that binds only the Docker bridge address (<code>net.app_host</code>, <code>172.17.0.1</code> on Ultra) is not on loopback. Use the <code>hostname_ref</code> override on the manifest health probe. The health probe supports this; remember to set it.</p>
       </article>
 
       <article class="card warn" id="q-pitfall-10" data-tags="auth_basic htpasswd nginx fragment public path off">
@@ -1228,13 +1228,13 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
         </p>
       </article>
 
-      <article class="card tut" id="q-tech-python" data-tags="python flask jinja kometa buildarr tautulli flaresolverr qflix-newsletter selenium">
-        <h3>The Python wing &mdash; Tautulli, Kometa, Buildarr, FlareSolverr, qflix-newsletter <a class="qhash" href="#q-tech-python">#</a></h3>
+      <article class="card tut" id="q-tech-python" data-tags="python flask jinja kometa buildarr tautulli qflix-newsletter">
+        <h3>The Python wing &mdash; Tautulli, Kometa, Buildarr, qflix-newsletter <a class="qhash" href="#q-tech-python">#</a></h3>
         <p>
           <strong>Tautulli</strong> is Flask-based; it's the original community Plex stats dashboard, around since the PlexPy days. <strong>Kometa</strong> (formerly Plex Meta Manager) is a YAML-driven Python pipeline that turns config files into Plex collections + posters. <strong>Buildarr</strong> is &ldquo;Infrastructure-as-Code for *arrs&rdquo; &mdash; declarative YAML in, reconciled *arr settings out (think Terraform, but for Sonarr).
         </p>
         <p>
-          <strong>FlareSolverr</strong> drives a headless browser (Selenium / undetected-chromedriver) to solve Cloudflare challenges Prowlarr can't pass on its own. <strong>qflix-newsletter</strong> is bespoke &mdash; Python + Jinja2 templates + the Listmonk REST API, ~600 LoC total.
+          <strong>qflix-newsletter</strong> is bespoke &mdash; Python + Jinja2 templates + the Listmonk REST API, ~600 LoC total.
         </p>
       </article>
 

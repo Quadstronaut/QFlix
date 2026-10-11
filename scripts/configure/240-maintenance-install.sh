@@ -156,9 +156,6 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-plex-intro-markers.timer \
     scripts/maint/systemd/manitoba-maint-canary-rea-liveness.service \
     scripts/maint/systemd/manitoba-maint-canary-rea-liveness.timer \
-    scripts/maint/systemd/manitoba-maint-flaresolverr-canary.service \
-    scripts/maint/systemd/manitoba-maint-flaresolverr-canary.timer \
-    scripts/maint/flaresolverr-canary.py \
     scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.service \
     scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer \
     scripts/maint/systemd/manitoba-maint-canary-plex-transcoder.service \
@@ -190,7 +187,6 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/audio-disposition-janitor.py \
     scripts/maint/unknown-codec-stream-janitor.py \
     scripts/maint/arr-housekeeping.py \
-    scripts/maint/flaresolverr-unsuppress-watch.sh \
     scripts/maint/functional-audit.py \
     scripts/maint/bootstrap-kuma-monitors.py \
     scripts/maint/qflix-torrent-janitor.py \
@@ -301,7 +297,6 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/300-native-unpackerr-install.sh \
     scripts/configure/305-native-sonarr2-install.sh \
     scripts/configure/306-native-radarr-install.sh \
-    scripts/configure/301-native-flaresolverr-install.sh \
     scripts/configure/302-native-bazarr-install.sh \
     scripts/configure/308-native-sabnzbd-install.sh \
     scripts/lib/qflix-tcpfwd.py \
@@ -338,8 +333,31 @@ cp -f "$STG"/scripts/maint/arr-audit.py       ~/scripts/maint/arr-audit.py
 chmod +x ~/scripts/maint/arr-audit.py
 cp -f "$STG"/scripts/maint/arr-audit-run.sh   ~/scripts/maint/arr-audit-run.sh
 chmod +x ~/scripts/maint/arr-audit-run.sh
-cp -f "$STG"/scripts/maint/flaresolverr-canary.py ~/scripts/maint/flaresolverr-canary.py
-chmod +x ~/scripts/maint/flaresolverr-canary.py
+# QFLX-26: FlareSolverr RETIRED 2026-10-11. Remove every deployed copy of its
+# scripts (canary, unsuppress watcher, native installer, the old UCC-era
+# install/configure scripts and their QFLX-23 .bak copies) so nothing can run
+# them and deploy-drift does not see deployed files with no source in git.
+# Idempotent: rm -f on an already-clean box is a no-op. The staging dir is
+# persistent across deploys (tar only adds), and the `cp -rf .../systemd`
+# below copies the WHOLE staged unit dir, so the stale staged copies go too or
+# they would be re-deployed on every run.
+rm -f "$STG"/scripts/maint/systemd/*flaresolverr* \
+      "$STG"/scripts/maint/flaresolverr-* \
+      "$STG"/scripts/configure/*flaresolverr* \
+      "$STG"/scripts/install/*flaresolverr*
+rm -f ~/scripts/maint/flaresolverr-canary.py \
+      ~/scripts/maint/__pycache__/flaresolverr-canary.*.pyc \
+      ~/scripts/maint/flaresolverr-unsuppress-watch.sh \
+      ~/scripts/configure/301-native-flaresolverr-install.sh \
+      ~/scripts/configure/03-prowlarr-flaresolverr.sh \
+      ~/scripts/configure/03-prowlarr-flaresolverr.sh.bak-qflx23 \
+      ~/scripts/install/02-flaresolverr.sh \
+      ~/scripts/install/02-flaresolverr.sh.bak-qflx23 \
+      ~/scripts/maint/systemd/manitoba-maint-flaresolverr-canary.service \
+      ~/scripts/maint/systemd/manitoba-maint-flaresolverr-canary.timer \
+      ~/scripts/maint/systemd/manitoba-maint-flaresolverr-unsuppress.service \
+      ~/scripts/maint/systemd/manitoba-maint-flaresolverr-unsuppress.timer \
+      ~/scripts/maint/systemd/qflix-flaresolverr.service
 cp -f "$STG"/scripts/maint/prune-app-backups.sh ~/scripts/maint/prune-app-backups.sh
 chmod +x ~/scripts/maint/prune-app-backups.sh
 # QFlix hourly collector — migrated off the workstation 2026-07-09 so the
@@ -395,14 +413,13 @@ chmod +x ~/scripts/maint/unknown-codec-stream-janitor.py
 # script (25 systemd ExecStart targets + crontab entries) against every installer
 # in the repo. These two were the only other unstaged ones, and both are
 # load-bearing -- arr-housekeeping.py --unstick runs HOURLY from cron and is the
-# autonomous stuck-download repair; flaresolverr-unsuppress-watch.sh is a systemd
-# unit. Both happened to be at parity, so nothing was broken -- but a fix pushed
-# to git would never have reached the box, and deploy-drift would only have told
+# autonomous stuck-download repair; flaresolverr-unsuppress-watch.sh was a systemd
+# unit (retired with FlareSolverr 2026-10-11). Both happened to be at parity,
+# so nothing was broken -- but a fix pushed to git would never have reached the
+# box, and deploy-drift would only have told
 # us AFTER the fix was already failing to apply.
 cp -f "$STG"/scripts/maint/arr-housekeeping.py ~/scripts/maint/arr-housekeeping.py
 chmod +x ~/scripts/maint/arr-housekeeping.py
-cp -f "$STG"/scripts/maint/flaresolverr-unsuppress-watch.sh ~/scripts/maint/flaresolverr-unsuppress-watch.sh
-chmod +x ~/scripts/maint/flaresolverr-unsuppress-watch.sh
 cp -f "$STG"/scripts/maint/functional-audit.py ~/scripts/maint/functional-audit.py
 chmod +x ~/scripts/maint/functional-audit.py
 # Kept in sync rather than left stale: it CREATES Kuma monitors, and a
@@ -502,8 +519,6 @@ chmod +x ~/scripts/configure/305-native-sonarr2-install.sh
 # QFLX-31 (A7 radarr): same shape; native_sanitize.py is already deployed above.
 cp -f   "$STG"/scripts/configure/306-native-radarr-install.sh ~/scripts/configure/306-native-radarr-install.sh
 chmod +x ~/scripts/configure/306-native-radarr-install.sh
-cp -f   "$STG"/scripts/configure/301-native-flaresolverr-install.sh ~/scripts/configure/301-native-flaresolverr-install.sh
-chmod +x ~/scripts/configure/301-native-flaresolverr-install.sh
 # QFLX-27 (A3 bazarr): same shape, plus native_sanitize.py (the proof copy is
 # sanitized with it, spec 5.9 step 2.2). Inert without --execute.
 cp -f   "$STG"/scripts/configure/302-native-bazarr-install.sh ~/scripts/configure/302-native-bazarr-install.sh
@@ -754,8 +769,6 @@ for unit in \
     manitoba-maint-canary-plex-intro-markers.timer \
     manitoba-maint-canary-rea-liveness.service \
     manitoba-maint-canary-rea-liveness.timer \
-    manitoba-maint-flaresolverr-canary.service \
-    manitoba-maint-flaresolverr-canary.timer \
     manitoba-maint-canary-hardlink-integrity.service \
     manitoba-maint-canary-hardlink-integrity.timer \
     manitoba-maint-canary-plex-transcoder.service \
@@ -841,6 +854,21 @@ done
 # removed timer (QFLX-48).
 systemctl --user disable --now manitoba-maint-cp-upgrade.timer 2>/dev/null || true
 rm -f ~/.config/systemd/user/manitoba-maint-cp-upgrade.timer
+# QFLX-26: FlareSolverr RETIRED 2026-10-11. Stop + disable its canary timer
+# (it would `app-flaresolverr restart` a deleted app), the self-deleting
+# unsuppress watcher if it was ever left behind, and the never-swapped native
+# unit; then remove the unit files. Same slot as the cp-upgrade retire above,
+# so the one daemon-reload below covers it (QFLX-48). Idempotent.
+for unit in manitoba-maint-flaresolverr-canary.timer \
+            manitoba-maint-flaresolverr-canary.service \
+            manitoba-maint-flaresolverr-unsuppress.timer \
+            manitoba-maint-flaresolverr-unsuppress.service \
+            qflix-flaresolverr.service; do
+  systemctl --user disable --now "$unit" 2>/dev/null || true
+  rm -f ~/.config/systemd/user/"$unit" \
+        ~/.config/systemd/user/timers.target.wants/"$unit" \
+        ~/.config/systemd/user/default.target.wants/"$unit"
+done
 systemctl --user daemon-reload
 # Enable everything that should auto-start.
 systemctl --user enable --now manitoba-maint-webhook.service
@@ -875,7 +903,7 @@ systemctl --user enable --now manitoba-maint-canary-stale-log-watchdog.timer
 # kometa deploy-drift: install-script vs deployed config consistency (daily 04:30).
 systemctl --user enable --now manitoba-maint-canary-kometa-deploy-drift.timer
 # prowlarr-indexer-health: 429-cascade and chronic-RSS-stale detector.
-# Detect-only — never disables an indexer or restarts FlareSolverr.
+# Detect-only — never disables an indexer.
 systemctl --user enable --now manitoba-maint-canary-prowlarr-indexer-health.timer
 # prowlarr-app-sync: the CONFIG half of the same surface — every indexer
 # Prowlarr intends to sync is actually present in that *arr, and the two
@@ -917,11 +945,6 @@ systemctl --user enable --now manitoba-maint-canary-plex-intro-markers.timer
 # with STAGE=rea-heartbeat-absent — accurate, actionable, and pushed every hour,
 # which is the point. Land the writer first if you want to deploy into green.
 systemctl --user enable --now manitoba-maint-canary-rea-liveness.timer
-# flaresolverr-canary: probes /  and /v1 every 5 min. On failure, calls
-# `app-flaresolverr restart` (capped 3/hour) and waits up to 120s for
-# Chromium subprocess to come back. Catches the silent-socket-stall mode
-# that bit the 2026-05-18 audit.
-systemctl --user enable --now manitoba-maint-flaresolverr-canary.timer
 # hardlink-integrity: assert recent library imports have linkcount >= 2.
 # Detects *arr "Use Hard Links" regression / filesystem-boundary changes
 # that would double storage on every new grab.

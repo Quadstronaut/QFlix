@@ -11,7 +11,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-55%2F55_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-31_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-84%2F84_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-83%2F83_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -39,9 +39,9 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 
 | Surface | Count | State |
 |---|---:|---|
-| Apps in manifest (`manifest/apps.yaml`) | **31** | 14 UCC · 6 systemd · 10 cron · 1 library |
+| Apps in manifest (`manifest/apps.yaml`) | **30** | 1 UCC · 18 systemd · 10 cron · 1 library (FlareSolverr retired 2026-10-11) |
 | End-to-end canaries (`manifest/apps.yaml` `canaries:`) | **41** | movie · anime · mobile-ux · qbit-stall · sab-stall · bazarr-ingest · tdarr-pause-integrity · stream-cap-liveness · cron-liveness · unstick-rate · vlogs-stall · kometa-libraries · stale-log-watchdog · kometa-deploy-drift · prowlarr-indexer-health · prowlarr-app-sync · hardlink-integrity · library-container-sanity · plex-transcoder · plex-playback · plex-unmatched · plex-intro-markers · tautulli-plex-link · quota · newsletter-digest · thread-ceiling · tdarr-scanner · tdarr-healthcheck · tdarr-transcode-stall · ucc-gate-stuck · dash-asset-integrity · timer-liveness · deploy-drift · rea-liveness · arr-plex-parity · prowlarr-proxy-link-fatal · plex-decision-stable-file · seerr-arr-parity · vlogs-time-integrity |
-| Kuma push monitors (manitoba-owned) | **84** | 31 manifest apps + 41 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper" + 1 "QFlix Audio Disposition" + 1 "qflix-anime-janitor" + 1 "QFlix Torrent Janitor" + 1 "QFlix Unknown Codec Stream" + 1 "QFlix Poster Janitor" + 1 "QFlix Collect" + 1 "QFlix Audit Regime" + 1 "QFlix Audit Live" + 1 "QFlix Entitlement Gate". ("34 canaries" here read stale against the **35** on the row above until 2026-08-24 — the guard only enforces the bolded total, so the breakdown drifted unseen.) "QFlix Poster Janitor" (declared 2026-08-24) is the newest and is `manifest_only` until `bootstrap-kuma-monitors.py` next runs on the box. 0 external: "QFlix Collect" was reclassified manitoba-owned on 2026-07-29 because the collector moved off the workstation onto the box on 2026-07-09, so the drift audit and `bootstrap-kuma-monitors.py` now treat it as mandatory. Its Kuma name still reads "(workstation)" — cosmetic only; renaming needs a coordinated live change. **All 74 are live** as of 2026-08-16: `manitoba-maint kuma audit` reported `manifest 78 / kuma 78 / matched 78, no drift` on 2026-08-08; the books stack was decommissioned 2026-08-16 and its four monitors deleted, taking both sides to 74. The three canary monitors declared 2026-08-03 ("Canary Prowlarr App Sync", "Canary Plex Unmatched", "Canary REA Liveness") were created by `bootstrap-kuma-monitors.py` on a subsequent deploy, as was "Canary Bazarr Ingest" (2026-08-06) — see [docs/audit-regime.md](docs/audit-regime.md). A freshly created monitor is born BOTH tokenless and mute, and both halves are repaired in the same bootstrap run: Bazarr Ingest came up `+ channels [1, 2] (was NONE)` and needed its push token captured by a live `getMonitor` round trip before the install smoke would pass (63/63). "Canary Seerr Arr Parity" (declared 2026-09-13, the Seerr/*arr cross-system reconciliation gap — spec section 4) is the newest and is `manifest_only` until `bootstrap-kuma-monitors.py` next runs on the box - a true finding while it lasts, not drift noise, and it is born BOTH mute and tokenless until that run reconciles both halves. |
+| Kuma push monitors (manitoba-owned) | **83** | 30 manifest apps + 41 canaries + 1 pusher self-heartbeat + 1 fleet-aggregate + 1 "QFlix Reaper" + 1 "QFlix Audio Disposition" + 1 "qflix-anime-janitor" + 1 "QFlix Torrent Janitor" + 1 "QFlix Unknown Codec Stream" + 1 "QFlix Poster Janitor" + 1 "QFlix Collect" + 1 "QFlix Audit Regime" + 1 "QFlix Audit Live" + 1 "QFlix Entitlement Gate". ("34 canaries" here read stale against the **35** on the row above until 2026-08-24 — the guard only enforces the bolded total, so the breakdown drifted unseen.) "QFlix Poster Janitor" (declared 2026-08-24) is the newest and is `manifest_only` until `bootstrap-kuma-monitors.py` next runs on the box. 0 external: "QFlix Collect" was reclassified manitoba-owned on 2026-07-29 because the collector moved off the workstation onto the box on 2026-07-09, so the drift audit and `bootstrap-kuma-monitors.py` now treat it as mandatory. Its Kuma name still reads "(workstation)" — cosmetic only; renaming needs a coordinated live change. **All 74 are live** as of 2026-08-16: `manitoba-maint kuma audit` reported `manifest 78 / kuma 78 / matched 78, no drift` on 2026-08-08; the books stack was decommissioned 2026-08-16 and its four monitors deleted, taking both sides to 74. The three canary monitors declared 2026-08-03 ("Canary Prowlarr App Sync", "Canary Plex Unmatched", "Canary REA Liveness") were created by `bootstrap-kuma-monitors.py` on a subsequent deploy, as was "Canary Bazarr Ingest" (2026-08-06) — see [docs/audit-regime.md](docs/audit-regime.md). A freshly created monitor is born BOTH tokenless and mute, and both halves are repaired in the same bootstrap run: Bazarr Ingest came up `+ channels [1, 2] (was NONE)` and needed its push token captured by a live `getMonitor` round trip before the install smoke would pass (63/63). "Canary Seerr Arr Parity" (declared 2026-09-13, the Seerr/*arr cross-system reconciliation gap — spec section 4) is the newest and is `manifest_only` until `bootstrap-kuma-monitors.py` next runs on the box - a true finding while it lasts, not drift noise, and it is born BOTH mute and tokenless until that run reconciles both halves. |
 | Cron + systemd timers | **62** _(live count on the box, verified 2026-08-07 via `systemctl --user list-timers` — 46 tracked in `scripts/maint/systemd/` plus the 7 installer-generated units now declared in `manifest/jobs.yaml` via `unit:`, plus the 2 canary timers added 2026-08-07, plus `manitoba-maint-poster-janitor.timer` added 2026-08-24, plus `manitoba-maint-canary-arr-plex-parity.timer` added 2026-08-26, plus `manitoba-maint-canary-prowlarr-proxy-link-fatal.timer` added 2026-09-10, plus `manitoba-maint-canary-plex-decision-stable-file.timer` added 2026-09-12, plus `manitoba-maint-canary-seerr-arr-parity.timer` added 2026-09-13. `timer-liveness` asserts every declared one is loaded+active+scheduled: 54/54 at last run, 60 once stream-cap-liveness, poster-janitor, arr-plex-parity, prowlarr-proxy-link-fatal, plex-decision-stable-file and seerr-arr-parity deploy.)_ | window-aware (Mon 11–15 UTC drain) |
 | pytest suite (`tests/unit/`) | **1000+** | pure-Python, no SSH |
 | Notification channels | **1** | Discord webhook + operator @ping on error/critical |
@@ -65,7 +65,7 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 | 🟠 Subtitles | **Bazarr** + **Bazarr 2** (anime branch) | One per arr-pair — Bazarr is hard-capped at one Sonarr + one Radarr each, so the second anime instance is a bare-Python install pinned to Bazarr-1's version (`bazarr2-sync.timer`) |
 | 🟠 Retention | **qflix-reaper** | **Per-file 45-day retention** (option D, shipped 2026-09-15): every episode file / movie file is available to members for 45 days from the moment Plex imported it — graded on the Plex **leaf** `addedAt` corroborated by the *arr's `dateAdded` (always the newer; the Plex *container* clock and file mtime are rejected — the container clock deleted Futurama 70 minutes after it was requested on 2026-09-12). Whether a show is airing is not a consideration. Deleting an episode file unmonitors its episode(s) in the same operation so Sonarr never re-grabs what just expired; a series RECORD is removed only when the show has **ended AND holds zero files** and does not carry the `permanent` tag (`scripts/maint/qflix-permanent.py --auto` tags every continuing series; a permanent show keeps its record at zero files so new episodes keep arriving), and the Plex show item is deleted with it (a removed folder is never re-scanned, so refresh+emptyTrash left ghosts). Floor `MIN_FILE_AGE_FLOOR_DAYS=45` is raise-only; a file with no determinable clock is withheld, counted and named. Script-driven (`scripts/maint/qflix-reaper.py`, daily timer, `--max-items 50` shared between file deletes and record removals, audit manifest with `series_removals[]` written before any delete, run lock; the 30%-per-library tripwire is disabled live via the on-box `--max-pct 100` drop-in — operator decision 2026-07-13). Media that can't resolve to a single *arr id is an **orphan** — never deleted, and graced: a fresh orphan reds the run for 24h, then downgrades to a weekly WARN ([2026-07-14 spec](docs/superpowers/specs/2026-07-14-reaper-orphan-grace-design.md)). Seerr reconciliation sweeps every status and clears stuck DELETED seasons so reaped titles are re-requestable; a member's live request on a cleared row is re-created on their behalf (the clear cascades requests — Yellowjackets 2026-09-15), and a row whose requests cannot be read is withheld. Plex-watchlist auto-request is disabled for every member (operator ruling 2026-09-15): requests are made in Seerr, never inferred from a watchlist. Spec: [2026-09-12 per-file retention](docs/superpowers/specs/2026-09-12-reaper-d-per-file-retention-spec.md). Replaced Maintainerr 2026-06-20. |
 
-Surrounding cast (qBittorrent, SABnzbd, FlareSolverr, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, qflix-dash, Kuma, manitoba-maint, 41 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Download clients are now dual-stack: **torrent** (qBittorrent) and **Usenet** (SABnzbd + NZBgeek indexer + Frugal block account). Full breakdown in [`inventory.md`](inventory.md).
+Surrounding cast (qBittorrent, SABnzbd, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, qflix-dash, Kuma, manitoba-maint, 41 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Download clients are now dual-stack: **torrent** (qBittorrent) and **Usenet** (SABnzbd + NZBgeek indexer + Frugal block account). Full breakdown in [`inventory.md`](inventory.md).
 
 ---
 
@@ -83,7 +83,7 @@ flowchart LR
 
   user[Operator workstation<br/>Windows + SSH tunnel]:::user
   friends[Friends + family<br/>Plex SSO]:::ext
-  ext[Indexers + Trackers<br/>via FlareSolverr]:::ext
+  ext[Indexers + Trackers]:::ext
 
   subgraph SB[Ultra.cc seedbox · host netns]
     direction TB
@@ -124,7 +124,6 @@ sequenceDiagram
   participant J as Seerr
   participant S as Sonarr / Radarr
   participant P as Prowlarr
-  participant F as FlareSolverr
   participant I as Indexer
   participant Q as qBittorrent
   participant FS as Hardlink ~/data/media
@@ -132,8 +131,7 @@ sequenceDiagram
   U->>J: request title
   J->>S: /api/v3/command (add + search)
   S->>P: /api/v1/search?query=…
-  P->>F: solve Cloudflare if walled
-  F->>I: HTTPS
+  P->>I: HTTPS
   I-->>P: torznab/newznab results
   P-->>S: ranked results
   S->>Q: add torrent
@@ -371,7 +369,7 @@ The pusher dispatches on `class` for both lifecycle ops and probe selection.
 ## Repo layout
 
 ```text
-manifest/apps.yaml           # 31 apps + 41 canaries — single source of truth
+manifest/apps.yaml           # 30 apps + 41 canaries — single source of truth
 versions.env                 # pinned versions (Tdarr only — pin policy lifted 2026-05-09)
 inventory.md                 # live snapshot of every artifact on the seedbox
 
