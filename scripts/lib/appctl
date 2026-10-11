@@ -94,7 +94,7 @@ PY
 }
 
 # Is anything listening on TCP port $1 (any bind address)? UCC apps bind
-# loopback, the public IP and/or the docker gateway (FlareSolverr: gateway
+# loopback, the public IP and/or the docker gateway (some bind the gateway
 # only), so ask the socket table rather than guessing an address to dial.
 port_listening() {
   local port="$1"

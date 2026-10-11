@@ -65,7 +65,6 @@ classify() {
     */app/prowlarr/bin/Prowlarr*) CL_LABEL=Prowlarr; CL_ROLE=Arr;;
     *bazarr2*)                    CL_LABEL=Bazarr2; CL_ROLE=Arr;;
     *bazarr*)                     CL_LABEL=Bazarr; CL_ROLE=Arr;;
-    *flaresolverr*)               CL_LABEL=FlareSolverr; CL_ROLE=Arr;;
     *Tautulli.py*)                CL_LABEL=Tautulli; CL_ROLE=Stats;;
     *Tdarr_Server*)               CL_LABEL="Tdarr Server"; CL_ROLE=Transcode;;
     *Tdarr_Node*)                 CL_LABEL="Tdarr Node"; CL_ROLE=Transcode;;

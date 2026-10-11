@@ -164,23 +164,20 @@ def test_the_spec_named_candidates_are_all_adjudicated(ctx):
         assert by_path[path].kind in {"monitored", "no-monitor-accepted", "open-gap"}
 
 
-def test_flaresolverr_canary_is_the_boundary_bug_and_is_now_visible(ctx):
-    """manitoba-maint-flaresolverr-canary.timer is on disk but absent from
-    manifest/apps.yaml:canaries — the exact section-1(g) enumeration-boundary
-    bug. Whether an audit 'saw' it used to depend on which file it opened.
+def test_ledger_only_timer_is_visible_to_the_detector(ctx):
+    """The section-1(g) enumeration-boundary bug: a timer on disk but absent
+    from manifest/apps.yaml:canaries. Whether an audit 'saw' it used to depend
+    on which file it opened.
 
-    What this guards is ENUMERATION, not brokenness. It originally also asserted
-    kind == "open-gap" so the gap could not be quietly erased, which was right
-    while it was open. It was CLOSED on 2026-07-30 by the timer-liveness canary,
-    a generic dead-man over every job in the ledger — a real closure, not an
-    erasure, so demanding the finding persist would now be demanding the defect
-    persist. The boundary property is what must never regress: this timer has to
-    stay visible to the detector even though nothing in apps.yaml:canaries
-    mentions it.
+    The original subject was manitoba-maint-flaresolverr-canary.timer, retired
+    with FlareSolverr 2026-10-11 (QFLX-26). The property is unchanged and is
+    now pinned on manitoba-maint-arr-audit.timer, which is likewise a ledger-
+    only job (in manifest/jobs.yaml, not an apps.yaml canary): it must stay
+    visible to the detector AND adjudicated, never 'unknown-timer'.
     """
     result = det.detect(ctx)
     hit = [v for v in result.verdicts
-           if v.path.endswith("manitoba-maint-flaresolverr-canary.timer")]
+           if v.path.endswith("manitoba-maint-arr-audit.timer")]
     assert len(hit) == 1, "the boundary bug is back: this timer is unenumerated"
     assert hit[0].kind != "unknown-timer", (
         "enumerated but unadjudicated — the ledger no longer describes it")

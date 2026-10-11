@@ -86,7 +86,6 @@ FAMILY_STRATEGY = {
 APP_STRATEGY = {
     "plex": "fresh-identity",          # D-1 default P1: new identity on box 2
     "qbittorrent": "qbit-profile",
-    "flaresolverr": "stateless",
     "unpackerr": "rendered",           # [[general]] TOML rendered from secrets
     "postgres": "pg-dump",
     "listmonk": "in-postgres",

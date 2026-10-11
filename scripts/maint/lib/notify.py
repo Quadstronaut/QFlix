@@ -11,7 +11,7 @@ gradual migration; that path is gone now.
 Audit trail: EVERY attempt — sent or failed — is recorded to
 MANITOBA_STATE_DIR/notify.log (default ~/.opt/maint/) so there is a durable
 record of what paged and when, independent of whether the caller has Python
-logging wired (the flaresolverr canary uses print()+journal; the pusher uses
+logging wired (the retired flaresolverr canary used print()+journal; the pusher uses
 logging). The webhook token is redacted from the audit line.
 
 On failure: ALSO logs to MANITOBA_STATE_DIR/notify-fail.log (failures only,
@@ -273,7 +273,7 @@ def _append_audit_log(level: str, message: str, outcome: str) -> None:
     WHY this is needed on top of notify-fail.log: previously only *failed*
     sends were recorded; a successfully-delivered page (the common case) left
     no trace, and callers don't all have Python logging configured to journal
-    (flaresolverr-canary.py uses print(); the pusher uses logging). The file
+    (the retired flaresolverr-canary.py used print(); the pusher uses logging). The file
     audit is caller-independent. Best-effort; never raises."""
     state_dir = _state_dir()
     try:

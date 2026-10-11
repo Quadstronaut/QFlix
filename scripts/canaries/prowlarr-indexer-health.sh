@@ -6,8 +6,8 @@
 #   STAGE=prowlarr-429-cascade   Many simultaneous HTTP 429s from *arr →
 #                                Prowlarr in the last $WINDOW. The root
 #                                cause is usually a single indexer that
-#                                Prowlarr has disabled (FlareSolverr 500s,
-#                                Cloudflare CAPTCHA timeouts, etc.) and
+#                                Prowlarr has disabled (Cloudflare CAPTCHA
+#                                timeouts, rate limits, etc.) and
 #                                every *arr is now re-trying it. WARN.md
 #                                2026-05-16 captured ~70 cascading 429
 #                                lines (sonarr 50, radarr 6, radarr2 9)
@@ -21,9 +21,8 @@
 #                                this signal exists to surface.
 #
 # This canary is a *detect-and-notify* tool — it does NOT mutate Prowlarr
-# state. Disabling an indexer or restarting FlareSolverr is the operator's
-# call (the FlareSolverr canary already auto-restarts on listener failure;
-# see scripts/maint/flaresolverr-canary.py).
+# state. Disabling an indexer is the operator's call.
+# (FlareSolverr was retired 2026-10-11 with its auto-restart canary, QFLX-26.)
 #
 # WHAT PROBE 1 ACTUALLY COUNTS — LOG LINES, NOT EVENTS (2026-08-03).
 # One failed grab emits roughly TEN matching lines, because vlogs indexes each

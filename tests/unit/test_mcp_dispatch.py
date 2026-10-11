@@ -95,7 +95,8 @@ def test_app_list_returns_only_lifecycle_classes():
     # loader, NOT off the `# --- group ---` comment headers in apps.yaml, which
     # have drifted from the real class fields (postgres sits under the systemd
     # comment but is class: ucc). cron (10) and library (1) have no lifecycle.
-    assert len(env["lines"]) == 20
+    # 19 since FlareSolverr was retired 2026-10-11 (QFLX-26).
+    assert len(env["lines"]) == 19
     for line in env["lines"]:
         assert line.split()[1] in ("ucc", "systemd")
 

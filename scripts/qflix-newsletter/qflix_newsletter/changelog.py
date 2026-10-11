@@ -36,7 +36,7 @@ MAX_BULLETS = 6  # cap visible items per group; full counts still reported
 DEFAULT_UPGRADE_FILE = Path("~/.opt/maint/last-upgrade.json").expanduser()
 
 # Member-facing names for the handful of apps a Plex member would recognize.
-# Everything else (the *arr stack, indexers, FlareSolverr, …) is invisible
+# Everything else (the *arr stack, indexers, …) is invisible
 # plumbing and is bucketed into a count — members don't know "Prowlarr".
 _FRIENDLY_APP_NAMES = {
     "plex": "Plex",

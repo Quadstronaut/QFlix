@@ -53,7 +53,7 @@ Then open `http://localhost:<local>/` in a browser.
 | Buildarr (new) | — | n/a — cron-class, no UI; check `~/.apps/buildarr/logs/buildarr.log` |
 
 Apps without an admin UI:
-- **FlareSolverr** — Cloudflare-bypass headless proxy at `172.17.0.1:17011`; no UI, just an API consumed by Prowlarr.
+- ~~**FlareSolverr** — Cloudflare-bypass headless proxy at `172.17.0.1:17011`; no UI, just an API consumed by Prowlarr.~~ Retired 2026-10-11 (QFLX-26).
 - **Recyclarr / Kometa / Buildarr / qflix-newsletter** — cron-class, run on timers; observe via `journalctl --user -u <name>.service` or `~/.apps/<name>/logs/`.
 - **python-plexapi** — library, no service.
 

@@ -154,7 +154,7 @@
 #
 # NOT REPAIRABLE - alert, do NOT restart (a restart is pure churn and would
 # mask the real fault; this refuse-on-wrong-signature discipline is
-# scripts/maint/flaresolverr-canary.py:12-18 applied here):
+# the retired scripts/maint/flaresolverr-canary.py:12-18 applied here):
 #   - a 404 whose file is genuinely ABSENT on disk -> broken/partial deploy.
 #   - the build directory itself missing/unreadable -> cannot arbitrate.
 #   - a non-200/non-404 status (403/5xx) -> a different fault.
@@ -1418,7 +1418,7 @@ def _attempt_heal_locked(v, trigger):
 def reverify():
     """Re-fetch and re-check after the repair. Polls rather than single-shot,
     because a slow-but-successful recovery must not be reported as a failure
-    (scripts/maint/flaresolverr-canary.py:329-332 records that exact
+    (the retired scripts/maint/flaresolverr-canary.py:329-332 recorded that exact
     regression). Returns (ok, attempts, last_summary) and NEVER raises -
     verification is observability, it must not turn a real heal into a crash.
     """

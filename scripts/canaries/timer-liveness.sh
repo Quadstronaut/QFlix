@@ -11,7 +11,7 @@
 #                                   THE TURTLE PROBLEM"
 #   manitoba-maint-arr-audit       "a permanently-failing unit is
 #                                   indistinguishable from a clean week"
-#   manitoba-maint-flaresolverr-canary
+#   manitoba-maint-flaresolverr-canary (retired 2026-10-11 with FlareSolverr)
 #                                  "the ONLY signal is the absence of Discord
 #                                   messages nobody was expecting anyway"
 #

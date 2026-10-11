@@ -218,8 +218,8 @@ def _probe_http_root(app: App, timeout_s: float) -> HealthResult:
     path = raw.get("path_override", "/")
     if not path.startswith("/"):
         path = "/" + path
-    # hostname / hostname_ref lets apps that bind only to the Docker bridge (e.g.
-    # FlareSolverr at net.app_host) be probed from the host netns.
+    # hostname / hostname_ref lets apps that bind only to the Docker bridge
+    # (net.app_host) be probed from the host netns.
     try:
         host = _resolve_host(raw)
     except Exception as exc:

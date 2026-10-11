@@ -26,7 +26,6 @@ ROUTED = {
     "scripts/configure/91-nginx-root-to-dash.sh": ["app-nginx"],
     "scripts/configure/92-sabnzbd-vhost.sh": ["app-nginx"],
     "scripts/configure/31-unpackerr.sh": ["app-unpackerr"],
-    "scripts/maint/flaresolverr-canary.py": ["app-flaresolverr"],
 }
 
 _ABS = re.compile(r"(?:~|\$HOME|\$\{HOME\}|%h)/bin/appctl")
@@ -63,19 +62,6 @@ def test_every_appctl_reference_is_absolute(rel):
         ctx = text[max(0, m.start() - 30):m.end() + 10]
         assert text[m.start() - 4:m.start()] == "bin/", (rel, ctx)
         assert _ABS.search(text[max(0, m.start() - 12):m.end()]), (rel, ctx)
-
-
-def test_flaresolverr_restart_default_is_absolute_appctl(monkeypatch):
-    monkeypatch.delenv("FS_RESTART_CMD", raising=False)
-    spec = importlib.util.spec_from_file_location(
-        "fs_canary_callsite", REPO / "scripts" / "maint" / "flaresolverr-canary.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    argv = mod.FS_RESTART_CMD.split()
-    assert argv[0] == os.path.expanduser("~/bin/appctl")
-    assert argv[0].replace("\\", "/").endswith("/bin/appctl")
-    assert os.path.isabs(argv[0])
-    assert argv[1:] == ["restart", "flaresolverr"]
 
 
 def test_app_install_guards_native_and_dormant():
