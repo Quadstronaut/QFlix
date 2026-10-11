@@ -17,7 +17,7 @@
 #                                          (NATIVE_PARITY=prefix: a dotted prefix of VERSION is enough)
 #   native_install_versioned SLUG VER SRC  parity, then bin/<VER> + atomic `current` symlink
 #   native_render_env SLUG FAMILY VER [K=V..]   env-file body (thread caps + family hook)
-#   native_render_unit SLUG FAMILY EXE ARGS    qflix-<slug>.service body (EXE %h/... or /... = verbatim)
+#   native_render_unit SLUG FAMILY EXE ARGS [WORKDIR]  qflix-<slug>.service body (EXE %h/... or /... = verbatim)
 #   native_write_secure PATH MODE          stdin -> PATH atomically, chmod MODE
 #   native_listen_capture SLUG PORT        record listen set (swapstate.py)
 #   native_listen_compare SLUG             diff live vs recorded (exit 1 = drift)
@@ -27,6 +27,8 @@
 #   native_link_current SLUG VER           atomic bin/current -> bin/VER, no UCC parity (QFLX-41)
 #
 # Families: dotnet (arrs, prowlarr) | go (unpackerr) | node (seerr) | python | db
+#           | static (qbittorrent-nox: one self-contained C++ binary, no runtime
+#             thread knob; TimeoutStopSec 120 so libtorrent can flush resume data)
 # Self-update stays OFF (I-10): arr UpdateMechanism=External and the bazarr
 # no-update flag are per-app config, set by each 3NN installer.
 # TasksMax= is deliberately NEVER emitted (G-2) until the F6 box proof shows the
@@ -112,14 +114,20 @@ native_install_versioned() {
 
 # stdout: env-file body. Thread caps live HERE because ulimit -u 2000 is shared
 # by every process on the slot (spec 5.3). NODE_OPTIONS is never used.
+# .NET also needs DOTNET_GCRegionRange: the slot caps address space (ulimit -v
+# and systemd LimitAS, ~10 GB) and the regions GC reserves 256 GB of virtual
+# range by default, so CoreCLR dies at boot with "GC heap initialization failed
+# 0x8007000E" (box 2026-10-10, first prowlarr --prove). 80000000 is HEX (the
+# runtime parses DOTNET_* GC values as hex) = 2 GiB of reserved range, ~10x
+# prowlarr's RSS. DOTNET_GCHeapHardLimit alone did NOT fix it (tested on box).
 native_render_env() {
   local slug="$1" fam="$2" ver="$3"; shift 3
   _native_valid_slug "$slug" || { _native_err "bad slug: $slug"; return 1; }
   case "$fam" in
-    dotnet) printf 'DOTNET_PROCESSOR_COUNT=4\nDOTNET_gcServer=0\n' ;;
+    dotnet) printf 'DOTNET_PROCESSOR_COUNT=4\nDOTNET_gcServer=0\nDOTNET_GCRegionRange=80000000\n' ;;
     go)     printf 'GOMAXPROCS=4\n' ;;
     node)   printf 'UV_THREADPOOL_SIZE=4\n' ;;
-    python|db) ;;
+    python|db|static) ;;
     *) _native_err "unknown family: $fam"; return 1 ;;
   esac
   printf 'MALLOC_ARENA_MAX=2\n'
@@ -133,8 +141,17 @@ native_render_env() {
 
 # stdout: the unit (spec 5.3). ARGS is a raw string; %h specifiers pass through.
 native_render_unit() {
-  local slug="$1" fam="$2" exe="$3" args="${4:-}" stop=60 pre="" cmd kill=""
+  local slug="$1" fam="$2" exe="$3" args="${4:-}" wd="${5:-}" stop=60 pre="" cmd kill=""
   _native_valid_slug "$slug" || { _native_err "bad slug: $slug"; return 1; }
+  # WORKDIR (QFLX-36): defaults to the data dir. Seerr's Next.js server resolves
+  # its .next build from the CWD, so it runs from %h/.apps/seerr/bin/current.
+  # Only a path under %h/.apps/<slug> is accepted.
+  case "$wd" in
+    "") wd="%h/.apps/$slug" ;;
+    "%h/.apps/$slug"|"%h/.apps/$slug/"*)
+      [[ "$wd" != *..* && "$wd" != *[[:space:]]* ]] || { _native_err "bad workdir: $wd"; return 1; } ;;
+    *) _native_err "workdir must be under %h/.apps/$slug: $wd"; return 1 ;;
+  esac
   case "$fam" in
     dotnet|go|python) ;;
     node) pre="--disable-wasm-trap-handler " ;;   # CLI flag, never NODE_OPTIONS
@@ -144,6 +161,7 @@ native_render_unit() {
     # cut). mixed: the signal goes to the postmaster only; it stops its own
     # backends (upstream's documented unit shape).
     db)   stop=120; kill=$'KillMode=mixed\nKillSignal=SIGINT\n' ;;
+    static) stop=120 ;;
     *) _native_err "unknown family: $fam"; return 1 ;;
   esac
   # EXE is normally a file under bin/current. A %h/... or /... EXE is used
@@ -160,7 +178,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/.apps/$slug
+WorkingDirectory=$wd
 Environment=PATH=%h/.apps/$slug/bin/current:%h/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/qflix/$slug.env
 ExecStart=${cmd} ${pre}${args}

@@ -1,0 +1,178 @@
+name: seerr-artifact
+
+# QFLX-36 (UCC divorce A12): Seerr publishes no linux-x64 build (its releases
+# carry no assets; only the alpine/musl Docker image). The native install on the
+# seedbox therefore needs a glibc build of the EXACT commit the container runs.
+#
+# build:   inside debian:bullseye (glibc 2.31, the floor the box guarantees),
+#          fetch the pinned Node runtime (sha256-checked), fetch the pinned Seerr
+#          commit, `pnpm install --frozen-lockfile && pnpm build`, prune to
+#          production deps, write committag.json, then SMOKE-BOOT the result with
+#          the same preload the unit uses (scripts/data/seerr-listen.cjs) on two
+#          loopback addresses and require /api/v1/status == the pinned version on
+#          both. Uploads the tarball + .sha256 as a workflow artifact.
+# publish: once per version. If release seerr-v<ver> does not exist yet, create
+#          it from the build. If it exists, NEVER replace it (builds are not
+#          byte-reproducible; the installer pins the sha256 of the published
+#          asset): download it and require its sha256 to equal the pin in
+#          scripts/configure/311-native-seerr-install.sh once one is set.
+#
+# Pins (versions.env, test-enforced against the installer): SEERR_VERSION,
+# SEERR_COMMIT, SEERR_NODE_VERSION, SEERR_NODE_SHA256.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/seerr-artifact.yml"
+      - "versions.env"
+      - "scripts/data/seerr-listen.cjs"
+      - "scripts/configure/311-native-seerr-install.sh"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/seerr-artifact.yml"
+      - "versions.env"
+      - "scripts/data/seerr-listen.cjs"
+      - "scripts/configure/311-native-seerr-install.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.pins.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read pins from versions.env
+        id: pins
+        run: |
+          set -euo pipefail
+          get() { sed -n "s/^$1=//p" versions.env | tail -n 1; }
+          for k in SEERR_VERSION SEERR_COMMIT SEERR_NODE_VERSION SEERR_NODE_SHA256; do
+            v="$(get "$k")"; [ -n "$v" ] || { echo "::error::$k missing from versions.env"; exit 1; }
+            echo "$k=$v" >> "$GITHUB_ENV"
+          done
+          echo "version=$(get SEERR_VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Build + smoke-boot inside debian:bullseye
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # -i: the build script arrives on stdin (without it bash -s reads
+          # nothing and "succeeds" having built nothing).
+          docker run -i --rm -v "$GITHUB_WORKSPACE:/w" -w /w \
+            -e SEERR_VERSION -e SEERR_COMMIT -e SEERR_NODE_VERSION -e SEERR_NODE_SHA256 \
+            debian:bullseye bash -euo pipefail -s <<'EOS'
+          export DEBIAN_FRONTEND=noninteractive
+          # bullseye is past LTS: its pools moved to archive.debian.org (the
+          # deb.debian.org indexes still resolve but every .deb 404s).
+          printf '%s\n' \
+            'deb http://archive.debian.org/debian bullseye main' \
+            'deb http://archive.debian.org/debian-security bullseye-security main' \
+            > /etc/apt/sources.list
+          rm -f /etc/apt/sources.list.d/*
+          apt-get -o Acquire::Check-Valid-Until=false update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates curl xz-utils \
+            python3 make g++ >/dev/null
+          echo "glibc: $(ldd --version | head -1)"
+          # Node runtime, sha256-pinned (the same tarball the installer lays out).
+          nt="node-v${SEERR_NODE_VERSION}-linux-x64"
+          curl -fsSL -o /tmp/node.tgz "https://nodejs.org/dist/v${SEERR_NODE_VERSION}/${nt}.tar.gz"
+          echo "${SEERR_NODE_SHA256}  /tmp/node.tgz" | sha256sum -c -
+          tar -xzf /tmp/node.tgz -C /opt
+          export PATH="/opt/${nt}/bin:$PATH"
+          node --version
+          # Seerr at the pinned COMMIT (the container's COMMIT_TAG), not a tag name.
+          curl -fsSL -o /tmp/src.tgz "https://codeload.github.com/seerr-team/seerr/tar.gz/${SEERR_COMMIT}"
+          mkdir -p /build && tar -xzf /tmp/src.tgz -C /build
+          cd "/build/seerr-${SEERR_COMMIT}"
+          ver="$(node -p 'require("./package.json").version')"
+          [ "$ver" = "$SEERR_VERSION" ] || { echo "package.json says $ver, pin says $SEERR_VERSION"; exit 1; }
+          export CI=true CYPRESS_INSTALL_BINARY=0 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NEXT_TELEMETRY_DISABLED=1
+          corepack enable
+          pnpm --version
+          pnpm install --frozen-lockfile
+          pnpm build
+          rm -rf .next/cache
+          # Prune to production deps (what the Docker image ships). Switching the
+          # dependency set purges node_modules; never prompt for it (no TTY).
+          pnpm install --prod --frozen-lockfile --config.confirm-modules-purge=false
+          printf '{"commitTag": "%s"}\n' "$SEERR_COMMIT" > committag.json
+          rm -rf cypress .github .husky
+          [ -f dist/index.js ] && [ -d .next ] && [ -d node_modules ] || { echo "incomplete build"; exit 1; }
+          # Smoke boot with the unit's preload on TWO addresses (listen-set parity).
+          cfg="$(mktemp -d)"
+          CONFIG_DIRECTORY="$cfg" NODE_ENV=production PORT=5055 \
+            SEERR_LISTEN="127.0.0.1:5055 127.0.0.2:5055" \
+            node --disable-wasm-trap-handler --require /w/scripts/data/seerr-listen.cjs dist/index.js \
+            >/tmp/seerr.log 2>&1 &
+          pid=$!
+          ok=""
+          for _ in $(seq 1 90); do
+            a="$(curl -fsS -m 5 http://127.0.0.1:5055/api/v1/status 2>/dev/null || true)"
+            b="$(curl -fsS -m 5 http://127.0.0.2:5055/api/v1/status 2>/dev/null || true)"
+            if [ -n "$a" ] && [ -n "$b" ]; then ok=1; break; fi
+            sleep 2
+          done
+          kill "$pid" 2>/dev/null || true
+          [ -n "$ok" ] || { tail -40 /tmp/seerr.log; echo "smoke boot failed"; exit 1; }
+          echo "status: $a"
+          echo "$a" | grep -q "\"version\":\"${SEERR_VERSION}\"" || { echo "status did not report ${SEERR_VERSION}"; exit 1; }
+          echo "$b" | grep -q "\"version\":\"${SEERR_VERSION}\"" || { echo "second listener did not answer"; exit 1; }
+          rm -rf "$cfg" config/db config/logs config/settings.json
+          # Flat tarball: lifecycle tarball_swap extracts it straight into bin/<ver>.
+          tar --owner=0 --group=0 -czf "/w/out/seerr-${SEERR_VERSION}-linux-x64.tar.gz" -C . .
+          cd /w/out && sha256sum "seerr-${SEERR_VERSION}-linux-x64.tar.gz" > "seerr-${SEERR_VERSION}-linux-x64.tar.gz.sha256"
+          cat "seerr-${SEERR_VERSION}-linux-x64.tar.gz.sha256"
+          ls -la /w/out
+          EOS
+          test -s "out/seerr-${SEERR_VERSION}-linux-x64.tar.gz" || { echo "::error::no tarball built"; exit 1; }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: seerr-${{ steps.pins.outputs.version }}-linux-x64
+          path: out/
+          retention-days: 30
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    # Same-repo events only (a fork PR never gets a write token).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VER: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: seerr-${{ needs.build.outputs.version }}-linux-x64
+          path: out
+      - name: Publish once, then verify the published asset against the pin
+        run: |
+          set -euo pipefail
+          tag="seerr-v${VER}"
+          asset="seerr-${VER}-linux-x64.tar.gz"
+          pin="$(sed -n 's/^ARTIFACT_SHA256="\([0-9a-f]*\)".*/\1/p' scripts/configure/311-native-seerr-install.sh)"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag exists; never replaced"
+            mkdir -p pub
+            gh release download "$tag" -p "$asset" -D pub --clobber
+            got="$(sha256sum "pub/$asset" | cut -d' ' -f1)"
+            echo "published sha256: $got"
+            if [ -n "$pin" ] && [ "$pin" != "$got" ]; then
+              echo "::error::installer pins $pin but release $tag carries $got"
+              exit 1
+            fi
+          else
+            gh release create "$tag" "out/$asset" "out/$asset.sha256" \
+              --title "Seerr ${VER} linux-x64 (QFlix native build)" \
+              --notes "Built by .github/workflows/seerr-artifact.yml from seerr-team/seerr at the commit pinned in versions.env (SEERR_COMMIT), inside debian:bullseye with Node $(sed -n 's/^SEERR_NODE_VERSION=//p' versions.env). sha256: $(cut -d' ' -f1 "out/$asset.sha256")" \
+              --latest=false
+            echo "published $tag: $(cat "out/$asset.sha256")"
+          fi

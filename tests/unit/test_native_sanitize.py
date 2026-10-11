@@ -179,6 +179,38 @@ def test_seerr_settings_json(tmp_path):
     assert s["main"]["apiKey"] == "k"
 
 
+def _seerr_db(d, cols="watchlistSyncMovies BOOLEAN, watchlistSyncTv BOOLEAN"):
+    (d / "settings.json").write_text(json.dumps({"main": {"apiKey": "k"}, "radarr": [], "sonarr": []}))
+    (d / "db").mkdir()
+    _db(d / "db" / "db.sqlite3", [
+        f"CREATE TABLE user_settings (id INTEGER PRIMARY KEY, {cols})",
+        "CREATE TABLE media_request (id INTEGER PRIMARY KEY)",
+    ], ["INSERT INTO user_settings VALUES (1,1,1)", "INSERT INTO user_settings VALUES (2,0,NULL)",
+        "INSERT INTO media_request VALUES (7)"])
+
+
+def test_seerr_db_watchlist_sync_off(tmp_path):
+    """QFLX-36: plex-watchlist-sync would AUTO-REQUEST from a booted proof copy."""
+    d = tmp_path / "seerr"
+    d.mkdir()
+    _seerr_db(d)
+    counts = ns.sanitize("seerr", d)
+    assert counts["watchlist_sync"] == 0 and sum(counts.values()) == 0
+    db = d / "db" / "db.sqlite3"
+    assert _q(db, "SELECT count(*) FROM user_settings WHERE watchlistSyncMovies!=0 "
+                  "OR watchlistSyncTv!=0") == [(0,)]
+    assert _q(db, "SELECT count(*) FROM user_settings") == [(2,)]       # rows kept
+    assert _q(db, "SELECT count(*) FROM media_request") == [(1,)]       # data untouched
+
+
+def test_seerr_db_without_the_flag_columns_fails_closed(tmp_path):
+    d = tmp_path / "seerr"
+    d.mkdir()
+    _seerr_db(d, cols="locale TEXT, other TEXT")
+    with pytest.raises(ns.SanitizeError):
+        ns.sanitize("seerr", d)
+
+
 def test_seerr_missing_settings_fails_closed(tmp_path):
     d = tmp_path / "seerr"
     d.mkdir()
@@ -235,6 +267,59 @@ def test_sab_servers_and_rss_off(tmp_path):
     assert out.count("enable = 0") == 3 and "enable = 1" not in out
     assert "check_new_rel = 0" in out and "port = 17007" in out
     assert "host = news.frugal.example" in out
+
+
+# The shape of the live ini (QFLX-33 box read, 2026-10-10): absolute HOST paths for
+# the data dirs, relative admin/log dirs, a notifier section, one server.
+SAB_LIVE_INI = """__version__ = 19
+[misc]
+check_new_rel = 1
+host = ::
+port = 8080
+api_key = 0123456789abcdef0123456789abcdef
+download_dir = /home/someone/downloads/sabnzbd/incomplete
+complete_dir = /home/someone/downloads/sabnzbd/complete
+script_dir = /home/someone/scripts/pp
+dirscan_dir = ""
+nzb_backup_dir = ""
+admin_dir = admin
+log_dir = logs
+email_endjob = 1
+[servers]
+[[news.example]]
+enable = 1
+[apprise]
+apprise_enable = 1
+apprise_urls = discord://x
+[categories]
+[[sonarr]]
+dir = sonarr
+"""
+
+
+def test_sab_proof_copy_never_touches_live_dirs_or_notifies(tmp_path):
+    d = tmp_path / "sabnzbd"
+    d.mkdir()
+    (d / "sabnzbd.ini").write_text(SAB_LIVE_INI)
+    counts = ns.sanitize("sabnzbd", d)
+    assert counts == {"servers": 0, "rss_feeds": 0, "auto_update": 0,
+                      "live_paths": 0, "notifications": 0}
+    out = (d / "sabnzbd.ini").read_text()
+    assert "/home/someone" not in out
+    assert f"download_dir = {(d / 'proof-dirs' / 'download_dir').as_posix()}" in out
+    assert (d / "proof-dirs" / "complete_dir").is_dir()
+    assert 'script_dir = ""' in out and "apprise_enable = 0" in out and "email_endjob = 0" in out
+    # untouched: what the boot needs, and the empty (unused) dirs
+    assert "admin_dir = admin" in out and "port = 8080" in out and 'dirscan_dir = ""' in out
+    assert "api_key = 0123456789abcdef0123456789abcdef" in out
+
+
+def test_sab_counts_an_absolute_admin_dir_outside_the_copy(tmp_path):
+    d = tmp_path / "sabnzbd"
+    d.mkdir()
+    (d / "sabnzbd.ini").write_text(SAB_INI.replace("[misc]\n", "[misc]\nadmin_dir = /elsewhere/admin\n"))
+    with pytest.raises(ns.SanitizeError, match="live_paths"):
+        ns.sanitize("sabnzbd", d)
 
 
 # ------------------------------------------------------- refusal & misc

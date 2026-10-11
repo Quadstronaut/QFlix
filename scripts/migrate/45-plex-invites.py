@@ -282,7 +282,10 @@ def execute_plan(account, rows, green_id) -> int:
                 skipped += 1
                 continue
             try:
-                account.inviteFriend(user=r["email"], server=green_id, sections=desired)
+                # allowSync=True: every member may download (QFLX-49); plexapi
+                # defaults it to False, which is how shares drift off.
+                account.inviteFriend(user=r["email"], server=green_id,
+                                     sections=desired, allowSync=True)
                 print("INVITE %s" % r["masked"])
             except Exception as e:
                 # 400 may still have created the invite: verify before failing.

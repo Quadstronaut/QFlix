@@ -477,14 +477,24 @@ def _apply_tarball_swap(app: App, target_version: str, timeout_s: float) -> Life
     r = _run(["bash", "-c", f"curl -fsSL '{url}' -o '{tmp}'"], timeout_s)
     if not r.ok:
         return r
-    if url.endswith(".deb"):
+    # QFLX-35: some releases ship ONE static binary, not an archive (userdocs
+    # qbittorrent-nox). `binary_name` says so: the download IS the binary, and it
+    # is installed as <target_dir>/<binary_name> (0755) instead of untarred.
+    binary_name = cfg.get("binary_name") or ""
+    if binary_name:
+        if "/" in binary_name or binary_name in (".", ".."):
+            return _fail(f"tarball_swap binary_name must be a bare file name: {binary_name!r}")
+        cmd = (f"mkdir -p '{extract_dir}' && "
+               f"install -m 0755 '{tmp}' '{extract_dir}/{binary_name}'")
+    elif url.endswith(".deb"):
         # QFLX-37: a .deb is an ar archive around a data tarball (native
         # postgres ships as PGDG debs). `dpkg-deb -x` unpacks that tarball and
         # runs no maintainer script: still a plain tarball swap, no new kind.
-        extract = f"mkdir -p '{extract_dir}' && dpkg-deb -x '{tmp}' '{extract_dir}'"
+        cmd = f"mkdir -p '{extract_dir}' && dpkg-deb -x '{tmp}' '{extract_dir}'"
     else:
-        extract = f"mkdir -p '{extract_dir}' && tar {_tar_flag_from_url(url)} '{tmp}' -C '{extract_dir}'"
-    r = _run(["bash", "-c", extract], timeout_s)
+        cmd = (f"mkdir -p '{extract_dir}' && "
+               f"tar {_tar_flag_from_url(url)} '{tmp}' -C '{extract_dir}'")
+    r = _run(["bash", "-c", cmd], timeout_s)
     if not r.ok:
         return r
     for step in cfg.get("post_steps", []) or []:

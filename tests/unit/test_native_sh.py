@@ -66,7 +66,7 @@ def test_render_unit_dotnet_matches_golden(tmp_path):
 
 @pytest.mark.parametrize("fam,slug", [("dotnet", "radarr"), ("go", "unpackerr"),
                                       ("node", "seerr"), ("python", "tautulli"),
-                                      ("db", "postgres")])
+                                      ("db", "postgres"), ("static", "qbittorrent")])
 def test_every_family_has_path_line_and_no_taskmax(tmp_path, fam, slug):
     r = _sh(tmp_path, f"native_render_unit {slug} {fam} exe '--x'")
     assert r.returncode == 0, r.stderr
@@ -90,6 +90,14 @@ def test_db_family_fast_shutdown_on_the_postmaster_only(tmp_path):
     assert "TimeoutStopSec=120\nKillMode=mixed\nKillSignal=SIGINT\nNice=5\n" in out
     for fam in ("go", "dotnet", "python", "node"):
         assert "KillSignal" not in _sh(tmp_path, f"native_render_unit a {fam} a ''").stdout
+
+
+def test_static_family_gets_120s_stop_and_no_thread_knob(tmp_path):
+    # qbittorrent-nox (QFLX-35): libtorrent flushes resume data on SIGTERM.
+    out = _sh(tmp_path, "native_render_unit qbittorrent static qbittorrent-nox ''").stdout
+    assert "TimeoutStopSec=120\n" in out
+    env = _sh(tmp_path, "native_render_env qbittorrent static 5.0.3").stdout.splitlines()
+    assert env == ["MALLOC_ARENA_MAX=2"]
 
 
 def test_node_wasm_flag_on_cli_never_in_node_options(tmp_path):
@@ -117,13 +125,25 @@ def test_render_unit_absolute_exe_is_used_verbatim(tmp_path):
     assert "ExecStart=%h/.apps/bz/bin/current/x.py --a" + chr(10) in plain
 
 
+def test_render_unit_workdir_defaults_to_the_data_dir_and_takes_a_subdir(tmp_path):
+    """QFLX-36: seerr runs from bin/current (Next.js reads .next from the CWD)."""
+    dflt = _sh(tmp_path, "native_render_unit sr node x ''").stdout
+    assert "WorkingDirectory=%h/.apps/sr" + chr(10) in dflt
+    sub = _sh(tmp_path, "native_render_unit sr node x '' %h/.apps/sr/bin/current").stdout
+    assert "WorkingDirectory=%h/.apps/sr/bin/current" + chr(10) in sub
+    for bad in ("/tmp", "%h/.apps/other", "%h/.apps/sr/../x"):
+        assert _sh(tmp_path, f"native_render_unit sr node x '' '{bad}'").returncode != 0
+
+
 # --- env caps -------------------------------------------------------------------
 
 @pytest.mark.parametrize("fam,lines", [
-    ("dotnet", ["DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "MALLOC_ARENA_MAX=2"]),
+    ("dotnet", ["DOTNET_PROCESSOR_COUNT=4", "DOTNET_gcServer=0", "DOTNET_GCRegionRange=80000000",
+                "MALLOC_ARENA_MAX=2"]),
     ("go", ["GOMAXPROCS=4", "MALLOC_ARENA_MAX=2"]),
     ("node", ["UV_THREADPOOL_SIZE=4", "MALLOC_ARENA_MAX=2"]),
     ("python", ["MALLOC_ARENA_MAX=2"]),
+    ("static", ["MALLOC_ARENA_MAX=2"]),
 ])
 def test_env_caps_per_family(tmp_path, fam, lines):
     out = _sh(tmp_path, f"native_render_env app {fam} 1.0").stdout.splitlines()

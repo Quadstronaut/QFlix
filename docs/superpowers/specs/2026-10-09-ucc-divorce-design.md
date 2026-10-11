@@ -265,7 +265,7 @@ process on the slot:
 
 | Runtime | Apps | Env caps |
 |---|---|---|
-| .NET | arrs, prowlarr | `DOTNET_PROCESSOR_COUNT=4`, `DOTNET_gcServer=0` |
+| .NET | arrs, prowlarr | `DOTNET_PROCESSOR_COUNT=4`, `DOTNET_gcServer=0`, `DOTNET_GCRegionRange=80000000` (hex, 2 GiB; the slot caps address space at ~10 GB) |
 | Go | unpackerr | `GOMAXPROCS=4` |
 | Node | seerr, box-2 kuma | `UV_THREADPOOL_SIZE=4`, and `--disable-wasm-trap-handler` on the CLI, never in `NODE_OPTIONS` |
 | all | all | `MALLOC_ARENA_MAX=2` |
