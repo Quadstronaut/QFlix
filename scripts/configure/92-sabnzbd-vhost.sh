@@ -30,13 +30,16 @@
 #   * proof: nginx on its listen port, Host=<slot>, /sabnzbd/ answers 200/303
 #     (SAB's login redirect), then -- from the workstation -- the public HTTPS
 #     URL answers 200/303 and api?mode=version answers with the API key.
-set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+# Sourced BEFORE set -e: ssh.sh resolves ../../secrets with a `cd` that fails
+# (by design, it then falls back) when there is no secrets/ dir -- on CI and on
+# the box -- and under set -e that failed assignment would exit silently.
 # shellcheck source=/dev/null
 source "$HERE/../lib/ssh.sh"
 # shellcheck source=/dev/null
 source "$HERE/../lib/log.sh"
+set -euo pipefail
 
 EXECUTE=0
 for a in "$@"; do
