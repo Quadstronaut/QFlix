@@ -198,6 +198,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-audit.service \
     scripts/maint/systemd/manitoba-maint-audit.timer \
     scripts/maint/qflix-audit-live.py \
+    scripts/maint/qflix-vlogs-ingest.py \
+    scripts/mcp/logs.py \
     scripts/maint/systemd/manitoba-maint-audit-live.service \
     scripts/maint/systemd/manitoba-maint-audit-live.timer \
     scripts/maint/systemd/manitoba-maint-torrent-janitor.service \
@@ -414,6 +416,16 @@ chmod +x ~/scripts/maint/bootstrap-kuma-monitors.py
 # -- which needs a git checkout and runs from ~/.opt/qflix-src -- it IS copied.
 cp -f "$STG"/scripts/maint/qflix-audit-live.py ~/scripts/maint/qflix-audit-live.py
 chmod +x ~/scripts/maint/qflix-audit-live.py
+
+# QFLX-50: the vlogs ingester and the scripts/mcp/logs.py it imports are code
+# only. Ship them on every routine deploy (a 240 run used to leave both stale
+# and deploy-drift red) WITHOUT touching victorialogs.service -- unit changes
+# and restarts stay in 80-vlogs-install.sh. The ingester is a oneshot timer, so
+# the next tick picks the new code up.
+mkdir -p ~/scripts/mcp
+cp -f "$STG"/scripts/maint/qflix-vlogs-ingest.py ~/scripts/maint/qflix-vlogs-ingest.py
+chmod +x ~/scripts/maint/qflix-vlogs-ingest.py
+cp -f "$STG"/scripts/mcp/logs.py ~/scripts/mcp/logs.py
 
 # Convergent Audit Regime (landed on master 2026-07-30). Its units sat in the
 # repo with ZERO installer wiring, so the audit would have shipped as a guard
