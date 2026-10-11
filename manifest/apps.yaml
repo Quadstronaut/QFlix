@@ -574,14 +574,16 @@ apps:
     # re-creates 127.0.0.1:<sabnzbd.port> (nginx, canaries, MCP, this probe).
     # The container's public-IP listener is dropped as a recorded swap-state
     # exception (D-4). The UCC container stays installed and DORMANT as the
-    # rollback target (I-8). `swap_state: pending-swap` keeps the container the
-    # live runtime (appctl, lifecycle, health) until the swap runs; the
-    # follow-up PR drops it.
+    # rollback target (I-8). Swapped to native 2026-10-11 08:27 UTC (spec 5.9
+    # steps 1-6, 36s; public listener dropped as the operator-approved D-4
+    # exception, HTTPS ingress via the phase-92 nginx fragment); the
+    # `swap_state: pending-swap` line that held this flip inert is gone, so
+    # appctl / lifecycle / require_unit_active / runtime parity now treat
+    # qflix-sabnzbd.service as the live runtime. 14-day soak until 2026-10-25.
     class: systemd
     unit: qflix-sabnzbd.service
     ucc_slug: sabnzbd
     ucc_dormant: true
-    swap_state: pending-swap
     kuma_monitor: "SABnzbd"
     health:
       kind: http_root

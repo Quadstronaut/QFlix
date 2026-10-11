@@ -117,9 +117,9 @@ def test_flaresolverr_is_converted_pending_swap():
     assert any("mv .fs-tmp/* ." in step for step in a["upgrade"]["post_steps"])
 
 
-def test_sabnzbd_is_converted_pending_swap():
+def test_sabnzbd_is_converted_and_swapped():
     a = _converted()["sabnzbd"]
-    assert a["swap_state"] == "pending-swap" and a["unit"] == "qflix-sabnzbd.service"
+    assert "swap_state" not in a and a["unit"] == "qflix-sabnzbd.service"   # swapped 2026-10-11
     # The probe stays on loopback (the forwarder) under the urlbase.
     assert a["health"]["path_override"] == "/sabnzbd/" and "hostname_ref" not in a["health"]
     steps = a["upgrade"]["post_steps"]
