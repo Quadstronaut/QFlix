@@ -421,7 +421,8 @@ jobs:
   # Every entry below was reviewed on 2026-07-29 while landing the audit
   # regime. Six of these are the spec's named candidates; the flaresolverr pair
   # was found by the detector itself, which is the point of enumerating the
-  # glob instead of a hand-list.
+  # glob instead of a hand-list. (That pair, manitoba-maint-flaresolverr-canary
+  # and -unsuppress, was retired with FlareSolverr 2026-10-11, QFLX-26.)
 
   manitoba-maint-arr-audit:
     timer: scripts/maint/systemd/manitoba-maint-arr-audit.timer
@@ -501,41 +502,6 @@ jobs:
       Nightly newsletter poster-cache prune. Pure disk hygiene for a cache that
       is regenerated on demand; a stopped prune costs bounded disk, which the
       quota canary already watches. No correctness consequence.
-    open_gap: false
-    adjudicated: 2026-07-29
-    owner: operator
-
-  manitoba-maint-flaresolverr-canary:
-    timer: scripts/maint/systemd/manitoba-maint-flaresolverr-canary.timer
-    adjudicated: 2026-07-29
-    owner: operator
-    kuma_monitor: "Canary Timer Liveness"
-    no_monitor_reason: >-
-      A second, independent alert path that pages Discord directly and is not in
-      manifest/apps.yaml:canaries, so it has no monitor of its own. The gap was
-      "if its timer dies, the ONLY signal is the absence of Discord messages
-      nobody was expecting anyway". Closed 2026-07-30 by timer-liveness, which
-      needs no monitor of its own to notice this timer stopped.
-    open_gap: false
-    adjudicated: 2026-07-30
-    owner: operator
-
-  manitoba-maint-flaresolverr-unsuppress:
-    # Exempt from the timer-liveness canary's LOADED predicate. This unit
-    # deletes itself on success, so ABSENT is its intended terminal state --
-    # the canary correctly reported it missing on its first working run, and
-    # that would be a permanent false red. Declared here rather than
-    # hardcoded in the canary so the exemption is visible where the job is.
-    may_be_absent: true
-    timer: scripts/maint/systemd/manitoba-maint-flaresolverr-unsuppress.timer
-    kuma_monitor: null
-    no_monitor_reason: >-
-      A SELF-DESTRUCTING watcher: it polls flaresolverr, lifts the
-      push-suppression once healthy, then deletes its own units and script. A
-      dead-man is inapplicable by construction — the intended terminal state is
-      "this timer no longer exists". If it dies early the suppression simply
-      stays, which the operator sees as a permanently [SUPPRESSED] FlareSolverr
-      monitor: visible, not silent.
     open_gap: false
     adjudicated: 2026-07-29
     owner: operator

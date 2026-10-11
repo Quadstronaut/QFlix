@@ -73,7 +73,7 @@ Adjudicated in `manifest/jobs.yaml` with `open_gap: true`. Each is reported as a
 | `manitoba-maint-arr-audit` | Weekly *arr audit notifies on findings but pushes no heartbeat, so a permanently-failing unit is indistinguishable from a clean week. |
 | `manitoba-maint-window` | Monday window orchestrator. If both it and its watchdog fail to start, nothing pages. |
 | `manitoba-maint-window-watchdog` | The watcher with no watcher. An instance of the turtle problem; the chain currently ends here. |
-| `manitoba-maint-flaresolverr-canary` | **Found by the detector, not by a hand-list.** Not in `manifest/apps.yaml:canaries`, so it has no monitor and no dead-man; if its timer dies the only signal is the absence of Discord messages nobody expected. |
+| ~~`manitoba-maint-flaresolverr-canary`~~ (retired 2026-10-11 with FlareSolverr) | **Found by the detector, not by a hand-list.** Not in `manifest/apps.yaml:canaries`, so it has no monitor and no dead-man; if its timer dies the only signal is the absence of Discord messages nobody expected. |
 
 ## What changing this file costs
 

@@ -518,43 +518,22 @@ apps:
       path_override: /healthz
       expect_status: 200
 
-  flaresolverr:
-    # Binds only on the Docker bridge gateway (net.app_host:17011), not host
-    # loopback — hostname override below routes the probe accordingly.
-    # QFLX-26 (UCC divorce A2): converted to the upstream PyInstaller release
-    # (bundled Chromium, HEADLESS=true) run as qflix-flaresolverr.service by
-    # scripts/configure/301-native-flaresolverr-install.sh (version pinned in
-    # versions.env FLARESOLVERR_VERSION + sha256 in the installer). The listen
-    # set stays EXACTLY net.app_host:<flaresolverr.port> (172.17.0.1): an
-    # auth-less Chromium proxy, never 0.0.0.0, never loopback-plus-public. The
-    # UCC container stays installed and DORMANT as the rollback target (I-8).
-    # `swap_state: pending-swap` keeps the container the live runtime (appctl,
-    # lifecycle, health) until the swap runs; the follow-up PR drops it.
-    class: systemd
-    unit: qflix-flaresolverr.service
-    ucc_slug: flaresolverr
-    ucc_dormant: true
-    swap_state: pending-swap
-    kuma_monitor: "FlareSolverr"
-    health:
-      kind: http_root
-      hostname_ref: net.app_host
-      port_secret: flaresolverr.port
-      expect_status: 200
-    upgrade:
-      # The release tarball wraps everything in flaresolverr/; the post step
-      # flattens it so bin/<ver>/flaresolverr + bin/<ver>/_internal/chrome match
-      # what the installer lays out, then flips `current` atomically. The soak
-      # gate refuses it for 14 days after the swap.
-      kind: tarball_swap
-      url_template: "https://github.com/FlareSolverr/FlareSolverr/releases/download/v{version}/flaresolverr_linux_x64.tar.gz"
-      target_dir: "~/.apps/flaresolverr/bin/{version}"
-      post_steps:
-        - "cd ~/.apps/flaresolverr/bin/{version} && mv flaresolverr .fs-tmp && mv .fs-tmp/* . && rmdir .fs-tmp"
-        - "ln -sfn {version} ~/.apps/flaresolverr/bin/.current.new && mv -Tf ~/.apps/flaresolverr/bin/.current.new ~/.apps/flaresolverr/bin/current"
-      version_pin:
-        source: versions.env
-        key: FLARESOLVERR_VERSION
+  # flaresolverr: RETIRED 2026-10-11 (QFLX-26) - operator decision "get rid of
+  # flaresolverr for post-migration". It could not run native (UCC divorce
+  # decision D-7: its bundled Chromium fails the slot's 10 GB address-space
+  # cap) and it had no use: 23 Prowlarr indexers, only 2 tagged `cloudflare`
+  # (kickasstorrents.ws, Torrent[CORE]) and both disabled; indexerstats over
+  # the prior 30 days = 0 queries / 0 grabs through it vs 130 grabs through
+  # untagged indexers (Prowlarr history for the 2 tagged indexers: 0 records
+  # ever). Retired: this manifest entry + its Kuma monitor "FlareSolverr", the
+  # Prowlarr indexer proxy and the `cloudflare` tag on the 2 disabled indexers
+  # (both left disabled), the UCC app (uninstalled), and the scripts
+  # scripts/install/02-flaresolverr.sh, scripts/configure/{03-prowlarr-
+  # flaresolverr.sh,301-native-flaresolverr-install.sh}, scripts/maint/
+  # {flaresolverr-canary.py,flaresolverr-unsuppress-watch.sh} + their units.
+  # Tool: scripts/ops/decommission-flaresolverr-2026-10-11.py. ORDER (the
+  # Homarr lesson): manifest entry removed + pusher restarted by the 240 deploy
+  # BEFORE the monitor delete and the uninstall.
 
   sabnzbd:
     # Usenet download client (added 2026-06-22 usenet buildout). Binds host
@@ -1256,8 +1235,8 @@ canaries:
     #   - indexer-rss-stale : Prowlarr health endpoint reports chronic
     #     indexer-down warnings (matches the nekoBT-since-2026-05-12
     #     case from WARN.md)
-    # Detect-and-notify only. The FlareSolverr canary already handles
-    # listener-failure restarts upstream of this.
+    # Detect-and-notify only. (The FlareSolverr canary was retired 2026-10-11
+    # along with the proxy it used to restart upstream of this.)
     #
     # WINDOW RETUNED 10m -> 20m -> 45m ON 2026-08-03. TWO terms, and the 20m
     # step only closed one of them. (1) run spacing: OnCalendar=*:0/15 with
@@ -1647,8 +1626,8 @@ canaries:
     # nothing pages"), manitoba-maint-window-watchdog ("a watcher with no watcher
     # -- THE TURTLE PROBLEM"), manitoba-maint-arr-audit ("a permanently-failing
     # unit is indistinguishable from a clean week") and
-    # manitoba-maint-flaresolverr-canary ("the ONLY signal is the absence of
-    # Discord messages nobody was expecting anyway").
+    # manitoba-maint-flaresolverr-canary (retired 2026-10-11; "the ONLY signal
+    # is the absence of Discord messages nobody was expecting anyway").
     #
     # One monitor per gap was the wrong shape: four more monitors, four more push
     # tokens, four more things that can be born mute or born tokenless (both
@@ -1768,7 +1747,7 @@ canaries:
     # `systemctl --user restart qflix-dash`. A 404 whose file is genuinely
     # ABSENT is a broken or partial deploy - a restart cannot help, so that
     # branch alerts and does NOT restart (the same refuse-on-wrong-signature
-    # logic as scripts/maint/flaresolverr-canary.py); so does a stalled body.
+    # logic as the retired flaresolverr-canary.py); so does a stalled body.
     # The restart is capped at one per 24h by a durable epoch latch that is
     # RESERVED (written atomically and read back) BEFORE the restart is issued
     # and RELEASED on every path that turns out not to have issued it: if the

@@ -115,6 +115,98 @@ components:
       executable surfaces, not the fleet's existence.
     allow_paths: []
 
+  - id: flaresolverr
+    names: [flaresolverr]
+    retired: 2026-10-11
+    fully_removed: 2026-10-11
+    replaced_by: null
+    why: >-
+      QFLX-26, operator decision 2026-10-11 ("get rid of flaresolverr for
+      post-migration"). No native path (UCC divorce D-7: its bundled Chromium
+      fails the slot's 10 GB address-space cap) and no use: of 23 Prowlarr
+      indexers only 2 were tagged `cloudflare`, both disabled, with 0 queries /
+      0 grabs in 30 days and 0 history records ever. Manifest entry dropped and
+      the pusher restarted by the 240 deploy FIRST (the Homarr ordering), then
+      the Prowlarr proxy + tags and the Kuma monitor removed by
+      scripts/ops/decommission-flaresolverr-2026-10-11.py, then the UCC app
+      uninstalled. Its canary, unsuppress watcher, native installer and the
+      UCC-era install/configure scripts were deleted from git and the box.
+    allow_paths:
+      - path: scripts/ops/decommission-flaresolverr-2026-10-11.py
+        reason: >-
+          The decommission tool itself. It deletes the proxy and the monitor and
+          must name them. Retained on the maintainerr/books precedent so the
+          removal stays reproducible and auditable.
+      - path: scripts/configure/240-maintenance-install.sh
+        reason: >-
+          Its retire block stops/disables the old units and rm's every deployed
+          copy of the retired scripts by name. That cleanup is what keeps the
+          box and deploy-drift honest on boxes provisioned before 2026-10-11.
+      - path: manifest/apps.yaml
+        reason: >-
+          The comment block that replaced the app entry records the retirement,
+          its evidence and the files it removed; the canary narratives that
+          cite the old flaresolverr canary as history. No `flaresolverr:` key
+          remains (pinned by tests/unit/test_native_app_manifest.py).
+      - path: manifest/jobs.yaml
+        reason: >-
+          The adjudication preamble names the flaresolverr pair as the first
+          thing the C-01 detector found by enumeration - history of the regime,
+          annotated as retired.
+      - path: CLAUDE.md
+        reason: >-
+          The operator runbook's Live-vs-Retired table. Naming it there is the
+          retirement record.
+      - path: manifest/rea-noise-classes.yaml
+        reason: >-
+          REA noise class prowlarr-flaresolverr-validation-transient. Pre-
+          retirement Prowlarr log lines remain in retained logs/vlogs and must
+          stay classified; the class goes inert as those age out. Removing it
+          early would re-page old noise.
+      - path: scripts/local-llm/qflix-rea.ps1
+        reason: >-
+          The self-syncing mirror of the REA noise class above (same reason).
+      - path: tests/local-llm/test-qflix-rea.ps1
+        reason: >-
+          The REA test pinning that noise class (same reason).
+      - path: tests/unit/**
+        reason: >-
+          Tests either pin the retirement (no manifest entry, no files) or use
+          "flaresolverr" as an arbitrary fixture app name for generic
+          suppression / pusher / bridge-probe logic, or cite the old canary as
+          the provenance of a pattern. None loads FlareSolverr code.
+      - path: scripts/maint/lib/audit/detectors/c01_timer_deadman.py
+        reason: >-
+          The detector docstring cites the original enumeration-boundary bug
+          (the flaresolverr canary timer) as the class's discovery provenance.
+      - path: scripts/configure/04*-prowlarr-*
+        reason: >-
+          Legacy one-shot Prowlarr bootstrap scripts (2026-05). Their proxy
+          lookup already degrades to "added without proxy" when no FlareSolverr
+          proxy exists, which is now the permanent state. Not deployed or
+          scheduled.
+      - path: scripts/configure/40-prowlarr-bulk-indexers.py
+        reason: Same legacy 2026-05 Prowlarr bootstrap family as 04*; comment-only mentions.
+      - path: scripts/data/prowlarr-indexers*.json
+        reason: >-
+          The legacy bootstrap's indexer catalog; `needs_flaresolverr` is the
+          input key those 04* scripts read. Data, not a live reference.
+      - path: scripts/configure/303-native-prowlarr-install.sh
+        reason: Comment-only F-17 caller list; see 307 below.
+      - path: scripts/configure/305-native-sonarr2-install.sh
+        reason: Comment-only F-17 caller list; see 307 below.
+      - path: scripts/configure/306-native-radarr-install.sh
+        reason: Comment-only F-17 caller list; see 307 below.
+      - path: scripts/configure/307-native-sonarr-install.sh
+        reason: >-
+          Comment-only: the F-17 list of bridge callers at the time the native
+          installers were written. The installers are idempotent re-runnable
+          proofs; churning them for a comment is not worth a re-proof.
+      - path: scripts/maint/systemd/qflix-*-fwd.socket
+        reason: >-
+          Comment-only F-17 caller list (same as the installers). Editing a live
+          socket unit for a comment would churn four deployed units.
+
 # Surfaces where a retired name is history, not a live reference. These are the
 # only places a decommissioned name may appear without a per-path adjudication.
 allowed_context_paths:

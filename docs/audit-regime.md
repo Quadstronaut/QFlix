@@ -39,7 +39,7 @@ Four more causes, all confirmed against the tree:
 | No coverage ledger | Nothing recorded what was audited, at what depth, with what result. The 2026-07-27 audit declared its scope in **prose inside a commit message** (`15bc997`) — unqueryable, and demonstrably false the next day. |
 | No defect-class taxonomy | The regression file was named after a **date** (`tests/unit/test_audit_2026_07_27.py`), not a class. Its own docstring says it covers the "highest-risk NEW" logic: sampling language, in the test suite. |
 | Prose findings + one-off fixes | `ad8198e`: `qflix_status` and `qflix_arr_queue` computed snapshot freshness; three **sibling** functions in the **same file** had none and served a 19-day-stale snapshot as live. Fixed once, per instance, never generalised. |
-| Unstated enumeration boundary | `manitoba-maint-flaresolverr-canary.timer` exists on disk but is absent from `manifest/apps.yaml:canaries`. Whether an audit "saw" it depended on which files that run happened to open. Two runs, two answers, neither buggy. |
+| Unstated enumeration boundary | `manitoba-maint-flaresolverr-canary.timer` exists on disk but is absent from `manifest/apps.yaml:canaries`. Whether an audit "saw" it depended on which files that run happened to open. Two runs, two answers, neither buggy. (That canary was retired 2026-10-11 with FlareSolverr.) |
 
 ## The guarantee
 

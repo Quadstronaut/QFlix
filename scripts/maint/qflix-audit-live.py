@@ -75,7 +75,7 @@ JOBS_LEDGER = Path(os.environ.get(
 def _may_be_absent() -> set:
     """Unit basenames whose intended terminal state is 'gone'.
 
-    flaresolverr-unsuppress deletes itself once FlareSolverr is healthy, so its
+    e.g. flaresolverr-unsuppress (retired 2026-10-11) deleted itself once healthy, so its
     absence is success, not drift. Declared in the ledger next to the job rather
     than hardcoded here, so the exemption lives where the job does.
     """

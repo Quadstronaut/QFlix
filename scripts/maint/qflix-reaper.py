@@ -356,7 +356,7 @@ def warn(msg: str) -> None:
 def _notify(msg: str, level: str = "info") -> None:
     """Discord via lib.notify (lazy + guarded). A missing `requests` (the box is
     stdlib-preferred and lib.notify top-imports requests) degrades to a logged
-    no-op, exactly like flaresolverr-canary._notify. Never raises."""
+    no-op, exactly like the retired flaresolverr-canary._notify. Never raises."""
     try:
         if str(_HERE) not in sys.path:
             sys.path.insert(0, str(_HERE))

@@ -27,8 +27,6 @@ files:
     app_calls: 2
   scripts/configure/90-sabnzbd-usenet-install.sh:
     app_calls: 1
-  scripts/install/02-flaresolverr.sh:
-    app_calls: 2
   scripts/lib/ports.sh:
     app_calls: 2
   scripts/maint/app-upgrade-all.sh:

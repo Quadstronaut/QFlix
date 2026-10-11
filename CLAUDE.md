@@ -13,7 +13,7 @@ Self-healing Plex stack on one Ultra.cc shared seedbox: `manifest/apps.yaml` (si
 ## What's live vs. gone (check before asserting)
 | Live | Retired — do not restore |
 |---|---|
-| Plex (primary), Seerr, Prowlarr, Sonarr/Sonarr2, Radarr/Radarr2, Bazarr/Bazarr2, qBittorrent, SABnzbd, Tdarr, Tautulli, **Kometa** (daily 03:30 timer), Listmonk, qflix-dash, qflix-reaper, 40 canaries | Jellyfin/Jellystat (2026-05-10) · Notifiarr (2026-05-10; Discord webhook is the only channel) · Maintainerr → qflix-reaper (2026-06-20) · Homarr → qflix-dash (2026-07-13) · books stack kavita/komga/calibre-web/audiobookshelf (2026-08-16) |
+| Plex (primary), Seerr, Prowlarr, Sonarr/Sonarr2, Radarr/Radarr2, Bazarr/Bazarr2, qBittorrent, SABnzbd, Tdarr, Tautulli, **Kometa** (daily 03:30 timer), Listmonk, qflix-dash, qflix-reaper, 40 canaries | Jellyfin/Jellystat (2026-05-10) · Notifiarr (2026-05-10; Discord webhook is the only channel) · Maintainerr → qflix-reaper (2026-06-20) · Homarr → qflix-dash (2026-07-13) · books stack kavita/komga/calibre-web/audiobookshelf (2026-08-16) · FlareSolverr (2026-10-11; no native path under the 10 GB cap, 0 use) |
 
 When the operator says something was purged, **verify on the box** (`~/.apps/`, `systemctl --user list-timers`) before agreeing or acting — the manifest is the truth, memory is a lead.
 

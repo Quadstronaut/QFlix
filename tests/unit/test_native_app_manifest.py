@@ -108,13 +108,20 @@ def test_postgres_is_converted_and_swapped():
     assert 'VERSION="17.11-1.pgdg13+2"' in text
 
 
-def test_flaresolverr_is_converted_pending_swap():
-    a = _converted()["flaresolverr"]
-    assert a["swap_state"] == "pending-swap" and a["unit"] == "qflix-flaresolverr.service"
-    # The probe still targets the bridge gateway, not loopback (never widen the bind).
-    assert a["health"]["hostname_ref"] == "net.app_host"
-    # The release wraps everything in flaresolverr/: the upgrade must flatten it.
-    assert any("mv .fs-tmp/* ." in step for step in a["upgrade"]["post_steps"])
+def test_flaresolverr_is_retired():
+    """QFLX-26: retired 2026-10-11 (no native path under the 10 GB cap, 0 use).
+    No manifest entry, no version pin, no installer, no canary, no units."""
+    assert "flaresolverr" not in _apps()
+    assert "FLARESOLVERR_VERSION" not in _versions_env()
+    for rel in ("scripts/configure/301-native-flaresolverr-install.sh",
+                "scripts/install/02-flaresolverr.sh",
+                "scripts/configure/03-prowlarr-flaresolverr.sh",
+                "scripts/maint/flaresolverr-canary.py",
+                "scripts/maint/flaresolverr-unsuppress-watch.sh",
+                "scripts/maint/systemd/qflix-flaresolverr.service",
+                "scripts/maint/systemd/manitoba-maint-flaresolverr-canary.timer",
+                "scripts/maint/systemd/manitoba-maint-flaresolverr-unsuppress.timer"):
+        assert not (REPO / rel).exists(), rel
 
 
 def test_sabnzbd_is_converted_and_swapped():
@@ -164,7 +171,7 @@ def test_generated_skip_list_carries_unpackerr():
                         "--manifest", str(MANIFEST)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert "unpackerr" in r.stdout.split()
-    assert "flaresolverr" in r.stdout.split()
+    assert "flaresolverr" not in r.stdout.split()   # retired 2026-10-11 (QFLX-26)
     assert "bazarr" in r.stdout.split()
     assert "postgres" in r.stdout.split()
     assert "sabnzbd" in r.stdout.split()

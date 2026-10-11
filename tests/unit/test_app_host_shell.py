@@ -22,7 +22,6 @@ def _run_with_home(script: str, home: Path):
 
 @pytest.mark.parametrize("script", [
     "scripts/ops/tautulli-gate-watch.sh",
-    "scripts/maint/flaresolverr-unsuppress-watch.sh",
 ])
 def test_box_watchers_refuse_to_guess_without_the_secret(script, tmp_path):
     (tmp_path / "secrets").mkdir()
