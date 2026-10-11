@@ -1,0 +1,37 @@
+# scripts/data/sabnzbd.nginx.conf.tmpl -> ~/.apps/nginx/proxy.d/sabnzbd.conf
+# QFlix-owned. Rendered and installed by scripts/configure/92-sabnzbd-vhost.sh
+# (edit HERE, re-run phase 92; never hand-edit the live copy).
+#
+# WHY this exists (QFLX-33, 2026-10-11): SABnzbd was the one UCC app with NO
+# proxy.d fragment, so https://<slot>/sabnzbd/ fell through to the dashboard's
+# catch-all `location /` and answered 404. Outside clients (the phone app)
+# reached SAB only on the PUBLIC listener <public-ip>:<port>, which the native
+# swap drops by design (operator decision D-4: ingress is nginx-only). This
+# fragment is the HTTPS path those clients move to, and it must exist BEFORE the
+# swap removes the public listener.
+#
+# Upstream is loopback on the recorded port (@@PORT@@ comes from the box's
+# ~/secrets/sabnzbd.port). Both the UCC container and the native unit answer
+# there, so this fragment survives the swap and a rollback unchanged.
+#
+# SAB side: url_base = /sabnzbd (the path is passed through as-is: no URI on
+# proxy_pass) and host_whitelist must carry the slot host, because Host is
+# forwarded verbatim; phase 92 asserts both. verify_xff_header = 1 makes SAB
+# apply inet_exposure to the real client from X-Forwarded-For, not to nginx.
+location ^~ /sabnzbd {
+    proxy_pass       http://127.0.0.1:@@PORT@@;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_redirect off;
+
+    # NZB uploads through the web UI / phone app; nginx's 1m default 413s them.
+    client_max_body_size 100m;
+    proxy_read_timeout 300;
+    proxy_send_timeout 300;
+
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $http_connection;
+}

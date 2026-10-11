@@ -24,6 +24,7 @@ ROUTED = {
     "scripts/configure/50-tautulli-pms-url-fix.sh": ["app-tautulli"],
     "scripts/configure/60-www-images.sh": ["app-nginx"],
     "scripts/configure/91-nginx-root-to-dash.sh": ["app-nginx"],
+    "scripts/configure/92-sabnzbd-vhost.sh": ["app-nginx"],
     "scripts/configure/31-unpackerr.sh": ["app-unpackerr"],
     "scripts/maint/flaresolverr-canary.py": ["app-flaresolverr"],
 }
