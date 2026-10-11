@@ -2,8 +2,8 @@
 
 The generic converted-app checks live in test_native_app_manifest.py; this file
 pins what is specific to sonarr2:
-  * the flip is `pending-swap` (the container stays the live runtime until the
-    swap runs) and the UCC container is dormant;
+  * the flip is swapped (2026-10-11: `pending-swap` dropped, the native unit is
+    the live runtime) and the UCC container is dormant;
   * the version pin in versions.env is the FOUR-part build, the installer and
     the manifest upgrade block agree on it, and the tarball URL carries it;
   * the generated app-upgrade-all skip list carries sonarr2 (I-9);
@@ -47,11 +47,11 @@ def _pin() -> str:
     raise AssertionError("SONARR2_VERSION missing from versions.env")
 
 
-def test_sonarr2_is_converted_but_pending_swap_and_dormant():
+def test_sonarr2_is_converted_swapped_and_dormant():
     a = _app()
     assert a["class"] == "systemd" and a["unit"] == "qflix-sonarr2.service"
     assert a["ucc_slug"] == "sonarr2" and a["ucc_dormant"] is True
-    assert a["swap_state"] == "pending-swap"
+    assert "swap_state" not in a                     # swapped 2026-10-11
     assert a["health"]["require_unit_active"] is True
     # the health probe (Kuma "Sonarr Anime") is unchanged: same secrets, same path
     assert a["kuma_monitor"] == "Sonarr Anime"
@@ -107,6 +107,9 @@ def _manifest_copy(tmp_path: Path, *, swapped: bool) -> Path:
     data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
     if swapped:
         data["apps"]["sonarr2"].pop("swap_state", None)
+    else:
+        # the real manifest is swapped now; model the pre-swap flip explicitly
+        data["apps"]["sonarr2"]["swap_state"] = "pending-swap"
     p = tmp_path / "apps.yaml"
     p.write_text(yaml.safe_dump(data), encoding="utf-8")
     return p
