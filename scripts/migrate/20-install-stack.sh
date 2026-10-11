@@ -46,6 +46,7 @@ declare -A SKIP=(
   [90-qflix-dash-install.sh]="reads secrets/seedbox.ssh-host directly (ignores SSHM_HOST) -- it would install onto BLUE. Patch it to honor SSHM_HOST, then drop this skip"
   [90-sabnzbd-usenet-install.sh]="Ultra app-CLI install path; SAB server + arr wiring arrive with SAB/arr data in 35"
   [91-nginx-root-to-dash.sh]="front-door change (50-cutover step 7 / QFLX-41) and reads seedbox.ssh-host directly"
+  [92-sabnzbd-vhost.sh]="writes an Ultra proxy.d fragment + the panel nginx verb (F-11) and reads secrets/seedbox.host; box-2 proxy is QFLX-41"
 )
 
 # Numbered phases in numeric-then-bytewise order (plain sort -V puts 04b
