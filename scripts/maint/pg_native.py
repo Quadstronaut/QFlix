@@ -297,9 +297,16 @@ SQL = {
                 "'app.check_updates', 'app.send_optin_confirmation'); "
                 "update campaigns set status = 'paused' where status in ('running', 'scheduled');",
     "sanitize-check": "/*qflix:sanitize-check*/ select "
-                      "(select count(*) from settings, jsonb_array_elements(value) e "
-                      "where key in ('smtp', 'messengers', 'bounce.mailboxes') and jsonb_typeof(value) = 'array' "
-                      "and coalesce(e->>'enabled', 'false') <> 'false') + "
+                      # settings is aliased and every column qualified: the
+                      # set-returning jsonb_array_elements() names its own
+                      # output column `value` too, so a bare `value` here is
+                      # ambiguous (box 2026-10-11, first --prove). The CASE
+                      # keeps a non-array value from reaching the function
+                      # whatever order the planner evaluates the filter in.
+                      "(select count(*) from settings s, jsonb_array_elements("
+                      "case when jsonb_typeof(s.value) = 'array' then s.value else '[]'::jsonb end) e "
+                      "where s.key in ('smtp', 'messengers', 'bounce.mailboxes') "
+                      "and coalesce(e.value->>'enabled', 'false') <> 'false') + "
                       "(select count(*) from settings where key in ('bounce.postmark', 'bounce.forwardemail', "
                       "'bounce.lettermint') and jsonb_typeof(value) = 'object' "
                       "and coalesce(value->>'enabled', 'false') <> 'false') + "
