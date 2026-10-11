@@ -76,13 +76,14 @@ sshm 'mkdir -p ~/.opt/_maint_stage'
     scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.service \
     scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.timer \
     scripts/maint/qflix-vlogs-ingest.py \
+    scripts/mcp/logs.py \
     scripts/canaries/vlogs-stall.sh \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
 
 sshm bash -s <<'STAGE'
 set -euo pipefail
 STG=~/.opt/_maint_stage
-mkdir -p ~/scripts/maint/systemd ~/scripts/maint ~/scripts/canaries
+mkdir -p ~/scripts/maint/systemd ~/scripts/maint ~/scripts/canaries ~/scripts/mcp
 cp -f "$STG"/scripts/maint/systemd/victorialogs.service                    ~/scripts/maint/systemd/
 cp -f "$STG"/scripts/maint/systemd/qflix-vlogs-ingest.service              ~/scripts/maint/systemd/
 cp -f "$STG"/scripts/maint/systemd/qflix-vlogs-ingest.timer                ~/scripts/maint/systemd/
@@ -90,6 +91,9 @@ cp -f "$STG"/scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.service ~/s
 cp -f "$STG"/scripts/maint/systemd/manitoba-maint-canary-vlogs-stall.timer   ~/scripts/maint/systemd/
 cp -f "$STG"/scripts/maint/qflix-vlogs-ingest.py                           ~/scripts/maint/
 chmod +x ~/scripts/maint/qflix-vlogs-ingest.py
+# QFLX-50: the ingester imports ~/scripts/mcp/logs.py; ship it so a first
+# install does not depend on 70-mcp having run.
+cp -f "$STG"/scripts/mcp/logs.py                                           ~/scripts/mcp/
 cp -f "$STG"/scripts/canaries/vlogs-stall.sh                               ~/scripts/canaries/
 chmod +x ~/scripts/canaries/vlogs-stall.sh
 STAGE
