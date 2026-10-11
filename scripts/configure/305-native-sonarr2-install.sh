@@ -44,7 +44,11 @@
 #               port/bind/update settings coming from the environment (proves
 #               config.xml's Port 8989 is overridden), check status (build ==
 #               pin, not docker), renameEpisodes == true (naming API), and
-#               series-count parity between the live container and the copy.
+#               series-count parity between the live container and the copy
+#               (an EMPTY library is a parity, 0 == 0, only when the source
+#               sonarr.db Series table also counts 0). The proof runs in its
+#               own session and is stopped as a process GROUP, then checked as
+#               state (no process left carrying -data=<proof dir>).
 #               Measure the task count (refused at 70% of the host ceiling),
 #               then delete the copy. Never side by side against live queues.
 #   --swap      5.9 steps 3-6: needs the proof and the DEPLOYED pending-swap
@@ -91,7 +95,7 @@
 # Overrides (tests; resolved at call time): QFLIX_APPS_DIR QFLIX_UNIT_DIR
 # QFLIX_ENV_DIR QFLIX_SWAP_DIR QFLIX_SECRETS_DIR MANITOBA_STATE_DIR
 # QFLIX_MANIFEST QFLIX_PROC QFLIX_PYTHON QFLIX_APPCTL QFLIX_SYSTEMCTL QFLIX_SS
-# QFLIX_PS QFLIX_CURL QFLIX_FUSER QFLIX_HOSTPOLICY QFLIX_HOST_ID_FILE
+# QFLIX_PS QFLIX_PGREP QFLIX_CURL QFLIX_FUSER QFLIX_HOSTPOLICY QFLIX_HOST_ID_FILE
 # QFLIX_SONARR2_SHA256 QFLIX_POLL_S QFLIX_SETTLE_S QFLIX_STOP_TIMEOUT_S
 # QFLIX_PROOF_TIMEOUT_S QFLIX_API_TIMEOUT_S QFLIX_KEEP_PROOF.
 set -uo pipefail
@@ -163,6 +167,7 @@ APPCTL="${QFLIX_APPCTL:-$HOME/bin/appctl}"
 SYSTEMCTL="${QFLIX_SYSTEMCTL:-systemctl}"
 SS="${QFLIX_SS:-ss}"
 PS="${QFLIX_PS:-ps}"
+PGREP="${QFLIX_PGREP:-pgrep}"
 CURL="${QFLIX_CURL:-curl}"
 FUSER="${QFLIX_FUSER:-fuser}"
 PROC="${QFLIX_PROC:-/proc}"
@@ -238,8 +243,47 @@ T0=$SECONDS
 # function stays armed globally and would fire on every later return).
 CLEANUP_PATHS=()
 PROOF_PID=""
+PROOF_SURVIVED=0
+# Stop the proof as a GROUP and check STATE, never the kill's exit status
+# (same class as QFLX-27 #53, which orphaned bazarr's child): the old cleanup
+# sent one TERM to the pid and removed the copy dir at once, so a survivor
+# kept serving a deleted copy on its loopback port. The proof boots under
+# setsid (PID == PGID); a pgrep sweep on `-data=$PROVE` catches anything that
+# left the group. TERM, KILL after 10s, give up loudly after 20s.
+proof_survivors() { "$PGREP" -u "$(id -u)" -f -- "-data=$PROVE( |\$)" 2>/dev/null; }
+stop_proof() {
+  [ -n "$PROOF_PID" ] || return 0
+  local i=0 pids
+  kill -TERM -- "-$PROOF_PID" 2>/dev/null || kill -TERM "$PROOF_PID" 2>/dev/null
+  wait "$PROOF_PID" 2>/dev/null
+  while pids="$(proof_survivors)" && [ -n "$pids" ]; do
+    i=$((i + 1))
+    if [ "$i" -ge 10 ]; then
+      kill -KILL -- "-$PROOF_PID" 2>/dev/null
+      # shellcheck disable=SC2086
+      kill -KILL $pids 2>/dev/null
+    else
+      # shellcheck disable=SC2086
+      kill -TERM $pids 2>/dev/null
+    fi
+    if [ "$i" -ge 20 ]; then
+      # shellcheck disable=SC2086
+      echo "[305-sonarr2] ERROR: proof processes survived: "$pids >&2
+      PROOF_PID=""; PROOF_SURVIVED=1
+      return 1
+    fi
+    sleep 1
+  done
+  PROOF_PID=""
+}
 cleanup() {
-  [ -n "$PROOF_PID" ] && kill "$PROOF_PID" 2>/dev/null
+  # A survivor means the copy is still open: keep it on disk (it is inert)
+  # rather than delete it under a running process.
+  stop_proof || PROOF_SURVIVED=1
+  if [ "$PROOF_SURVIVED" = 1 ]; then
+    echo "[305-sonarr2] ERROR: keeping $PROVE: proof processes still hold it; kill them, then remove it" >&2
+    return 0
+  fi
   local p
   for p in "${CLEANUP_PATHS[@]}"; do rm -rf "$p"; done
 }
@@ -364,6 +408,27 @@ print(str(v).lower() if isinstance(v, bool) else v)' "$1"
 series_count() {
   api_get "$1" series 2>/dev/null \
     | "$PY" -c 'import sys, json; d = json.load(sys.stdin); assert isinstance(d, list); print(len(d))'
+}
+# Series rows in a sqlite db, read-only (safe beside the container's open WAL).
+# The empty-library guard's second witness: an API that answers 0 is only
+# believed when the database it serves from also holds 0 rows.
+db_series_count() {
+  "$PY" - "$1" <<'PY'
+import sqlite3, sys
+from pathlib import Path
+con = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
+print(con.execute('SELECT count(*) FROM "Series"').fetchone()[0])
+con.close()
+PY
+}
+# 0 series on the API is a parity (0 == 0) only when the source db agrees; an
+# API 0 over a db with rows means a broken copy or a wrong instance: refuse.
+empty_library_ok() {
+  local what="$1" dbn
+  dbn="$(db_series_count "$APPDIR/$DBNAME")" || die "$what: zero series and $DBNAME Series is unreadable; refusing an empty parity"
+  dbn="${dbn%$'\r'}"
+  [ "$dbn" = 0 ] || die "$what: zero series on the API but $DBNAME holds $dbn; refusing an empty parity"
+  info "parity: empty library (0 == 0)"
 }
 rename_is_true() {
   [ "$(api_get "$1" config/naming 2>/dev/null | json_get renameEpisodes)" = true ]
@@ -505,7 +570,7 @@ do_install() {
 }
 
 do_prove() {
-  local before ceiling delta pport live proofn naming status_json version docker
+  local before ceiling delta pport live proofn naming status_json version docker dbn
   [ -x "$APPDIR/bin/current/$EXE" ] || die "not installed; run --install --execute first"
   [ -f "$SANITIZE" ] || die "$SANITIZE missing (run 240 first)"
   ceiling="$(hostpolicy task-ceiling)" || die "task ceiling unknown; refusing (G-2)"
@@ -549,7 +614,12 @@ PY
   [[ "$before" =~ ^[0-9]+$ ]] || die "cannot count tasks"
   # Port/bind/update come from the ENVIRONMENT, exactly as in the real unit:
   # config.xml still says Port 8989, so a green status here proves the override.
-  env DOTNET_PROCESSOR_COUNT=4 DOTNET_gcServer=0 MALLOC_ARENA_MAX=2 COMPlus_EnableDiagnostics=0 \
+  # Own session (setsid does not fork: a background job is not a group leader,
+  # so $! stays the PGID) so stop_proof can signal the whole group. Absent
+  # setsid (Git Bash) it runs ungrouped and the pgrep sweep still applies.
+  local SETSID=()
+  command -v setsid >/dev/null 2>&1 && SETSID=(setsid)
+  "${SETSID[@]}" env DOTNET_PROCESSOR_COUNT=4 DOTNET_gcServer=0 MALLOC_ARENA_MAX=2 COMPlus_EnableDiagnostics=0 \
       "$TZ_ENV" SONARR__SERVER__BINDADDRESS="$LOOPBACK" SONARR__SERVER__PORT="$pport" \
       SONARR__UPDATE__MECHANISM=External SONARR__UPDATE__AUTOMATICALLY=false \
       "$APPDIR/bin/current/$EXE" -nobrowser "-data=$PROVE" >"$PROVE/stdout.log" 2>&1 &
@@ -574,10 +644,14 @@ PY
   live="$(series_count "$PORT")" || die "proof: cannot count series on the live container"
   proofn="$(series_count "$pport")" || die "proof: cannot count series on the proof copy"
   [ "$live" = "$proofn" ] || die "proof: series count differs (live $live, copy $proofn); retry if a series was just added"
-  [ "$live" -gt 0 ] || die "proof: zero series; refusing an empty parity"
+  if [ "${live%$'\r'}" = 0 ]; then
+    empty_library_ok proof
+    dbn="$(db_series_count "$PROVE/$DBNAME")" && [ "${dbn%$'\r'}" = 0 ] \
+      || die "proof: zero series on the API but the proof copy's Series counts '$dbn'; refusing"
+  fi
   delta="$(ls "$PROC/$PROOF_PID/task" 2>/dev/null | wc -l | tr -d ' ')"
   [ "${delta:-0}" -gt 0 ] || die "proof: cannot read the task count of pid $PROOF_PID; refusing"
-  kill "$PROOF_PID" 2>/dev/null; wait "$PROOF_PID" 2>/dev/null; PROOF_PID=""
+  stop_proof || die "proof: the proof boot left processes behind (-data=$PROVE); not recording a proof"
   if [ $(( (before + delta) * 100 )) -ge $(( 70 * ceiling )) ]; then
     die "thread gate: $before + $delta tasks reaches 70% of the ceiling $ceiling; refusing the swap"
   fi
@@ -673,7 +747,7 @@ do_swap() {
   rename_is_true "$PORT" || die "renameEpisodes is not true on the live container; fix it first (arr-plex-parity)"
   queue_not_importing || die "the queue has an import in flight; wait for it to finish and retry"
   live_series="$(series_count "$PORT")" || die "cannot count series on the live container"
-  [ "$live_series" -gt 0 ] || die "zero series on the live container; refusing"
+  [ "$live_series" -gt 0 ] || empty_library_ok swap
   native_listen_capture "$SLUG" "$PORT" >/dev/null || die "listen-set capture failed"
   mkdir -p "$SWAPDIR"
   printf '%s\n' "$live_series" | native_write_secure "$SWAPDIR/series.count" 0644 || die "cannot record series.count"

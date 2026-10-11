@@ -109,6 +109,13 @@ rec = {
 }
 open(os.path.join(d, "boot.json"), "w").write(json.dumps(rec))
 PY
+# A child carrying the same -data= that only dies on its OWN TERM: a TERM to
+# this pid alone orphans it (QFLX-27 #53 class; the old cleanup did exactly
+# that and then deleted the copy under it). 60s watchdog so no test leaks it.
+bash -c 'm="$QFLIX_PROC/proof-child.alive"; : > "$m"
+trap '"'"'rm -f "$m"; exit 0'"'"' TERM
+end=$((SECONDS + 60)); while [ "$SECONDS" -lt "$end" ]; do sleep 0.2; done; rm -f "$m"' \
+  proof-child "-data=$data" &
 while :; do sleep 0.2; done
 '''
 
@@ -629,6 +636,70 @@ def test_prove_records_status_rename_series_and_task_delta_and_cleans_up(box):
     assert proof["delta"] == 40 and proof["ceiling"] == 2000 and proof["ok"] is True
     assert proof["version"] == VERSION and proof["series"] == 5 and proof["rename_episodes"] is True
     assert box.container_running()                      # live app untouched
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Git Bash has no setsid/pgrep and cannot signal a group")
+def test_prove_stops_the_proof_as_a_group_before_removing_the_copy(box):
+    # QFLX-30: the old cleanup sent one TERM to the pid and rm -rf'd the copy at
+    # once; a child of the proof kept running on a deleted copy.
+    box.proved()
+    assert not (box.proc / "proof-child.alive").exists()
+    assert not (box.apps / ".prove" / "sonarr2").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Git Bash has no setsid/pgrep and cannot signal a group")
+def test_prove_failure_path_also_stops_the_group(box):
+    # die() after the boot goes through the EXIT trap: same group stop.
+    box.installed()
+    r = box.run("--prove", "--execute", env={"FAKE_API_VERSION_PROOF": "4.0.20.3000"})
+    assert r.returncode != 0 and "pinned" in r.stderr
+    assert not (box.proc / "proof-child.alive").exists()
+    assert not (box.apps / ".prove" / "sonarr2").exists()
+
+
+def _empty_library(box):
+    con = sqlite3.connect(box.appdir / "sonarr.db")
+    con.execute('DELETE FROM "Series"')
+    con.commit()
+    con.close()
+
+
+def test_prove_accepts_an_empty_library_when_the_db_agrees(box):
+    # sonarr2 genuinely has 0 series (box 2026-10-11): API 0 AND sonarr.db 0 is
+    # a parity, 0 == 0.
+    _empty_library(box)
+    r = box.proved(env={"FAKE_SERIES": "0"})
+    assert "parity: empty library (0 == 0)" in r.stdout
+    proof = json.loads((box.swap / "sonarr2" / "proof.json").read_text())
+    assert proof["series"] == 0 and proof["ok"] is True
+
+
+def test_prove_refuses_zero_series_when_the_db_holds_series(box):
+    # API 0 over a db with rows = a broken copy / wrong instance: still refused.
+    box.installed()
+    r = box.run("--prove", "--execute", env={"FAKE_SERIES": "0"})
+    assert r.returncode != 0
+    assert "zero series" in r.stderr and "holds 5" in r.stderr
+    assert not (box.swap / "sonarr2" / "proof.json").exists()
+
+
+def test_swap_accepts_an_empty_library_when_the_db_agrees(box):
+    _empty_library(box)
+    box.proved(env={"FAKE_SERIES": "0"})
+    r = box.run("--swap", "--execute", env={"FAKE_SERIES": "0"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "parity: empty library (0 == 0)" in r.stdout
+    assert (box.swap / "sonarr2" / "series.count").read_text().strip() == "0"
+    assert box.native_running() and not box.container_running()
+
+
+def test_swap_refuses_zero_series_when_the_db_holds_series(box):
+    box.proved()
+    r = box.run("--swap", "--execute", env={"FAKE_SERIES": "0"})
+    assert r.returncode != 0
+    assert "zero series" in r.stderr and "holds 5" in r.stderr
+    assert box.container_running() and not box.suppressed()
+    assert "appctl stop" not in box.calls_text()
 
 
 def test_prove_refuses_at_seventy_percent_of_ceiling(box):
