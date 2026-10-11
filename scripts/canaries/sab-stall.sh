@@ -22,6 +22,10 @@
 #                        no help) sat invisible for 3 days in exactly this
 #                        state. Remediation that worked: *arr-side unstick
 #                        (delete + blocklist + auto re-search).
+#   sab-pause-on-pp    — misc.pause_on_post_processing != 0 (config drift
+#                        from the 2026-08-08 fix; QFLX-33). Set it back via
+#                        api?mode=set_config&section=misc&keyword=
+#                        pause_on_post_processing&value=0.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -66,6 +70,25 @@ print(int(kbps), len(slots) - paused_slots, 1 if q.get("paused") else 0,
 PY
 ) || { printf "STAGE=sab-up-fail msg=queue-json-parse\n" >&2; exit 1; }
 rm -f /tmp/sab-canary-queue.json
+
+# pause_on_post_processing drift leg (QFLX-33, 2026-10-11). The 2026-08-08
+# fix set it to 0 (phantom "SAB paused" while par2/unrar ran), yet the live ini
+# was found back at 1 two months later with NOTHING watching it. Config drift,
+# not a stall, so it has its own stage; any value other than 0 is red.
+PP_FILE=/tmp/sab-canary-pp.$$.json
+curl -sf -m 8 "http://127.0.0.1:${PORT}/api?mode=get_config&section=misc&keyword=pause_on_post_processing&output=json&apikey=${KEY}" > "$PP_FILE" \
+  || { rm -f "$PP_FILE"; printf "STAGE=sab-up-fail msg=config-api-fail\n" >&2; exit 1; }
+PPV=$(python3 - "$PP_FILE" <<"PY"
+import json, sys
+v = json.load(open(sys.argv[1]))["config"]["misc"]["pause_on_post_processing"]
+print(0 if str(v).strip().lower() in ("0", "false") else 1)
+PY
+) || { rm -f "$PP_FILE"; printf "STAGE=sab-up-fail msg=config-json-parse\n" >&2; exit 1; }
+rm -f "$PP_FILE"
+if [ "$PPV" != "0" ]; then
+  printf "STAGE=sab-pause-on-pp msg=pause_on_post_processing-is-on-want-0\n" >&2
+  exit 1
+fi
 
 NOW=$(date +%s)
 
