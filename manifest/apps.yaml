@@ -86,15 +86,15 @@ apps:
     # (qflix-sonarr2-fwd.socket) owns the loopback listener nginx and the
     # canaries use. The UCC container stays installed and DORMANT as the
     # rollback target (I-8). renameEpisodes must stay true (arr-plex-parity).
-    # swap_state: pending-swap (spec 5.9 step 7) = this flip is merged and
-    # deployed but the swap has not run: the container still serves, so appctl
-    # and lifecycle dispatch it as UCC and require_unit_active is off. A
-    # follow-up PR removes the line right after the swap.
+    # Swapped to native 2026-10-11 06:31 UTC (spec 5.9 steps 1-6; the library
+    # was empty, a DB-confirmed 0 == 0 parity); the `swap_state: pending-swap`
+    # line that held this flip inert until the swap ran is gone, so appctl /
+    # lifecycle / require_unit_active / runtime parity now treat
+    # qflix-sonarr2.service as the live runtime. 14-day soak until 2026-10-25.
     class: systemd
     unit: qflix-sonarr2.service
     ucc_slug: sonarr2
     ucc_dormant: true
-    swap_state: pending-swap
     kuma_monitor: "Sonarr Anime"
     health:
       kind: http_api
