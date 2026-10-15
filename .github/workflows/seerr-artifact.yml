@@ -95,7 +95,14 @@ jobs:
           corepack enable
           pnpm --version
           pnpm install --frozen-lockfile
+          # QFLX-53: next.config.js bakes process.env.COMMIT_TAG into the CLIENT
+          # bundle at build time (default 'local'); the server reports
+          # committag.json. If they differ, the UI's StatusChecker shows the
+          # "Seerr Updated" modal on every 60s poll, forever. Upstream's
+          # Dockerfile sets it as an ENV before `pnpm build`; so do we.
+          export COMMIT_TAG="$SEERR_COMMIT"
           pnpm build
+          grep -rqF "$SEERR_COMMIT" .next/static || { echo "client bundle did not bake COMMIT_TAG=$SEERR_COMMIT"; exit 1; }
           rm -rf .next/cache
           # Prune to production deps (what the Docker image ships). Switching the
           # dependency set purges node_modules; never prompt for it (no TTY).
@@ -122,6 +129,7 @@ jobs:
           echo "status: $a"
           echo "$a" | grep -q "\"version\":\"${SEERR_VERSION}\"" || { echo "status did not report ${SEERR_VERSION}"; exit 1; }
           echo "$b" | grep -q "\"version\":\"${SEERR_VERSION}\"" || { echo "second listener did not answer"; exit 1; }
+          echo "$a" | grep -q "\"commitTag\":\"${SEERR_COMMIT}\"" || { echo "status commitTag != ${SEERR_COMMIT} (client/server mismatch loops the update modal)"; exit 1; }
           rm -rf "$cfg" config/db config/logs config/settings.json
           # Flat tarball: lifecycle tarball_swap extracts it straight into bin/<ver>.
           tar --owner=0 --group=0 -czf "/w/out/seerr-${SEERR_VERSION}-linux-x64.tar.gz" -C . .
