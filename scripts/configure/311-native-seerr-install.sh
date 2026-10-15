@@ -655,12 +655,29 @@ do_install() {
   [ "$(jget "$stage/x/package.json" version)" = "$VERSION" ] || die "artifact package.json is not $VERSION"
   tag="$(jget "$stage/x/committag.json" commitTag)"
   [ "$tag" = "$COMMIT" ] || die "artifact commitTag '$tag' != pinned $COMMIT"
+  tag="$(align_tag "$stage/x" "$tag")" || die "cannot align committag.json with the client bundle"
   native_install_versioned "$SLUG" "$VERSION" "$stage/x" || die "install refused (see above)"
   native_write_secure "$PRELOAD" 0644 < "$PRELOAD_SRC" || die "cannot stage the listen preload"
-  write_env "" "$COMMIT" || die "env file write failed"
+  write_env "" "$tag" || die "env file write failed"
   native_render_unit "$SLUG" "$FAMILY" "$EXE" "$EXEC_ARGS" "$WORKDIR" \
     | native_write_secure "$APPDIR/native/$UNIT" 0644 || die "unit staging failed"
   info "installed $VERSION (Node v$NODE_VERSION); unit staged at $APPDIR/native/$UNIT (not enabled). Next: --prove --execute"
+}
+
+# QFLX-53: the browser bundle bakes COMMIT_TAG at `pnpm build` (default
+# 'local'); the server reports committag.json. A mismatch makes the UI show the
+# "Seerr Updated" modal on every 60s status poll, forever. align_tag DIR TAG:
+# if DIR's client bundle does not carry TAG it was built as 'local', so make
+# committag.json say 'local' too. Prints the tag the server will report.
+align_tag() {
+  local d="$1" tag="$2"
+  if [ -n "$tag" ] && [ "$tag" != local ] && ! grep -rqF "$tag" "$d/.next/static" 2>/dev/null; then
+    # stderr: stdout is the return value (callers use $(align_tag ...)).
+    info "client bundle in $d was built without COMMIT_TAG=$tag; committag.json -> local (QFLX-53)" >&2
+    printf '{"commitTag": "local"}\n' > "$d/committag.json" || return 1
+    tag=local
+  fi
+  printf '%s\n' "$tag"
 }
 
 installed() {
@@ -902,6 +919,7 @@ do_post_upgrade() {
   [ -n "$want_major" ] && [ "$want_major" = "$have_major" ] \
     || die "Seerr $v wants Node ${want_major:-?}, installed Node is ${have_major:-?}; a Node upgrade is a manual step"
   tag="$(jget "$d/committag.json" commitTag)" && [ -n "$tag" ] || die "$d has no committag.json"
+  tag="$(align_tag "$d" "$tag")" || die "cannot align $d/committag.json with the client bundle"
   native_link_current "$SLUG" "$v" || die "cannot flip bin/current"
   [ -f "$ENV_FILE" ] || die "$ENV_FILE missing"
   listen="$(sed -n 's/^SEERR_LISTEN=//p' "$ENV_FILE" | tail -n 1)"

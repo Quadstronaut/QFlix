@@ -321,8 +321,11 @@ class Box:
         self.node_sha = hashlib.sha256(self.node_payload.read_bytes()).hexdigest()
         self.set_artifact()
 
-    def set_artifact(self, *, version="3.5.0", commit=COMMIT, with_dist=True):
+    def set_artifact(self, *, version="3.5.0", commit=COMMIT, with_dist=True, baked=None):
+        # baked: the tag `pnpm build` inlined into the client bundle (QFLX-53).
+        baked = commit if baked is None else baked
         files = {
+            "./.next/static/chunks/app.js": (f'if("{baked}"!==a.commitTag)x()\n', 0o644),
             "./package.json": (json.dumps({"name": "seerr", "version": version,
                                            "engines": {"node": "^22.19.0"}}), 0o644),
             "./committag.json": (json.dumps({"commitTag": commit}), 0o644),
@@ -633,6 +636,16 @@ def test_install_lays_out_node_artifact_env_and_stages_unit_without_enabling(box
     assert "enable" not in box.calls_text()
     assert box.container_running()
     assert box.dropin.read_text() == DROPIN                           # gate untouched
+
+
+def test_install_aligns_commit_tag_with_an_unbaked_client_bundle(box):
+    # QFLX-53: a bundle built without COMMIT_TAG baked 'local'; the server must
+    # report 'local' too or the UI loops the "Seerr Updated" modal.
+    box.set_artifact(baked="local")
+    box.installed()
+    cur = box.appdir / "bin" / "current"
+    assert json.loads((cur / "committag.json").read_text()) == {"commitTag": "local"}
+    assert "COMMIT_TAG=local" in (box.envdir / "seerr.env").read_text().splitlines()
 
 
 def test_install_refuses_version_mismatch(box):
@@ -1111,11 +1124,12 @@ def test_rollback_with_nothing_swapped_is_harmless(box):
 
 # --- --post-upgrade (tarball_swap post step) ---------------------------------------------------
 
-def _extract_build(box, version, *, engines="^22.19.0", tag="abc123"):
+def _extract_build(box, version, *, engines="^22.19.0", tag="abc123", baked=None):
     d = box.appdir / "bin" / version                           # what lifecycle's tar -x leaves
     shutil.copytree(box.appdir / "bin" / "3.5.0", d)
     (d / "package.json").write_text(json.dumps({"version": version, "engines": {"node": engines}}))
     (d / "committag.json").write_text(json.dumps({"commitTag": tag}))
+    (d / ".next" / "static" / "chunks" / "app.js").write_text(f'if("{baked or tag}"!==a.commitTag)x()')
     return d
 
 
@@ -1130,6 +1144,16 @@ def test_post_upgrade_flips_current_and_rewrites_commit_tag(box):
     assert "COMMIT_TAG=abc123" in env
     assert any(l.startswith("SEERR_LISTEN=") for l in env)     # the recorded set survives
     assert f"CONFIG_DIRECTORY={_posix(box.appdir)}" in env
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Git Bash copies `current` instead of linking")
+def test_post_upgrade_aligns_an_unbaked_client_bundle_to_local(box):
+    box.swapped()
+    d = _extract_build(box, "3.5.1", baked="local")
+    r = box.run("--post-upgrade", "3.5.1", "--execute", env={"FAKE_INWINDOW_RC": "0"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert json.loads((d / "committag.json").read_text()) == {"commitTag": "local"}
+    assert "COMMIT_TAG=local" in (box.envdir / "seerr.env").read_text().splitlines()
 
 
 def test_post_upgrade_refuses_a_directory_that_is_not_a_build(box):
