@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,11 @@ def _tree(tmp_path: Path, next_mono: str, next_real: str = "") -> Path:
     )
     (stub / "systemctl").write_text("#!/usr/bin/env bash\n" + show, newline="\n")
     (stub / "systemctl").chmod(0o755)
+    # The canary parses jobs.yaml with `python3 -c 'import yaml'`; point it at the
+    # interpreter running pytest (CI's system python3 has no PyYAML).
+    (stub / "python3").write_text(f'#!/usr/bin/env bash\nexec "{Path(sys.executable).as_posix()}" "$@"\n',
+                                  newline="\n")
+    (stub / "python3").chmod(0o755)
     return root
 
 
