@@ -308,6 +308,29 @@ def test_dormant_ucc_stop_is_allowed(tmp_path):
     assert calls == ["app-unpackerr stop"]
 
 
+def test_stop_on_converted_app_is_the_native_unit(tmp_path):
+    # Pins today's meaning of `stop` (callers depend on it); stop-dormant below
+    # is the verb that reaches the woken container (QFLX-55).
+    r, calls = _run(tmp_path, "stop", "flipped")
+    assert r.returncode == 0, r.stderr
+    assert calls == ["systemctl --user stop qflix-flipped.service"]
+
+
+def test_stop_dormant_reaches_the_container_never_the_unit(tmp_path):
+    r, calls = _run(tmp_path, "stop-dormant", "flipped")
+    assert r.returncode == 0, r.stderr
+    assert calls == ["app-flipped stop"]
+
+
+@pytest.mark.parametrize("slug", ["sonarr", "unpackerr", "bazarr2", "kometa"])
+def test_stop_dormant_refuses_anything_but_a_converted_dormant_app(tmp_path, slug):
+    # sonarr: live UCC runtime; unpackerr: class ucc (not converted);
+    # bazarr2: native with no container; kometa: no lifecycle.
+    r, calls = _run(tmp_path, "stop-dormant", slug)
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    assert calls == []
+
+
 def test_flipped_app_starts_native_never_ucc(tmp_path):
     r, calls = _run(tmp_path, "start", "flipped")
     assert r.returncode == 0, r.stderr
