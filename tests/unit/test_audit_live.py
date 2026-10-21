@@ -13,6 +13,8 @@ import datetime as _dt
 import importlib.util
 from pathlib import Path
 
+import subprocess
+
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -50,10 +52,30 @@ def test_missing_push_tokens_treats_empty_string_as_missing(live):
         "Canary Quota", "QFlix Audit Live"]
 
 
+QUOTA_OUT = ("Disk quotas for user q (uid 1):\n"
+             "     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace\n"
+             "      /dev/sdaa1 {used}  1000000 1000000            10       0       0\n")
+
+
 def test_parse_quota_pct(live):
-    assert live.parse_quota_pct(
-        "/dev/sda1  1000000  900000  100000  90% /home") == 90
+    assert live.parse_quota_pct(QUOTA_OUT.format(used="900000")) == 90
+    assert live.parse_quota_pct(QUOTA_OUT.format(used="950000*")) == 95
     assert live.parse_quota_pct("nonsense") is None
+    assert live.parse_quota_pct(QUOTA_OUT.format(used="garbage")) is None
+
+
+def test_l06_reads_quota_not_df(live, monkeypatch):
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(cmd)
+        out = QUOTA_OUT.format(used="950000") if cmd[:1] == ["quota"] else ""
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+    monkeypatch.setattr(live.subprocess, "run", fake_run)
+    result = live.collect(["QFlix Reaper"])
+    assert ["quota", "-p"] in seen and not any(c[:1] == ["df"] for c in seen)
+    assert {"class_id": "L-06", "instance_id": "home-quota",
+            "detail": "quota-95pct"} in result["findings"]
 
 
 def test_snapshot_staleness_uses_record_time_not_file_mtime(live):
@@ -81,7 +103,17 @@ def test_collect_degrades_to_unavailable_not_to_clean(live, monkeypatch, tmp_pat
     monkeypatch.setattr(live, "SECRETS_DIR", tmp_path / "no-secrets")
     monkeypatch.setattr(live, "PUSH_TOKENS", tmp_path / "no-tokens.json")
     monkeypatch.setattr(live, "KUMA_DB", tmp_path / "no-kuma.db")
+    # QFLX-67: hermetic - no quota binary here means L-06 unavailable, never
+    # a reading of whatever disk the test happens to run on.
+    real_run = live.subprocess.run
+
+    def no_quota(cmd, *a, **kw):
+        if cmd[:1] == ["quota"]:
+            raise FileNotFoundError("quota")
+        return real_run(cmd, *a, **kw)
+    monkeypatch.setattr(live.subprocess, "run", no_quota)
     result = live.collect(["QFlix Reaper"])
+    assert result["coverage"]["L-06"] == "unavailable"
     for cid in ("L-01", "L-02", "L-03", "L-04", "L-05"):
         assert result["coverage"][cid] == "unavailable"
     assert result["findings"] == []
