@@ -189,9 +189,12 @@ VERDICTS=$(printf '%s\n' "$RES" | tr -d '\r' | awk '
     # A realtime timer (OnCalendar) reports a date in NextElapseUSecRealtime and
     # 0 for monotonic; a monotonic timer (OnUnitActiveSec) reports the reverse.
     # Stuck = nothing scheduled on EITHER clock while claiming to be active.
+    # "infinity" is how systemd spells "never" on the monotonic clock (QFLX-55):
+    # after the 2026-10-16 reboot two timers sat `active (elapsed)` with
+    # NextElapseUSecMonotonic=infinity for 6.5h and this read them as scheduled.
     sched = 0
-    if (nr != "" && nr != "0" && nr != "n/a") sched = 1
-    if (nm != "" && nm != "0" && nm != "n/a") sched = 1
+    if (nr != "" && nr != "0" && nr != "n/a" && nr != "infinity") sched = 1
+    if (nm != "" && nm != "0" && nm != "n/a" && nm != "infinity") sched = 1
     if (sched) print "OK " id; else print "STUCK " id
   }
 ')
