@@ -1,6 +1,8 @@
 [Unit]
 Description=QFlix qbittorrent (native)
 After=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -10,8 +12,6 @@ EnvironmentFile=%h/.config/qflix/qbittorrent.env
 ExecStart=%h/.apps/qbittorrent/bin/current/qbittorrent-nox
 Restart=on-failure
 RestartSec=15
-StartLimitIntervalSec=600
-StartLimitBurst=5
 TimeoutStopSec=120
 Nice=5
 UMask=0002

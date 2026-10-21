@@ -235,7 +235,13 @@ case "$CLASS" in
   systemd)
     [ -n "$UNIT" ] || die2 "no lifecycle for $NAME (class systemd without unit)"
     case "$VERB" in
-      start|stop|restart) exec systemctl --user "$VERB" "$UNIT" ;;
+      # QFLX-57: StartLimitBurst in [Unit] makes systemd refuse start/restart
+      # after a crash-loop until the 600s window ends. A deliberate start/
+      # restart clears the counter first (no-op on a never-failed unit).
+      start|restart)
+        systemctl --user reset-failed "$UNIT" 2>/dev/null || true
+        exec systemctl --user "$VERB" "$UNIT" ;;
+      stop)    exec systemctl --user stop "$UNIT" ;;
       status)  exec systemctl --user is-active "$UNIT" ;;
       version) native_version "${NDIR:-$SLUG}"; exit $? ;;
       upgrade) exec "$HOME/bin/manitoba-maint" upgrade "$NAME" "$@" ;;

@@ -235,6 +235,8 @@ PATH and hides which path ran.
 [Unit]
 Description=QFlix <slug> (native)
 After=network-online.target
+StartLimitIntervalSec=600   # [Unit] key (QFLX-57); under [Service] it is ignored
+StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=%h/.apps/<slug>
@@ -243,8 +245,6 @@ EnvironmentFile=%h/.config/qflix/<slug>.env
 ExecStart=%h/.apps/<slug>/bin/current/<exe> <data-dir flag> <bind/port flags>
 Restart=on-failure
 RestartSec=15
-StartLimitIntervalSec=600
-StartLimitBurst=5
 TimeoutStopSec=60        # 120 for DB apps
 Nice=5
 UMask=0002
