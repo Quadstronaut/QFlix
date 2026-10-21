@@ -151,6 +151,7 @@ CANARY_HEARTBEAT_S_BY_SCHEDULE = {
     "every-15min": 1500,   # 15min + jitter + margin
     "every-30min": 2400,   # 30min + jitter + margin
     "hourly": 4200,        # 1h + RandomizedDelaySec (<=240s) + margin
+    "every-6h": 23400,     # 6h + RandomizedDelaySec (120s) + 28min margin (seerr-commit-tag)
     "daily-0430": 90000,   # 24h + buffer
     "daily": 90000,        # 24h + RandomizedDelaySec + buffer (arr-plex-parity)
     # weekly-mon-send: the newsletter-digest canary pushes only on Mondays (3x:

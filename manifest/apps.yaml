@@ -1921,3 +1921,17 @@ canaries:
     kuma_monitor: "Canary Seerr Arr Parity"
     script: "scripts/canaries/seerr-arr-parity.sh"
     schedule: "hourly"
+  seerr-commit-tag:
+    # Added 2026-10-20 (QFLX-58). Seerr's StatusChecker opens the "Seerr
+    # Updated - Reload Seerr" modal whenever the commitTag baked into the
+    # client bundle differs from /api/v1/status commitTag; reloading serves
+    # the same bundle, so the modal loops every 60s. QFLX-53 was exactly that
+    # and was reported by a member, never detected. This canary reads the
+    # server tag from the status endpoint and the client tag from the literal
+    # compared against `.commitTag` in .next/static, and reds on any
+    # difference. Unreadable either side = exit 2, never green. Read-only.
+    # Own timer + own Kuma push monitor (born mute: wire channels 1+2 after
+    # bootstrap).
+    kuma_monitor: "Canary Seerr Commit Tag"
+    script: "scripts/canaries/seerr-commit-tag.sh"
+    schedule: "every-6h"
