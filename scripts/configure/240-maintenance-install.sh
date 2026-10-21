@@ -293,6 +293,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/304-native-radarr2-install.sh \
     scripts/maint/native_sanitize.py \
     scripts/configure/55-kometa-install.sh \
+    scripts/configure/59b-plex-welcome-library.py \
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
     scripts/configure/305-native-sonarr2-install.sh \
@@ -493,6 +494,10 @@ chmod +x ~/scripts/canaries/*.sh
 # kometa-deploy-drift canary reads this install script's heredoc to know
 # what library names should be deployed — needs the file resident.
 cp -f   "$STG"/scripts/configure/55-kometa-install.sh ~/scripts/configure/55-kometa-install.sh
+# 59b creates the Welcome/Test floor sections and is run ON THE BOX inside the
+# plexapi venv (its docstring + the entitlement runbook). A box-run script is
+# shipped, not hand-copied, or deploy-drift reads it as deploy-unshipped (QFLX-52).
+cp -f   "$STG"/scripts/configure/59b-plex-welcome-library.py ~/scripts/configure/59b-plex-welcome-library.py
 # THIS SCRIPT, copied to the box on purpose. It is workstation-side and nothing
 # on the box ever runs it -- but a copy has been resident under ~/scripts since
 # some past manual scp, and deploy-drift.sh walks EVERY *.sh under ~/scripts and

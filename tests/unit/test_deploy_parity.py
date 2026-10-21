@@ -197,7 +197,9 @@ def test_real_installers_ship_the_box_run_configure_scripts_only():
                      for d in deploy_parity.INSTALLER_DIRS if (REPO / d).is_dir()
                      for p in sorted((REPO / d).rglob("*")) if p.is_file())
     shipped = deploy_parity.shipped_configure_from_text(text)
+    # 59b is box-run (plexapi venv, entitlement runbook): shipped, or it reads unshipped.
     assert {"240-maintenance-install.sh", "55-kometa-install.sh",
+            "59b-plex-welcome-library.py",
             "300-native-unpackerr-install.sh", "312-native-postgres-install.sh"} <= shipped
     assert not shipped & {"80-vlogs-install.sh", "90-sabnzbd-usenet-install.sh",
                           "91-nginx-root-to-dash.sh"}
