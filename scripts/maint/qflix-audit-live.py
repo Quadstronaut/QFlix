@@ -39,7 +39,6 @@ import argparse
 import datetime as _dt
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -156,10 +155,22 @@ def missing_push_tokens(expected: list[str], tokens: dict) -> list[str]:
                   if not str(tokens.get(name) or "").strip())
 
 
-def parse_quota_pct(df_line: str) -> int | None:
-    """L-06. Accepts a `df -P` style line; returns the used percentage."""
-    m = re.search(r"(\d+)%", df_line or "")
-    return int(m.group(1)) if m else None
+def parse_quota_pct(quota_out: str) -> int | None:
+    """L-06. Parses `quota -p` output; returns used % of the per-user limit.
+
+    QFLX-67: this used to read `df -P ~`, which on Ultra.cc is the SHARED
+    filesystem every tenant fills, not this slot's hard quota. Same parse as
+    scripts/canaries/quota.sh: the /dev/ line, blocks (col 2, a trailing '*'
+    once grace starts) over the limit (col 3), both 1 KiB units."""
+    for line in (quota_out or "").splitlines():
+        cols = line.split()
+        if len(cols) >= 3 and cols[0].startswith("/dev/"):
+            try:
+                used, limit = int(cols[1].rstrip("*")), int(cols[2])
+            except ValueError:
+                return None
+            return int(used * 100 / limit) if limit > 0 else None
+    return None
 
 
 def snapshot_is_stale(payload: dict, now: _dt.datetime, max_age_min: int) -> bool:
@@ -396,13 +407,13 @@ def collect(expected_monitors: list[str]) -> dict:
         coverage["L-05"] = "unavailable"
 
     # L-06 ---------------------------------------------------------------
-    proc = subprocess.run(["df", "-P", str(Path.home())],
-                          capture_output=True, text=True, check=False)
-    pct = None
-    if proc.returncode == 0:
-        lines = proc.stdout.strip().splitlines()
-        if len(lines) >= 2:
-            pct = parse_quota_pct(lines[1])
+    try:
+        proc = subprocess.run(["quota", "-p"], capture_output=True, text=True,
+                              check=False, timeout=30)
+        # quota exits non-zero once over the soft limit, so parse regardless.
+        pct = parse_quota_pct(proc.stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        pct = None
     if pct is None:
         coverage["L-06"] = "unavailable"
     else:
