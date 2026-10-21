@@ -171,10 +171,16 @@ native_render_unit() {
     %h/*|/*) cmd="$exe" ;;
     *)       cmd="%h/.apps/$slug/bin/current/$exe" ;;
   esac
+  # QFLX-57: StartLimit* are [Unit] keys (systemd >= 230). Under [Service]
+  # systemd logs "Unknown key ... ignoring" and restart rate limiting is OFF:
+  # a crash-looping app restarts every RestartSec forever on a shared slot.
+  # tests/unit/test_unit_key_sections.py pins every key to its section.
   cat <<EOF
 [Unit]
 Description=QFlix $slug (native)
 After=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -184,8 +190,6 @@ EnvironmentFile=%h/.config/qflix/$slug.env
 ExecStart=${cmd} ${pre}${args}
 Restart=on-failure
 RestartSec=15
-StartLimitIntervalSec=600
-StartLimitBurst=5
 TimeoutStopSec=$stop
 ${kill}Nice=5
 UMask=0002

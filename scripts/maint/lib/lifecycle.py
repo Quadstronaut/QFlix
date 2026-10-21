@@ -231,6 +231,15 @@ def _ucc_status(app: App, timeout_s: float) -> LifecycleResult:
 
 def _systemd_verb(app: App, verb: str, timeout_s: float) -> LifecycleResult:
     unit = app.raw.get("unit") or ""
+    if verb in ("start", "restart"):
+        # QFLX-57: native units carry StartLimitBurst=5/StartLimitIntervalSec=600
+        # in [Unit]. Once a crash-loop trips it, systemd refuses EVERY start/
+        # restart ("start request repeated too quickly") until the window ends,
+        # so pusher recovery would burn its 3 attempts and page. reset-failed
+        # clears the start-limit counter; a never-failed unit just ignores it.
+        # The burst still throttles systemd's OWN Restart= loop - only a
+        # deliberate recovery verb bypasses it. Same move as _cron_start_service.
+        _run(["systemctl", "--user", "reset-failed", unit], timeout_s)
     return _run(["systemctl", "--user", verb, unit], timeout_s)
 
 
@@ -603,8 +612,8 @@ def _restart_after_upgrade(app: App, timeout_s: float) -> LifecycleResult:
         r = _run(["systemctl", "--user", "daemon-reload"], timeout_s)
         if not r.ok:
             return r
-        unit = app.raw.get("unit") or ""
-        return _run(["systemctl", "--user", "restart", unit], timeout_s)
+        # Through _systemd_verb so a start-limit-hit unit is reset-failed first.
+        return _systemd_verb(app, "restart", timeout_s)
     # ucc: `app-<slug> upgrade` recreates and starts the container itself — no-op here
     # cron, library: no service to restart
     return _ok()
