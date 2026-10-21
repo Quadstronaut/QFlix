@@ -74,6 +74,9 @@ jobs:
             'deb http://archive.debian.org/debian-security bullseye-security main' \
             > /etc/apt/sources.list
           rm -f /etc/apt/sources.list.d/*
+          # QFLX-54: archive.debian.org 404'd libstdc++-10-dev for one run
+          # (2026-10-15) and served it again by 10-21. Retry transient misses.
+          printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-retries
           apt-get -o Acquire::Check-Valid-Until=false update -qq
           apt-get install -y -qq --no-install-recommends ca-certificates curl xz-utils \
             python3 make g++ >/dev/null
