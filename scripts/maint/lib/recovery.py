@@ -260,6 +260,13 @@ def trigger_async(app: App, *, manifest: Optional[Manifest] = None) -> str:
         quiet hours); intentionally down right now, so do NOT revive it. Covers
         EVERY recovery entry point (pusher, deep_check, kuma webhook) at the
         chokepoint, not just the pusher's push-up branch.
+      - "suppressed"          — suppression.recovery_suppressed(app): the app is
+        in the push-suppress registry (knowingly down, e.g. a pending-swap app
+        whose UCC container must stay dormant -- I-9 "nothing wakes a dormant
+        app") or UCC maintenance gates its `app-* start`. Checked HERE, not just
+        in the pusher, so deep_check / the webhook / any future caller cannot
+        restart it either (QFLX-64). The pusher keeps its own earlier check for
+        its richer Kuma msg; this one is the backstop.
       - "permanently_failed"  — prior 3-attempt loop exhausted; caller must
         clear_permanent_failure() once the probe self-recovers
 
@@ -269,6 +276,10 @@ def trigger_async(app: App, *, manifest: Optional[Manifest] = None) -> str:
         return "parked"
     if suppression.in_pause_window(app):
         return "paused"
+    # Fails OPEN (False on any error) inside recovery_suppressed, so a corrupt
+    # registry never silences recovery of a genuinely-down app.
+    if suppression.recovery_suppressed(app):
+        return "suppressed"
     if not _is_recoverable(app):
         return "not_recoverable"
     if is_permanently_failed(app.name):
@@ -340,6 +351,11 @@ def run(app_name: str, *, manifest: Optional[Manifest] = None) -> dict:
     Always writes outcome to state via state.record().
     Always notifies via notify.notify().
     Never raises.
+
+    Deliberately UNGATED by suppression: this is the raw loop that
+    trigger_async's worker runs after the gate, and the operator's explicit
+    `manitoba-maint recover <app> --force`. Automatic callers must go through
+    trigger_async; the manual CLI gates itself (cli._cmd_recover, QFLX-64).
     """
     if manifest is None:
         try:
