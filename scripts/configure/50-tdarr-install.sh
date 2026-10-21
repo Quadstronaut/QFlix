@@ -132,7 +132,26 @@ sshm "cat > ~/.apps/tdarr/configs/Tdarr_Node_Config.json" <<JSON
 JSON
 
 # ── Step 6: systemd units (server + node) ──────────────────────────────────
-sshm "bash -s" <<'UNITSCRIPT'
+# QFLX-61: every remote step below is its OWN top-level local sshm call. This
+# step used to be one big remote `bash -s` heredoc with a second
+# `sshm "bash -s" <<'SHIMSCRIPT'` nested inside it. The inner heredoc is just
+# text to the local shell, so it ran ON THE BOX, where `sshm` (a local function
+# from scripts/lib/ssh.sh) does not exist: exit 127 under the remote `set -e`,
+# the node unit was never rewritten, nothing was reloaded or restarted, and the
+# local `set -e` killed the installer here. Never nest a local helper inside a
+# remote heredoc; tests/unit/test_configure_no_nested_remote_ssh.py guards it.
+
+# 6a: ship the box-side helpers the units and the shim install below USE.
+# Both were referenced from ~/scripts/ops but no installer ever shipped them,
+# so a fresh slot got a server unit whose ExecStartPre did not exist (start
+# refused) and a shim install with nothing to copy.
+sshm 'mkdir -p ~/scripts/ops ~/.config/systemd/user'
+scpm_to "$HERE/../ops/tdarr-port-drain.sh"     '~/scripts/ops/tdarr-port-drain.sh' >/dev/null
+scpm_to "$HERE/../ops/ffmpeg-threadcap-shim.sh" '~/scripts/ops/ffmpeg-threadcap-shim.sh' >/dev/null
+sshm 'chmod +x ~/scripts/ops/tdarr-port-drain.sh ~/scripts/ops/ffmpeg-threadcap-shim.sh'
+
+# 6b: server unit.
+sshm "bash -s" <<'SERVERUNIT'
 set -euo pipefail
 cat > ~/.config/systemd/user/tdarr-server.service <<'UNIT'
 [Unit]
@@ -173,8 +192,9 @@ StandardError=append:%h/.apps/tdarr/logs/server.err
 [Install]
 WantedBy=default.target
 UNIT
+SERVERUNIT
 
-# --- ffmpeg thread cap ------------------------------------------------------
+# 6c: ffmpeg thread cap ------------------------------------------------------
 # Install scripts/ops/ffmpeg-threadcap-shim.sh AS Tdarr's ffmpeg binary, in
 # BOTH bundles. Same fragility class as the worker1.js null-guard patch above:
 # a Tdarr upgrade unzips over node_modules and removes it, so this is
@@ -198,8 +218,12 @@ for D in "$R/.apps/tdarr/Tdarr_Node/node_modules/ffmpeg-static" \
   if [ ! -e "$D/ffmpeg.real" ]; then
     mv "$D/ffmpeg" "$D/ffmpeg.real"
   fi
-  cp "$R/scripts/ops/ffmpeg-threadcap-shim.sh" "$D/ffmpeg"
-  chmod +x "$D/ffmpeg" "$D/ffmpeg.real"
+  # Copy beside, then rename over: the node runs 24/7, and `cp` straight over
+  # a bash script that a live job is still reading rewrites it under bash's
+  # feet. rename(2) swaps the inode atomically; the old reader keeps the old one.
+  cp "$R/scripts/ops/ffmpeg-threadcap-shim.sh" "$D/ffmpeg.qflix-new"
+  chmod +x "$D/ffmpeg.qflix-new" "$D/ffmpeg.real"
+  mv -f "$D/ffmpeg.qflix-new" "$D/ffmpeg"
   head -3 "$D/ffmpeg" | grep -q QFLIX-FFMPEG-THREADCAP     || { echo "shim copied to $D but marker absent" >&2; exit 1; }
 done
 # Prove the shim did not brick the binary BEFORE the node ever calls it — a
@@ -211,6 +235,9 @@ case "$V" in
 esac
 SHIMSCRIPT
 
+# 6d: node unit, then ONE daemon-reload covering both units, enable, restart.
+sshm "bash -s" <<'NODEUNIT'
+set -euo pipefail
 cat > ~/.config/systemd/user/tdarr-node.service <<'UNIT'
 [Unit]
 Description=Tdarr Node (transcoding worker)
@@ -238,7 +265,7 @@ systemctl --user enable tdarr-server.service tdarr-node.service
 systemctl --user restart tdarr-server.service
 sleep 5
 systemctl --user restart tdarr-node.service
-UNITSCRIPT
+NODEUNIT
 sleep 5
 sshm 'systemctl --user is-active tdarr-server.service' | grep -q active || die "tdarr-server not active"
 sshm 'systemctl --user is-active tdarr-node.service'   | grep -q active || die "tdarr-node not active"
