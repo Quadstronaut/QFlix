@@ -160,8 +160,10 @@ def test_systemd_start_invokes_systemctl_user():
     with patch("subprocess.run", return_value=cp) as mock_run:
         result = start(app)
 
-    args = mock_run.call_args[0][0]
-    assert args == ["systemctl", "--user", "start", "conjurr.service"]
+    # QFLX-57: reset-failed BEFORE start so a start-limit-hit unit recovers.
+    cmds = [c.args[0] for c in mock_run.call_args_list]
+    assert cmds == [["systemctl", "--user", "reset-failed", "conjurr.service"],
+                    ["systemctl", "--user", "start", "conjurr.service"]]
     assert result.ok is True
 
 
@@ -184,8 +186,34 @@ def test_systemd_restart_invokes_systemctl_user():
     with patch("subprocess.run", return_value=cp) as mock_run:
         result = restart(app)
 
-    args = mock_run.call_args[0][0]
-    assert args == ["systemctl", "--user", "restart", "conjurr.service"]
+    # QFLX-57: reset-failed BEFORE restart so a start-limit-hit unit recovers.
+    cmds = [c.args[0] for c in mock_run.call_args_list]
+    assert cmds == [["systemctl", "--user", "reset-failed", "conjurr.service"],
+                    ["systemctl", "--user", "restart", "conjurr.service"]]
+    assert result.ok is True
+
+
+def test_systemd_stop_does_not_reset_failed():
+    app = _systemd_app(unit="conjurr.service")
+    cp = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    with patch("subprocess.run", return_value=cp) as mock_run:
+        stop(app)
+
+    assert [c.args[0] for c in mock_run.call_args_list] == [
+        ["systemctl", "--user", "stop", "conjurr.service"]]
+
+
+def test_systemd_start_ignores_reset_failed_exit():
+    # reset-failed on a never-failed/unloaded unit can exit nonzero; the start
+    # result alone decides ok.
+    app = _systemd_app(unit="conjurr.service")
+    bad = CompletedProcess(args=[], returncode=1, stdout="", stderr="not loaded")
+    good = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=[bad, good]):
+        result = start(app)
+
     assert result.ok is True
 
 
@@ -379,7 +407,9 @@ def test_systemd_git_checkout_upgrade_runs_fetch_checkout_postSteps_restart():
     assert any("checkout" in " ".join(c) and "v4.1.0" in " ".join(c) for c in cmds), cmds
     assert any(".venv/bin/pip install" in " ".join(c) for c in cmds), cmds
     assert ["systemctl", "--user", "daemon-reload"] in cmds
-    assert ["systemctl", "--user", "restart", "conjurr.service"] in cmds
+    # Post-upgrade restart also clears a tripped start limit first (QFLX-57).
+    i = cmds.index(["systemctl", "--user", "restart", "conjurr.service"])
+    assert cmds[i - 1] == ["systemctl", "--user", "reset-failed", "conjurr.service"]
 
 
 # ---- systemd tarball_swap upgrade -----------------------------------------

@@ -89,6 +89,7 @@ case "$(basename "$0")" in
       echo "LISTEN 0 4096 127.0.0.1:$p 0.0.0.0:*"
     done ;;
   systemctl)
+    if [ "$2" = reset-failed ]; then exit "${RESET_FAILED_RC:-0}"; fi
     if [ "$2" = is-active ]; then echo active; fi ;;
 esac
 exit 0
@@ -99,7 +100,7 @@ _STUBS = ("app-sonarr", "app-unpackerr", "app-postgres", "app-flipped", "app-ngi
 
 
 def _env(tmp_path: Path, *, manifest: str | None = MANIFEST, ss_listen: str = "",
-         profile: str | None = None, stubs=_STUBS) -> dict:
+         profile: str | None = None, stubs=_STUBS, reset_failed_rc: int = 0) -> dict:
     home = tmp_path / "home"
     (home / ".opt" / "maint").mkdir(parents=True, exist_ok=True)
     (home / "bin").mkdir(parents=True, exist_ok=True)
@@ -128,6 +129,7 @@ def _env(tmp_path: Path, *, manifest: str | None = MANIFEST, ss_listen: str = ""
         "PATH": binp.as_posix() + os.pathsep + env.get("PATH", ""),
         "STUB_LOG": (tmp_path / "argv.log").as_posix(),
         "SS_LISTEN": ss_listen,
+        "RESET_FAILED_RC": str(reset_failed_rc),
         "APPCTL_PYTHON": Path(sys.executable).as_posix(),
         "APPCTL_LIB": LIB.as_posix(),
         "APPCTL_SECRETS_DIR": secrets.as_posix(),
@@ -161,11 +163,27 @@ def test_ucc_extra_args_pass_through(tmp_path):
     assert calls == ["app-sonarr upgrade -p pw"]
 
 
-@pytest.mark.parametrize("verb", ["start", "stop", "restart"])
-def test_systemd_verbs_dispatch_to_systemctl_user(tmp_path, verb):
+@pytest.mark.parametrize("verb", ["start", "restart"])
+def test_systemd_start_restart_reset_failed_first(tmp_path, verb):
+    # QFLX-57: StartLimitBurst in [Unit] refuses starts after a crash-loop
+    # until the window ends; recovery must clear the counter BEFORE the verb.
     r, calls = _run(tmp_path, verb, "bazarr2")
     assert r.returncode == 0, r.stderr
-    assert calls == ["systemctl --user %s bazarr2.service" % verb]
+    assert calls == ["systemctl --user reset-failed bazarr2.service",
+                     "systemctl --user %s bazarr2.service" % verb]
+
+
+def test_systemd_stop_does_not_reset_failed(tmp_path):
+    r, calls = _run(tmp_path, "stop", "bazarr2")
+    assert r.returncode == 0, r.stderr
+    assert calls == ["systemctl --user stop bazarr2.service"]
+
+
+def test_systemd_start_proceeds_when_reset_failed_fails(tmp_path):
+    # reset-failed on a never-loaded unit exits nonzero; it must not block start.
+    r, calls = _run(tmp_path, "start", "bazarr2", reset_failed_rc=1)
+    assert r.returncode == 0, r.stderr
+    assert calls[-1] == "systemctl --user start bazarr2.service"
 
 
 def test_systemd_status_is_is_active(tmp_path):
@@ -311,7 +329,8 @@ def test_dormant_ucc_stop_is_allowed(tmp_path):
 def test_flipped_app_starts_native_never_ucc(tmp_path):
     r, calls = _run(tmp_path, "start", "flipped")
     assert r.returncode == 0, r.stderr
-    assert calls == ["systemctl --user start qflix-flipped.service"]
+    assert calls == ["systemctl --user reset-failed qflix-flipped.service",
+                     "systemctl --user start qflix-flipped.service"]
 
 
 @pytest.mark.parametrize("slug,rc", [("flipped", 0), ("bazarr2", 0), ("unpackerr", 0),
