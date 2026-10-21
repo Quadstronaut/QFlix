@@ -12,8 +12,8 @@ class DestinationTest {
     }
 
     @Test
-    fun `three destinations, labelled for the drawer`() {
-        assertEquals(listOf("Dashboard", "Apps", "stARR"),
+    fun `four destinations, labelled for the drawer`() {
+        assertEquals(listOf("Dashboard", "Apps", "stARR", "Fix"),
             Destination.values().map { it.label })
     }
 }
