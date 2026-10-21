@@ -1,0 +1,17 @@
+[Unit]
+Description=Manitoba canary - Seerr client/server commitTag parity (every 6h)
+
+[Timer]
+# Every 6h, not hourly: the tags only move on a deploy/upgrade. Hours
+# 01/07/13/19 miss every fixed-hour daily job here (02,08,14,20 audit-live,
+# the 03-06 UTC dailies, the Monday 14-15 UTC send); minute :01 is not taken
+# by any fixed minute or N/10, N/15, N/30 step in this directory. Never :00 -
+# see the 2026-09-12 Kuma connection-pool incident in
+# manitoba-maint-canary-vlogs-stall.timer. Calendar, not OnBootSec, so a
+# reboot cannot leave it unscheduled (QFLX-55).
+OnCalendar=*-*-* 01,07,13,19:01:00 UTC
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

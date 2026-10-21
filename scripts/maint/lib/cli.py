@@ -99,6 +99,7 @@ _CANARY_INTERVAL_MIN = {
     "every-15min": 15,
     "every-30min": 30,
     "hourly": 60,
+    "every-6h": 360,
     "daily-0430": 1440,
     "daily": 1440,
     # weekly-mon-send (newsletter-digest canary): 1.5x this = 15120min =
