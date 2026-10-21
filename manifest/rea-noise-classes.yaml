@@ -1242,6 +1242,40 @@ classes:
       non-season skip exception still pages.
     added: 2026-09-26
 
+  - id: arr-upstream-metadata-dns-eagain
+    title: '*arr transient DNS EAI_AGAIN ("Resource temporarily unavailable") against the vendor metadata hosts'
+    rx: '(?is)\A(?!.*\|(?:error|fatal)\|.*\|(?:error|fatal)\|)(?!.*\b(?:[a-z]+\.)*(?!(?:httprequest|socket|web)exception\b)[a-z]+exception\b).*(?:(?:resource temporarily unavailable|socketexception \(11\)|eai_again).{0,200}?(?:(?:services|skyhook)\.sonarr\.tv|\bradarr\.video|\bservarr\.com)|(?:(?:services|skyhook)\.sonarr\.tv|\bradarr\.video|\bservarr\.com).{0,200}?(?:resource temporarily unavailable|socketexception \(11\)|eai_again))'
+    field: null
+    prompt_clause: '*arr "Resource temporarily unavailable (services.sonarr.tv:443)" / SocketException (11) / EAI_AGAIN DNS failures against the vendor metadata hosts services.sonarr.tv, skyhook.sonarr.tv, *.radarr.video or *.servarr.com'
+    why: >-
+      Paged 2026-10-16 23:13 as sonarr:task-error. The full NLog record is
+      "|Error|TaskExtensions|Task Error" followed by "System.Net.Http.
+      HttpRequestException: Resource temporarily unavailable
+      (services.sonarr.tv:443) ---> System.Net.Sockets.SocketException (11)":
+      errno 11 / EAI_AGAIN is the resolver saying TRY AGAIN, during post-reboot
+      load, against the *arr VENDOR'S metadata cloud. Nothing on this box is
+      broken, the next scheduled pass resolves, it self-cleared. ANCHORED TO
+      CAUSE + HOST TOGETHER (<=200 chars apart, either order): a DNS blip
+      against an indexer, a download client or anything local is not this
+      class and still pages, and so does NXDOMAIN ("Name or service not
+      known" = a real resolver/config break, not a retry). TWO FAIL-OPEN
+      GUARDS on the joined haystack: (1) a second |Error|/|Fatal| NLog header
+      means the model bundled another record - page; (2) any *Exception type
+      other than HttpRequest/Socket/WebException (SQLiteException "database
+      is locked", NullReferenceException, ...) means a different cause sits
+      in the same finding - page. DELIBERATELY NOT "TaskExtensions|Task
+      Error": that header fronts every unhandled *arr task failure. HONEST
+      LIMIT: the arr_logs collector greps "|Error|" lines only, so the
+      exception line on the NEXT line never reaches the models; a finding
+      whose only evidence is the bare header carries no cause and still
+      pages. This class fires when the cause is quoted (excerpt, summary or
+      signature) - the shape a collector that ships the record's first
+      exception line would produce. WHO OWNS THE REAL VERSION: a sustained
+      upstream outage shows as Sonarr/Radarr health warnings and Kuma *arr
+      canaries; local DNS failing for real breaks indexers too, which pages
+      under their own classes.
+    added: 2026-10-20
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1377,6 +1411,9 @@ prompt_segments:
   - index: 42
     marker: 'Plex "Exception caught determining whether we could skip ''<Show>/Season N'' ~ Null value not allowed for this type" scanner lines'
     classes: [plex-season-skip-null-value]
+  - index: 43
+    marker: '*arr "Resource temporarily unavailable (services.sonarr.tv:443)" / SocketException (11) / EAI_AGAIN DNS failures against the vendor metadata hosts services.sonarr.tv, skyhook.sonarr.tv, *.radarr.video or *.servarr.com'
+    classes: [arr-upstream-metadata-dns-eagain]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths

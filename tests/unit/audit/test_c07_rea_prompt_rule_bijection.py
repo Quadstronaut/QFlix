@@ -517,6 +517,74 @@ def test_the_2026_08_20_classes_do_not_eat_real_faults(ledgers):
             cid + " swallows a live *arr Error")
 
 
+def test_arr_upstream_metadata_dns_eagain_is_cause_scoped(ledgers):
+    """QFLX-59. Paged 2026-10-16 23:13 (sonarr:task-error). The rule has no
+    `field`, so it runs on signature + summary + excerpt JOINED - exactly the
+    haystack Test-IsNoiseFinding builds - and it must key on the CAUSE, never on
+    the "TaskExtensions|Task Error" header, which fronts every *arr task crash."""
+    by = {c["id"]: c for c in ledgers.rea["classes"]}
+    c = by["arr-upstream-metadata-dns-eagain"]
+    assert c["field"] is None
+    rx = re.compile(c["rx"])  # compiles under Python re, not only .NET
+
+    def hay(sig, summ, exc):  # Test-IsNoiseFinding: @(sig, sum, exc) -join ' '
+        return " ".join((sig, summ, exc))
+
+    header = "2026-10-16 23:13:31.6|Error|TaskExtensions|Task Error"
+    cause = ("[v4.0.20.3014] System.Net.Http.HttpRequestException: Resource "
+             "temporarily unavailable (services.sonarr.tv:443)")
+    inner = (" ---> System.Net.Sockets.SocketException (11): Resource "
+             "temporarily unavailable")
+
+    # The real 23:13 record, verbatim, as a model quoting it would emit it.
+    assert rx.search(hay("sonarr:task-error", "Sonarr task error occurred "
+                         "while processing feed", "\n".join((header, cause, inner))))
+    # Cause line alone; cause in the model's prose; sibling vendor hosts.
+    assert rx.search(hay("sonarr:dns", "upstream lookup failed", cause))
+    assert rx.search(hay("sonarr:dns", "EAI_AGAIN resolving services.sonarr.tv", header))
+    for host in ("api.radarr.video", "radarr.video", "skyhook.sonarr.tv",
+                 "prowlarr.servarr.com"):
+        assert rx.search("HttpRequestException: Resource temporarily "
+                         "unavailable (" + host + ":443)"), host
+
+    # HONEST LIMIT, pinned: the bare header carries no cause. It must PAGE -
+    # suppressing it would blanket-mute every unhandled *arr task failure.
+    assert not rx.search(hay("sonarr:task-error", "Sonarr task error occurred "
+                             "while processing feed", header))
+
+    # Same header, different cause: must page.
+    for other in (
+            "[v4.0.20.3014] System.NullReferenceException: Object reference "
+            "not set to an instance of an object.",
+            "[v4.0.20.3014] System.Data.SQLite.SQLiteException (0x800007AF): "
+            "database is locked",
+            "[v4.0.20.3014] System.Threading.Tasks.TaskCanceledException: "
+            "The request was canceled due to the configured HttpClient.Timeout"):
+        assert not rx.search(hay("sonarr:task-error", "task error",
+                                 header + "\n" + other)), other
+
+    # Bundled finding: the DNS record PLUS a second cause must page, whether
+    # the second cause shows as another exception type or another NLog header.
+    assert not rx.search(hay("s", "x", "\n".join((
+        header, cause, "System.Data.SQLite.SQLiteException (0x800007AF): "
+        "database is locked"))))
+    assert not rx.search(hay("s", "x", "\n".join((
+        header, cause, "2026-10-16 23:14:00.1|Error|Database|database is locked"))))
+
+    # Cause without a vendor host, or a vendor host without the retry errno.
+    assert not rx.search("HttpRequestException: Resource temporarily "
+                         "unavailable (api.nzbgeek.info:443)"), "indexer DNS pages"
+    assert not rx.search("HttpRequestException: Resource temporarily "
+                         "unavailable (localhost:17007)"), "local DNS pages"
+    assert not rx.search("HttpRequestException: Name or service not known "
+                         "(services.sonarr.tv:443)"), "NXDOMAIN is not a retry"
+    assert not rx.search("Resource temporarily unavailable "
+                         "(notradarr.video:443)"), "host anchor is a label boundary"
+    # And the prompt's explicit MUST-report class.
+    assert not rx.search("Unknown system error -122: Disk quota exceeded "
+                         "writing /data/Movies services.sonarr.tv")
+
+
 def test_the_ps1_cross_check_now_really_runs_in_ci(ctx, repo, report):
     """This test used to be named for the opposite fact.
 
