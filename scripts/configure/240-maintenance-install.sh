@@ -219,6 +219,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-arr-plex-parity.timer \
     scripts/maint/systemd/manitoba-maint-canary-seerr-arr-parity.service \
     scripts/maint/systemd/manitoba-maint-canary-seerr-arr-parity.timer \
+    scripts/maint/systemd/manitoba-maint-canary-seerr-commit-tag.service \
+    scripts/maint/systemd/manitoba-maint-canary-seerr-commit-tag.timer \
     scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.service \
     scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.timer \
     scripts/maint/systemd/manitoba-maint-canary-cron-liveness.service \
@@ -276,6 +278,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/tdarr-transcode-stall.sh \
     scripts/canaries/arr-plex-parity.sh \
     scripts/canaries/seerr-arr-parity.sh \
+    scripts/canaries/seerr-commit-tag.sh \
     scripts/canaries/stream-cap-liveness.sh \
     scripts/canaries/cron-liveness.sh \
     scripts/canaries/entitlement-service.sh \
@@ -816,6 +819,8 @@ for unit in \
     manitoba-maint-canary-arr-plex-parity.timer \
     manitoba-maint-canary-seerr-arr-parity.service \
     manitoba-maint-canary-seerr-arr-parity.timer \
+    manitoba-maint-canary-seerr-commit-tag.service \
+    manitoba-maint-canary-seerr-commit-tag.timer \
     manitoba-maint-canary-stream-cap-liveness.service \
     manitoba-maint-canary-stream-cap-liveness.timer \
     manitoba-maint-canary-cron-liveness.service \
@@ -1145,6 +1150,11 @@ systemctl --user enable --now manitoba-maint-canary-arr-plex-parity.timer
 # (spec: docs/superpowers/specs/2026-09-12-reaper-d-per-file-retention-spec.md
 # section 4, S-1..S-3). Never mutates Seerr or any *arr.
 systemctl --user enable --now manitoba-maint-canary-seerr-arr-parity.timer
+# Seerr client/server commitTag parity (QFLX-58) - every 6h. The tag baked into
+# the client bundle must equal /api/v1/status commitTag, or every member gets
+# the "Seerr Updated / Reload" modal every 60s (QFLX-53: member-reported, never
+# detected). It only moves on a deploy/upgrade, so 6h is plenty. Read-only.
+systemctl --user enable --now manitoba-maint-canary-seerr-commit-tag.timer
 # Stream-cap cron liveness — every 15 min. The per-member concurrent-stream cap
 # is enforced by two CRONTAB entries (kill_stream.sh --max 4, stream_stats.sh),
 # a third scheduling plane neither the C-01 timer ledger nor timer-liveness
@@ -1321,7 +1331,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall vlogs-time-integrity qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched plex-intro-markers newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity seerr-arr-parity; do
+for canary in movie anime mobile-ux vlogs-stall vlogs-time-integrity qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched plex-intro-markers newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity seerr-arr-parity seerr-commit-tag; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
