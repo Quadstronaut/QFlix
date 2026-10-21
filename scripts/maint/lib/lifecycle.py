@@ -404,12 +404,25 @@ def _validate_max(app: App, target_version: str) -> None:
         )
 
 
+# `app-<slug> upgrade` returns once the container is recreated, but the app
+# inside (Plex scanning its DB, an arr running migrations) can take minutes to
+# answer. A 15s window would log a good ucc upgrade as upgrade_failed.
+_UCC_POST_HEALTH_MIN_WINDOW_S = 180.0
+
+
+def _post_health_window_s(app: App, timeout_s: float) -> float:
+    window = timeout_s * 3
+    if app.class_ == "ucc":
+        window = max(window, _UCC_POST_HEALTH_MIN_WINDOW_S)
+    return window
+
+
 def _post_health_probe(app: App) -> tuple[bool, str]:
-    """Probe health repeatedly within health_timeout_s * 3 window."""
+    """Probe health repeatedly within health_timeout_s * 3 window (ucc: >=180s)."""
     from lib import health as health_mod
 
     timeout_s = float(app.defaults.get("health_timeout_s", 5.0))
-    window = timeout_s * 3
+    window = _post_health_window_s(app, timeout_s)
     deadline = time.monotonic() + window
     last_reason = "no probe"
     while time.monotonic() < deadline:
@@ -716,8 +729,12 @@ def upgrade(
         _record_state(app, "upgraded", target, "ok")
         return _ok(f"upgraded to {target}")
 
-    # Health failed — try rollback if we have a previous version
-    if _allow_rollback and previous_version:
+    # Health failed — try rollback if we have a previous version. Never for ucc:
+    # UCC picks the version, so "rolling back" would re-run `app-<slug> upgrade`
+    # (a second rebuild to latest) and then record rolled_back at a version the
+    # box is not on, corrupting state.json's version/previous_version. Same rule
+    # as downgrade(): ucc has no version selection, so no rollback.
+    if _allow_rollback and previous_version and app.class_ != "ucc":
         try:
             rb = upgrade(
                 app,
@@ -742,6 +759,9 @@ def upgrade(
         )
 
     _record_state(app, "upgrade_failed", target, f"health: {reason}")
+    if app.class_ == "ucc":
+        return _fail(f"post-upgrade health failed: {reason} "
+                     f"(ucc: no rollback, UCC picks the version)")
     return _fail(f"post-upgrade health failed: {reason}")
 
 

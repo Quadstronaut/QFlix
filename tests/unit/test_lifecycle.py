@@ -403,6 +403,31 @@ def test_ucc_postgres_upgrade_refused_without_running_anything():
     assert "refused" in result.reason and "-p" in result.reason
 
 
+def test_ucc_upgrade_health_failure_does_not_rollback():
+    # Rollback on ucc would re-run `app-<slug> upgrade` (UCC picks the
+    # version) and record rolled_back at a version the box is not on.
+    app = _ucc_app(ucc_slug="plex")
+
+    with patch("subprocess.run", return_value=_ok_cp()) as mock_run,          patch("lib.lifecycle._post_health_probe", return_value=(False, "x")),          patch("lib.lifecycle._record_state") as mock_rec:
+        result = upgrade(app, target_version="1.41.0", previous_version="1.40.0")
+
+    args_list = [c.args[0] for c in mock_run.call_args_list]
+    assert args_list == [["app-plex", "upgrade"]]
+    assert result.ok is False
+    assert "rolled back" not in result.reason.lower()
+    assert "no rollback" in result.reason
+    events = [c.args[1] for c in mock_rec.call_args_list]
+    assert events == ["upgrade_failed"]
+
+
+def test_ucc_post_health_window_has_container_recreate_floor():
+    from lib.lifecycle import _post_health_window_s
+
+    assert _post_health_window_s(_ucc_app(ucc_slug="plex"), 5.0) >= 180
+    # Non-ucc keeps the plain 3x health timeout.
+    assert _post_health_window_s(_library_app(name="python-plexapi"), 5.0) == 15.0
+
+
 def test_ucc_downgrade_returns_not_supported():
     app = _ucc_app(ucc_slug="maintainerr")
 
