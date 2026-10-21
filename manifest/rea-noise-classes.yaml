@@ -1244,7 +1244,7 @@ classes:
 
   - id: arr-upstream-metadata-dns-eagain
     title: '*arr transient DNS EAI_AGAIN ("Resource temporarily unavailable") against the vendor metadata hosts'
-    rx: '(?is)\A(?!.*\|(?:error|fatal)\|.*\|(?:error|fatal)\|)(?!.*\b(?:[a-z]+\.)*(?!(?:httprequest|socket|web)exception\b)[a-z]+exception\b).*(?:(?:resource temporarily unavailable|socketexception \(11\)|eai_again).{0,200}?(?:(?:services|skyhook)\.sonarr\.tv|\bradarr\.video|\bservarr\.com)|(?:(?:services|skyhook)\.sonarr\.tv|\bradarr\.video|\bservarr\.com).{0,200}?(?:resource temporarily unavailable|socketexception \(11\)|eai_again))'
+    rx: '(?is)\A(?!.*\|(?:error|fatal)\|.*\|(?:error|fatal)\|)(?!.*(?:\sERROR\s*[-:]|\[ERROR\]|Traceback \(most recent call last\)))(?!.*(?:unknown system error -122|edquot|enospc|disk quota exceeded|no space left on device))(?!.*\b(?:[a-z]+\.)*(?!(?:httprequest|socket|web)exception\b)[a-z]+exception\b).*(?:(?:resource temporarily unavailable|socketexception \(11\)|eai_again).{0,200}?(?:(?:services|skyhook)\.sonarr\.tv|\bradarr\.video|\bservarr\.com)|(?:(?:services|skyhook)\.sonarr\.tv|\bradarr\.video|\bservarr\.com).{0,200}?(?:resource temporarily unavailable|socketexception \(11\)|eai_again))'
     field: null
     prompt_clause: '*arr "Resource temporarily unavailable (services.sonarr.tv:443)" / SocketException (11) / EAI_AGAIN DNS failures against the vendor metadata hosts services.sonarr.tv, skyhook.sonarr.tv, *.radarr.video or *.servarr.com'
     why: >-
@@ -1263,7 +1263,17 @@ classes:
       means the model bundled another record - page; (2) any *Exception type
       other than HttpRequest/Socket/WebException (SQLiteException "database
       is locked", NullReferenceException, ...) means a different cause sits
-      in the same finding - page. DELIBERATELY NOT "TaskExtensions|Task
+      in the same finding - page; (3) the house cross-format error guard
+      (plex_errors " ERROR - ", "[ERROR]", a Python Traceback) minus its NLog
+      arm, which (1) already owns - a fault in ANOTHER log shape bundled in;
+      (4) the prompt's MUST-report quota/write class ("Unknown system error
+      -122", EDQUOT, ENOSPC, "Disk quota exceeded", "No space left on
+      device") anywhere in the haystack - page. (3) and (4) added on review
+      2026-10-20: the first cut carried (1)+(2) only, which is the exact hole
+      plex-orphaned-webhook-delivery documented on 2026-08-20 - a plex_errors
+      "-122: Disk quota exceeded" line, or "|Error|...|Disk quota exceeded"
+      on the same NLog line as the DNS cause, suppressed the whole finding.
+      Every guard can only suppress LESS. DELIBERATELY NOT "TaskExtensions|Task
       Error": that header fronts every unhandled *arr task failure. HONEST
       LIMIT: the arr_logs collector greps "|Error|" lines only, so the
       exception line on the NEXT line never reaches the models; a finding

@@ -240,7 +240,7 @@ $Script:NoiseFindingRules = @(
        field = 'excerpt'
        rx = '(?i)exception caught determining whether we could skip\s+''.+/season \d+''\s*~\s*null value not allowed for this type' }
     @{ id = 'arr-upstream-metadata-dns-eagain'
-       rx = '(?is)\A(?!.*\|(?:error|fatal)\|.*\|(?:error|fatal)\|)(?!.*\b(?:[a-z]+\.)*(?!(?:httprequest|socket|web)exception\b)[a-z]+exception\b).*(?:(?:resource temporarily unavailable|socketexception \(11\)|eai_again).{0,200}?(?:(?:services|skyhook)\.sonarr\.tv|\bradarr\.video|\bservarr\.com)|(?:(?:services|skyhook)\.sonarr\.tv|\bradarr\.video|\bservarr\.com).{0,200}?(?:resource temporarily unavailable|socketexception \(11\)|eai_again))' }
+       rx = '(?is)\A(?!.*\|(?:error|fatal)\|.*\|(?:error|fatal)\|)(?!.*(?:\sERROR\s*[-:]|\[ERROR\]|Traceback \(most recent call last\)))(?!.*(?:unknown system error -122|edquot|enospc|disk quota exceeded|no space left on device))(?!.*\b(?:[a-z]+\.)*(?!(?:httprequest|socket|web)exception\b)[a-z]+exception\b).*(?:(?:resource temporarily unavailable|socketexception \(11\)|eai_again).{0,200}?(?:(?:services|skyhook)\.sonarr\.tv|\bradarr\.video|\bservarr\.com)|(?:(?:services|skyhook)\.sonarr\.tv|\bradarr\.video|\bservarr\.com).{0,200}?(?:resource temporarily unavailable|socketexception \(11\)|eai_again))' }
 )
 #>
 # END GENERATED NOISE-TABLE MIRROR

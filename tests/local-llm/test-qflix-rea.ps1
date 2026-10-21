@@ -1860,6 +1860,14 @@ Test-Case 'Test-IsNoiseFinding suppresses *arr upstream-metadata DNS EAI_AGAIN b
     # Bundled: the DNS record plus a second cause must page.
     $bundle = @{ signature = 'sonarr:task-error'; summary = 'task error'; excerpt = $dns.excerpt + "`nSystem.Data.SQLite.SQLiteException (0x800007AF): database is locked" }
     Assert-Equal $null (Test-IsNoiseFinding $bundle) 'DNS record bundled with a db fault still pages'
+    # Review 2026-10-20: a MUST-report quota fault in another log shape, or on
+    # the same NLog line as the DNS cause, must page (guards 3 and 4).
+    $quota = @{ signature = 'sonarr:task-error'; summary = 'task error'; excerpt = $dns.excerpt + "`n[2026-10-16 23:14:02.118] [0x7f] ERROR - Unknown system error -122: Disk quota exceeded" }
+    Assert-Equal $null (Test-IsNoiseFinding $quota) 'DNS record bundled with a plex_errors quota line still pages'
+    $oneLine = @{ signature = 'sonarr:task-error'; summary = 'task error'; excerpt = '2026-10-16 23:13:31.6|Error|RssSyncService|Disk quota exceeded; Resource temporarily unavailable (services.sonarr.tv:443)' }
+    Assert-Equal $null (Test-IsNoiseFinding $oneLine) 'quota fault on the DNS NLog line still pages'
+    $tb = @{ signature = 'sonarr:task-error'; summary = 'task error'; excerpt = $dns.excerpt + "`nTraceback (most recent call last):" }
+    Assert-Equal $null (Test-IsNoiseFinding $tb) 'DNS record bundled with a Python Traceback still pages'
 }
 
 # ---------------------------------------------------------------------------

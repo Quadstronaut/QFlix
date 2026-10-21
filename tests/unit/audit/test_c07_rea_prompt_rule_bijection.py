@@ -584,6 +584,31 @@ def test_arr_upstream_metadata_dns_eagain_is_cause_scoped(ledgers):
     assert not rx.search("Unknown system error -122: Disk quota exceeded "
                          "writing /data/Movies services.sonarr.tv")
 
+    # Review 2026-10-20: a MUST-report fault in ANOTHER log shape, bundled with
+    # a genuine DNS cause, must page - the hole plex-orphaned-webhook-delivery
+    # closed on 2026-08-20. Each of these matched before guards (3)+(4) landed.
+    dns = "\n".join((header, cause))
+    for fault in (
+            # plex_errors shape: " ERROR - ", no NLog pipes, no *Exception.
+            "[2026-10-16 23:14:02.118] [0x7f] ERROR - Unknown system error "
+            "-122: Disk quota exceeded",
+            "Unknown system error -122 writing /data",
+            "[ERROR] tdarr worker failed",
+            "Traceback (most recent call last):",
+            "write failed: No space left on device",
+            "EDQUOT on /data/Movies",
+            "ENOSPC"):
+        assert not rx.search(hay("sonarr:task-error", "task error",
+                                 dns + "\n" + fault)), fault
+    # One NLog line carrying BOTH the quota fault and the DNS cause: guard (1)
+    # sees a single |Error| header, so only the must-report guard catches it.
+    assert not rx.search("2026-10-16 23:13:31.6|Error|RssSyncService|Disk "
+                         "quota exceeded; Resource temporarily unavailable "
+                         "(services.sonarr.tv:443)")
+    assert not rx.search("Unknown system error -122 writing /data; "
+                         "HttpRequestException: Resource temporarily "
+                         "unavailable (services.sonarr.tv:443)")
+
 
 def test_the_ps1_cross_check_now_really_runs_in_ci(ctx, repo, report):
     """This test used to be named for the opposite fact.
