@@ -132,6 +132,7 @@ SERVICES_LINE=$(printf '%s ' $UNITS | sed 's/\.timer/\.service/g')
 # a shared box; batching also makes the whole check one atomic view of systemd
 # rather than 160 separately-timed samples that can disagree with each other.
 # `show` accepts many units and emits blank-line-separated blocks keyed by Id=.
+sample() {
 RES=$(sshm "
 set -uo pipefail
 systemctl --user show ${UNITS_LINE} -p Id -p LoadState -p ActiveState -p NextElapseUSecRealtime -p NextElapseUSecMonotonic 2>/dev/null
@@ -198,11 +199,24 @@ VERDICTS=$(printf '%s\n' "$RES" | tr -d '\r' | awk '
     if (sched) print "OK " id; else print "STUCK " id
   }
 ')
+}
+sample
 
 pick() { printf '%s\n' "$VERDICTS" | awk -v k="$1" '$1==k {print $2}' | paste -sd, - ; }
 MISSING=$(pick MISSING); INACTIVE=$(pick INACTIVE)
 STUCK=$(pick STUCK);     FAILED=$(pick FAILED)
 OKN=$(printf '%s\n' "$VERDICTS" | grep -c '^OK ' || true)
+
+# A timer whose service is mid-run can momentarily report no next elapse (one
+# false timer-stuck on qbit-stall right after it fired, 2026-10-21). A genuinely
+# dead timer stays dead, so a STUCK verdict must survive a second sample.
+if [ -n "$STUCK" ]; then
+  sleep "${QFLIX_TL_RECHECK_S:-20}"
+  sample
+  MISSING=$(pick MISSING); INACTIVE=$(pick INACTIVE)
+  STUCK=$(pick STUCK);     FAILED=$(pick FAILED)
+  OKN=$(printf '%s\n' "$VERDICTS" | grep -c '^OK ' || true)
+fi
 
 trim() { printf '%s' "$1" | sed 's/^,*//; s/,*$//'; }
 

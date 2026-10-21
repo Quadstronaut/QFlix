@@ -29,7 +29,9 @@ SYSTEMD_DIR = REPO_ROOT / "scripts" / "maint" / "systemd"
 bash = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
 
-def _tree(tmp_path: Path, next_mono: str, next_real: str = "") -> Path:
+def _tree(tmp_path: Path, next_mono: str, next_real: str = "", then_mono: str | None = None) -> Path:
+    """then_mono: what the timer reports on the 2nd+ sample (default: unchanged)."""
+    then_mono = next_mono if then_mono is None else then_mono
     root = tmp_path / "root"
     (root / "scripts" / "canaries").mkdir(parents=True)
     (root / "scripts" / "lib").mkdir(parents=True)
@@ -41,10 +43,13 @@ def _tree(tmp_path: Path, next_mono: str, next_real: str = "") -> Path:
     stub = root / "bin"
     stub.mkdir()
     # Property order mirrors the box (Id mid-block); blank line ends the block.
+    count = (root / "samples").as_posix()
     show = (
+        f'n=$(cat "{count}" 2>/dev/null || echo 0)\n'
         "case \"$*\" in\n"
-        "  *ingest.timer*) printf '%s\\n' "
-        f"'NextElapseUSecRealtime={next_real}' 'NextElapseUSecMonotonic={next_mono}' "
+        f'  *ingest.timer*) echo $((n+1)) > "{count}"; mono={next_mono!r}; [ "$n" -gt 0 ] && mono={then_mono!r}\n'
+        "    printf '%s\\n' "
+        f"'NextElapseUSecRealtime={next_real}' \"NextElapseUSecMonotonic=$mono\" "
         "'Id=ingest.timer' 'LoadState=loaded' 'ActiveState=active' '' ;;\n"
         "  *ingest.service*) printf '%s\\n' 'Id=ingest.service' 'Result=success' ;;\n"
         "esac\n"
@@ -60,7 +65,8 @@ def _tree(tmp_path: Path, next_mono: str, next_real: str = "") -> Path:
 
 
 def _run(root: Path) -> subprocess.CompletedProcess:
-    env = {**os.environ, "PATH": str(root / "bin") + os.pathsep + os.environ["PATH"]}
+    env = {**os.environ, "PATH": str(root / "bin") + os.pathsep + os.environ["PATH"],
+           "QFLIX_TL_RECHECK_S": "0"}
     return subprocess.run(["bash", str(root / "scripts" / "canaries" / "timer-liveness.sh")],
                           capture_output=True, text=True, timeout=60, env=env)
 
@@ -77,6 +83,15 @@ def test_monotonic_countdown_is_scheduled(tmp_path):
     r = _run(_tree(tmp_path, "3w 17h 22min 56.114690s"))
     assert r.returncode == 0, r.stdout + r.stderr
     assert "PASS" in r.stdout
+
+
+@bash
+def test_transient_no_next_elapse_is_not_stuck(tmp_path):
+    # A timer caught mid-run reports nothing scheduled once, then re-arms.
+    root = _tree(tmp_path, "infinity", then_mono="4min 47s")
+    r = _run(root)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (root / "samples").read_text().strip() == "2"       # it really re-sampled
 
 
 def test_no_repo_timer_uses_onbootsec():
