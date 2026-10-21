@@ -110,6 +110,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/ports.py \
     scripts/maint/lib/swapstate.py \
     scripts/maint/lib/runtime_parity.py \
+    scripts/maint/lib/dormant_stop.py \
     scripts/maint/lib/deploy_parity.py \
     scripts/maint/prune-app-backups.sh \
     scripts/maint/qflix-collect.py \

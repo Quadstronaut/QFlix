@@ -9,6 +9,7 @@
 # Usage:
 #   appctl start|stop|restart|status|version|upgrade <app> [extra args...]
 #   appctl is-native <app>      exit 0 native/dormant, 1 still UCC, 2 unknown
+#   appctl stop-dormant <app>   stop a converted app's woken UCC container
 #   appctl lookup <app>         print the raw manifest row (see lookup()); the
 #                               ONE resolver other scripts reuse (QFLX-60
 #                               ucc-uninstall.sh) so the rules never fork
@@ -27,8 +28,14 @@
 # DORMANT REFUSAL (I-9). After a swap the UCC container stays installed but
 # must never run again while the native unit serves the app. If the manifest
 # marks the app `ucc_dormant: true` and the verb would reach UCC, every verb
-# except `stop` exits 3 without touching anything. `stop` stays allowed so a
-# woken container can always be put back to sleep.
+# except `stop` exits 3 without touching anything.
+#
+# STOP-DORMANT (QFLX-55). On a CONVERTED app (class systemd) `stop` means the
+# native unit, so it can NOT put a woken container back to sleep: on 2026-10-21
+# `appctl stop sonarr` stopped qflix-sonarr and left the woken container
+# running. `appctl stop-dormant <app>` is the explicit verb for that: it runs
+# `app-<slug> stop` (UCC's CLI, container only) and touches no unit. Refused
+# (exit 2) for anything that is not a converted app with ucc_dormant.
 #
 # PENDING-SWAP. `swap_state: pending-swap` on a class-systemd app (the manifest
 # flip merged, the swap not yet run) dispatches as the UCC app it still is.
@@ -51,7 +58,7 @@ export MANITOBA_SECRETS_DIR="$SECRETS"
 
 usage() {
   echo "usage: appctl {start|stop|restart|status|version|upgrade} <app> [args...]" >&2
-  echo "       appctl is-native <app> | lookup <app> | ports-free | proxy-reload" >&2
+  echo "       appctl is-native <app> | stop-dormant <app> | lookup <app> | ports-free | proxy-reload" >&2
   exit 64
 }
 die2() { echo "appctl: $*" >&2; exit 2; }
@@ -180,7 +187,7 @@ case "$VERB" in
       ultra) exec app-nginx restart ;;
       *) die2 "no proxy-reload for host profile '$prof' yet (QFLX-41)" ;;
     esac ;;
-  start|stop|restart|status|version|upgrade|is-native|lookup) ;;
+  start|stop|restart|status|version|upgrade|is-native|stop-dormant|lookup) ;;
   *) usage ;;
 esac
 
@@ -206,6 +213,16 @@ IFS='|' read -r NAME CLASS SLUG UNIT DORMANT PSEC SWAPSTATE NDIR <<<"$(_cr "$row
 if [ "$SWAPSTATE" = pending-swap ] && [ "$CLASS" = systemd ]; then
   CLASS=ucc
   DORMANT=0
+fi
+
+if [ "$VERB" = stop-dormant ]; then
+  # Only a converted app has a dormant container distinct from its runtime.
+  # A pending-swap app was re-classed ucc above: its container IS the runtime.
+  if [ "$CLASS" != systemd ] || [ "$DORMANT" != 1 ]; then
+    die2 "stop-dormant: $NAME is not a converted app with a dormant UCC container"
+  fi
+  command -v "app-$SLUG" >/dev/null 2>&1 || die2 "stop-dormant: app-$SLUG not installed"
+  exec "app-$SLUG" stop
 fi
 
 if [ "$VERB" = is-native ]; then

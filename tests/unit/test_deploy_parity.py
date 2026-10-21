@@ -141,6 +141,26 @@ def test_installer_stages_every_new_file():
     assert "~/scripts/ops/ucc-uninstall.sh" in inst
 
 
+def test_staged_lib_modules_import_only_staged_lib_modules():
+    """QFLX-55: 240 stages lib/*.py from an explicit list. A new module the
+    pusher imports but 240 does not ship crashes the daemon on the box at import
+    time (dormant_stop.py nearly went out that way). Close the list over imports."""
+    import re
+    inst = (REPO / "scripts/configure/240-maintenance-install.sh").read_text(encoding="utf-8")
+    staged = set(re.findall(r"scripts/maint/lib/(\w+)\.py \\", inst))
+    pat = re.compile(r"^\s*(?:from lib import ([\w ,]+?)(?:\s+as\s+\w+)?\s*$|from lib\.(\w+) import|import lib\.(\w+))",
+                     re.M)
+    missing = {}
+    for mod in sorted(staged):
+        src = (REPO / "scripts/maint/lib" / f"{mod}.py").read_text(encoding="utf-8")
+        for names, dotted, imp in pat.findall(src):
+            targets = [dotted or imp] if (dotted or imp) else [n.split(" as ")[0].strip() for n in names.split(",")]
+            for t in targets:
+                if t and (REPO / "scripts/maint/lib" / f"{t}.py").exists() and t not in staged:
+                    missing.setdefault(mod, []).append(t)
+    assert not missing, f"staged module imports an unstaged lib module (add it to 240): {missing}"
+
+
 def test_socket_units_are_compared_too(world):
     """QFLX-28: qflix-prowlarr-fwd.socket is a deployed unit like any service."""
     repo, home, _ = world
