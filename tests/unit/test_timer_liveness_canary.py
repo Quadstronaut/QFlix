@@ -29,7 +29,8 @@ SYSTEMD_DIR = REPO_ROOT / "scripts" / "maint" / "systemd"
 bash = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
 
-def _tree(tmp_path: Path, next_mono: str, next_real: str = "", then_mono: str | None = None) -> Path:
+def _tree(tmp_path: Path, next_mono: str, next_real: str = "", then_mono: str | None = None,
+          svc_state: str = "inactive") -> Path:
     """then_mono: what the timer reports on the 2nd+ sample (default: unchanged)."""
     then_mono = next_mono if then_mono is None else then_mono
     root = tmp_path / "root"
@@ -51,7 +52,7 @@ def _tree(tmp_path: Path, next_mono: str, next_real: str = "", then_mono: str | 
         "    printf '%s\\n' "
         f"'NextElapseUSecRealtime={next_real}' \"NextElapseUSecMonotonic=$mono\" "
         "'Id=ingest.timer' 'LoadState=loaded' 'ActiveState=active' '' ;;\n"
-        "  *ingest.service*) printf '%s\\n' 'Id=ingest.service' 'Result=success' ;;\n"
+        f"  *ingest.service*) printf '%s\\n' 'Id=ingest.service' 'Result=success' 'ActiveState={svc_state}' ;;\n"
         "esac\n"
     )
     (stub / "systemctl").write_text("#!/usr/bin/env bash\n" + show, newline="\n")
@@ -92,6 +93,21 @@ def test_transient_no_next_elapse_is_not_stuck(tmp_path):
     r = _run(root)
     assert r.returncode == 0, r.stdout + r.stderr
     assert (root / "samples").read_text().strip() == "2"       # it really re-sampled
+
+
+@bash
+def test_nothing_scheduled_while_its_service_runs_is_not_stuck(tmp_path):
+    # QFLX-68: a oneshot mid-run (the canary reading its own timer) never
+    # re-arms within the re-sample; its service state is the evidence.
+    r = _run(_tree(tmp_path, "infinity", svc_state="activating"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "PASS" in r.stdout
+
+
+@bash
+def test_nothing_scheduled_with_failed_service_is_still_stuck(tmp_path):
+    r = _run(_tree(tmp_path, "infinity", svc_state="failed"))
+    assert r.returncode == 1 and "STAGE=timer-stuck" in r.stderr, r.stdout + r.stderr
 
 
 def test_no_repo_timer_uses_onbootsec():

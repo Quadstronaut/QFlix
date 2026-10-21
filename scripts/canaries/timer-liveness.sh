@@ -142,7 +142,7 @@ systemctl --user show ${UNITS_LINE} -p Id -p LoadState -p ActiveState -p NextEla
 # then inherits a Result= and is classified as a service, silently losing its
 # verdict (measured: 38/39, with qflix-vlogs-ingest.timer unchecked).
 echo; echo '---SERVICES---'; echo
-systemctl --user show ${SERVICES_LINE} -p Id -p Result 2>/dev/null
+systemctl --user show ${SERVICES_LINE} -p Id -p Result -p ActiveState 2>/dev/null
 ") || { echo "STAGE=timer-read-fail msg=ssh-or-systemd-unreadable" >&2; exit 1; }
 
 # Parse in PARAGRAPH mode: one blank-line-separated block per unit.
@@ -183,6 +183,7 @@ VERDICTS=$(printf '%s\n' "$RES" | tr -d '\r' | awk '
     # service and dropped a real timer from the count.
     if (id ~ /\.service$/) {
       if (seen_res && res != "" && res != "success") print "FAILED " id "=" res
+      svc_active[id] = active
       next
     }
     if (load != "loaded")        { print "MISSING " id;  next }
@@ -196,7 +197,19 @@ VERDICTS=$(printf '%s\n' "$RES" | tr -d '\r' | awk '
     sched = 0
     if (nr != "" && nr != "0" && nr != "n/a" && nr != "infinity") sched = 1
     if (nm != "" && nm != "0" && nm != "n/a" && nm != "infinity") sched = 1
-    if (sched) print "OK " id; else print "STUCK " id
+    if (sched) print "OK " id; else stuck[id] = 1
+  }
+  # QFLX-68: a oneshot service stays "activating" for its whole run, and an
+  # OnUnitActiveSec timer has nothing scheduled until that run ends. This
+  # canary is always mid-run when it reads its OWN timer, so the 20s re-sample
+  # cannot clear it. Nothing scheduled + its service running = busy, not stuck.
+  # Verdicts print at END because the services block follows the timers.
+  END {
+    for (t in stuck) {
+      svc = t; sub(/\.timer$/, ".service", svc)
+      if (svc_active[svc] ~ /^(activating|active|deactivating|reloading)$/) print "OK " t
+      else print "STUCK " t
+    }
   }
 ')
 }
