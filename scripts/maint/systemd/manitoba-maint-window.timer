@@ -4,6 +4,11 @@ Description=Manitoba maintenance — weekly window timer (Mon 11:00 UTC)
 [Timer]
 # Mon 11:00 UTC = 04:00 AZ (Arizona has no DST, fixed UTC-7 year-round).
 OnCalendar=Mon *-*-* 11:00:00 UTC
+# Persistent=true KEPT on purpose (QFLX-62): if the box or the --user manager
+# is down at 11:00, the catch-up at boot still gets a window that day. It is
+# safe because `window run` checks the clock against lib/hostpolicy first: a
+# catch-up inside Mon 11-15 UTC runs, one outside it logs
+# "SKIP window-outside-hours" and exits 0 (no email, no drain, no upgrades).
 Persistent=true
 Unit=manitoba-maint-window.service
 

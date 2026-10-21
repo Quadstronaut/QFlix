@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 import re
 import shutil
 import socket
@@ -1151,7 +1152,8 @@ def test_the_canonical_suppression_predicate_is_genuinely_consulted(
     script header.)"""
     state = tmp_path / "manitoba-state"
     state.mkdir()
-    (state / "lock").write_text("%d\n2026-07-27T11:00:00Z\n" % os.getpid(),
+    (state / "lock").write_text(  # stamped now: QFLX-62 ignores pre-boot/old locks
+        "%d\n%s\n" % (os.getpid(), datetime.now(timezone.utc).isoformat()),
                                 encoding="utf-8")
     marker = tmp_path / "restarted"
     _, env = _broken_env(
