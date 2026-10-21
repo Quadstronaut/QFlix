@@ -320,6 +320,7 @@ class WindowOrchestrator:
         self._queue_path.write_text("", encoding="utf-8")
 
         deferred_lines: list[str] = []
+        queue_failed = 0
 
         for line in raw.splitlines():
             line = line.strip()
@@ -374,14 +375,29 @@ class WindowOrchestrator:
                 continue
 
             # 5. Attempt upgrade
+            # QFLX-65: upgrade() reports subprocess failure in its RESULT, it
+            # only raises for config errors. Counting a returned ok=False as a
+            # success hid every failed upgrade behind "succeeded=N".
             self._queue_processed += 1
             try:
-                lifecycle.upgrade(app, target_version)
-                self._queue_succeeded += 1
-                logger.info("queue: upgraded %s to %s", app_name, target_version)
+                res = lifecycle.upgrade(app, target_version)
             except LifecycleError as exc:
                 logger.error("queue: upgrade failed for %s: %s", app_name, exc)
                 self._notes.append(f"upgrade error {app_name}: {exc}")
+                queue_failed += 1
+                continue
+            if res.ok:
+                self._queue_succeeded += 1
+                logger.info("queue: upgraded %s to %s", app_name, target_version)
+            else:
+                logger.error("queue: upgrade failed for %s: %s", app_name, res.reason)
+                self._notes.append(f"upgrade failed {app_name}@{target_version}: {res.reason}")
+                queue_failed += 1
+
+        # failed = processed - succeeded - dry-run skips; spelled out so the
+        # window summary notes say it without arithmetic.
+        if queue_failed:
+            self._notes.append(f"queue: {queue_failed} upgrade(s) failed")
 
         # Write deferred entries back
         if deferred_lines:

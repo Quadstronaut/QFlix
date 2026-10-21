@@ -198,6 +198,37 @@ def test_drain_queue_drops_unknown_app(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 5b. QFLX-65: a returned ok=False upgrade is a failure, not a success
+# ---------------------------------------------------------------------------
+
+def test_drain_queue_counts_returned_failure(tmp_path):
+    manifest = _FakeManifest({
+        "listmonk": _make_app("listmonk", class_="systemd", unit="listmonk.service"),
+        "plex": _make_app("plex", class_="ucc", unit=None),
+    })
+    queue = tmp_path / "queue.jsonl"
+    queue.write_text(
+        json.dumps({"app": "listmonk", "target_version": "6.1.0", "enqueued_at": "2026-05-09T00:00:00Z"}) + "\n"
+        + json.dumps({"app": "plex", "target_version": "1.2.3", "enqueued_at": "2026-05-09T00:00:00Z"}) + "\n",
+        encoding="utf-8",
+    )
+    ok = LifecycleResult(ok=True, duration_s=0.0, stdout="", stderr="", reason="upgraded to 6.1.0")
+    bad = LifecycleResult(ok=False, duration_s=0.0, stdout="", stderr="",
+                          reason="app-plex upgrade failed (exit 1); start ok")
+
+    with patch("lib.window.lifecycle.upgrade", side_effect=[ok, bad]):
+        w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+        w.open()
+        w.drain_queue()
+        summary = w.close()
+
+    assert summary.queue_processed == 2
+    assert summary.queue_succeeded == 1
+    assert any("upgrade failed plex@1.2.3" in n and "start ok" in n for n in summary.notes)
+    assert "queue: 1 upgrade(s) failed" in summary.notes
+
+
+# ---------------------------------------------------------------------------
 # 6. drain_queue blocks max_version entries
 # ---------------------------------------------------------------------------
 
