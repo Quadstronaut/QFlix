@@ -56,4 +56,15 @@ object Provisioning {
      */
     fun loadConfig(filesDir: File): ProvisionConfig =
         json.decodeFromString(ProvisionConfig.serializer(), configFile(filesDir).readText())
+
+    // --- Fix page (QFLX-70): routine fire credentials, pushed by provision-fixer.ps1.
+    // Independent of the SSH bundle above: the Fix page works with or without it.
+    const val ROUTINE_FILE_NAME = "routine.json"
+
+    fun routineFile(filesDir: File): File = File(provisionDir(filesDir), ROUTINE_FILE_NAME)
+
+    fun isFixerProvisioned(filesDir: File): Boolean = routineFile(filesDir).isFile
+
+    fun loadRoutineConfig(filesDir: File): RoutineConfig =
+        json.decodeFromString(RoutineConfig.serializer(), routineFile(filesDir).readText())
 }

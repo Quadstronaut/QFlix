@@ -41,6 +41,7 @@ enum class Destination(val label: String) {
     DASHBOARD("Dashboard"),
     APPS("Apps"),
     STARR("stARR"),
+    FIX("Fix"),
 }
 
 /**
@@ -75,6 +76,7 @@ fun AdminScaffold(
     viewModel: StatusViewModel,
     actionViewModel: ActionViewModel,
     transport: StatusTransport,
+    fixViewModel: FixViewModel,
     host: String? = null,
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -150,6 +152,7 @@ fun AdminScaffold(
                         actionViewModel = actionViewModel,
                         host = host,
                     )
+                    Destination.FIX -> FixScreen(viewModel = fixViewModel)
                 }
             }
         }
