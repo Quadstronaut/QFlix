@@ -3,7 +3,7 @@
 #  - Deploys scripts/maint/ (Python codebase + manifest + systemd units) to seedbox
 #  - Claims a loopback port for the Kuma webhook receiver (127.0.0.1 only)
 #  - Migrates 4 version pins into versions.env (one-time, append-only)
-#  - Installs 5 user-systemd units + heartbeat cron entry
+#  - Installs the maint user-systemd units + heartbeat and maint cron entries
 #  - Runs install-time smoke (webhook /health, manifest validate, timer scheduled,
 #    synthetic Kuma POST round-trips)
 #
@@ -15,6 +15,7 @@ source "$HERE/../lib/ssh.sh"
 source "$HERE/../lib/log.sh"
 source "$HERE/../lib/secrets.sh"
 source "$HERE/../lib/ports.sh"
+source "$HERE/../lib/cron.sh"
 
 # ── Step 1: pre-flight — required local secrets ─────────────────────────────
 log_info "Phase 240: maintenance system install"
@@ -180,6 +181,12 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-backup-prune.timer \
     scripts/maint/systemd/manitoba-maint-anime-janitor.service \
     scripts/maint/systemd/manitoba-maint-anime-janitor.timer \
+    scripts/maint/systemd/manitoba-maint-audio-disposition.service \
+    scripts/maint/systemd/manitoba-maint-audio-disposition.timer \
+    scripts/maint/systemd/manitoba-maint-reaper.service \
+    scripts/maint/systemd/manitoba-maint-reaper.timer \
+    scripts/maint/systemd/manitoba-maint-unknown-codec-stream.service \
+    scripts/maint/systemd/manitoba-maint-unknown-codec-stream.timer \
     scripts/maint/qflix-anime-janitor.py \
     scripts/maint/qflix-anime-janitor.exclude \
     scripts/maint/qflix-reaper.py \
@@ -197,6 +204,14 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/qflix-audit-live.py \
     scripts/maint/qflix-vlogs-ingest.py \
     scripts/mcp/logs.py \
+    scripts/mcp/collect.py \
+    scripts/mcp/missing.py \
+    scripts/mcp/unstick.py \
+    scripts/mcp/lib/arr_client.py \
+    scripts/mcp/lib/maint_state.py \
+    scripts/mcp/lib/qbit_client.py \
+    scripts/mcp/lib/sab_client.py \
+    scripts/ops/listmonk-sync.py \
     scripts/maint/systemd/manitoba-maint-audit-live.service \
     scripts/maint/systemd/manitoba-maint-audit-live.timer \
     scripts/maint/systemd/manitoba-maint-torrent-janitor.service \
@@ -444,6 +459,32 @@ mkdir -p ~/scripts/mcp
 cp -f "$STG"/scripts/maint/qflix-vlogs-ingest.py ~/scripts/maint/qflix-vlogs-ingest.py
 chmod +x ~/scripts/maint/qflix-vlogs-ingest.py
 cp -f "$STG"/scripts/mcp/logs.py ~/scripts/mcp/logs.py
+# QFLX-63: the rest of the mcp code the maint jobs above depend on. The reaper,
+# torrent and anime janitors import lib.arr_client / lib.qbit_client from
+# ~/scripts/mcp/lib (merged `lib` namespace with scripts/maint/lib), and
+# qflix-collect.py + arr-housekeeping.py exec ~/scripts/mcp/{collect,logs,
+# unstick,missing}.py. Only 70-mcp-install.sh shipped them, and it is not a
+# routine deploy, so a fix to arr_client never reached the box via 240.
+# chmod 755: git holds them 100755 but a Windows checkout tars them 644, and
+# deploy-drift flags the mode (deploy-mode-drift, 2026-08-23).
+mkdir -p ~/scripts/mcp/lib
+cp -f "$STG"/scripts/mcp/collect.py ~/scripts/mcp/collect.py
+cp -f "$STG"/scripts/mcp/missing.py ~/scripts/mcp/missing.py
+cp -f "$STG"/scripts/mcp/unstick.py ~/scripts/mcp/unstick.py
+cp -f "$STG"/scripts/mcp/lib/arr_client.py ~/scripts/mcp/lib/arr_client.py
+cp -f "$STG"/scripts/mcp/lib/maint_state.py ~/scripts/mcp/lib/maint_state.py
+cp -f "$STG"/scripts/mcp/lib/qbit_client.py ~/scripts/mcp/lib/qbit_client.py
+cp -f "$STG"/scripts/mcp/lib/sab_client.py ~/scripts/mcp/lib/sab_client.py
+chmod 755 ~/scripts/mcp/logs.py ~/scripts/mcp/collect.py ~/scripts/mcp/missing.py \
+          ~/scripts/mcp/unstick.py ~/scripts/mcp/lib/arr_client.py \
+          ~/scripts/mcp/lib/maint_state.py ~/scripts/mcp/lib/qbit_client.py \
+          ~/scripts/mcp/lib/sab_client.py
+# QFLX-63: nightly Plex/Seerr -> Listmonk subscriber reconcile, run from cron
+# (Step 8b writes the line). Shipped here, not by 43-listmonk-install.sh: 43
+# rewrites config.toml and restarts listmonk, so it is not something a routine
+# deploy re-runs, and a script only it shipped would never get its fixes.
+cp -f "$STG"/scripts/ops/listmonk-sync.py ~/scripts/ops/listmonk-sync.py
+chmod +x ~/scripts/ops/listmonk-sync.py
 
 # Convergent Audit Regime (landed on master 2026-07-30). Its units sat in the
 # repo with ZERO installer wiring, so the audit would have shipped as a guard
@@ -793,6 +834,12 @@ for unit in \
     manitoba-maint-backup-prune.timer \
     manitoba-maint-anime-janitor.service \
     manitoba-maint-anime-janitor.timer \
+    manitoba-maint-audio-disposition.service \
+    manitoba-maint-audio-disposition.timer \
+    manitoba-maint-reaper.service \
+    manitoba-maint-reaper.timer \
+    manitoba-maint-unknown-codec-stream.service \
+    manitoba-maint-unknown-codec-stream.timer \
     manitoba-maint-torrent-janitor.service \
     manitoba-maint-torrent-janitor.timer \
     manitoba-maint-poster-janitor.service \
@@ -1049,6 +1096,18 @@ systemctl --user enable --now manitoba-maint-backup-prune.timer
 # mutates nothing. --now activates the schedule (no immediate run). Arming
 # --execute is an operator step gated on Phase-0 live validation + re-council.
 systemctl --user enable --now manitoba-maint-anime-janitor.timer
+# QFLX-63: three media janitors that were LIVE on the box from hand-copied
+# units, with no installer shipping them, so a rebuild would silently drop them.
+#  - reaper (daily 05:00): the repo unit ships DRY-RUN. The box arms it with an
+#    on-box drop-in, manitoba-maint-reaper.service.d/, which this installer
+#    never ships and never touches; the Step 7 loop copies only the unit file,
+#    and daemon-reload re-reads the drop-in on top of it.
+#  - audio-disposition (nightly) and unknown-codec-stream (nightly): the repo
+#    units ARE --execute, operator-reviewed; see the comments in each unit.
+# --now starts the schedule only; none of the three runs immediately.
+systemctl --user enable --now manitoba-maint-reaper.timer
+systemctl --user enable --now manitoba-maint-audio-disposition.timer
+systemctl --user enable --now manitoba-maint-unknown-codec-stream.timer
 # Torrent janitor — daily 05:30 UTC. Purges completed *arr-untracked qBit
 # seeding leftovers ("nothing forever"). Ships DRY-RUN (ExecStart has no
 # --execute); arm via an on-box drop-in like the reaper. --now activates the
@@ -1198,6 +1257,21 @@ UNITSCRIPT
 
 # ── Step 8: heartbeat cron entry ────────────────────────────────────────────
 sshm '(crontab -l 2>/dev/null | grep -v heartbeat-maint-webhook; echo "*/5 * * * * /home/quadstronaut/scripts/ops/heartbeat-maint-webhook.sh") | crontab -'
+
+# ── Step 8b: maint cron jobs declared in manifest/jobs.yaml (QFLX-63) ───────
+# Both lines were hand-added on the box and written by no installer, so a
+# rebuild dropped them silently. The strings are the box's lines VERBATIM
+# (2026-10-21): cron_ensure is a no-op when the exact line is present, so a
+# re-run on the live box does not even rewrite the crontab. Schedules mirror
+# jobs.yaml cron-listmonk-sync / cron-arr-housekeeping-unstick.
+LISTMONK_SYNC_CRON='0 4 * * * /usr/bin/python3 /home/quadstronaut/scripts/ops/listmonk-sync.py >> /home/quadstronaut/.apps/listmonk/logs/sync.log 2>&1'
+UNSTICK_CRON='15 * * * * /usr/bin/python3 /home/quadstronaut/scripts/maint/arr-housekeeping.py --unstick >> /home/quadstronaut/.opt/maint/arr-unstick.log 2>&1'
+# The redirect targets must exist or cron fails the job before python starts.
+sshm 'mkdir -p ~/.apps/listmonk/logs ~/.opt/maint'
+cron_ensure_remote listmonk-sync "$LISTMONK_SYNC_CRON" 'listmonk-sync[.]py'
+# Match only the --unstick mode: --missing was retired 2026-08-08 and any other
+# arr-housekeeping line is not ours to rewrite.
+cron_ensure_remote arr-unstick "$UNSTICK_CRON" 'arr-housekeeping[.]py --unstick'
 
 # ── Step 9: install-time smoke ──────────────────────────────────────────────
 log_info "running install-time smoke gate"
@@ -1371,6 +1445,24 @@ if [ "${BPT:-0}" -ge 1 ]; then
 else
   gate "backup-prune-timer-scheduled" fail "backup-prune timer not in systemctl list-timers"
 fi
+
+# Smoke 16 (QFLX-63): the three media janitors and the two maint cron lines.
+for t in reaper audio-disposition unknown-codec-stream; do
+  JT=$(remote_count "systemctl --user list-timers manitoba-maint-${t}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-${t}.timer")
+  if [ "${JT:-0}" -ge 1 ]; then
+    gate "${t}-timer-scheduled" pass
+  else
+    gate "${t}-timer-scheduled" fail "manitoba-maint-${t}.timer not in systemctl list-timers"
+  fi
+done
+for c in 'listmonk-sync[.]py' 'arr-housekeeping[.]py --unstick'; do
+  MC=$(remote_count "crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -cE '$c'")
+  if [ "${MC:-0}" -ge 1 ]; then
+    gate "cron-${c%%[[]*}" pass
+  else
+    gate "cron-${c%%[[]*}" fail "no active crontab line matches '$c' (held by a 312 swap?)"
+  fi
+done
 
 echo
 TOTAL=$((PASS + FAIL))

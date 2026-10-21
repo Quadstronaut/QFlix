@@ -21,12 +21,15 @@ source "$HERE/lib/log.sh"
 
 KS_MAX="${KS_MAX:-4}"   # per-user concurrent-stream cap enforced by kill_stream
 
-# 1. Deploy the three Plex scripts to the box.
+# 1. Deploy the four Plex scripts to the box. Each .sh is only a creds/lock
+#    wrapper that execs its .py sibling, so a wrapper shipped without its .py
+#    runs green-looking and does nothing (stream_stats.py was missing from this
+#    list until QFLX-63; the box had a hand copy since 2026-08-09).
 sshm 'mkdir -p ~/scripts/plex ~/.apps/stream-stats/logs'
-for f in kill_stream.sh kill_stream.py stream_stats.sh; do
+for f in kill_stream.sh kill_stream.py stream_stats.sh stream_stats.py; do
   scpm_to "$HERE/plex/$f" "/home/quadstronaut/scripts/plex/$f"
 done
-sshm 'chmod +x ~/scripts/plex/kill_stream.sh ~/scripts/plex/kill_stream.py ~/scripts/plex/stream_stats.sh'
+sshm 'chmod +x ~/scripts/plex/kill_stream.sh ~/scripts/plex/kill_stream.py ~/scripts/plex/stream_stats.sh ~/scripts/plex/stream_stats.py'
 
 # 2. Install both crons idempotently as a marker-tagged, self-documenting block.
 #    The cron + comment lines are interpolated locally so the remote just writes
