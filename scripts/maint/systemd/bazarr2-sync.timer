@@ -5,7 +5,9 @@ Description=bazarr2 version sync — hourly drift check vs bazarr-1
 # Fire shortly after boot so a fresh seedbox catches up immediately, then
 # every hour. Bazarr-1 updates rarely (months apart), so hourly is plenty
 # and keeps the no-op fast path cheap.
-OnBootSec=2min
+# OnStartupSec, not OnBootSec (QFLX-55): a --user manager can start after a
+# short OnBootSec has passed, and a monotonic-only timer then never fires.
+OnStartupSec=2min
 OnUnitActiveSec=1h
 Persistent=true
 Unit=bazarr2-sync.service
