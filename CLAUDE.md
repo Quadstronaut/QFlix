@@ -22,6 +22,7 @@ When the operator says something was purged, **verify on the box** (`~/.apps/`, 
 - New self-pusher → register in `lib/kuma.py STANDALONE_SELF_PUSH_MONITORS` (audit + bootstrap read it). Kuma audit reads `kuma.db`, not `/metrics`.
 - Improvements you notice → `TaskCreate`, not a passing mention. Surface known issues proactively.
 - Trust durable logs (`~/.opt/maint/*`) over journald; SAB/qBit APIs lie — re-poll to verify.
+- **Phone fixer (QFLX-70):** QFlix Admin "Fix" page fires routine "QFlix Fix (phone)" → cloud session. Cloud sandboxes cannot SSH; box access there is private `qflix-brain` `bin/boxrun` (GitHub Actions). Memory dir is a clone of `qflix-brain`. Design: `docs/superpowers/specs/2026-10-21-phone-fixer-design.md`.
 - Migration to the Gold slot lives on `feature/migration` (worktree `../QFlix-migration`); trigger phrase is "migrate me".
 
 ## Memory

@@ -5,10 +5,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import com.qflix.heartbeat.net.HttpRoutineFirer
 import com.qflix.heartbeat.net.Provisioning
 import com.qflix.heartbeat.net.SshFetcher
 import com.qflix.heartbeat.ui.ActionViewModel
 import com.qflix.heartbeat.ui.AdminScaffold
+import com.qflix.heartbeat.ui.FixHistory
+import com.qflix.heartbeat.ui.FixViewModel
 import com.qflix.heartbeat.ui.StatusViewModel
 import com.qflix.heartbeat.ui.theme.HeartbeatTheme
 import java.security.Security
@@ -31,6 +34,12 @@ class MainActivity : ComponentActivity() {
 
     private val actionViewModel: ActionViewModel by viewModels {
         ActionViewModel.factory(transport)
+    }
+
+    // QFLX-70 Fix page: HTTPS to the routines API, not SSH - works even when
+    // the SSH bundle is absent or the box itself is the thing that's broken.
+    private val fixViewModel: FixViewModel by viewModels {
+        FixViewModel.factory(HttpRoutineFirer(filesDir), FixHistory(java.io.File(filesDir, "fixer-history.json")))
     }
 
     // The SAME FQDN the SSH transport above already connects to, read from
@@ -65,6 +74,7 @@ class MainActivity : ComponentActivity() {
                     viewModel = viewModel,
                     actionViewModel = actionViewModel,
                     transport = transport,
+                    fixViewModel = fixViewModel,
                     host = provisionedHost,
                 )
             }
