@@ -387,3 +387,22 @@ def test_ports_free_without_profile_fails_closed(tmp_path):
     r, _ = _run(tmp_path, "ports-free")
     assert r.returncode == 2
     assert r.stdout.strip() == ""
+
+
+# --- lookup (QFLX-60: the shared resolver) ---------------------------------------
+
+def test_lookup_prints_the_raw_row_and_touches_nothing(tmp_path):
+    man = MANIFEST + ("  pend:\n    class: systemd\n    ucc_slug: pend\n"
+                      "    unit: qflix-pend.service\n    ucc_dormant: true\n"
+                      "    swap_state: pending-swap\n")
+    r, calls = _run(tmp_path, "lookup", "pend", manifest=man)
+    assert r.returncode == 0, r.stderr
+    # The manifest's own words: no pending-swap rewrite to class ucc.
+    assert r.stdout.strip() == "pend|systemd|pend|qflix-pend.service|1||pending-swap|pend"
+    assert calls == []
+
+
+def test_lookup_unknown_app_is_exit_2(tmp_path):
+    r, calls = _run(tmp_path, "lookup", "nosuch")
+    assert r.returncode == 2
+    assert calls == []

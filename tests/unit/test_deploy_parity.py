@@ -134,9 +134,11 @@ def test_deploy_drift_canary_invokes_the_parity_leg_and_stays_valid_bash():
 def test_installer_stages_every_new_file():
     inst = (REPO / "scripts/configure/240-maintenance-install.sh").read_text(encoding="utf-8")
     for f in ("scripts/maint/lib/swapstate.py", "scripts/maint/lib/runtime_parity.py",
-              "scripts/maint/lib/deploy_parity.py", "scripts/ops/qflix-listen-set.sh"):
+              "scripts/maint/lib/deploy_parity.py", "scripts/ops/qflix-listen-set.sh",
+              "scripts/ops/ucc-uninstall.sh"):
         assert f + " \\" in inst, f
     assert "~/scripts/ops/qflix-listen-set.sh" in inst
+    assert "~/scripts/ops/ucc-uninstall.sh" in inst
 
 
 def test_socket_units_are_compared_too(world):

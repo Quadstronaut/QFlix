@@ -248,6 +248,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/ops/heartbeat-maint-webhook.sh \
     scripts/ops/boot-listeners-snapshot.sh \
     scripts/ops/qflix-listen-set.sh \
+    scripts/ops/ucc-uninstall.sh \
     scripts/lib/ssh.sh \
     scripts/lib/appctl \
     scripts/lib/native.sh \
@@ -480,6 +481,9 @@ chmod +x ~/scripts/ops/boot-listeners-snapshot.sh
 # QFLX-20: records an app listen set before a UCC->native swap (record only).
 cp -f   "$STG"/scripts/ops/qflix-listen-set.sh ~/scripts/ops/
 chmod +x ~/scripts/ops/qflix-listen-set.sh
+# QFLX-60: dormant-UCC uninstaller (dry-run by default; operator-run only).
+cp -f   "$STG"/scripts/ops/ucc-uninstall.sh ~/scripts/ops/
+chmod +x ~/scripts/ops/ucc-uninstall.sh
 mkdir -p ~/scripts/lib ~/scripts/canaries ~/scripts/configure
 cp -f   "$STG"/scripts/lib/ssh.sh                ~/scripts/lib/ssh.sh
 # ~/bin/appctl (QFLX-18): the one lifecycle shim. Callers use the ABSOLUTE

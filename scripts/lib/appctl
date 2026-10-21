@@ -9,6 +9,9 @@
 # Usage:
 #   appctl start|stop|restart|status|version|upgrade <app> [extra args...]
 #   appctl is-native <app>      exit 0 native/dormant, 1 still UCC, 2 unknown
+#   appctl lookup <app>         print the raw manifest row (see lookup()); the
+#                               ONE resolver other scripts reuse (QFLX-60
+#                               ucc-uninstall.sh) so the rules never fork
 #   appctl ports-free           free listen ports per the host policy
 #   appctl proxy-reload         reload the public reverse proxy
 #
@@ -48,7 +51,7 @@ export MANITOBA_SECRETS_DIR="$SECRETS"
 
 usage() {
   echo "usage: appctl {start|stop|restart|status|version|upgrade} <app> [args...]" >&2
-  echo "       appctl is-native <app> | ports-free | proxy-reload" >&2
+  echo "       appctl is-native <app> | lookup <app> | ports-free | proxy-reload" >&2
   exit 64
 }
 die2() { echo "appctl: $*" >&2; exit 2; }
@@ -177,7 +180,7 @@ case "$VERB" in
       ultra) exec app-nginx restart ;;
       *) die2 "no proxy-reload for host profile '$prof' yet (QFLX-41)" ;;
     esac ;;
-  start|stop|restart|status|version|upgrade|is-native) ;;
+  start|stop|restart|status|version|upgrade|is-native|lookup) ;;
   *) usage ;;
 esac
 
@@ -191,6 +194,9 @@ case "$rc" in
      die2 "no lifecycle for $WANT (not in $MANIFEST)" ;;
   *) die2 "no lifecycle for $WANT (manifest $MANIFEST unreadable)" ;;
 esac
+# `lookup` prints the row BEFORE the pending-swap rewrite below: the caller
+# gets the manifest's own words and applies its own policy to them.
+if [ "$VERB" = lookup ]; then _cr "$row"; echo; exit 0; fi
 IFS='|' read -r NAME CLASS SLUG UNIT DORMANT PSEC SWAPSTATE NDIR <<<"$(_cr "$row")"
 
 # PENDING-SWAP (QFLX-20, spec 5.9 step 7). The manifest flip (class systemd,
