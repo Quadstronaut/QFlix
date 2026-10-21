@@ -1839,6 +1839,37 @@ Test-Case 'Test-IsNoiseFinding suppresses "Job failed: Video does not exist" and
     Assert-Equal $null (Test-IsNoiseFinding $mism) 'Mis-matching media items still pages'
 }
 
+# QFLX-59: the 2026-10-16 23:13 sonarr:task-error page. The rule keys on the
+# CAUSE (EAI_AGAIN against a vendor metadata host), never on the
+# "TaskExtensions|Task Error" header, which fronts every *arr task crash.
+Test-Case 'Test-IsNoiseFinding suppresses *arr upstream-metadata DNS EAI_AGAIN by cause, not by header' {
+    $hdr = '2026-10-16 23:13:31.6|Error|TaskExtensions|Task Error'
+    $dns = @{
+        signature = 'sonarr:task-error'
+        summary   = 'Sonarr task error occurred while processing feed'
+        excerpt   = $hdr + "`n[v4.0.20.3014] System.Net.Http.HttpRequestException: Resource temporarily unavailable (services.sonarr.tv:443)`n ---> System.Net.Sockets.SocketException (11): Resource temporarily unavailable"
+    }
+    Assert-Equal 'arr-upstream-metadata-dns-eagain' (Test-IsNoiseFinding $dns) 'real 23:13 record suppressed'
+    # The header alone carries no cause: it must page (no blanket TaskExtensions mute).
+    $bare = @{ signature = 'sonarr:task-error'; summary = 'Sonarr task error occurred while processing feed'; excerpt = $hdr }
+    Assert-Equal $null (Test-IsNoiseFinding $bare) 'bare Task Error header still pages'
+    $nre = @{ signature = 'sonarr:task-error'; summary = 'task error'; excerpt = $hdr + "`n[v4.0.20.3014] System.NullReferenceException: Object reference not set to an instance of an object." }
+    Assert-Equal $null (Test-IsNoiseFinding $nre) 'NullReferenceException Task Error still pages'
+    $lock = @{ signature = 'sonarr:task-error'; summary = 'task error'; excerpt = $hdr + "`n[v4.0.20.3014] System.Data.SQLite.SQLiteException (0x800007AF): database is locked" }
+    Assert-Equal $null (Test-IsNoiseFinding $lock) 'database is locked Task Error still pages'
+    # Bundled: the DNS record plus a second cause must page.
+    $bundle = @{ signature = 'sonarr:task-error'; summary = 'task error'; excerpt = $dns.excerpt + "`nSystem.Data.SQLite.SQLiteException (0x800007AF): database is locked" }
+    Assert-Equal $null (Test-IsNoiseFinding $bundle) 'DNS record bundled with a db fault still pages'
+    # Review 2026-10-20: a MUST-report quota fault in another log shape, or on
+    # the same NLog line as the DNS cause, must page (guards 3 and 4).
+    $quota = @{ signature = 'sonarr:task-error'; summary = 'task error'; excerpt = $dns.excerpt + "`n[2026-10-16 23:14:02.118] [0x7f] ERROR - Unknown system error -122: Disk quota exceeded" }
+    Assert-Equal $null (Test-IsNoiseFinding $quota) 'DNS record bundled with a plex_errors quota line still pages'
+    $oneLine = @{ signature = 'sonarr:task-error'; summary = 'task error'; excerpt = '2026-10-16 23:13:31.6|Error|RssSyncService|Disk quota exceeded; Resource temporarily unavailable (services.sonarr.tv:443)' }
+    Assert-Equal $null (Test-IsNoiseFinding $oneLine) 'quota fault on the DNS NLog line still pages'
+    $tb = @{ signature = 'sonarr:task-error'; summary = 'task error'; excerpt = $dns.excerpt + "`nTraceback (most recent call last):" }
+    Assert-Equal $null (Test-IsNoiseFinding $tb) 'DNS record bundled with a Python Traceback still pages'
+}
+
 # ---------------------------------------------------------------------------
 # 2026-09-02: cross-run page ledger.
 #
