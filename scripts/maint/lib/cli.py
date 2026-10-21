@@ -378,10 +378,16 @@ def _cmd_recover(args: argparse.Namespace, manifest) -> int:
 
 
 def _cmd_window_run(args: argparse.Namespace, manifest) -> int:
-    from lib.window import WindowOrchestrator
+    from lib.window import WindowOrchestrator, WindowOutsideHours
 
     orchestrator = WindowOrchestrator(manifest=manifest, dry_run=args.dry_run)
-    summary = orchestrator.run(force=args.force)
+    try:
+        summary = orchestrator.run(force=args.force)
+    except WindowOutsideHours as exc:
+        # Exit 0: a refused out-of-hours catch-up is the guard WORKING, not a
+        # failed unit (a failed oneshot would page via the timer-liveness path).
+        print(f"SKIP window-outside-hours: {exc}")
+        return 0
     smoke_pass = sum(1 for v in summary.smoke_results.values() if v)
     smoke_total = len(summary.smoke_results)
     print(
@@ -709,7 +715,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     pw_run = window_sub.add_parser("run", help="run maintenance window")
     pw_run.add_argument("--dry-run", action="store_true", dest="dry_run")
-    pw_run.add_argument("--force", action="store_true")
+    pw_run.add_argument("--force", action="store_true",
+                        help="override a live lock AND the outside-window refusal")
 
     window_sub.add_parser("status", help="lock present? since when?")
     window_sub.add_parser("watchdog", help="one-shot stale-lock check")

@@ -5,6 +5,9 @@ Description=Manitoba maintenance — window watchdog timer (Mon 15:00 UTC)
 # Fires at the end of the 4h window. If the window orchestrator crashed
 # mid-run, the lockfile leaks; the watchdog removes it.
 OnCalendar=Mon *-*-* 15:00:00 UTC
+# Persistent=true is safe without a clock guard (QFLX-62 review): the
+# watchdog only REMOVES a lock that is dead/old, so a late catch-up at boot is
+# exactly when a reboot-orphaned lock most needs clearing.
 Persistent=true
 Unit=manitoba-maint-window-watchdog.service
 

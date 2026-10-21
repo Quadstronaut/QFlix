@@ -26,6 +26,14 @@ from lib.health import HealthResult
 from lib.lifecycle import LifecycleError, LifecycleResult
 
 
+@pytest.fixture(autouse=True)
+def _clock_inside_window(monkeypatch):
+    """run() refuses outside the policy window (QFLX-62). The cycle tests below
+    are about the cycle, not the clock, so pin the wall-clock leg to "inside";
+    the QFLX-62 tests at the bottom override it."""
+    monkeypatch.setattr("lib.window._in_policy_window", lambda now=None: True)
+
+
 # ---------------------------------------------------------------------------
 # App / manifest builders
 # ---------------------------------------------------------------------------
@@ -1104,3 +1112,57 @@ def test_run_notify_message_happy_path_format_unchanged(tmp_path):
     post_msg = mock_notify.call_args_list[1].args[0]
     assert "· upgraded 2" in post_msg
     assert "FAILED" not in post_msg
+
+
+# ---------------------------------------------------------------------------
+# QFLX-62. run() refuses outside the host-policy window (Persistent catch-up)
+# ---------------------------------------------------------------------------
+
+def _real_clock_leg(monkeypatch):
+    """Undo the autouse pin and pin the profile to Ultra (Mon 11-15 UTC)."""
+    from lib import window as window_mod
+    monkeypatch.undo()
+    from lib import hostpolicy
+    monkeypatch.setattr(hostpolicy, "load",
+                        lambda check_detect=True: hostpolicy._policy_for("ultra"))
+    return window_mod
+
+
+def test_run_outside_window_refuses_before_any_side_effect(tmp_path, monkeypatch):
+    window_mod = _real_clock_leg(monkeypatch)
+    tue_prime = datetime(2026, 10, 20, 19, 0, tzinfo=timezone.utc)   # a Tuesday
+    with patch("lib.window.notify.notify") as mock_notify,          patch("lib.window.listmonk.fire_template_campaign") as mock_mail:
+        w = window_mod.WindowOrchestrator(state_dir=tmp_path, manifest=_simple_manifest())
+        with pytest.raises(window_mod.WindowOutsideHours):
+            w.run(now=tue_prime)
+    assert not (tmp_path / "lock").exists(), "a refusal must not take the lock"
+    mock_notify.assert_not_called()
+    mock_mail.assert_not_called()
+
+
+def test_run_monday_after_window_end_refuses(tmp_path, monkeypatch):
+    window_mod = _real_clock_leg(monkeypatch)
+    mon_late = datetime(2026, 10, 19, 15, 0, tzinfo=timezone.utc)    # end exclusive
+    w = window_mod.WindowOrchestrator(state_dir=tmp_path, manifest=_simple_manifest())
+    with pytest.raises(window_mod.WindowOutsideHours):
+        w.run(now=mon_late)
+
+
+def test_run_late_catch_up_inside_window_still_runs(tmp_path, monkeypatch):
+    """Box back at 11:02 Monday: the Persistent catch-up must still run."""
+    window_mod = _real_clock_leg(monkeypatch)
+    mon_catchup = datetime(2026, 10, 19, 11, 2, tzinfo=timezone.utc)
+    w = window_mod.WindowOrchestrator(state_dir=tmp_path, manifest=_simple_manifest())
+    w.open = MagicMock(side_effect=RuntimeError("reached open"))
+    with pytest.raises(RuntimeError, match="reached open"):
+        w.run(now=mon_catchup)
+
+
+def test_run_force_overrides_outside_window(tmp_path, monkeypatch):
+    window_mod = _real_clock_leg(monkeypatch)
+    tue_prime = datetime(2026, 10, 20, 19, 0, tzinfo=timezone.utc)
+    w = window_mod.WindowOrchestrator(state_dir=tmp_path, manifest=_simple_manifest())
+    w.open = MagicMock(side_effect=RuntimeError("reached open"))
+    with pytest.raises(RuntimeError, match="reached open"):
+        w.run(force=True, now=tue_prime)
+    w.open.assert_called_once_with(force=True)
