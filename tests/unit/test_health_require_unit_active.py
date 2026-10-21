@@ -99,6 +99,7 @@ def _push(parity, probe_ok=True, strikes=1):
                return_value=HealthResult(ok=probe_ok, latency_ms=2, reason="ok" if probe_ok else "down")), \
          patch("lib.pusher.parity_mod.check", return_value=parity), \
          patch("lib.pusher.recovery_mod.trigger_async") as trig, \
+         patch("lib.pusher.dormant_mod.trigger_async", return_value="started") as dstop, \
          patch("lib.pusher.suppression_mod.in_maintenance_window", return_value=False), \
          patch("lib.pusher.suppression_mod.push_suppressed", return_value=None), \
          patch("lib.pusher.suppression_mod.in_pause_window", return_value=False), \
@@ -106,6 +107,7 @@ def _push(parity, probe_ok=True, strikes=1):
          patch("lib.pusher.requests.get", return_value=resp) as get:
         pusher.push_once(manifest=m, tokens={"sonarr": "tok"})
     params = get.call_args.kwargs["params"]
+    _push.dstop = dstop
     return params, trig
 
 
@@ -119,6 +121,25 @@ def test_pusher_never_auto_restarts_for_a_parity_violation():
     params, trig = _push(["2 process trees match ExecStart /x"], strikes=1)
     trig.assert_not_called()
     assert "operator needed" in params["msg"]
+
+
+def test_pusher_stops_a_woken_dormant_container_on_first_sighting():
+    # QFLX-55: strike 1 of 3, and still the stop goes out immediately.
+    _, trig = _push(["dormant container woken: sonarr pid(s) 7"], strikes=3)
+    _push.dstop.assert_called_once()
+    trig.assert_not_called()                      # never a native restart
+
+
+def test_pusher_labels_the_dormant_stop_at_the_threshold():
+    params, trig = _push(["dormant container woken: sonarr pid(s) 7"], strikes=1)
+    assert "dormant container stop started" in params["msg"]
+    assert "operator needed" not in params["msg"]
+    trig.assert_not_called()
+
+
+def test_pusher_does_not_dormant_stop_other_parity_violations():
+    _push(["2 process trees match ExecStart /x"], strikes=1)
+    _push.dstop.assert_not_called()
 
 
 def test_pusher_still_auto_heals_ordinary_failures():

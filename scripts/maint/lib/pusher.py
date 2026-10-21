@@ -20,6 +20,7 @@ from typing import Optional
 
 import requests
 
+from lib import dormant_stop as dormant_mod
 from lib import fleet as fleet_mod
 from lib import health as health_mod
 from lib import manifest as manifest_mod
@@ -217,6 +218,10 @@ def push_once(
         # other app. A violation turns the push red even when the probe is
         # green (a woken container answering 200 is exactly that case).
         parity = parity_mod.check(app)
+        # QFLX-55 interim remedy: a woken dormant container is stopped on the
+        # FIRST sighting, not after the strike threshold. Two runtimes sharing
+        # one config dir is the harm, and every minute of it counts.
+        dormant_stop = dormant_mod.trigger_async(app) if dormant_mod.is_woken(parity) else None
         if parity:
             detail = f"{parity_mod.PARITY_PREFIX} " + "; ".join(parity)
             if not result.ok:
@@ -304,9 +309,12 @@ def push_once(
                 # permanent-failure (counter stays, but trigger skipped).
                 if result.reason.startswith(parity_mod.PARITY_PREFIX):
                     # Restarting the native unit cannot fix a woken container
-                    # or a stray listener; it needs the operator (rollback
-                    # step 0: re-suppress + mask the container).
-                    params["msg"] = f"{result.reason} [strike {n}/{_STRIKE_THRESHOLD}] [parity: operator needed, no auto-restart]"
+                    # or a stray listener. A woken container gets the dormant
+                    # stop (above); anything else needs the operator.
+                    if dormant_stop is not None:
+                        params["msg"] = f"{result.reason} [strike {n}/{_STRIKE_THRESHOLD}] [parity: dormant container stop {dormant_stop}]"
+                    else:
+                        params["msg"] = f"{result.reason} [strike {n}/{_STRIKE_THRESHOLD}] [parity: operator needed, no auto-restart]"
                     log.warning("auto-heal %s: strike %d/%d -> recovery SKIPPED (runtime-parity violation)",
                                 app.name, n, _STRIKE_THRESHOLD)
                 elif suppression_mod.recovery_suppressed(app):
