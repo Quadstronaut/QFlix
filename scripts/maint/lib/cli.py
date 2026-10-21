@@ -366,10 +366,21 @@ def _cmd_recover(args: argparse.Namespace, manifest) -> int:
 
     # Validate app exists before entering recovery
     try:
-        manifest.app(args.app)
+        app = manifest.app(args.app)
     except KeyError:
         print(f"error: unknown app '{args.app}'", file=sys.stderr)
         return 1
+
+    # Same gate as recovery.trigger_async (QFLX-64): a push-suppressed app
+    # (pending-swap container that must stay dormant) or a ucc app during UCC
+    # maintenance is down ON PURPOSE -- a habitual `recover` would wake it.
+    # --force is the explicit operator override; refusal exits 2 (not recovered).
+    from lib import suppression as suppression_mod
+    if not getattr(args, "force", False) and suppression_mod.recovery_suppressed(app):
+        reason = suppression_mod.push_suppressed(app.name) or "UCC maintenance active"
+        print(f"refused: recovery for '{args.app}' is suppressed ({reason}); "
+              f"re-run with --force to override", file=sys.stderr)
+        return 2
 
     result = recovery_mod.run(args.app, manifest=manifest)
     print(result)
@@ -701,6 +712,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # recover
     p_recover = sub.add_parser("recover", help="manual recovery")
     p_recover.add_argument("app")
+    p_recover.add_argument("--force", action="store_true",
+                           help="recover even if the app is push-suppressed / UCC-maint gated")
 
     # window
     p_window = sub.add_parser("window", help="maintenance window commands")
