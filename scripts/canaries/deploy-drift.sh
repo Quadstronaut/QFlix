@@ -25,6 +25,17 @@
 # deployed). Files DEPLOYED but not in git are the interesting direction: either
 # a decommission that never finished, or code running with no source of truth.
 #
+# WORKSTATION-RUN CONFIGURE SCRIPTS (QFLX-52)
+# Most of scripts/configure/ runs FROM THE WORKSTATION. Hand copies of three of
+# them sat in ~/scripts/configure and went red here on every repo edit -- drift
+# no installer could ever clear. So ~/scripts/configure/<name> is compared only
+# when an installer at REF ships it (copies a file TO that path; the rule lives
+# in deploy_parity.shipped_configure, derived from the installers, not a hand
+# list). A configure file that is deployed but NOT shipped is the same
+# interesting direction as an orphan: it has a source in git but no deploy path,
+# so it is reported (deploy-unshipped), never silently excluded. Fix: rm it from
+# the box, or make an installer ship it if the box really runs it.
+#
 # GENERATED FILES
 # Some deployed scripts are legitimately produced ON the box by an installer
 # heredoc rather than copied from git. Those get declared in is_generated below.
@@ -40,6 +51,8 @@
 #                      possibly-stale ref, so it is reported, never silently passed
 #   deploy-drift       >=1 deployed file differs from origin/master
 #   deploy-orphan      >=1 deployed file has no counterpart in git
+#   deploy-unshipped   >=1 deployed configure/ script no installer ships
+#                      (a hand copy; the workstation runs it, not the box)
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -71,8 +84,19 @@ if ! git -C "$SRC" fetch -q origin 2>/dev/null; then
   exit 1
 fi
 
-drift=0; orphan=0; match=0; skipped=0; modedrift=0
-drift_list=""; orphan_list=""; modedrift_list=""
+# configure/ basenames some installer at REF ships (QFLX-52). Streamed from the
+# object store like the parity leg below, so the rule of the commit under test
+# runs. Empty or failed = could not decide, reported; an empty set read as
+# "ship nothing" would red every configure script for the wrong reason.
+SHIPPED=$(git -C "$SRC" show "$REF:scripts/maint/lib/deploy_parity.py" 2>/dev/null \
+  | python3 - --src "$SRC" --ref "$REF" --shipped-configure 2>/dev/null)
+if [ -z "$SHIPPED" ]; then
+  printf "STAGE=deploy-parity-error msg=cannot-derive-shipped-configure-scripts-from-%s\n" "$REF" >&2
+  exit 1
+fi
+
+drift=0; orphan=0; match=0; skipped=0; modedrift=0; unshipped=0
+drift_list=""; orphan_list=""; modedrift_list=""; unshipped_list=""
 
 while IFS= read -r f; do
   rel="${f#$DEPLOYED/}"
@@ -80,6 +104,15 @@ while IFS= read -r f; do
     *.venv/*|*site-packages/*|*node_modules/*|*__pycache__/*) continue ;;
   esac
   if is_generated "$rel"; then skipped=$((skipped+1)); continue; fi
+  case "$rel" in
+    configure/*)
+      # Exact-line match on the basename: grep -x so 80-x.sh never matches
+      # 180-x.sh, -F so dots are literal.
+      if ! printf "%s\n" "$SHIPPED" | grep -qxF -- "${rel#configure/}"; then
+        unshipped=$((unshipped+1)); unshipped_list="$unshipped_list $rel"
+        continue
+      fi ;;
+  esac
 
   if git -C "$SRC" cat-file -e "$REF:scripts/$rel" 2>/dev/null; then
     a=$(md5sum < "$f" | cut -d" " -f1)
@@ -122,6 +155,11 @@ fi
 if [ "$orphan" -gt 0 ]; then
   printf "STAGE=deploy-orphan msg=%d-deployed-files-absent-from-git files=%s\n" \
     "$orphan" "$(echo $orphan_list | cut -c1-160)" >&2
+  exit 1
+fi
+if [ "$unshipped" -gt 0 ]; then
+  printf "STAGE=deploy-unshipped msg=%d-deployed-configure-scripts-no-installer-ships-rm-or-ship files=%s\n" \
+    "$unshipped" "$(echo $unshipped_list | cut -c1-160)" >&2
   exit 1
 fi
 

@@ -151,6 +151,12 @@ request id and skips the cleanup step.
   decommission, or code running with no source of truth. `fetch-failed` is reported rather
   than passed, because comparing against a stale ref makes everything look clean — which is
   the exact failure this canary exists to prevent.
+- `deploy-unshipped` — `deploy-drift.sh` (QFLX-52): a `~/scripts/configure/` script is on the
+  box but no installer ships it. Most configure scripts run from the workstation; a hand copy on
+  the box can never be brought into agreement by any deploy, so instead of comparing it the
+  canary names it. The shipped set is derived from the installers' copy lines
+  (`deploy_parity.shipped_configure`), never hand-listed, so the next hand copy reads red here
+  rather than silently excluded. Fix: `rm` the box copy, or have an installer ship it.
 - 0 — pass; stdout has the `PASS: ...` line (or, for newsletter-digest-stale, `digest-fresh ...` / `not-in-eval-window ...` / `digest-check-inconclusive ...`) that Kuma stores as `msg=`
 - non-zero — fail; stderr's `STAGE=... msg=...` line becomes Kuma `msg=`
 
