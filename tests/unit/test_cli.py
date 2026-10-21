@@ -359,6 +359,20 @@ class TestWindowRun:
         # force=True should be passed to run()
         assert run_kwargs == call(force=True)
 
+    def test_cli_window_run_outside_hours_is_named_skip_exit_0(self, capsys):
+        """QFLX-62: a Persistent catch-up outside the window is refused by
+        run(); the CLI turns that into a named SKIP and exit 0 (not a failed
+        unit)."""
+        from lib.window import WindowOutsideHours
+        mock_orch = MagicMock()
+        mock_orch.return_value.run.side_effect = WindowOutsideHours("outside")
+
+        with patch("lib.window.WindowOrchestrator", mock_orch):
+            rc = main(["window", "run"], manifest_path=_VALID_FIXTURE)
+
+        assert rc == 0
+        assert "SKIP window-outside-hours" in capsys.readouterr().out
+
 
 # ---------------------------------------------------------------------------
 # window status

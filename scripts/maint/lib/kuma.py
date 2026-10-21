@@ -476,8 +476,10 @@ class KumaWebhookHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if status == 0:
-            lock_file = state_dir / "lock"
-            if lock_file.exists():
+            # Same predicate as the pusher (QFLX-62): a lock left behind by a
+            # reboot mid-window is ignored, so a real outage still recovers.
+            from lib import suppression as _suppression_mod  # noqa: PLC0415
+            if _suppression_mod.in_maintenance_window(state_dir=state_dir):
                 event = {
                     "timestamp": _utc_now_iso(),
                     "monitor": monitor_name,

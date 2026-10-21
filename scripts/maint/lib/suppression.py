@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -42,26 +42,135 @@ def _state_dir() -> Path:
     return Path(env) if env else Path.home() / ".opt" / "maint"
 
 
-def in_maintenance_window(*, state_dir: Optional[Path] = None) -> bool:
-    """True iff the weekly maintenance-window lockfile is present.
+# A lock older than this is litter, not a window (QFLX-62). The window service
+# has a 4h10m TimeoutStartSec (manitoba-maint-window.service), so no live run
+# can hold the lock longer; +20m grace absorbs close()/notify tail latency.
+_LOCK_HARD_MAX = timedelta(hours=4, minutes=30)
+# btime is derived (now - uptime), so it can wobble by a second; a lock is only
+# "pre-boot" when it predates btime by more than this. Errs toward honouring.
+_BOOT_SKEW_S = 5.0
+
+# Locks already reported stale by this process: the pusher asks every cycle,
+# and one journald line per lock is evidence, sixty an hour is noise.
+_reported_stale: set = set()
+
+
+def _boot_time() -> Optional[float]:
+    """Kernel boot time (epoch s) from /proc/stat `btime`, or None when
+    unreadable (non-Linux, sandboxed). None means "no clock evidence", never
+    "stale" -- the caller keeps honouring the lock."""
+    try:
+        with open("/proc/stat", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("btime "):
+                    return float(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _lock_started(lock_path: Path, start_iso: str) -> Optional[float]:
+    """When the lock was taken (epoch s): the ISO stamp window.open() writes on
+    line 2, else the file mtime (open() writes the file once, never touches it)."""
+    if start_iso:
+        try:
+            dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except ValueError:
+            pass
+    try:
+        return lock_path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def lock_stale_reason(lock_path: Path, *, now: Optional[datetime] = None,
+                      boot_time: Optional[float] = None,
+                      read_boot: bool = True) -> Optional[str]:
+    """Why the window lock at *lock_path* is litter, or None to honour it.
+
+    window.open() writes "<pid>
+<start ISO>
+". A reboot mid-window kills the
+    orchestrator without close(), so the lock survives and -- before QFLX-62 --
+    muted pusher recovery until the Mon 15:00 watchdog. Stale when ANY clear
+    piece of evidence says so:
+      * pid-dead   -- kill(0) says no such process (posix only);
+      * pre-boot   -- taken before the kernel booted (catches pid REUSE after
+                      a reboot, which pid-dead alone would miss);
+      * hard-max   -- older than any live window run can be.
+    Each leg that cannot judge (unparseable lock, no /proc/stat, no stamp)
+    abstains; all abstaining = honour the lock, i.e. the pre-QFLX-62 behaviour.
+    """
+    try:
+        lines = lock_path.read_text(encoding="utf-8").splitlines()
+        pid = int(lines[0].strip())
+    except (OSError, ValueError, IndexError):
+        return None                       # unreadable: cannot judge, honour it
+    start_iso = lines[1].strip() if len(lines) > 1 else ""
+
+    if os.name == "posix" and pid > 0:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return f"pid-dead (pid={pid})"
+        except OSError:
+            pass                          # EPERM etc: exists, not ours -- alive
+
+    started = _lock_started(lock_path, start_iso)
+    if started is None:
+        return None
+    if boot_time is None and read_boot:
+        boot_time = _boot_time()
+    if boot_time is not None and started < boot_time - _BOOT_SKEW_S:
+        return f"pre-boot (lock {start_iso or 'mtime'} < btime {int(boot_time)})"
+    now_ts = (now or datetime.now(timezone.utc)).timestamp()
+    if now_ts - started > _LOCK_HARD_MAX.total_seconds():
+        return f"hard-max (lock {start_iso or 'mtime'} older than {_LOCK_HARD_MAX})"
+    return None
+
+
+def in_maintenance_window(*, state_dir: Optional[Path] = None,
+                          now: Optional[datetime] = None,
+                          boot_time: Optional[float] = None) -> bool:
+    """True iff the weekly maintenance-window lockfile is present AND live.
 
     The window orchestrator holds ``$STATE_DIR/lock`` for the whole Monday
     window, which overlaps the cp-upgrade sweep (apps are intentionally cycled).
-    BOTH recovery entry points must consult this so neither restarts an app the
-    window is mid-upgrade on. The Kuma webhook (lib/kuma.do_POST) already does;
-    the pusher — the operative auto-heal path — must too.
+    BOTH recovery entry points (pusher + lib/kuma.do_POST) consult this so
+    neither restarts an app the window is mid-upgrade on.
 
-    Simple existence check, mirroring kuma.do_POST: the standalone
-    window-watchdog clears a stale lock at 15:00 UTC, so a lingering lock can't
-    silence alerting indefinitely. Fail-open: any error → False (recover as
-    normal), never silence a real outage on a path glitch.
+    QFLX-62: existence alone is not enough -- a reboot mid-window leaves the
+    lock behind and the pusher would push every app UP with [maint-window] and
+    skip recovery until the 15:00 watchdog. lock_stale_reason() ignores such a
+    lock, but only on clear evidence; when it cannot judge, the lock wins.
+    Fail-open on path errors: any error -> False (recover as normal), never
+    silence a real outage on a path glitch.
     """
     try:
         sd = state_dir if state_dir is not None else _state_dir()
-        return (sd / _WINDOW_LOCK_FILE).exists()
+        lock = sd / _WINDOW_LOCK_FILE
+        if not lock.exists():
+            return False
     except Exception as exc:
         print(f"WARNING: suppression.in_maintenance_window: {exc}", file=sys.stderr)
         return False
+    try:
+        why = lock_stale_reason(lock, now=now, boot_time=boot_time)
+    except Exception as exc:              # judging failed: honour the lock
+        print(f"WARNING: suppression.in_maintenance_window: stale check: {exc}",
+              file=sys.stderr)
+        return True
+    if why is None:
+        return True
+    key = (str(lock), why)
+    if key not in _reported_stale:
+        _reported_stale.add(key)
+        print(f"WARNING: maint-window lock {lock} ignored as stale: {why}; "
+              "recovery proceeds (window-watchdog removes it)", file=sys.stderr)
+    return False
 
 
 def push_suppressed(app_name: str) -> Optional[str]:

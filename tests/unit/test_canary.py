@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -377,7 +378,8 @@ class TestCanaryPushDuringMaintenanceWindow:
         manifest = _make_manifest_with_canary()
         tokens_file = tmp_path / "tokens.json"
         tokens_file.write_text('{"canary-movie": "tok-canary-movie"}')
-        (tmp_path / "lock").write_text("1\n2026-06-30T11:00:00Z\n")  # window lock present
+        (tmp_path / "lock").write_text(  # live window lock: own pid, stamped now (QFLX-62)
+            f"{os.getpid()}\n{datetime.now(timezone.utc).isoformat()}\n")
 
         monkeypatch.setenv("MANITOBA_KUMA_TOKENS", str(tokens_file))
         monkeypatch.setenv("MANITOBA_KUMA_URL", "http://127.0.0.1:42005")

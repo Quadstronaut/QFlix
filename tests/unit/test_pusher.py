@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 import signal
 import threading
 import time
@@ -566,7 +567,8 @@ class TestPusherMaintenanceWindow:
         from lib import pusher, health, recovery
         pusher.reset_strike_counter()
         monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
-        (tmp_path / "lock").write_text("1\n2026-06-30T11:00:00Z\n", encoding="utf-8")
+        (tmp_path / "lock").write_text(  # live lock: own pid, stamped now (QFLX-62)
+            f"{os.getpid()}\n{datetime.now(timezone.utc).isoformat()}\n", encoding="utf-8")
 
         app = _make_app("sonarr", "Sonarr")
         manifest = _make_manifest(app)
