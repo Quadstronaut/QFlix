@@ -134,9 +134,31 @@ def test_deploy_drift_canary_invokes_the_parity_leg_and_stays_valid_bash():
 def test_installer_stages_every_new_file():
     inst = (REPO / "scripts/configure/240-maintenance-install.sh").read_text(encoding="utf-8")
     for f in ("scripts/maint/lib/swapstate.py", "scripts/maint/lib/runtime_parity.py",
-              "scripts/maint/lib/deploy_parity.py", "scripts/ops/qflix-listen-set.sh"):
+              "scripts/maint/lib/deploy_parity.py", "scripts/ops/qflix-listen-set.sh",
+              "scripts/ops/ucc-uninstall.sh"):
         assert f + " \\" in inst, f
     assert "~/scripts/ops/qflix-listen-set.sh" in inst
+    assert "~/scripts/ops/ucc-uninstall.sh" in inst
+
+
+def test_staged_lib_modules_import_only_staged_lib_modules():
+    """QFLX-55: 240 stages lib/*.py from an explicit list. A new module the
+    pusher imports but 240 does not ship crashes the daemon on the box at import
+    time (dormant_stop.py nearly went out that way). Close the list over imports."""
+    import re
+    inst = (REPO / "scripts/configure/240-maintenance-install.sh").read_text(encoding="utf-8")
+    staged = set(re.findall(r"scripts/maint/lib/(\w+)\.py \\", inst))
+    pat = re.compile(r"^\s*(?:from lib import ([\w ,]+?)(?:\s+as\s+\w+)?\s*$|from lib\.(\w+) import|import lib\.(\w+))",
+                     re.M)
+    missing = {}
+    for mod in sorted(staged):
+        src = (REPO / "scripts/maint/lib" / f"{mod}.py").read_text(encoding="utf-8")
+        for names, dotted, imp in pat.findall(src):
+            targets = [dotted or imp] if (dotted or imp) else [n.split(" as ")[0].strip() for n in names.split(",")]
+            for t in targets:
+                if t and (REPO / "scripts/maint/lib" / f"{t}.py").exists() and t not in staged:
+                    missing.setdefault(mod, []).append(t)
+    assert not missing, f"staged module imports an unstaged lib module (add it to 240): {missing}"
 
 
 def test_socket_units_are_compared_too(world):
@@ -151,3 +173,113 @@ def test_socket_units_are_compared_too(world):
     assert _cmp(repo, home)["drift"] == [f"{rel}:differs"]
     dst.write_bytes((repo / rel).read_bytes())
     assert _cmp(repo, home)["drift"] == []
+
+
+
+# -- QFLX-52: configure/ scripts are compared only when an installer ships them --
+
+def test_ship_rule_counts_copies_to_configure_and_nothing_else():
+    text = "\n".join([
+        'cp -f   "$STG"/scripts/configure/a.sh ~/scripts/configure/a.sh',
+        '    cp -f "$STG"/x/b.py $HOME/scripts/configure/b.py   # indented, trailing comment',
+        'install -m 755 src/c.sh ${HOME}/scripts/configure/c.sh',
+        'rm -f ~/scripts/configure/dead.sh',          # decommission, not shipping
+        '      ~/scripts/configure/cont.sh \\',        # rm continuation line
+        '# cp -f x ~/scripts/configure/commented.sh',  # comment
+        'chmod +x ~/scripts/configure/a.sh',
+        'sshm "~/scripts/configure/run.sh --execute"',  # invoking, not shipping
+    ])
+    assert deploy_parity.shipped_configure_from_text(text) == {"a.sh", "b.py", "c.sh"}
+
+
+def test_shipped_configure_reads_installers_at_the_ref_not_the_worktree(world):
+    repo, _, _ = world
+    inst = repo / "scripts/configure/240-maintenance-install.sh"
+    inst.parent.mkdir(parents=True)
+    inst.write_text('cp -f "$STG"/scripts/configure/240-maintenance-install.sh '
+                    '~/scripts/configure/240-maintenance-install.sh\n')
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "installer")
+    # An uncommitted edit must not change the answer: the canary judges the ref.
+    inst.write_text(inst.read_text() + 'cp -f x ~/scripts/configure/wip.sh\n')
+    assert deploy_parity.shipped_configure(str(repo), "master") == {"240-maintenance-install.sh"}
+
+
+def test_shipped_configure_cli_refuses_an_empty_set_and_a_bad_ref(world, capsys):
+    repo, _, _ = world             # fixture repo has no installer: nothing ships
+    assert deploy_parity.main(["--src", str(repo), "--ref", "master", "--shipped-configure"]) == 2
+    assert "parser-broken" in capsys.readouterr().err
+    assert deploy_parity.main(["--src", str(repo), "--ref", "nope", "--shipped-configure"]) == 2
+
+
+def test_real_installers_ship_the_box_run_configure_scripts_only():
+    """Pin today's derivation against the real tree: the box-run scripts are
+    shipped, the QFLX-52 hand copies (workstation-run) are not."""
+    text = "\n".join(p.read_text(encoding="utf-8", errors="ignore")
+                     for d in deploy_parity.INSTALLER_DIRS if (REPO / d).is_dir()
+                     for p in sorted((REPO / d).rglob("*")) if p.is_file())
+    shipped = deploy_parity.shipped_configure_from_text(text)
+    # 59b is box-run (plexapi venv, entitlement runbook): shipped, or it reads unshipped.
+    assert {"240-maintenance-install.sh", "55-kometa-install.sh",
+            "59b-plex-welcome-library.py",
+            "300-native-unpackerr-install.sh", "312-native-postgres-install.sh"} <= shipped
+    assert not shipped & {"80-vlogs-install.sh", "90-sabnzbd-usenet-install.sh",
+                          "91-nginx-root-to-dash.sh"}
+    # Every shipped name is a real file, or the canary would compare against nothing.
+    assert all((REPO / "scripts/configure" / n).is_file() for n in shipped)
+
+
+def test_drift_scope_constants_match_the_canary_walk():
+    """deploy_parity mirrors deploy-drift.sh's find globs and skip list so tests
+    can derive the covered set; pin the two so they cannot drift apart."""
+    sh = (REPO / "scripts/canaries/deploy-drift.sh").read_text(encoding="utf-8")
+    globs = " -o ".join(f'-name "*{s}"' for s in deploy_parity.DRIFT_SUFFIXES)
+    assert f'find "$DEPLOYED" -type f \\( {globs} \\)' in sh
+    skip = "|".join(f"*{p}/*" for p in deploy_parity.DRIFT_SKIP_PARTS)
+    assert f"    {skip}) continue ;;" in sh
+    assert "--shipped-configure" in sh and "STAGE=deploy-unshipped" in sh
+    assert deploy_parity.in_drift_scope("maint/x.py")
+    assert not deploy_parity.in_drift_scope("maint/.venv/lib/x.py")
+    assert not deploy_parity.in_drift_scope("data/seerr-listen.cjs")
+
+
+_TOOLS = all(shutil.which(t) for t in ("bash", "md5sum", "python3"))
+
+
+@pytest.mark.skipif(os.name != "posix" or not _TOOLS, reason="runs the canary body; needs posix bash")
+def test_canary_body_end_to_end_unshipped_then_clean(world):
+    """Run the real remote body (the text inside sshm '...') against a fixture
+    box: a hand-copied configure script reads deploy-unshipped, a shipped one
+    is compared, and removing the hand copy clears it."""
+    repo, home, _ = world
+    inst = "scripts/configure/240-maintenance-install.sh"
+    (repo / "scripts/configure").mkdir(parents=True)
+    (repo / inst).write_text('cp -f "$STG"/' + inst + " ~/" + inst + "\n")
+    (repo / "scripts/configure/80-vlogs-install.sh").write_text("echo ws\n")
+    lib = repo / "scripts/maint/lib"
+    lib.mkdir(parents=True)
+    shutil.copyfile(REPO / "scripts/maint/lib/deploy_parity.py", lib / "deploy_parity.py")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "box")
+    _git(repo, "remote", "add", "origin", str(repo))
+    dep = home / "scripts"
+    (dep / "configure").mkdir(parents=True)
+    shutil.copyfile(repo / inst, dep / "configure/240-maintenance-install.sh")
+    shutil.copyfile(repo / "scripts/configure/80-vlogs-install.sh",
+                    dep / "configure/80-vlogs-install.sh")
+    sh = (REPO / "scripts/canaries/deploy-drift.sh").read_text(encoding="utf-8")
+    body = sh.split("RES=$(sshm '", 1)[1].split("') || RC=$?", 1)[0]
+    env = {**os.environ, "HOME": str(home), "QFLIX_SRC_DIR": str(repo),
+           "QFLIX_DEPLOYED_DIR": str(dep), "QFLIX_DRIFT_REF": "master"}
+
+    def run():
+        return subprocess.run(["bash", "-c", body], env=env, capture_output=True, text=True)
+
+    r = run()
+    assert r.returncode == 1 and "STAGE=deploy-unshipped" in r.stderr, r.stderr
+    assert "configure/80-vlogs-install.sh" in r.stderr
+    assert "240-maintenance-install.sh" not in r.stderr
+    (dep / "configure/80-vlogs-install.sh").unlink()
+    r = run()
+    assert r.returncode == 0, r.stderr
+    assert "PASS: deploy-drift - 1 deployed files match" in r.stdout

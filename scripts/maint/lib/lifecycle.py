@@ -8,7 +8,9 @@ Dispatches start/stop/restart/status on app.class_:
   library  — all four return not-applicable
 
 Phase 16 (2026-05-09): upgrade/downgrade are real for all four classes.
-Dispatch on app.upgrade.kind for non-ucc; ucc upgrades shell to `app-<slug> update`.
+Dispatch on app.upgrade.kind for non-ucc; ucc upgrades shell to `app-<slug> upgrade`
+(QFLX-65: the UCC CLI has no `update` verb), with no prior stop, and a failed
+upgrade is followed by `app-<slug> start` so it never leaves the app down.
 Honors version_pin.max ceiling. Rolls back on post-upgrade health failure when a
 previous_version is supplied. State is written via lib.state.record().
 
@@ -411,12 +413,25 @@ def _validate_max(app: App, target_version: str) -> None:
         )
 
 
+# `app-<slug> upgrade` returns once the container is recreated, but the app
+# inside (Plex scanning its DB, an arr running migrations) can take minutes to
+# answer. A 15s window would log a good ucc upgrade as upgrade_failed.
+_UCC_POST_HEALTH_MIN_WINDOW_S = 180.0
+
+
+def _post_health_window_s(app: App, timeout_s: float) -> float:
+    window = timeout_s * 3
+    if app.class_ == "ucc":
+        window = max(window, _UCC_POST_HEALTH_MIN_WINDOW_S)
+    return window
+
+
 def _post_health_probe(app: App) -> tuple[bool, str]:
-    """Probe health repeatedly within health_timeout_s * 3 window."""
+    """Probe health repeatedly within health_timeout_s * 3 window (ucc: >=180s)."""
     from lib import health as health_mod
 
     timeout_s = float(app.defaults.get("health_timeout_s", 5.0))
-    window = timeout_s * 3
+    window = _post_health_window_s(app, timeout_s)
     deadline = time.monotonic() + window
     last_reason = "no probe"
     while time.monotonic() < deadline:
@@ -543,14 +558,53 @@ def _apply_zip_swap(app: App, target_version: str, timeout_s: float) -> Lifecycl
     return _ok()
 
 
-def _apply_ucc_update(app: App, target_version: Optional[str], timeout_s: float) -> LifecycleResult:
-    # `update` would rebuild and START the container: never on a dormant app (I-9).
-    if _ucc_dormant(app):
-        return _dormant_refusal(app, "update")
+# QFLX-65: slugs whose `app-<slug> upgrade` needs extra argv lifecycle cannot
+# supply. Refused up front with the reason, never run bare.
+_UCC_UPGRADE_REFUSED = {
+    # A bare `app-postgres upgrade` (no -p <old pw>) ROTATES the listmonk DB
+    # password, and -p puts the password in argv (F-23). Native postgres
+    # upgrades go through its manifest tarball_swap block (QFLX-37).
+    "postgres": "the UCC postgres upgrade needs -p <password> (bare upgrade rotates "
+                "the listmonk DB password, QFLX-37/F-23)",
+}
+
+# Same per-app budget app-upgrade-all.sh gives `app-<slug> upgrade` (8m): the
+# 60s lifecycle default would kill a container rebuild mid-pull.
+_UCC_UPGRADE_MIN_TIMEOUT_S = 480.0
+
+
+def _apply_ucc_upgrade(app: App, target_version: Optional[str], timeout_s: float) -> LifecycleResult:
+    """`app-<slug> upgrade` (UCC verbs, box `app-sonarr --help`: backup install
+    migrate password restart start stop uninstall upgrade version; there is NO
+    `update`). UCC picks the version itself, so `target_version` is advisory.
+
+    No stop first: the weekly app-upgrade-all.sh sweep runs a bare `upgrade`
+    on a running app every Monday, so that is the box-proven call. The old
+    stop-then-`update` left the app STOPPED when the bogus verb failed.
+    """
     slug = app.raw.get("ucc_slug") or app.name
-    # Stop first; tolerate failure (app may already be stopped)
-    _run(["app-" + slug, "stop"], timeout_s)
-    return _run(["app-" + slug, "update"], timeout_s)
+    # `upgrade` rebuilds and STARTS the container: never on a dormant app (I-9).
+    if _ucc_dormant(app):
+        return _dormant_refusal(app, "upgrade")
+    refusal = _UCC_UPGRADE_REFUSED.get(slug) or _UCC_UPGRADE_REFUSED.get(app.name)
+    if refusal:
+        return _fail(f"refused: {refusal}")
+    t = max(timeout_s, _UCC_UPGRADE_MIN_TIMEOUT_S)
+    r = _run(["app-" + slug, "upgrade"], t)
+    if r.ok:
+        return r
+    # A failed upgrade may have stopped the container part-way. Try to bring it
+    # back so a failed upgrade costs a version, not an outage; report both, and
+    # the result stays a failure either way (the upgrade did not happen).
+    s = _run(["app-" + slug, "start"], timeout_s)
+    start_seg = "start ok" if s.ok else f"start FAILED ({s.reason})"
+    return LifecycleResult(
+        ok=False,
+        duration_s=r.duration_s + s.duration_s,
+        stdout=r.stdout,
+        stderr=r.stderr,
+        reason=f"app-{slug} upgrade failed ({r.reason}); {start_seg}",
+    )
 
 
 def _restart_after_upgrade(app: App, timeout_s: float) -> LifecycleResult:
@@ -560,14 +614,14 @@ def _restart_after_upgrade(app: App, timeout_s: float) -> LifecycleResult:
             return r
         # Through _systemd_verb so a start-limit-hit unit is reset-failed first.
         return _systemd_verb(app, "restart", timeout_s)
-    # ucc: app-<slug> update typically restarts on its own — no-op here
+    # ucc: `app-<slug> upgrade` recreates and starts the container itself — no-op here
     # cron, library: no service to restart
     return _ok()
 
 
 def _apply_upgrade(app: App, target_version: str, timeout_s: float) -> LifecycleResult:
     if app.class_ == "ucc":
-        return _apply_ucc_update(app, target_version, timeout_s)
+        return _apply_ucc_upgrade(app, target_version, timeout_s)
     if not app.upgrade:
         raise LifecycleError(f"no upgrade config for {app.name}")
     kind = app.upgrade.kind
@@ -684,8 +738,12 @@ def upgrade(
         _record_state(app, "upgraded", target, "ok")
         return _ok(f"upgraded to {target}")
 
-    # Health failed — try rollback if we have a previous version
-    if _allow_rollback and previous_version:
+    # Health failed — try rollback if we have a previous version. Never for ucc:
+    # UCC picks the version, so "rolling back" would re-run `app-<slug> upgrade`
+    # (a second rebuild to latest) and then record rolled_back at a version the
+    # box is not on, corrupting state.json's version/previous_version. Same rule
+    # as downgrade(): ucc has no version selection, so no rollback.
+    if _allow_rollback and previous_version and app.class_ != "ucc":
         try:
             rb = upgrade(
                 app,
@@ -710,6 +768,9 @@ def upgrade(
         )
 
     _record_state(app, "upgrade_failed", target, f"health: {reason}")
+    if app.class_ == "ucc":
+        return _fail(f"post-upgrade health failed: {reason} "
+                     f"(ucc: no rollback, UCC picks the version)")
     return _fail(f"post-upgrade health failed: {reason}")
 
 

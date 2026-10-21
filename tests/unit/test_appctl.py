@@ -326,6 +326,29 @@ def test_dormant_ucc_stop_is_allowed(tmp_path):
     assert calls == ["app-unpackerr stop"]
 
 
+def test_stop_on_converted_app_is_the_native_unit(tmp_path):
+    # Pins today's meaning of `stop` (callers depend on it); stop-dormant below
+    # is the verb that reaches the woken container (QFLX-55).
+    r, calls = _run(tmp_path, "stop", "flipped")
+    assert r.returncode == 0, r.stderr
+    assert calls == ["systemctl --user stop qflix-flipped.service"]
+
+
+def test_stop_dormant_reaches_the_container_never_the_unit(tmp_path):
+    r, calls = _run(tmp_path, "stop-dormant", "flipped")
+    assert r.returncode == 0, r.stderr
+    assert calls == ["app-flipped stop"]
+
+
+@pytest.mark.parametrize("slug", ["sonarr", "unpackerr", "bazarr2", "kometa"])
+def test_stop_dormant_refuses_anything_but_a_converted_dormant_app(tmp_path, slug):
+    # sonarr: live UCC runtime; unpackerr: class ucc (not converted);
+    # bazarr2: native with no container; kometa: no lifecycle.
+    r, calls = _run(tmp_path, "stop-dormant", slug)
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    assert calls == []
+
+
 def test_flipped_app_starts_native_never_ucc(tmp_path):
     r, calls = _run(tmp_path, "start", "flipped")
     assert r.returncode == 0, r.stderr
@@ -406,3 +429,22 @@ def test_ports_free_without_profile_fails_closed(tmp_path):
     r, _ = _run(tmp_path, "ports-free")
     assert r.returncode == 2
     assert r.stdout.strip() == ""
+
+
+# --- lookup (QFLX-60: the shared resolver) ---------------------------------------
+
+def test_lookup_prints_the_raw_row_and_touches_nothing(tmp_path):
+    man = MANIFEST + ("  pend:\n    class: systemd\n    ucc_slug: pend\n"
+                      "    unit: qflix-pend.service\n    ucc_dormant: true\n"
+                      "    swap_state: pending-swap\n")
+    r, calls = _run(tmp_path, "lookup", "pend", manifest=man)
+    assert r.returncode == 0, r.stderr
+    # The manifest's own words: no pending-swap rewrite to class ucc.
+    assert r.stdout.strip() == "pend|systemd|pend|qflix-pend.service|1||pending-swap|pend"
+    assert calls == []
+
+
+def test_lookup_unknown_app_is_exit_2(tmp_path):
+    r, calls = _run(tmp_path, "lookup", "nosuch")
+    assert r.returncode == 2
+    assert calls == []

@@ -361,7 +361,9 @@ def _attach_upgrade(app: App, **kwargs) -> App:
 
 # ---- UCC upgrade/downgrade ------------------------------------------------
 
-def test_ucc_upgrade_runs_app_stop_then_update():
+def test_ucc_upgrade_runs_app_upgrade_without_stop():
+    # QFLX-65: the UCC CLI verb is `upgrade` (there is no `update`), and no
+    # stop first: the box-proven app-upgrade-all.sh sweep runs it bare.
     app = _ucc_app(ucc_slug="maintainerr")
 
     with patch("subprocess.run", return_value=_ok_cp()) as mock_run, \
@@ -370,8 +372,88 @@ def test_ucc_upgrade_runs_app_stop_then_update():
 
     assert result.ok is True
     args_list = [c.args[0] for c in mock_run.call_args_list]
-    assert ["app-maintainerr", "stop"] in args_list
-    assert ["app-maintainerr", "update"] in args_list
+    assert args_list == [["app-maintainerr", "upgrade"]]
+    assert all("update" not in a for a in args_list)
+    # 60s lifecycle default would kill a container rebuild: 8m floor.
+    assert mock_run.call_args_list[0].kwargs["timeout"] >= 480
+
+
+def test_ucc_upgrade_failure_attempts_start_and_reports_both():
+    app = _ucc_app(ucc_slug="maintainerr")
+    fail = CompletedProcess(args=[], returncode=1, stdout="", stderr="pull failed\n")
+
+    with patch("subprocess.run", side_effect=[fail, _ok_cp()]) as mock_run, \
+         patch("lib.lifecycle._post_health_probe") as mock_probe:
+        result = upgrade(app, target_version="3.4.5")
+
+    args_list = [c.args[0] for c in mock_run.call_args_list]
+    assert args_list == [["app-maintainerr", "upgrade"], ["app-maintainerr", "start"]]
+    assert result.ok is False
+    assert "upgrade failed" in result.reason and "pull failed" in result.reason
+    assert "start ok" in result.reason
+    mock_probe.assert_not_called()
+
+
+def test_ucc_upgrade_failure_reports_failed_start():
+    app = _ucc_app(ucc_slug="maintainerr")
+    fail = CompletedProcess(args=[], returncode=1, stdout="", stderr="pull failed\n")
+    start_fail = CompletedProcess(args=[], returncode=3, stdout="", stderr="no container\n")
+
+    with patch("subprocess.run", side_effect=[fail, start_fail]):
+        result = upgrade(app, target_version="3.4.5")
+
+    assert result.ok is False
+    assert "start FAILED" in result.reason and "no container" in result.reason
+
+
+def test_ucc_upgrade_timeout_still_attempts_start():
+    app = _ucc_app(ucc_slug="maintainerr")
+
+    with patch("subprocess.run",
+               side_effect=[subprocess.TimeoutExpired(cmd="app-maintainerr", timeout=480),
+                            _ok_cp()]) as mock_run:
+        result = upgrade(app, target_version="3.4.5")
+
+    assert mock_run.call_args_list[-1].args[0] == ["app-maintainerr", "start"]
+    assert result.ok is False
+    assert "timeout" in result.reason and "start ok" in result.reason
+
+
+def test_ucc_postgres_upgrade_refused_without_running_anything():
+    # A bare `app-postgres upgrade` rotates the listmonk DB password (QFLX-37).
+    app = _ucc_app(ucc_slug="postgres")
+
+    with patch("subprocess.run") as mock_run:
+        result = upgrade(app, target_version="17.6")
+
+    mock_run.assert_not_called()
+    assert result.ok is False
+    assert "refused" in result.reason and "-p" in result.reason
+
+
+def test_ucc_upgrade_health_failure_does_not_rollback():
+    # Rollback on ucc would re-run `app-<slug> upgrade` (UCC picks the
+    # version) and record rolled_back at a version the box is not on.
+    app = _ucc_app(ucc_slug="plex")
+
+    with patch("subprocess.run", return_value=_ok_cp()) as mock_run,          patch("lib.lifecycle._post_health_probe", return_value=(False, "x")),          patch("lib.lifecycle._record_state") as mock_rec:
+        result = upgrade(app, target_version="1.41.0", previous_version="1.40.0")
+
+    args_list = [c.args[0] for c in mock_run.call_args_list]
+    assert args_list == [["app-plex", "upgrade"]]
+    assert result.ok is False
+    assert "rolled back" not in result.reason.lower()
+    assert "no rollback" in result.reason
+    events = [c.args[1] for c in mock_rec.call_args_list]
+    assert events == ["upgrade_failed"]
+
+
+def test_ucc_post_health_window_has_container_recreate_floor():
+    from lib.lifecycle import _post_health_window_s
+
+    assert _post_health_window_s(_ucc_app(ucc_slug="plex"), 5.0) >= 180
+    # Non-ucc keeps the plain 3x health timeout.
+    assert _post_health_window_s(_library_app(name="python-plexapi"), 5.0) == 15.0
 
 
 def test_ucc_downgrade_returns_not_supported():
@@ -768,7 +850,7 @@ def test_timeout_uses_app_default_when_not_specified():
 # ---- I-9: nothing wakes a dormant app (QFLX-17) ----------------------------
 # A `ucc_dormant: true` entry is a converted app whose UCC container stays
 # installed and stopped as a rollback target. Only `stop` may reach it; start,
-# restart and the ucc_update upgrade kind (stop + update) must refuse WITHOUT
+# restart and the ucc upgrade path (`app-<slug> upgrade`) must refuse WITHOUT
 # running anything.
 
 def _dormant_ucc_app(slug: str = "sonarr") -> App:
@@ -793,7 +875,7 @@ def test_dormant_ucc_app_still_stops():
     assert result.ok is True
 
 
-def test_dormant_ucc_app_refuses_ucc_update():
+def test_dormant_ucc_app_refuses_ucc_upgrade():
     with patch("subprocess.run") as mock_run, \
          patch("lib.lifecycle._post_health_probe", return_value=(True, "ok")):
         result = upgrade(_dormant_ucc_app(), target_version="1.0.0")

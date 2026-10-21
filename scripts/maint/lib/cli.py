@@ -99,6 +99,7 @@ _CANARY_INTERVAL_MIN = {
     "every-15min": 15,
     "every-30min": 30,
     "hourly": 60,
+    "every-6h": 360,
     "daily-0430": 1440,
     "daily": 1440,
     # weekly-mon-send (newsletter-digest canary): 1.5x this = 15120min =
@@ -366,10 +367,21 @@ def _cmd_recover(args: argparse.Namespace, manifest) -> int:
 
     # Validate app exists before entering recovery
     try:
-        manifest.app(args.app)
+        app = manifest.app(args.app)
     except KeyError:
         print(f"error: unknown app '{args.app}'", file=sys.stderr)
         return 1
+
+    # Same gate as recovery.trigger_async (QFLX-64): a push-suppressed app
+    # (pending-swap container that must stay dormant) or a ucc app during UCC
+    # maintenance is down ON PURPOSE -- a habitual `recover` would wake it.
+    # --force is the explicit operator override; refusal exits 2 (not recovered).
+    from lib import suppression as suppression_mod
+    if not getattr(args, "force", False) and suppression_mod.recovery_suppressed(app):
+        reason = suppression_mod.push_suppressed(app.name) or "UCC maintenance active"
+        print(f"refused: recovery for '{args.app}' is suppressed ({reason}); "
+              f"re-run with --force to override", file=sys.stderr)
+        return 2
 
     result = recovery_mod.run(args.app, manifest=manifest)
     print(result)
@@ -378,10 +390,16 @@ def _cmd_recover(args: argparse.Namespace, manifest) -> int:
 
 
 def _cmd_window_run(args: argparse.Namespace, manifest) -> int:
-    from lib.window import WindowOrchestrator
+    from lib.window import WindowOrchestrator, WindowOutsideHours
 
     orchestrator = WindowOrchestrator(manifest=manifest, dry_run=args.dry_run)
-    summary = orchestrator.run(force=args.force)
+    try:
+        summary = orchestrator.run(force=args.force)
+    except WindowOutsideHours as exc:
+        # Exit 0: a refused out-of-hours catch-up is the guard WORKING, not a
+        # failed unit (a failed oneshot would page via the timer-liveness path).
+        print(f"SKIP window-outside-hours: {exc}")
+        return 0
     smoke_pass = sum(1 for v in summary.smoke_results.values() if v)
     smoke_total = len(summary.smoke_results)
     print(
@@ -701,6 +719,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # recover
     p_recover = sub.add_parser("recover", help="manual recovery")
     p_recover.add_argument("app")
+    p_recover.add_argument("--force", action="store_true",
+                           help="recover even if the app is push-suppressed / UCC-maint gated")
 
     # window
     p_window = sub.add_parser("window", help="maintenance window commands")
@@ -709,7 +729,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     pw_run = window_sub.add_parser("run", help="run maintenance window")
     pw_run.add_argument("--dry-run", action="store_true", dest="dry_run")
-    pw_run.add_argument("--force", action="store_true")
+    pw_run.add_argument("--force", action="store_true",
+                        help="override a live lock AND the outside-window refusal")
 
     window_sub.add_parser("status", help="lock present? since when?")
     window_sub.add_parser("watchdog", help="one-shot stale-lock check")

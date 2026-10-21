@@ -3,7 +3,7 @@
 #  - Deploys scripts/maint/ (Python codebase + manifest + systemd units) to seedbox
 #  - Claims a loopback port for the Kuma webhook receiver (127.0.0.1 only)
 #  - Migrates 4 version pins into versions.env (one-time, append-only)
-#  - Installs 5 user-systemd units + heartbeat cron entry
+#  - Installs the maint user-systemd units + heartbeat and maint cron entries
 #  - Runs install-time smoke (webhook /health, manifest validate, timer scheduled,
 #    synthetic Kuma POST round-trips)
 #
@@ -15,6 +15,7 @@ source "$HERE/../lib/ssh.sh"
 source "$HERE/../lib/log.sh"
 source "$HERE/../lib/secrets.sh"
 source "$HERE/../lib/ports.sh"
+source "$HERE/../lib/cron.sh"
 
 # ── Step 1: pre-flight — required local secrets ─────────────────────────────
 log_info "Phase 240: maintenance system install"
@@ -110,6 +111,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/ports.py \
     scripts/maint/lib/swapstate.py \
     scripts/maint/lib/runtime_parity.py \
+    scripts/maint/lib/dormant_stop.py \
     scripts/maint/lib/deploy_parity.py \
     scripts/maint/prune-app-backups.sh \
     scripts/maint/qflix-collect.py \
@@ -179,6 +181,12 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-backup-prune.timer \
     scripts/maint/systemd/manitoba-maint-anime-janitor.service \
     scripts/maint/systemd/manitoba-maint-anime-janitor.timer \
+    scripts/maint/systemd/manitoba-maint-audio-disposition.service \
+    scripts/maint/systemd/manitoba-maint-audio-disposition.timer \
+    scripts/maint/systemd/manitoba-maint-reaper.service \
+    scripts/maint/systemd/manitoba-maint-reaper.timer \
+    scripts/maint/systemd/manitoba-maint-unknown-codec-stream.service \
+    scripts/maint/systemd/manitoba-maint-unknown-codec-stream.timer \
     scripts/maint/qflix-anime-janitor.py \
     scripts/maint/qflix-anime-janitor.exclude \
     scripts/maint/qflix-reaper.py \
@@ -196,6 +204,14 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/qflix-audit-live.py \
     scripts/maint/qflix-vlogs-ingest.py \
     scripts/mcp/logs.py \
+    scripts/mcp/collect.py \
+    scripts/mcp/missing.py \
+    scripts/mcp/unstick.py \
+    scripts/mcp/lib/arr_client.py \
+    scripts/mcp/lib/maint_state.py \
+    scripts/mcp/lib/qbit_client.py \
+    scripts/mcp/lib/sab_client.py \
+    scripts/ops/listmonk-sync.py \
     scripts/maint/systemd/manitoba-maint-audit-live.service \
     scripts/maint/systemd/manitoba-maint-audit-live.timer \
     scripts/maint/systemd/manitoba-maint-torrent-janitor.service \
@@ -219,6 +235,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-arr-plex-parity.timer \
     scripts/maint/systemd/manitoba-maint-canary-seerr-arr-parity.service \
     scripts/maint/systemd/manitoba-maint-canary-seerr-arr-parity.timer \
+    scripts/maint/systemd/manitoba-maint-canary-seerr-commit-tag.service \
+    scripts/maint/systemd/manitoba-maint-canary-seerr-commit-tag.timer \
     scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.service \
     scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.timer \
     scripts/maint/systemd/manitoba-maint-canary-cron-liveness.service \
@@ -248,6 +266,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/ops/heartbeat-maint-webhook.sh \
     scripts/ops/boot-listeners-snapshot.sh \
     scripts/ops/qflix-listen-set.sh \
+    scripts/ops/ucc-uninstall.sh \
     scripts/lib/ssh.sh \
     scripts/lib/appctl \
     scripts/lib/native.sh \
@@ -276,6 +295,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/tdarr-transcode-stall.sh \
     scripts/canaries/arr-plex-parity.sh \
     scripts/canaries/seerr-arr-parity.sh \
+    scripts/canaries/seerr-commit-tag.sh \
     scripts/canaries/stream-cap-liveness.sh \
     scripts/canaries/cron-liveness.sh \
     scripts/canaries/entitlement-service.sh \
@@ -293,6 +313,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/304-native-radarr2-install.sh \
     scripts/maint/native_sanitize.py \
     scripts/configure/55-kometa-install.sh \
+    scripts/configure/59b-plex-welcome-library.py \
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
     scripts/configure/305-native-sonarr2-install.sh \
@@ -443,6 +464,32 @@ mkdir -p ~/scripts/mcp
 cp -f "$STG"/scripts/maint/qflix-vlogs-ingest.py ~/scripts/maint/qflix-vlogs-ingest.py
 chmod +x ~/scripts/maint/qflix-vlogs-ingest.py
 cp -f "$STG"/scripts/mcp/logs.py ~/scripts/mcp/logs.py
+# QFLX-63: the rest of the mcp code the maint jobs above depend on. The reaper,
+# torrent and anime janitors import lib.arr_client / lib.qbit_client from
+# ~/scripts/mcp/lib (merged `lib` namespace with scripts/maint/lib), and
+# qflix-collect.py + arr-housekeeping.py exec ~/scripts/mcp/{collect,logs,
+# unstick,missing}.py. Only 70-mcp-install.sh shipped them, and it is not a
+# routine deploy, so a fix to arr_client never reached the box via 240.
+# chmod 755: git holds them 100755 but a Windows checkout tars them 644, and
+# deploy-drift flags the mode (deploy-mode-drift, 2026-08-23).
+mkdir -p ~/scripts/mcp/lib
+cp -f "$STG"/scripts/mcp/collect.py ~/scripts/mcp/collect.py
+cp -f "$STG"/scripts/mcp/missing.py ~/scripts/mcp/missing.py
+cp -f "$STG"/scripts/mcp/unstick.py ~/scripts/mcp/unstick.py
+cp -f "$STG"/scripts/mcp/lib/arr_client.py ~/scripts/mcp/lib/arr_client.py
+cp -f "$STG"/scripts/mcp/lib/maint_state.py ~/scripts/mcp/lib/maint_state.py
+cp -f "$STG"/scripts/mcp/lib/qbit_client.py ~/scripts/mcp/lib/qbit_client.py
+cp -f "$STG"/scripts/mcp/lib/sab_client.py ~/scripts/mcp/lib/sab_client.py
+chmod 755 ~/scripts/mcp/logs.py ~/scripts/mcp/collect.py ~/scripts/mcp/missing.py \
+          ~/scripts/mcp/unstick.py ~/scripts/mcp/lib/arr_client.py \
+          ~/scripts/mcp/lib/maint_state.py ~/scripts/mcp/lib/qbit_client.py \
+          ~/scripts/mcp/lib/sab_client.py
+# QFLX-63: nightly Plex/Seerr -> Listmonk subscriber reconcile, run from cron
+# (Step 8b writes the line). Shipped here, not by 43-listmonk-install.sh: 43
+# rewrites config.toml and restarts listmonk, so it is not something a routine
+# deploy re-runs, and a script only it shipped would never get its fixes.
+cp -f "$STG"/scripts/ops/listmonk-sync.py ~/scripts/ops/listmonk-sync.py
+chmod +x ~/scripts/ops/listmonk-sync.py
 
 # Convergent Audit Regime (landed on master 2026-07-30). Its units sat in the
 # repo with ZERO installer wiring, so the audit would have shipped as a guard
@@ -480,6 +527,9 @@ chmod +x ~/scripts/ops/boot-listeners-snapshot.sh
 # QFLX-20: records an app listen set before a UCC->native swap (record only).
 cp -f   "$STG"/scripts/ops/qflix-listen-set.sh ~/scripts/ops/
 chmod +x ~/scripts/ops/qflix-listen-set.sh
+# QFLX-60: dormant-UCC uninstaller (dry-run by default; operator-run only).
+cp -f   "$STG"/scripts/ops/ucc-uninstall.sh ~/scripts/ops/
+chmod +x ~/scripts/ops/ucc-uninstall.sh
 mkdir -p ~/scripts/lib ~/scripts/canaries ~/scripts/configure
 cp -f   "$STG"/scripts/lib/ssh.sh                ~/scripts/lib/ssh.sh
 # ~/bin/appctl (QFLX-18): the one lifecycle shim. Callers use the ABSOLUTE
@@ -493,6 +543,10 @@ chmod +x ~/scripts/canaries/*.sh
 # kometa-deploy-drift canary reads this install script's heredoc to know
 # what library names should be deployed — needs the file resident.
 cp -f   "$STG"/scripts/configure/55-kometa-install.sh ~/scripts/configure/55-kometa-install.sh
+# 59b creates the Welcome/Test floor sections and is run ON THE BOX inside the
+# plexapi venv (its docstring + the entitlement runbook). A box-run script is
+# shipped, not hand-copied, or deploy-drift reads it as deploy-unshipped (QFLX-52).
+cp -f   "$STG"/scripts/configure/59b-plex-welcome-library.py ~/scripts/configure/59b-plex-welcome-library.py
 # THIS SCRIPT, copied to the box on purpose. It is workstation-side and nothing
 # on the box ever runs it -- but a copy has been resident under ~/scripts since
 # some past manual scp, and deploy-drift.sh walks EVERY *.sh under ~/scripts and
@@ -792,6 +846,12 @@ for unit in \
     manitoba-maint-backup-prune.timer \
     manitoba-maint-anime-janitor.service \
     manitoba-maint-anime-janitor.timer \
+    manitoba-maint-audio-disposition.service \
+    manitoba-maint-audio-disposition.timer \
+    manitoba-maint-reaper.service \
+    manitoba-maint-reaper.timer \
+    manitoba-maint-unknown-codec-stream.service \
+    manitoba-maint-unknown-codec-stream.timer \
     manitoba-maint-torrent-janitor.service \
     manitoba-maint-torrent-janitor.timer \
     manitoba-maint-poster-janitor.service \
@@ -816,6 +876,8 @@ for unit in \
     manitoba-maint-canary-arr-plex-parity.timer \
     manitoba-maint-canary-seerr-arr-parity.service \
     manitoba-maint-canary-seerr-arr-parity.timer \
+    manitoba-maint-canary-seerr-commit-tag.service \
+    manitoba-maint-canary-seerr-commit-tag.timer \
     manitoba-maint-canary-stream-cap-liveness.service \
     manitoba-maint-canary-stream-cap-liveness.timer \
     manitoba-maint-canary-cron-liveness.service \
@@ -1048,6 +1110,18 @@ systemctl --user enable --now manitoba-maint-backup-prune.timer
 # mutates nothing. --now activates the schedule (no immediate run). Arming
 # --execute is an operator step gated on Phase-0 live validation + re-council.
 systemctl --user enable --now manitoba-maint-anime-janitor.timer
+# QFLX-63: three media janitors that were LIVE on the box from hand-copied
+# units, with no installer shipping them, so a rebuild would silently drop them.
+#  - reaper (daily 05:00): the repo unit ships DRY-RUN. The box arms it with an
+#    on-box drop-in, manitoba-maint-reaper.service.d/, which this installer
+#    never ships and never touches; the Step 7 loop copies only the unit file,
+#    and daemon-reload re-reads the drop-in on top of it.
+#  - audio-disposition (nightly) and unknown-codec-stream (nightly): the repo
+#    units ARE --execute, operator-reviewed; see the comments in each unit.
+# --now starts the schedule only; none of the three runs immediately.
+systemctl --user enable --now manitoba-maint-reaper.timer
+systemctl --user enable --now manitoba-maint-audio-disposition.timer
+systemctl --user enable --now manitoba-maint-unknown-codec-stream.timer
 # Torrent janitor — daily 05:30 UTC. Purges completed *arr-untracked qBit
 # seeding leftovers ("nothing forever"). Ships DRY-RUN (ExecStart has no
 # --execute); arm via an on-box drop-in like the reaper. --now activates the
@@ -1145,6 +1219,11 @@ systemctl --user enable --now manitoba-maint-canary-arr-plex-parity.timer
 # (spec: docs/superpowers/specs/2026-09-12-reaper-d-per-file-retention-spec.md
 # section 4, S-1..S-3). Never mutates Seerr or any *arr.
 systemctl --user enable --now manitoba-maint-canary-seerr-arr-parity.timer
+# Seerr client/server commitTag parity (QFLX-58) - every 6h. The tag baked into
+# the client bundle must equal /api/v1/status commitTag, or every member gets
+# the "Seerr Updated / Reload" modal every 60s (QFLX-53: member-reported, never
+# detected). It only moves on a deploy/upgrade, so 6h is plenty. Read-only.
+systemctl --user enable --now manitoba-maint-canary-seerr-commit-tag.timer
 # Stream-cap cron liveness — every 15 min. The per-member concurrent-stream cap
 # is enforced by two CRONTAB entries (kill_stream.sh --max 4, stream_stats.sh),
 # a third scheduling plane neither the C-01 timer ledger nor timer-liveness
@@ -1197,6 +1276,21 @@ UNITSCRIPT
 
 # ── Step 8: heartbeat cron entry ────────────────────────────────────────────
 sshm '(crontab -l 2>/dev/null | grep -v heartbeat-maint-webhook; echo "*/5 * * * * /home/quadstronaut/scripts/ops/heartbeat-maint-webhook.sh") | crontab -'
+
+# ── Step 8b: maint cron jobs declared in manifest/jobs.yaml (QFLX-63) ───────
+# Both lines were hand-added on the box and written by no installer, so a
+# rebuild dropped them silently. The strings are the box's lines VERBATIM
+# (2026-10-21): cron_ensure is a no-op when the exact line is present, so a
+# re-run on the live box does not even rewrite the crontab. Schedules mirror
+# jobs.yaml cron-listmonk-sync / cron-arr-housekeeping-unstick.
+LISTMONK_SYNC_CRON='0 4 * * * /usr/bin/python3 /home/quadstronaut/scripts/ops/listmonk-sync.py >> /home/quadstronaut/.apps/listmonk/logs/sync.log 2>&1'
+UNSTICK_CRON='15 * * * * /usr/bin/python3 /home/quadstronaut/scripts/maint/arr-housekeeping.py --unstick >> /home/quadstronaut/.opt/maint/arr-unstick.log 2>&1'
+# The redirect targets must exist or cron fails the job before python starts.
+sshm 'mkdir -p ~/.apps/listmonk/logs ~/.opt/maint'
+cron_ensure_remote listmonk-sync "$LISTMONK_SYNC_CRON" 'listmonk-sync[.]py'
+# Match only the --unstick mode: --missing was retired 2026-08-08 and any other
+# arr-housekeeping line is not ours to rewrite.
+cron_ensure_remote arr-unstick "$UNSTICK_CRON" 'arr-housekeeping[.]py --unstick'
 
 # ── Step 9: install-time smoke ──────────────────────────────────────────────
 log_info "running install-time smoke gate"
@@ -1321,7 +1415,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall vlogs-time-integrity qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched plex-intro-markers newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity seerr-arr-parity; do
+for canary in movie anime mobile-ux vlogs-stall vlogs-time-integrity qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched plex-intro-markers newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity seerr-arr-parity seerr-commit-tag; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"
@@ -1370,6 +1464,24 @@ if [ "${BPT:-0}" -ge 1 ]; then
 else
   gate "backup-prune-timer-scheduled" fail "backup-prune timer not in systemctl list-timers"
 fi
+
+# Smoke 16 (QFLX-63): the three media janitors and the two maint cron lines.
+for t in reaper audio-disposition unknown-codec-stream; do
+  JT=$(remote_count "systemctl --user list-timers manitoba-maint-${t}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-${t}.timer")
+  if [ "${JT:-0}" -ge 1 ]; then
+    gate "${t}-timer-scheduled" pass
+  else
+    gate "${t}-timer-scheduled" fail "manitoba-maint-${t}.timer not in systemctl list-timers"
+  fi
+done
+for c in 'listmonk-sync[.]py' 'arr-housekeeping[.]py --unstick'; do
+  MC=$(remote_count "crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -cE '$c'")
+  if [ "${MC:-0}" -ge 1 ]; then
+    gate "cron-${c%%[[]*}" pass
+  else
+    gate "cron-${c%%[[]*}" fail "no active crontab line matches '$c' (held by a 312 swap?)"
+  fi
+done
 
 echo
 TOTAL=$((PASS + FAIL))

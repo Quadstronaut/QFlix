@@ -55,6 +55,23 @@ class WindowAlreadyOpen(Exception):
     """Raised when open() detects a live lock and force=False."""
 
 
+class WindowOutsideHours(Exception):
+    """Raised by run() when the wall clock is outside the host policy's
+    maintenance window and force=False (QFLX-62). The CLI maps it to a named
+    SKIP line and exit 0 -- a refused catch-up is not a failure."""
+
+
+def _in_policy_window(now: Optional[datetime] = None) -> bool:
+    """Wall-clock leg: is *now* inside the host policy's maintenance window?
+
+    hostpolicy.in_maintenance_window() answers the Ultra window when the
+    profile secret is unresolvable, so a box without host.profile still runs
+    its Monday window instead of skipping it forever. Imported lazily so a
+    test can patch this one function without loading the policy modules."""
+    from lib import hostpolicy  # noqa: PLC0415
+    return hostpolicy.in_maintenance_window(now)
+
+
 @dataclass
 class WindowSummary:
     started_at: str
@@ -320,6 +337,7 @@ class WindowOrchestrator:
         self._queue_path.write_text("", encoding="utf-8")
 
         deferred_lines: list[str] = []
+        queue_failed = 0
 
         for line in raw.splitlines():
             line = line.strip()
@@ -374,14 +392,29 @@ class WindowOrchestrator:
                 continue
 
             # 5. Attempt upgrade
+            # QFLX-65: upgrade() reports subprocess failure in its RESULT, it
+            # only raises for config errors. Counting a returned ok=False as a
+            # success hid every failed upgrade behind "succeeded=N".
             self._queue_processed += 1
             try:
-                lifecycle.upgrade(app, target_version)
-                self._queue_succeeded += 1
-                logger.info("queue: upgraded %s to %s", app_name, target_version)
+                res = lifecycle.upgrade(app, target_version)
             except LifecycleError as exc:
                 logger.error("queue: upgrade failed for %s: %s", app_name, exc)
                 self._notes.append(f"upgrade error {app_name}: {exc}")
+                queue_failed += 1
+                continue
+            if res.ok:
+                self._queue_succeeded += 1
+                logger.info("queue: upgraded %s to %s", app_name, target_version)
+            else:
+                logger.error("queue: upgrade failed for %s: %s", app_name, res.reason)
+                self._notes.append(f"upgrade failed {app_name}@{target_version}: {res.reason}")
+                queue_failed += 1
+
+        # failed = processed - succeeded - dry-run skips; spelled out so the
+        # window summary notes say it without arithmetic.
+        if queue_failed:
+            self._notes.append(f"queue: {queue_failed} upgrade(s) failed")
 
         # Write deferred entries back
         if deferred_lines:
@@ -574,12 +607,30 @@ class WindowOrchestrator:
 
     # ------------------------------------------------------------------ run
 
-    def run(self, *, force: bool = False) -> WindowSummary:
+    def run(self, *, force: bool = False,
+            now: Optional[datetime] = None) -> WindowSummary:
         """Full window cycle: open → pre-maint notify → drain_queue → smoke →
         wait_for_kuma_green → close → post-maint notify.
 
-        force is forwarded to open() — overrides an existing live lock.
+        force is forwarded to open() — overrides an existing live lock — and
+        also overrides the out-of-hours refusal below (an operator running a
+        window by hand off-schedule). `now` is for test injection.
+
+        QFLX-62: the timer is Persistent=true, so if the box (or the --user
+        manager) is down across Mon 11:00 UTC, systemd fires the MISSED run at
+        the next boot -- possibly Tuesday prime time: member "Maintenance Window
+        Start" email, queue drain and app upgrades while people watch. The
+        clock check makes Persistent safe to keep: a late catch-up still
+        inside the window (boot at 11:02) runs; one outside it is refused.
+        Checked before open() so a refusal leaves no lock and sends nothing.
         """
+        if not force and not _in_policy_window(now):
+            raise WindowOutsideHours(
+                "outside the host-policy maintenance window "
+                f"(now={(now or datetime.now(timezone.utc)).isoformat()}); "
+                "likely a Persistent=true catch-up after downtime -- "
+                "use --force to run anyway"
+            )
         self.open(force=force)
 
         # Snapshot queue depth before we drain so the pre-maint ping can

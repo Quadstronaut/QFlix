@@ -8,6 +8,8 @@ import ast
 import re
 from pathlib import Path
 
+from lib import deploy_parity
+
 REPO = Path(__file__).resolve().parents[2]
 INGESTER = REPO / "scripts" / "maint" / "qflix-vlogs-ingest.py"
 INSTALL_240 = REPO / "scripts" / "configure" / "240-maintenance-install.sh"
@@ -62,6 +64,28 @@ def test_240_does_not_restart_victorialogs():
     assert "restart victorialogs" not in INSTALL_240.read_text(encoding="utf-8")
 
 
-def test_deploy_drift_covers_deployed_py_files():
-    text = DRIFT.read_text(encoding="utf-8")
-    assert "*.py" in text and "scripts" in text
+def _drift_covered() -> set[str]:
+    """Repo paths deploy-drift actually byte-compares after a 240 deploy,
+    derived by deploy-drift's OWN rule (QFLX-52): what 240 stages, narrowed to
+    the canary's walk (in_drift_scope) and, under configure/, to what an
+    installer ships. Text-matching "*.py" in the canary proved nothing."""
+    inst = INSTALL_240.read_text(encoding="utf-8")
+    shipped = deploy_parity.shipped_configure_from_text(inst)
+    out = set()
+    for rel in _staged(inst):
+        sub = rel[len("scripts/"):]
+        if not deploy_parity.in_drift_scope(sub):
+            continue
+        if sub.startswith("configure/") and sub[len("configure/"):] not in shipped:
+            continue
+        out.add(rel)
+    return out
+
+
+def test_deploy_drift_covers_ingester_and_every_import():
+    covered = _drift_covered()
+    assert len(covered) >= 50, f"covered-set derivation found only {len(covered)}"
+    missing = _need() - covered
+    assert not missing, f"deploy-drift does not compare: {sorted(missing)}"
+    # The canary walk is the one deploy_parity mirrors (pinned in test_deploy_parity).
+    assert "--shipped-configure" in DRIFT.read_text(encoding="utf-8")

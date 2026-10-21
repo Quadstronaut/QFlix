@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 import socket
 import threading
 import time
@@ -356,7 +357,8 @@ class TestWebhookServer:
     def test_webhook_lock_present_appends_window_event(self, webhook_server, monkeypatch):
         _, port, state_dir = webhook_server
         lock_file = state_dir / "lock"
-        lock_file.write_text("99999\n2026-05-09T04:00:00Z\n")
+        lock_file.write_text(  # live lock: own pid, stamped now (QFLX-62)
+            f"{os.getpid()}\n{datetime.now(timezone.utc).isoformat()}\n")
         recovery_called = []
 
         def fake_recovery(app_name, *, manifest=None):

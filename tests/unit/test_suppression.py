@@ -10,11 +10,17 @@ Matrix:
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
 
 from lib.manifest import App, HealthConfig
+
+
+def _now_iso(delta: timedelta = timedelta(0)) -> str:
+    return (datetime.now(timezone.utc) + delta).isoformat().replace("+00:00", "Z")
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +200,8 @@ class TestInMaintenanceWindow:
     def test_true_when_lockfile_present(self, tmp_path, monkeypatch):
         from lib import suppression
         monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
-        (tmp_path / "lock").write_text("12345\n2026-06-30T11:00:00Z\n", encoding="utf-8")
+        # A LIVE lock: our own pid, stamped now (QFLX-62 ignores dead/old ones).
+        (tmp_path / "lock").write_text(f"{os.getpid()}\n{_now_iso()}\n", encoding="utf-8")
         assert suppression.in_maintenance_window() is True
 
     def test_explicit_state_dir_overrides_env(self, tmp_path):
@@ -207,3 +214,93 @@ class TestInMaintenanceWindow:
         from lib import suppression
         with patch("lib.suppression._state_dir", side_effect=OSError("boom")):
             assert suppression.in_maintenance_window() is False
+
+
+# ---------------------------------------------------------------------------
+# QFLX-62: a lock left by a reboot mid-window must not mute recovery
+# ---------------------------------------------------------------------------
+
+class TestStaleWindowLock:
+    """The pusher trusted the lock's mere existence, so a reboot mid-window
+    (orchestrator killed, close() never ran) muted recovery until the Mon 15:00
+    watchdog. Stale on CLEAR evidence only; no evidence = honour the lock."""
+
+    NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
+
+    def _lock(self, tmp_path, pid, start):
+        (tmp_path / "lock").write_text(f"{pid}\n{start}\n", encoding="utf-8")
+
+    def test_lock_from_before_boot_is_stale(self, tmp_path):
+        from lib import suppression
+        self._lock(tmp_path, os.getpid(), "2026-10-19T11:00:00Z")
+        boot = datetime(2026, 10, 19, 11, 40, tzinfo=timezone.utc).timestamp()
+        assert suppression.in_maintenance_window(
+            state_dir=tmp_path, now=self.NOW, boot_time=boot) is False
+
+    def test_lock_taken_after_boot_is_honoured(self, tmp_path):
+        from lib import suppression
+        self._lock(tmp_path, os.getpid(), "2026-10-19T11:00:00Z")
+        boot = datetime(2026, 10, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        assert suppression.in_maintenance_window(
+            state_dir=tmp_path, now=self.NOW, boot_time=boot) is True
+
+    def test_boot_skew_does_not_flip_a_fresh_lock(self, tmp_path):
+        """btime is now-uptime and can wobble a second; within skew = honour."""
+        from lib import suppression
+        self._lock(tmp_path, os.getpid(), "2026-10-19T11:00:00Z")
+        boot = datetime(2026, 10, 19, 11, 0, 2, tzinfo=timezone.utc).timestamp()
+        assert suppression.in_maintenance_window(
+            state_dir=tmp_path, now=self.NOW, boot_time=boot) is True
+
+    def test_lock_older_than_hard_max_is_stale(self, tmp_path):
+        from lib import suppression
+        self._lock(tmp_path, os.getpid(), "2026-10-19T07:00:00Z")   # 5h old
+        assert suppression.in_maintenance_window(
+            state_dir=tmp_path, now=self.NOW, boot_time=0.0) is False
+
+    def test_unreadable_proc_stat_keeps_honouring_lock(self, tmp_path):
+        """Fail CLOSED-safe: no btime evidence -> pre-QFLX-62 behaviour."""
+        from lib import suppression
+        self._lock(tmp_path, os.getpid(), "2026-10-19T11:00:00Z")
+        with patch("lib.suppression._boot_time", return_value=None):
+            assert suppression.in_maintenance_window(
+                state_dir=tmp_path, now=self.NOW) is True
+
+    def test_unparseable_lock_is_honoured(self, tmp_path):
+        from lib import suppression
+        (tmp_path / "lock").write_text("not-a-pid\n", encoding="utf-8")
+        assert suppression.in_maintenance_window(
+            state_dir=tmp_path, now=self.NOW, boot_time=0.0) is True
+
+    def test_stale_check_crash_honours_lock(self, tmp_path):
+        from lib import suppression
+        self._lock(tmp_path, os.getpid(), "2026-10-19T11:00:00Z")
+        with patch("lib.suppression.lock_stale_reason", side_effect=RuntimeError("x")):
+            assert suppression.in_maintenance_window(state_dir=tmp_path) is True
+
+    @pytest.mark.skipif(os.name != "posix", reason="kill(0) liveness is posix-only")
+    def test_dead_pid_lock_is_stale(self, tmp_path):
+        import subprocess
+        import sys
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        from lib import suppression
+        self._lock(tmp_path, dead.pid, _now_iso())
+        assert suppression.in_maintenance_window(state_dir=tmp_path) is False
+
+    def test_boot_time_reads_proc_stat_btime(self, tmp_path):
+        from lib import suppression
+        fake = tmp_path / "stat"
+        fake.write_text("cpu  1 2 3\nbtime 1760000000\nprocesses 9\n", encoding="ascii")
+        real_open = open
+        with patch("builtins.open",
+                   lambda p, *a, **k: real_open(fake if p == "/proc/stat" else p, *a, **k)):
+            assert suppression._boot_time() == 1760000000.0
+
+    def test_stale_lock_reported_once_per_process(self, tmp_path, capsys):
+        from lib import suppression
+        suppression._reported_stale.clear()
+        self._lock(tmp_path, os.getpid(), "2026-10-19T07:00:00Z")
+        for _ in range(3):
+            suppression.in_maintenance_window(state_dir=tmp_path, now=self.NOW, boot_time=0.0)
+        assert capsys.readouterr().err.count("ignored as stale") == 1

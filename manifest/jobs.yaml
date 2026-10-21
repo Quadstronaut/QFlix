@@ -317,6 +317,13 @@ jobs:
   manitoba-maint-canary-seerr-arr-parity:
     timer: scripts/maint/systemd/manitoba-maint-canary-seerr-arr-parity.timer
     kuma_monitor: "Canary Seerr Arr Parity"
+  # Added 2026-10-20 (QFLX-58): Seerr client bundle's baked commitTag must equal
+  # /api/v1/status commitTag, or members get the "Seerr Updated" modal every
+  # 60s (QFLX-53, member-reported). Every 6h; own timer, own Kuma push monitor
+  # (dead-man by heartbeat).
+  manitoba-maint-canary-seerr-commit-tag:
+    timer: scripts/maint/systemd/manitoba-maint-canary-seerr-commit-tag.timer
+    kuma_monitor: "Canary Seerr Commit Tag"
   manitoba-maint-canary-hardlink-integrity:
     timer: scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer
     kuma_monitor: "Canary Hardlink Integrity"

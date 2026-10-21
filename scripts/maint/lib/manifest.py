@@ -20,6 +20,10 @@ VALID_CANARY_SCHEDULES = {
     # The schedule NAME is weekly for staleness-map purposes (cli.py
     # _CANARY_INTERVAL_MIN); the timer itself has 3 OnCalendar lines, not 1.
     "weekly-mon-send",
+    # every-6h (QFLX-58, seerr-commit-tag): a check whose subject only moves on
+    # a deploy/upgrade. Needs its own heartbeat + staleness entries, or the
+    # hourly defaults would mark it down/stale between every run.
+    "every-6h",
 }
 
 
