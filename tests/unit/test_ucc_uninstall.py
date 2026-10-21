@@ -13,7 +13,10 @@ What is pinned:
     else on app-<slug> -- plain uninstall deletes the live data dir;
   * post-checks: a vanished data file is non-zero; a vanished proxy conf is
     restored and `appctl proxy-reload` is called; a lingering container
-    process is non-zero.
+    process is non-zero;
+  * backup verification holds for listings past the 64 KiB pipe buffer;
+  * key files outside ~/.apps/<slug>: ~/ ones are copied + cmp-verified, and
+    the GONE message names the copy that really holds the file (or says none).
 """
 from __future__ import annotations
 
@@ -66,6 +69,17 @@ apps:
     unit: qflix-seerr.service
     ucc_slug: seerr
     ucc_dormant: true
+  qbittorrent:
+    class: systemd
+    unit: qflix-qbittorrent.service
+    ucc_slug: qbittorrent
+    ucc_dormant: true
+  postgres:
+    class: systemd
+    unit: qflix-postgres.service
+    ucc_slug: postgres
+    ucc_dormant: true
+    native_dir: pg-native
 """
 
 # $UNIT_STATE drives is-active; $UNINSTALL_EFFECT lets the app-* stub simulate
@@ -83,6 +97,8 @@ case "$(basename "$0")" in
       case "$UNINSTALL_EFFECT" in
         rm-data) rm -f "$HOME/.apps/unpackerr/unpackerr.conf" ;;
         rm-proxy) rm -f "$HOME/.apps/nginx/proxy.d/unpackerr.conf" ;;
+        rm-qbit) rm -f "$HOME/.config/qBittorrent/qBittorrent.conf" ;;
+        rm-pg) rm -f "$HOME/.apps/pg-native/data/PG_VERSION" ;;
       esac
     fi ;;
 esac
@@ -107,6 +123,17 @@ def _env(tmp_path: Path, manifest: str = MANIFEST, **extra) -> dict:
     (app / "unpackerr.conf").write_text("[[sonarr]]\n")
     (app / "bin" / "unpackerr").write_text("binary\n")
     (home / ".apps" / "sonarr").mkdir(parents=True, exist_ok=True)
+    # qbittorrent: its key file is under ~/.config, OUTSIDE ~/.apps/<slug>.
+    (home / ".apps" / "qbittorrent").mkdir(parents=True, exist_ok=True)
+    (home / ".apps" / "qbittorrent" / "state.dat").write_text("x\n")
+    qb = home / ".config" / "qBittorrent"
+    qb.mkdir(parents=True, exist_ok=True)
+    (qb / "qBittorrent.conf").write_text("[Preferences]\nWebUI\\Port=1\n")
+    # postgres: native_dir pg-native, outside ~/.apps/postgres.
+    (home / ".apps" / "postgres").mkdir(parents=True, exist_ok=True)
+    (home / ".apps" / "postgres" / "postgresql.conf").write_text("x\n")
+    (home / ".apps" / "pg-native" / "data").mkdir(parents=True, exist_ok=True)
+    (home / ".apps" / "pg-native" / "data" / "PG_VERSION").write_text("16\n")
     proxy_d = home / ".apps" / "nginx" / "proxy.d"
     proxy_d.mkdir(parents=True, exist_ok=True)
     (proxy_d / "unpackerr.conf").write_text("location /unpackerr {}\n")
@@ -117,7 +144,8 @@ def _env(tmp_path: Path, manifest: str = MANIFEST, **extra) -> dict:
     (home / "secrets" / "host.profile").write_text("ultra\n")
     binp = tmp_path / "stubbin"
     binp.mkdir(exist_ok=True)
-    for name in ("systemctl", "app-unpackerr", "app-seerr", "app-sonarr"):
+    for name in ("systemctl", "app-unpackerr", "app-seerr", "app-sonarr",
+                 "app-qbittorrent", "app-postgres"):
         p = binp / name
         p.write_text(_STUB, newline="\n")
         p.chmod(0o755)
@@ -273,3 +301,71 @@ def test_execute_refused_inside_the_maintenance_window(tmp_path):
     assert r.returncode == 2
     assert "maintenance window" in r.stderr
     assert _uninstalls(calls) == []
+
+
+# --- backup verification at scale (pipefail/SIGPIPE regression) ---------------
+
+def test_backup_verify_survives_listing_over_pipe_buffer(tmp_path):
+    """`printf "$listing" | grep -q` under pipefail returned 141 once the
+    listing passed the 64 KiB pipe buffer (grep -q quits on its first match,
+    printf takes SIGPIPE) -> a good backup was failed. ~300 KiB of names here."""
+    env = _env(tmp_path)
+    big = Path(env["HOME"]) / ".apps" / "unpackerr" / "many"
+    big.mkdir()
+    for i in range(3000):
+        (big / f"{i:05d}-{'x' * 90}.dat").write_bytes(b"")
+    r = subprocess.run(["bash", SCRIPT.as_posix(), "unpackerr", "--execute"], env=env,
+                       capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "backup verified" in r.stdout
+
+
+def test_no_pipe_into_grep_q_under_pipefail():
+    """Structural guard for the same bug: no `| grep -q` anywhere in code."""
+    code = [ln for ln in SCRIPT.read_text(encoding="utf-8").splitlines()
+            if not ln.lstrip().startswith("#")]
+    assert not [ln for ln in code if "| grep -q" in ln]
+
+
+# --- key files outside ~/.apps/<slug> --------------------------------------------
+
+def test_qbittorrent_home_key_file_is_backed_up_and_verified(tmp_path):
+    r, calls, home = _run(tmp_path, "qbittorrent", "--execute")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert [c for c in calls if c.startswith("app-")] == ["app-qbittorrent uninstall --keep-config"]
+    bdir = home / ".opt" / "maint" / "ucc-uninstall"
+    extra = list(bdir.glob("qbittorrent-*.extra"))
+    assert len(extra) == 1
+    copy = extra[0] / ".config" / "qBittorrent" / "qBittorrent.conf"
+    assert copy.read_text() == (home / ".config" / "qBittorrent" / "qBittorrent.conf").read_text()
+    assert "extra backup verified" in r.stdout
+
+
+def test_qbittorrent_dry_run_copies_nothing(tmp_path):
+    r, _, home = _run(tmp_path, "qbittorrent")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "would run: cp -p" in r.stdout
+    assert not (home / ".opt" / "maint" / "ucc-uninstall").exists()
+
+
+def test_qbittorrent_gone_message_names_the_real_copy(tmp_path):
+    r, _, home = _run(tmp_path, "qbittorrent", "--execute", UNINSTALL_EFFECT="rm-qbit")
+    assert r.returncode == 1
+    line = next(ln for ln in r.stdout.splitlines() if "is GONE" in ln)
+    assert ".extra/.config/qBittorrent/qBittorrent.conf" in line
+    assert ".tgz" not in line  # the tarball does not hold it
+
+
+def test_postgres_gone_message_says_no_backup(tmp_path):
+    """pg-native is outside ~/.apps/postgres: never claim the tarball has it."""
+    r, _, _ = _run(tmp_path, "postgres", "--execute", UNINSTALL_EFFECT="rm-pg")
+    assert r.returncode == 1
+    line = next(ln for ln in r.stdout.splitlines() if "is GONE" in ln)
+    assert "NO automated backup" in line
+    assert "restore from" not in line
+
+
+def test_in_slug_gone_message_names_the_tarball(tmp_path):
+    r, _, _ = _run(tmp_path, "unpackerr", "--execute", UNINSTALL_EFFECT="rm-data")
+    line = next(ln for ln in r.stdout.splitlines() if "is GONE" in ln)
+    assert ".tgz (unpackerr/unpackerr.conf)" in line

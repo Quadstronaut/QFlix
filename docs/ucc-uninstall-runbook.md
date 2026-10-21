@@ -15,6 +15,11 @@ Never during the Monday 11:00-15:00 UTC window (the script refuses).
   `swap_state: pending-swap`, native unit `active`, key data files present.
 - Backs up `~/.apps/<slug>` to `~/.opt/maint/ucc-uninstall/<slug>-<ts>.tgz`
   (bin/logs/caches excluded) and verifies the tarball lists the key files.
+- Key files under `~/` (outside the slug dir, e.g. qBit's
+  `~/.config/qBittorrent/qBittorrent.conf`) are copied to
+  `<slug>-<ts>.extra/<home-relative path>` and `cmp`-verified. Postgres'
+  `~/.apps/pg-native` (a live cluster) is NOT backed up; the UCC uninstall
+  never targets it.
 - Snapshots `~/.apps/nginx/proxy.d/<slug>.conf`.
 - Runs **only** `app-<slug> uninstall --keep-config`. Plain `uninstall` deletes
   the config files, and `~/.apps/<slug>` IS the live native data dir.
@@ -55,7 +60,8 @@ Generic (every app):
 - [ ] A download completed and was handed to an arr since the swap.
 - [ ] qBit: WebUI bound (no boot-bind squatter); seeding/ratio actions intact.
 - [ ] qBit config lives at `~/.config/qBittorrent/qBittorrent.conf` -- confirm
-      `--keep-config` keeps it (the script checks after; back it up by hand first).
+      `--keep-config` keeps it (the script copies it to `<slug>-<ts>.extra/` and
+      checks after).
 
 ### Seerr -- BLOCKED
 
@@ -66,8 +72,11 @@ outright. Needs a replacement route first (QFLX-56).
 ## If a post-check fails
 
 1. Read the log line(s) `POST-CHECK FAILED:`.
-2. Data file gone: stop the native unit, restore from the tarball
-   (`tar -xzf <tgz> -C ~/.apps`), start the unit, re-verify.
+2. Data file gone: the line names where its copy is. Stop the native unit,
+   restore from the tarball (`tar -xzf <tgz> -C ~/.apps`) or the `.extra/`
+   copy (`cp -p <extra>/<path> ~/<path>`), start the unit, re-verify. "NO
+   automated backup" (pg-native) = the live cluster itself is damaged; stop
+   and investigate by hand, this script has no copy of it.
 3. Proxy conf: the script restored it; confirm the route answers.
 4. Container process left: `app-<slug>` is gone, so kill the stray pid and
    check `runtime-parity`.

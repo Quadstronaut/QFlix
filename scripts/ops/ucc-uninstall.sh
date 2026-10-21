@@ -23,8 +23,8 @@
 # table entry exists, ~/.apps/<slug> and app-<slug> exist, and not inside the
 # Monday 11:00-15:00 UTC Ultra.cc maintenance window.
 #
-# Steps (--execute): backup tarball (verified by listing) -> proxy conf
-# snapshot -> app-<slug> uninstall --keep-config -> post-checks. A failed
+# Steps (--execute): backup tarball (verified by listing) -> copies of key
+# files outside ~/.apps/<slug> (verified by cmp) -> proxy conf snapshot -> app-<slug> uninstall --keep-config -> post-checks. A failed
 # post-check exits 1 with the reason; it NEVER reinstalls (a reinstall would
 # put a second runtime on the live data dir -- that call is the operator's).
 #
@@ -98,6 +98,20 @@ key_files() {
   esac
 }
 key_path() { case "$1" in "~/"*) echo "$HOME/${1#\~/}" ;; *) echo "$APPS/$NDIR/$1" ;; esac; }
+# Where a key file's backup lives -- the GONE message must point at a copy that
+# really holds the file. Three cases:
+#   in the slug dir  -> inside the tarball;
+#   ~/ (qbittorrent's ~/.config conf) -> a cp -p into $EXTRA (Step 1b);
+#   another native_dir (postgres: pg-native) -> NOT backed up. That dir is a
+#     live PG cluster: a file copy of it is not a consistent backup, and the
+#     panel uninstall of the UCC postgres app never targets it. Say so plainly.
+key_backup() {
+  case "$1" in
+    "~/"*) echo "restore from $EXTRA/${1#\~/}" ;;
+    *) if [ "$NDIR" = "$SLUG" ]; then echo "restore from $TGZ ($SLUG/$1)"
+       else echo "it lives in $APPS/$NDIR, outside $TGZ; NO automated backup exists"; fi ;;
+  esac
+}
 
 # ---------------------------------------------------------------------------
 # Gates. All read-only, so they run in dry-run too: a dry-run that would be
@@ -152,6 +166,7 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 TGZ="$BACKUP_DIR/$SLUG-$TS.tgz"
 PROXY="$PROXY_D/$SLUG.conf"
 PROXY_SNAP="$BACKUP_DIR/$SLUG-$TS.proxy.conf"
+EXTRA="$BACKUP_DIR/$SLUG-$TS.extra"
 
 # Step 1: backup. Same excludes as the swap snapshot (307 Step 5): binaries are
 # re-downloadable, logs and caches are bulk with no restore value.
@@ -163,16 +178,34 @@ act "${TAR[@]}" -czf "$TGZ" -C "$APPS" --exclude="$SLUG/bin" --exclude="$SLUG/na
 if [ "$EXECUTE" = 1 ]; then
   # A tarball that does not list is not a backup. When the native data lives in
   # the slug dir, its key files must be IN the listing too.
+  # Here-strings, never `printf | grep -q`: grep -q exits on its first match,
+  # and once the listing passes the 64 KiB pipe buffer (a PG cluster, prowlarr
+  # Definitions) printf takes SIGPIPE and pipefail turns a good backup into
+  # rc=141 -> "lists no entries".
   listing="$("${TAR[@]}" -tzf "$TGZ" 2>/dev/null)" || fail "backup $TGZ does not list"
-  printf '%s\n' "$listing" | grep -q "^$SLUG/" || fail "backup $TGZ lists no $SLUG/ entries"
+  grep -q "^$SLUG/" <<<"$listing" || fail "backup $TGZ lists no $SLUG/ entries"
   if [ "$NDIR" = "$SLUG" ]; then
     for k in $KEYS; do
       case "$k" in "~/"*) continue ;; esac
-      printf '%s\n' "$listing" | grep -qxF "$SLUG/$k" || fail "backup $TGZ is missing $SLUG/$k"
+      grep -qxF "$SLUG/$k" <<<"$listing" || fail "backup $TGZ is missing $SLUG/$k"
     done
   fi
-  log "backup verified: $TGZ ($(printf '%s\n' "$listing" | wc -l | tr -d ' ') entries)"
+  log "backup verified: $TGZ ($(wc -l <<<"$listing" | tr -d ' ') entries)"
 fi
+
+# Step 1b: key files under ~/ live outside ~/.apps/<slug>, so the tarball never
+# holds them (qbittorrent's ~/.config/qBittorrent/qBittorrent.conf). Copy each
+# into $EXTRA at its $HOME-relative path and verify the copy byte-for-byte.
+for k in $KEYS; do
+  case "$k" in "~/"*) ;; *) continue ;; esac
+  dst="$EXTRA/${k#\~/}"
+  act mkdir -p "$(dirname "$dst")" || fail "cannot create $(dirname "$dst")"
+  act cp -p "$(key_path "$k")" "$dst" || fail "cannot back up $(key_path "$k")"
+  if [ "$EXECUTE" = 1 ]; then
+    cmp -s "$(key_path "$k")" "$dst" || fail "backup copy $dst does not match $(key_path "$k")"
+    log "extra backup verified: $dst"
+  fi
+done
 
 # Step 2: proxy conf snapshot (the panel uninstall may take the route with it).
 if [ -f "$PROXY" ]; then
@@ -198,7 +231,7 @@ if [ -n "$pid_before" ] && [ "$pid_after" != "$pid_before" ]; then
   log "WARN: $UNIT MainPID changed $pid_before -> ${pid_after:-none}"
 fi
 for k in $KEYS; do
-  [ -e "$(key_path "$k")" ] || FAILS+=("data file $(key_path "$k") is GONE; restore from $TGZ")
+  [ -e "$(key_path "$k")" ] || FAILS+=("data file $(key_path "$k") is GONE; $(key_backup "$k")")
 done
 
 if [ -f "$PROXY_SNAP" ] && [ ! -f "$PROXY" ]; then
