@@ -29,6 +29,17 @@ def test_the_2026_10_22_vector_is_covered():
     assert "*.exe" in m.REQUIRED_PATTERNS
 
 
+def test_the_2026_10_23_7z_wrapper_vector_is_covered():
+    # QFLX-72: same episodes, re-faked as a 7z holding a PE executable.
+    assert "*.7z" in m.REQUIRED_PATTERNS
+
+
+def test_real_archives_are_not_excluded():
+    # Scene releases ship rar volumes; unpackerr must still get those.
+    for name in ("*.rar", "*.r00", "*.zip", "*.mkv", "*.mp4"):
+        assert name not in m.REQUIRED_PATTERNS
+
+
 def test_disabled_client_gets_armed():
     p = m.plan({"excluded_file_names_enabled": False, "excluded_file_names": ""})
     assert p["excluded_file_names_enabled"] is True

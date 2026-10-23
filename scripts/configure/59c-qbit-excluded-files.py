@@ -55,8 +55,15 @@ import urllib.request
 # qBit matches these as case-insensitive wildcards against each file NAME.
 # Disc images (the 2026-10-22 vector) + Windows executables/scripts/shortcuts
 # (what fake releases actually ship). None of these is ever a library file.
+#
+# *.7z (QFLX-72, 2026-10-23): the SAME three episodes came back as single-file
+# "<title>.7z" torrents from LimeTorrents. Each held one Windows PE executable
+# named after a DIFFERENT show (Abbott Elementary, Georgie and Mandy), and
+# unpackerr extracted it onto disk before Sonarr refused the .7z. Scene and
+# p2p video releases ship rar (or nothing); a single 7z is a wrapper for a fake.
 REQUIRED_PATTERNS = (
     "*.iso",
+    "*.7z",
     "*.img",
     "*.exe",
     "*.scr",

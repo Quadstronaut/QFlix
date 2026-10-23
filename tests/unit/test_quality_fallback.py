@@ -289,7 +289,7 @@ def test_cap_blocks_26th_promotion():
 
 
 # ---------------------------------------------------------------------------
-# TV planner (park-only v2 — day-5 digest, day-15 unmonitor)
+# TV planner (park-only v2 — day-5 digest, day-30 unmonitor; QFLX-72)
 # ---------------------------------------------------------------------------
 
 def mk_episode(eid=1, series_id=10, aired_days_ago=30, monitored=True,
@@ -329,14 +329,28 @@ def test_tv_grabbed_episode_pruned():
     assert state == {}
 
 
-def test_tv_parks_at_day_15_and_sets_flag():
+def test_tv_park_threshold_is_30_days_movies_stay_15():
+    # Operator 2026-10-23: TV waits a month before the first backoff.
+    assert qf.TV_PARK_DAYS == 30
+    assert qf.PARK_DAYS == 15
+
+
+def test_tv_not_parked_at_day_15_anymore():
     e = mk_episode()
     state = {"sonarr:1": {"days": 14, "last_counted": "2026-06-05",
                           "alerted": True, "parked": False}}
     plan = qf.plan_tv("sonarr", [e], state, TODAY, NOW)
+    assert plan["parks"] == [] and state["sonarr:1"]["parked"] is False
+
+
+def test_tv_parks_at_tv_park_days_and_sets_flag():
+    e = mk_episode()
+    state = {"sonarr:1": {"days": qf.TV_PARK_DAYS - 1, "last_counted": "2026-06-05",
+                          "alerted": True, "parked": False}}
+    plan = qf.plan_tv("sonarr", [e], state, TODAY, NOW)
     assert len(plan["parks"]) == 1
     p = plan["parks"][0]
-    assert p["episode_id"] == 1 and p["days"] == 15
+    assert p["episode_id"] == 1 and p["days"] == qf.TV_PARK_DAYS
     assert state["sonarr:1"]["parked"] is True
 
 
@@ -360,7 +374,7 @@ def test_tv_park_blast_cap_defers_overflow():
     missing, state = [], {}
     for i in range(1, qf.MAX_TV_PARKS_PER_RUN + 3):
         missing.append(mk_episode(eid=i, ep=i))
-        state[f"sonarr:{i}"] = {"days": 14, "last_counted": "2026-06-05",
+        state[f"sonarr:{i}"] = {"days": qf.TV_PARK_DAYS - 1, "last_counted": "2026-06-05",
                                 "alerted": True, "parked": False}
     plan = qf.plan_tv("sonarr", missing, state, TODAY, NOW)
     assert len(plan["parks"]) == qf.MAX_TV_PARKS_PER_RUN
@@ -501,7 +515,7 @@ def test_run_tv_parks_and_unmonitors(tmp_path, monkeypatch):
                "sonarr2": FakeClient(_empty_tv_routes())}
     state_path = tmp_path / "state.json"
     state = {"movies": {},
-             "tv": {"sonarr:1": {"days": 14, "last_counted": "2026-06-05",
+             "tv": {"sonarr:1": {"days": qf.TV_PARK_DAYS - 1, "last_counted": "2026-06-05",
                                  "alerted": True, "parked": False}}}
     qf.save_state(state_path, state)
     res = qf.run(client_factory=lambda slug: clients[slug],
@@ -525,7 +539,7 @@ def test_run_tv_park_rolls_back_on_failed_unmonitor(tmp_path, monkeypatch):
                "sonarr2": FakeClient(_empty_tv_routes())}
     state_path = tmp_path / "state.json"
     state = {"movies": {},
-             "tv": {"sonarr:1": {"days": 14, "last_counted": "2026-06-05",
+             "tv": {"sonarr:1": {"days": qf.TV_PARK_DAYS - 1, "last_counted": "2026-06-05",
                                  "alerted": True, "parked": False}}}
     qf.save_state(state_path, state)
     res = qf.run(client_factory=lambda slug: clients[slug],
@@ -555,7 +569,7 @@ def test_run_tv_dry_run_no_unmonitor(tmp_path, monkeypatch):
                "sonarr2": FakeClient(_empty_tv_routes())}
     state_path = tmp_path / "state.json"
     state = {"movies": {},
-             "tv": {"sonarr:1": {"days": 14, "last_counted": "2026-06-05",
+             "tv": {"sonarr:1": {"days": qf.TV_PARK_DAYS - 1, "last_counted": "2026-06-05",
                                  "alerted": True, "parked": False}}}
     qf.save_state(state_path, state)
     qf.run(client_factory=lambda slug: clients[slug],
@@ -614,7 +628,7 @@ def test_tv_fetch_failure_does_not_wipe_the_day_counters(tmp_path, monkeypatch):
                "sonarr2": FakeClient(_empty_tv_routes())}
     state_path = tmp_path / "state.json"
     before = {"movies": {},
-              "tv": {"sonarr:9001": {"days": 14, "last_counted": "2026-06-05",
+              "tv": {"sonarr:9001": {"days": qf.TV_PARK_DAYS - 1, "last_counted": "2026-06-05",
                                      "alerted": True, "parked": False},
                      "sonarr:9002": {"days": 9, "last_counted": "2026-06-05",
                                      "alerted": True, "parked": False}}}
@@ -641,7 +655,7 @@ def test_a_healthy_tv_instance_still_prunes(tmp_path, monkeypatch):
                "sonarr2": FakeClient(_empty_tv_routes())}
     state_path = tmp_path / "state.json"
     qf.save_state(state_path, {"movies": {}, "tv": {
-        "sonarr:9001": {"days": 14, "last_counted": "2026-06-05",
+        "sonarr:9001": {"days": qf.TV_PARK_DAYS - 1, "last_counted": "2026-06-05",
                         "alerted": True, "parked": False}}})
     res = qf.run(client_factory=lambda slug: clients[slug],
                  state_path=state_path, now=NOW, dry_run=False)
@@ -800,7 +814,7 @@ def test_run_park_is_remembered_after_plan_tv_prunes_it(tmp_path, monkeypatch):
                "sonarr2": FakeClient(_empty_tv_routes())}
     state_path = tmp_path / "state.json"
     qf.save_state(state_path, {"movies": {}, "tv": {"sonarr:1": {
-        "days": 14, "last_counted": "2026-06-05", "alerted": True,
+        "days": qf.TV_PARK_DAYS - 1, "last_counted": "2026-06-05", "alerted": True,
         "parked": False}}})
     qf.run(client_factory=lambda s: clients[s], state_path=state_path,
            now=NOW, dry_run=False)

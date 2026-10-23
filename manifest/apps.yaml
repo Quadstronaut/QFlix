@@ -890,7 +890,7 @@ apps:
   qflix-quality-fallback:
     # Two-stage quality loosening for movies stuck in the missing sweep
     # (day 5 -> HDTV tier, day 10 -> SD retail, day 15 -> park + alert).
-    # TV is park-only in v2 (day-15 unmonitor; no loosen — Sonarr profiles are
+    # TV is park-only in v2 (day-30 unmonitor, QFLX-72; no loosen — Sonarr profiles are
     # per-series). Daily 07:30 UTC, 30 min after qflix-missing-search.
     class: cron
     unit: qflix-quality-fallback.service
