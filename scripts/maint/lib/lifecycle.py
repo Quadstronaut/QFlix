@@ -243,6 +243,30 @@ def _systemd_verb(app: App, verb: str, timeout_s: float) -> LifecycleResult:
     return _run(["systemctl", "--user", verb, unit], timeout_s)
 
 
+def auto_restarts(app: App) -> Optional[int]:
+    """systemd's own Restart= count for a systemd-class unit, else None.
+
+    `_systemd_verb` runs reset-failed + restart, and a deliberate start flushes
+    NRestarts to 0, so after a recovery restart this counts ONLY crashes since.
+    QFLX-71: unpackerr panicked ~60s after every start; recovery probed in the
+    up-window, saw "healthy", and blamed Kuma for 5h. A non-zero count here is
+    the proof the app died again on its own. None = unknown (not systemd, dry
+    run, systemctl failed) - callers must treat None as "no evidence"."""
+    if app.class_ != "systemd" or _pending_swap(app):
+        return None
+    unit = app.raw.get("unit") or ""
+    if not unit or _dry_run():
+        return None
+    r = _run(["systemctl", "--user", "show", "-p", "NRestarts", "--value", unit],
+             _timeout(app, None))
+    if not r.ok:
+        return None
+    try:
+        return int(r.stdout.strip())
+    except ValueError:
+        return None
+
+
 def _systemd_status(app: App, timeout_s: float) -> LifecycleResult:
     unit = app.raw.get("unit") or ""
     result = _run(["systemctl", "--user", "is-active", unit], timeout_s)
