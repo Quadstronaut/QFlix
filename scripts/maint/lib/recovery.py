@@ -204,6 +204,7 @@ def clear_escalation_page(app_name: str) -> None:
 # pusher's own probe confirms the app is actually up again.
 _FAILURE_EVENTS = frozenset({
     "failed", "auto_downgrade_failed", "healthy_locally_kuma_down",
+    "crash_looping",
 })
 
 
@@ -459,6 +460,29 @@ def _recovery_loop(app: App) -> dict:
                 msg = f"✓ {app_name} recovered after {attempt} attempt(s)"
                 _emit("recovered", app_name, attempt, "ok", kstatus, msg, "info")
                 return _result(app_name, "recovered", attempt, "ok", kstatus)
+
+            # QFLX-71: before blaming Kuma, prove the app is STILL up. A
+            # crash-looping app passes the first probe (caught in its brief
+            # up-window after the restart) and is dead again by the time
+            # Kuma is read; Kuma is then right and "routing/auth" is a lie
+            # that re-pages every cycle. Evidence = systemd counted its own
+            # restarts since ours, or the local probe now fails.
+            restarts = lifecycle.auto_restarts(app)
+            reprobe = health.probe(app)
+            if (restarts or 0) > 0 or not reprobe.ok:
+                unit = app.raw.get("unit") or app_name
+                seen = (f"{restarts} auto-restart(s)" if restarts
+                        else "local probe failed again")
+                msg = (
+                    f"✗ {app_name} crash-looping: up right after restart, then"
+                    f" died ({seen} within ~{recheck_delay}s) — read its log"
+                    f" (journalctl --user -u {unit}); not a Kuma issue"
+                )
+                # page_once: the pusher re-triggers recovery every cycle; one
+                # page per cooldown, the state record still lands each time.
+                _emit("crash_looping", app_name, attempt, "down", kstatus, msg,
+                      "error", page_once=True)
+                return _result(app_name, "crash_looping", attempt, "down", kstatus)
             else:
                 msg = (
                     f"⚠ {app_name} healthy locally but Kuma reports {kstatus} "
