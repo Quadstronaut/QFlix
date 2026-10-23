@@ -235,6 +235,24 @@ def test_not_listening_is_the_probes_finding_not_parity(healthy):
     assert rp.check(_app(), healthy, port=PORT) == []
 
 
+def test_portless_app_skips_port_owner_without_warning(healthy, caplog):
+    # QFLX-74: unpackerr/postgres are process_pattern apps with no port; the
+    # pusher logged "port unresolved" for each every minute.
+    app = _app()
+    app.health = HealthConfig(kind="process_pattern", raw={"pattern": "/unpackerr"})
+    with caplog.at_level("WARNING"):
+        assert rp.check(app, healthy) == []
+    assert "port unresolved" not in caplog.text
+    assert not any(c[0] == "ss" for c in healthy.calls)
+
+
+def test_has_port():
+    assert rp.has_port(_app()) is True
+    app = _app()
+    app.health = HealthConfig(kind="process_pattern", raw={"pattern": "x"})
+    assert rp.has_port(app) is False
+
+
 def test_a_broken_detector_fails_open(tmp_path):
     host = FakeHost(tmp_path / "no-proc", "")
 

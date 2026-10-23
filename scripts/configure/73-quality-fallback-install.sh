@@ -46,5 +46,11 @@ sshm "systemctl --user list-timers qflix-quality-fallback.timer --all --no-pager
 sshm "python3 ~/scripts/mcp/quality_fallback.py --dry-run" | head -5
 
 echo "OK: quality-fallback deployed; timer enabled; profiles bootstrapped."
-echo "OPERATOR: create Kuma push monitor 'Qflix Quality Fallback' via"
-echo "          scripts/maint/bootstrap-kuma-monitors.py (needs Kuma creds)."
+# The Kuma push monitor was a one-time operator step; it exists now, so check
+# for it instead of telling the operator to create it on every run (QFLX-74).
+if sshm "sqlite3 ~/.apps/uptimekuma/kuma.db \"select 1 from monitor where name='Qflix Quality Fallback' and active=1;\"" | grep -qx 1; then
+  echo "OK: Kuma push monitor 'Qflix Quality Fallback' present."
+else
+  echo "OPERATOR: Kuma push monitor 'Qflix Quality Fallback' missing; create it via"
+  echo "          scripts/maint/bootstrap-kuma-monitors.py (needs Kuma creds)."
+fi

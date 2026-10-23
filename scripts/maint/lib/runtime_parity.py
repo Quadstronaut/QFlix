@@ -268,6 +268,17 @@ def port_owner(host: Host, app, show: dict, port: int) -> list[str]:
     return []
 
 
+def has_port(app) -> bool:
+    """Does the manifest give this app a listener at all?
+
+    process_pattern apps (unpackerr, postgres) have no port_secret/port_source:
+    unpackerr has no HTTP surface and postgres listens on a socket the probe
+    never names. There is no port to own, so port_owner does not apply; asking
+    lib.health anyway raised and logged a warning every minute (QFLX-74)."""
+    raw = getattr(getattr(app, "health", None), "raw", None) or {}
+    return bool(raw.get("port_secret") or raw.get("port_source"))
+
+
 def check(app, host: Host | None = None, port: int | None = None) -> list[str]:
     """All parity violations for *app*; [] when it does not apply or all hold."""
     try:
@@ -295,7 +306,7 @@ def check(app, host: Host | None = None, port: int | None = None) -> list[str]:
             return violations
         show = parse_show(show_text)
         guarded(process_trees, host, app, uid, show, show_text)
-        if port is None:
+        if port is None and has_port(app):
             try:
                 from lib import health as health_mod
                 port = health_mod._resolve_port(app)

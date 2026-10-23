@@ -45,5 +45,11 @@ sshm "systemctl --user list-timers qflix-specials-policy.timer --all --no-pager"
 sshm "python3 ~/scripts/mcp/specials_policy.py --dry-run" | head -5
 
 echo "OK: specials-policy deployed; timer enabled."
-echo "OPERATOR: create Kuma push monitor 'Qflix Specials Policy' via"
-echo "          scripts/maint/bootstrap-kuma-monitors.py (needs Kuma creds)."
+# The Kuma push monitor was a one-time operator step; it exists now, so check
+# for it instead of telling the operator to create it on every run (QFLX-74).
+if sshm "sqlite3 ~/.apps/uptimekuma/kuma.db \"select 1 from monitor where name='Qflix Specials Policy' and active=1;\"" | grep -qx 1; then
+  echo "OK: Kuma push monitor 'Qflix Specials Policy' present."
+else
+  echo "OPERATOR: Kuma push monitor 'Qflix Specials Policy' missing; create it via"
+  echo "          scripts/maint/bootstrap-kuma-monitors.py (needs Kuma creds)."
+fi
