@@ -36,6 +36,12 @@ sshm "mkdir -p ~/scripts/mcp"
 ( cd "$REPO/scripts/mcp" && tar --exclude='__pycache__' --exclude='*.pyc' -cf - . ) \
   | sshm "tar -C scripts/mcp -xf -"
 
+# RESTORE THE EXEC BIT (QFLX-72; same fix 70-mcp-install.sh got 2026-08-23).
+# tar ships the on-disk mode, and a Windows checkout writes every file 644
+# whatever git says; git has every scripts/mcp *.py at 100755. Without this,
+# each run of this installer turned deploy-drift red (deploy-mode-drift).
+sshm "find ~/scripts/mcp -name '*.py' -exec chmod 755 {} +"
+
 # ── Step 2: mint the phone's forced-command key ON THE BOX, only if missing ─
 log_info "checking for existing phone key (${PHONE_KEY_PATH})"
 KEY_OUT=$(sshm 'bash -s' <<KEYSCRIPT

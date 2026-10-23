@@ -16,6 +16,12 @@ sshm "mkdir -p ~/scripts/mcp"
 ( cd "$REPO/scripts/mcp" && tar --exclude='__pycache__' --exclude='*.pyc' -cf - . ) \
   | sshm "tar -C scripts/mcp -xf -"
 
+# RESTORE THE EXEC BIT (QFLX-72; same fix 70-mcp-install.sh got 2026-08-23).
+# tar ships the on-disk mode, and a Windows checkout writes every file 644
+# whatever git says; git has every scripts/mcp *.py at 100755. Without this,
+# each run of this installer turned deploy-drift red (deploy-mode-drift).
+sshm "find ~/scripts/mcp -name '*.py' -exec chmod 755 {} +"
+
 echo "-> install systemd-user units"
 sshm "mkdir -p ~/.config/systemd/user/"
 scpm_to "$REPO/scripts/mcp/systemd/qflix-specials-policy.service" \
