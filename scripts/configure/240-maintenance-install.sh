@@ -333,6 +333,11 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
+    scripts/smoke-test.sh \
+    scripts/smoke-test-plex.sh \
+    scripts/bootstrap-discover.sh \
+    scripts/qflix-top.sh \
+    scripts/qflix-top-pub.sh \
 ) | sshm 'tar -xf - -C ~/.opt/_maint_stage'
 
 # Move staged files into the right places (idempotent — overwrites).
@@ -558,6 +563,15 @@ cp -f   "$STG"/scripts/configure/59b-plex-welcome-library.py ~/scripts/configure
 # alternative was deleting the box copy, and adding a file is the reversible one.
 cp -f   "$STG"/scripts/configure/240-maintenance-install.sh ~/scripts/configure/240-maintenance-install.sh
 chmod +x ~/scripts/configure/240-maintenance-install.sh
+# QFLX-72: the same trap, five times over. Every top-level ~/scripts/*.sh was
+# resident from a past manual scp with no installer, so any edit to one (QFLX-71
+# touched smoke-test.sh) turned deploy-drift red until a hand copy. Ship them
+# all; tests/unit/test_toplevel_scripts_shipped.py fails if a new top-level
+# script lands in git without being listed here AND in the tar above.
+for f in smoke-test.sh smoke-test-plex.sh bootstrap-discover.sh qflix-top.sh qflix-top-pub.sh; do
+  cp -f "$STG/scripts/$f" ~/scripts/"$f"
+  chmod +x ~/scripts/"$f"
+done
 # QFLX-25 (UCC divorce A1): the native installers RUN ON THE BOX (they drive
 # systemctl --user, appctl and /proc locally), so each one ships with the
 # native.sh lib it sources. Deploying them does nothing by itself: every
