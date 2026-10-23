@@ -1274,6 +1274,15 @@ systemctl --user restart manitoba-maint-pusher.service
 sleep 3
 UNITSCRIPT
 
+# ── Step 7c: crontab MAILTO="" (QFLX-71) ────────────────────────────────────
+# Cron mails any job's stdout/stderr to the local mailbox, and the box's MTA
+# relays it to a dead legacy Ultra.cc address, so each bounce lands back in
+# /var/spool/mail where REA reads it as "cron:mail-delivery-failed". Job
+# output already goes to durable logs; cron mail is pure noise. Prepended
+# once (cron applies an assignment only to the lines AFTER it); a re-run on
+# an armed crontab rewrites nothing.
+sshm 'crontab -l 2>/dev/null | grep -qx "MAILTO=\"\"" || { (echo "MAILTO=\"\""; crontab -l 2>/dev/null) | crontab -; }'
+
 # ── Step 8: heartbeat cron entry ────────────────────────────────────────────
 sshm '(crontab -l 2>/dev/null | grep -v heartbeat-maint-webhook; echo "*/5 * * * * /home/quadstronaut/scripts/ops/heartbeat-maint-webhook.sh") | crontab -'
 

@@ -706,6 +706,40 @@ else
 fi
 fi
 
+# 13p. qBittorrent excluded file names (QFLX-71) - live re-read gate for
+#      scripts/configure/59c-qbit-excluded-files.py. 2026-10-22 three fake
+#      episodes were one Windows PE executable named .iso; unpackerr panicked
+#      on it and crash-looped 5h. The pattern list is parsed from 59c (ast,
+#      never imported) so the gate and the fix cannot drift apart.
+echo "13p. qBittorrent excluded file names"
+QX_SRC="$HERE/configure/59c-qbit-excluded-files.py"
+QX_REQ=$(python3 - "$QX_SRC" <<'QXEOF' 2>/dev/null
+import ast, sys
+for node in ast.parse(open(sys.argv[1], encoding="utf-8").read()).body:
+    if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", "") == "REQUIRED_PATTERNS" for t in node.targets):
+        print(" ".join(ast.literal_eval(node.value)))
+QXEOF
+)
+if [ -z "$QX_REQ" ]; then
+  record "qbit-excluded-files" fail "could not parse REQUIRED_PATTERNS from $QX_SRC"
+else
+  QX_PREFS=$(sshm 'P=$(cat ~/secrets/qbittorrent.port 2>/dev/null); U=$(cat ~/secrets/qbittorrent.user 2>/dev/null || echo quadstronaut); W=$(cat ~/secrets/qbittorrent.password 2>/dev/null); C=$(mktemp); curl -sf -m 15 -c "$C" --data-urlencode "username=$U" --data-urlencode "password=$W" "http://127.0.0.1:$P/api/v2/auth/login" >/dev/null && curl -sf -m 15 -b "$C" "http://127.0.0.1:$P/api/v2/app/preferences"; rm -f "$C"' 2>/dev/null)
+  QX_OUT=$(printf '%s' "$QX_PREFS" | QX_REQ="$QX_REQ" python3 -c 'import sys, json, os
+d = json.load(sys.stdin)
+have = {p.strip().lower() for p in str(d.get("excluded_file_names") or "").replace("\r", "\n").split("\n") if p.strip()}
+bad = [] if d.get("excluded_file_names_enabled") else ["disabled"]
+bad += [p for p in os.environ["QX_REQ"].split() if p.lower() not in have]
+print("OK" if not bad else " ".join(bad))' 2>/dev/null)
+  if [ -z "$QX_OUT" ]; then
+    record "qbit-excluded-files" fail "qBit preferences unreadable"
+  elif [ "$QX_OUT" != "OK" ]; then
+    record "qbit-excluded-files" fail "missing: $QX_OUT - run scripts/configure/59c-qbit-excluded-files.py"
+  else
+    record "qbit-excluded-files" pass "disc images + executables never downloaded"
+  fi
+fi
+
 # 13. Listmonk health + subscribers (mass-comms Phase 19+20)
 echo "13. Listmonk"
 LM_API_USER=$(secret_read listmonk.api_user 2>/dev/null || echo "")
