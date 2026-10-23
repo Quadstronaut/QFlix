@@ -11,7 +11,7 @@ TV (sonarr/sonarr2) is PARK-ONLY in v2 (no quality loosening — Sonarr profiles
 are per-series, so loosening one stuck episode would drop the whole series;
 and release-less specials grab nothing at any quality anyway). An aired+searched
 real episode (Season 0 excluded — that's the standalone specials_policy janitor's
-job) gets a day-5 Discord heads-up, then at PARK_DAYS is unmonitored + alerted.
+job) gets a day-5 Discord heads-up, then at TV_PARK_DAYS is unmonitored + alerted.
 The ONLY sonarr write is that unmonitor, blast-capped at MAX_TV_PARKS_PER_RUN.
 
 Spec: docs/superpowers/specs/2026-07-18-tv-fallback-v2-design.md
@@ -59,7 +59,12 @@ BANNED = {"WORKPRINT", "CAM", "TELESYNC", "TELECINE", "DVDSCR"}
 
 PROMOTE_DAYS = 5      # stage 0 -> 1 (Fallback HDTV) / TV day-5 heads-up
 DEEPEN_DAYS = 10      # stage 1 -> 2 (Fallback SD)
-PARK_DAYS = 15        # movies: restore + unmonitor + alert / TV: unmonitor + alert
+PARK_DAYS = 15        # movies: restore + unmonitor + alert (after the SD stage)
+# TV parks later than movies: TV has no quality-loosening stages, so waiting is
+# its only lever (operator 2026-10-23: "increase autopark to 30d to give users
+# the best chance"). A missing episode keeps its daily search for a month
+# before the first REARM backoff.
+TV_PARK_DAYS = 30     # TV: unmonitor + alert, then REARM backoff
 MAX_IN_FALLBACK = 25  # per instance, stage >= 1, blast-radius cap (movies)
 MAX_TV_PARKS_PER_RUN = 10  # per instance, TV unmonitors per run; overflow defers
 SEARCH_FRESH_HOURS = 48  # a day only counts if the sweep actually searched
@@ -289,7 +294,7 @@ def plan_tv(slug: str, missing: list, state: dict, today: str,
     Returns {"digest": [...], "parks": [...]}, both lists of
     {slug, series_id, episode_id, season, episode, title, days}:
       - digest: crossed PROMOTE_DAYS, once per episode (day-5 heads-up)
-      - parks:  crossed PARK_DAYS, once per episode, capped MAX_TV_PARKS_PER_RUN
+      - parks:  crossed TV_PARK_DAYS, once per episode, capped MAX_TV_PARKS_PER_RUN
                 (the caller unmonitors these episodes)
     """
     prefix = f"{slug}:"
@@ -319,7 +324,7 @@ def plan_tv(slug: str, missing: list, state: dict, today: str,
         if rec["days"] >= PROMOTE_DAYS and not rec["alerted"]:
             rec["alerted"] = True
             digest.append(dict(entry))
-        if (rec["days"] >= PARK_DAYS and not rec["parked"]
+        if (rec["days"] >= TV_PARK_DAYS and not rec["parked"]
                 and parked_this_run < MAX_TV_PARKS_PER_RUN):
             rec["parked"] = True
             parked_this_run += 1
@@ -639,7 +644,8 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
 
         if digest_all:
             lines = [f"- {_label(d)} — {d['days']}d missing" for d in digest_all]
-            _notify("TV still missing >5d (auto-parks at day 15 if unfound):\n"
+            _notify(f"TV still missing >{PROMOTE_DAYS}d (auto-parks at day "
+                    f"{TV_PARK_DAYS} if unfound):\n"
                     + "\n".join(lines), "info")
         ok_parks = [p for p in parks_all if p.get("ok")]
         bad_parks = [p for p in parks_all if not p.get("ok")]
