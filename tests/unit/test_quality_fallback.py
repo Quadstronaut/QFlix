@@ -823,6 +823,7 @@ def test_run_park_is_remembered_after_plan_tv_prunes_it(tmp_path, monkeypatch):
 
     # next run: the episode is gone from wanted/missing (unmonitored)
     clients["sonarr"] = FakeClient({**_tv_routes([]),
+                                    ("GET", "/episode/"): (200, {"id": 1}),
                                     ("POST", "/command"): (201, {"id": 1})})
     later = NOW + qf.timedelta(days=qf.REARM_BASE_DAYS)
     res = qf.run(client_factory=lambda s: clients[s], state_path=state_path,
@@ -834,6 +835,31 @@ def test_run_park_is_remembered_after_plan_tv_prunes_it(tmp_path, monkeypatch):
             {"name": "EpisodeSearch", "episodeIds": [1]}) in w
     assert res["tv_rearmed"] == ["sonarr:1"]
     assert qf.load_state(state_path)["tv_parked"]["sonarr:1"]["active"] is False
+
+
+def test_rearm_skips_deleted_episode_and_retires_record(tmp_path, monkeypatch):
+    """One deleted id made Sonarr 500 the whole batch, daily, forever."""
+    _isolate_notify(monkeypatch, tmp_path)
+    clients = {"radarr": FakeClient(_radarr_routes([], [])),
+               "radarr2": FakeClient(_radarr_routes([], [])),
+               "sonarr": FakeClient({**_tv_routes([]),
+                                     ("GET", "/episode/1"): (404, {}),
+                                     ("GET", "/episode/2"): (200, {"id": 2}),
+                                     ("POST", "/command"): (201, {"id": 1})}),
+               "sonarr2": FakeClient(_empty_tv_routes())}
+    state_path = tmp_path / "state.json"
+    rec = {"parked_on": "2026-01-01", "strikes": 1, "active": True,
+           "series_id": 10, "season": 1, "episode": 1}
+    qf.save_state(state_path, {"movies": {}, "tv": {}, "tv_parked": {
+        "sonarr:1": dict(rec), "sonarr:2": dict(rec)}})
+    res = qf.run(client_factory=lambda s: clients[s], state_path=state_path,
+                 now=NOW, dry_run=False)
+    assert ("PUT", "/episode/monitor",
+            {"episodeIds": [2], "monitored": True}) in clients["sonarr"].writes
+    assert res["tv_rearmed"] == ["sonarr:2"]
+    parked = qf.load_state(state_path)["tv_parked"]
+    assert parked["sonarr:1"]["active"] is False
+    assert parked["sonarr:2"]["active"] is False
 
 
 def test_run_dry_run_never_rearms(tmp_path, monkeypatch):
