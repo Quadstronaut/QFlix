@@ -504,6 +504,18 @@ def _apply_tv_park(client, episode_id: int) -> bool:
     return code in (200, 202)
 
 
+def _split_gone_episodes(client, episode_ids: list) -> tuple:
+    """(alive, gone). Sonarr's PUT /episode/monitor 500s for the WHOLE batch
+    ("Expected query to return N rows but returned N-1") if any id was deleted
+    (series refresh drops/renumbers episodes). Only a definite 404 counts as
+    gone; any other answer keeps the id so a blip never forgets a park."""
+    alive, gone = [], []
+    for eid in episode_ids:
+        code, _ = client.get(f"/episode/{eid}")
+        (gone if code == 404 else alive).append(eid)
+    return alive, gone
+
+
 def _apply_tv_rearm(client, episode_ids: list) -> bool:
     """End a park: re-monitor and search. The monitor write is the one that
     matters -- once monitored, the hourly MissingEpisodeSearch keeps trying
@@ -605,6 +617,12 @@ def run(*, client_factory=None, state_path: Path = STATE_PATH,
         plan = plan_tv(s, missing, state["tv"], today, now)
         digest_all.extend(plan["digest"])
         due = plan_tv_rearm(s, state["tv_parked"], today)
+        if due:
+            due, gone = _split_gone_episodes(client, due)
+            # a deleted episode can never be re-armed: retire its record so it
+            # stops poisoning every daily batch
+            for eid in gone:
+                state["tv_parked"][f"{s}:{eid}"]["active"] = False
         if due and _apply_tv_rearm(client, due):
             for eid in due:
                 state["tv_parked"][f"{s}:{eid}"]["active"] = False
