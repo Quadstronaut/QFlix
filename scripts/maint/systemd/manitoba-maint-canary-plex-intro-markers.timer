@@ -12,7 +12,7 @@ Description=Manitoba canary — Plex Skip Intro coverage (daily)
 # runs a day would be 23 restatements of the same number and 23 chances to
 # page on the same fault. The dead-man is the Kuma push monitor, which a daily
 # cadence serves as well as an hourly one.
-OnCalendar=*-*-* 08:00:00
+OnCalendar=*-*-* 08:00:00 UTC
 RandomizedDelaySec=600
 Persistent=true
 

@@ -13,7 +13,7 @@ Description=Manitoba canary — vlogs ingest stall (every 15 min)
 # which several canaries size their own lookback windows against. Moving the
 # phase keeps consecutive runs exactly one period apart and leaves every
 # downstream tuning valid.
-OnCalendar=*:14/15
+OnCalendar=*:14/15 UTC
 RandomizedDelaySec=60
 Persistent=true
 

@@ -2,7 +2,7 @@
 Description=Manitoba canary — Plex transcoder responsiveness (every 10 min)
 
 [Timer]
-OnCalendar=*:0/10
+OnCalendar=*:0/10 UTC
 RandomizedDelaySec=30
 Persistent=true
 

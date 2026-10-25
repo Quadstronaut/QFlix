@@ -114,7 +114,7 @@ cat > ~/.config/systemd/user/buildarr.timer <<'UNIT'
 Description=Run Buildarr nightly at 04:30 (post-maintenance window)
 
 [Timer]
-OnCalendar=*-*-* 04:30:00
+OnCalendar=*-*-* 04:30:00 UTC
 Persistent=true
 Unit=buildarr.service
 

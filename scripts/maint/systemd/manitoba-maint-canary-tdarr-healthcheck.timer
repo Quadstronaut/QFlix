@@ -10,7 +10,7 @@ Description=Manitoba canary - Tdarr health-check pipeline (hourly)
 # messages for zero real faults. The PERIOD is still one hour; only the start
 # minute moved, so every heartbeat timeout and lookback window sized against
 # an hourly cadence stays exactly as valid as before.
-OnCalendar=*:45:00
+OnCalendar=*:45:00 UTC
 RandomizedDelaySec=180
 Persistent=true
 

@@ -114,6 +114,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/dormant_stop.py \
     scripts/maint/lib/deploy_parity.py \
     scripts/maint/prune-app-backups.sh \
+    scripts/maint/timer-utc-pin.sh \
     scripts/maint/qflix-collect.py \
     scripts/maint/qflix-entitlement.py \
     scripts/maint/systemd/manitoba-maint-entitlement.service \
@@ -945,6 +946,11 @@ for unit in manitoba-maint-flaresolverr-canary.timer \
         ~/.config/systemd/user/timers.target.wants/"$unit" \
         ~/.config/systemd/user/default.target.wants/"$unit"
 done
+# QFLX-75: pin every timer on the box to UTC, including the ones this repo does
+# not ship (Ultra.cc's upgradinatorr/logrotate, older installers' units), so DST
+# can never skip or repeat a local hour of canaries again. Drop-ins only, no unit
+# edits. --no-reload because the reload below picks them up (QFLX-48).
+bash ~/scripts/maint/timer-utc-pin.sh --no-reload
 systemctl --user daemon-reload
 # Enable everything that should auto-start.
 systemctl --user enable --now manitoba-maint-webhook.service

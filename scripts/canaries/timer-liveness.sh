@@ -51,6 +51,8 @@
 #   STAGE=timer-inactive   — loaded but not active; will never fire again
 #   STAGE=timer-stuck      — active but no next elapse scheduled
 #   STAGE=timer-read-fail  — could not read the ledger or systemd
+#   STAGE=timer-local-tz   — a loaded timer's OnCalendar has no timezone even
+#                            after timer-utc-pin.sh ran (predicate 5, QFLX-75)
 #
 # Exit:
 #   0 — every declared timer is loaded, active and scheduled (failed .service
@@ -233,6 +235,41 @@ fi
 
 trim() { printf '%s' "$1" | sed 's/^,*//; s/,*$//'; }
 
+# 5. ZONE (QFLX-75) — every LOADED timer on the box, not just the ledger's, must
+# carry an explicit timezone in its effective OnCalendar. A bare spec runs in the
+# box's local zone (Europe/Amsterdam), and the 2026-10-25 DST fall-back made
+# systemd skip a whole local hour: ~40 canaries went silent and Kuma paged the
+# fleet red. Read systemd's merged view (TimersCalendar, so it includes drop-ins)
+# instead of grepping files. On a hit, heal with the same idempotent pin script
+# the installer runs, re-read, and FAIL only if a bare spec survives the heal.
+# Healing is cheap and rare (one daemon-reload, only when something changed).
+bare_tz_timers() {
+  sshm "systemctl --user show '*.timer' -p Id -p TimersCalendar 2>/dev/null" | tr -d '\r' | awk '
+    BEGIN { RS = ""; FS = "\n" }
+    {
+      id = ""; bad = 0
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^Id=/) { id = substr($i, 4); continue }
+        if ($i !~ /^TimersCalendar=/) continue
+        s = $i
+        while (match(s, /OnCalendar=[^;]*;/)) {
+          spec = substr(s, RSTART + 11, RLENGTH - 12)
+          sub(/[ \t]+$/, "", spec)
+          if (spec !~ /(^| )(UTC|[A-Za-z]+\/[A-Za-z0-9_+\/-]+)$/) bad = 1
+          s = substr(s, RSTART + RLENGTH)
+        }
+      }
+      if (id != "" && bad) print id
+    }' | paste -sd, -
+}
+BARE_TZ=$(bare_tz_timers || true)
+TZ_HEALED=""
+if [ -n "$BARE_TZ" ]; then
+  sshm "bash ~/scripts/maint/timer-utc-pin.sh" >/dev/null 2>&1 || true
+  TZ_HEALED="$BARE_TZ"
+  BARE_TZ=$(bare_tz_timers || true)
+fi
+
 if [ -n "$(trim "$MISSING")" ]; then
   echo "STAGE=timer-missing msg=declared-in-jobs.yaml-but-not-installed:$(trim "$MISSING")" >&2
   exit 1
@@ -245,9 +282,16 @@ if [ -n "$(trim "$STUCK")" ]; then
   echo "STAGE=timer-stuck msg=active-but-nothing-scheduled:$(trim "$STUCK")" >&2
   exit 1
 fi
-if [ -n "$(trim "$FAILED")" ]; then
+if [ -n "$(trim "$BARE_TZ")" ]; then
+  echo "STAGE=timer-local-tz msg=OnCalendar-without-timezone-survived-utc-pin:$(trim "$BARE_TZ")" >&2
+  exit 1
+fi
+if [ -n "$(trim "$FAILED")" ] || [ -n "$TZ_HEALED" ]; then
   # WARN, not FAIL — see the header. Still UP, but the message names them.
-  echo "PASS-WARN: ${OKN}/${COUNT} timers live; last-run-not-success:$(trim "$FAILED")"
+  W=""
+  [ -n "$(trim "$FAILED")" ] && W="last-run-not-success:$(trim "$FAILED")"
+  [ -n "$TZ_HEALED" ] && W="${W:+$W; }utc-pinned:$(trim "$TZ_HEALED")"
+  echo "PASS-WARN: ${OKN}/${COUNT} timers live; $W"
   exit 0
 fi
 echo "PASS: timer-liveness ${OKN}/${COUNT} declared timers loaded+active+scheduled"

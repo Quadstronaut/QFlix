@@ -61,6 +61,14 @@ def _replay(tmp_path: Path, body: str) -> list[str]:
     (stub / "sleep").write_text(NOOP_STUB, newline="\n")
     home = tmp_path / "home"
     home.mkdir()
+    # QFLX-75: Step 7 runs the real UTC pin against a bare timer, so the reload
+    # bound below also proves the pin adds no reload of its own (--no-reload).
+    (home / "scripts" / "maint").mkdir(parents=True)
+    shutil.copy(REPO_ROOT / "scripts" / "maint" / "timer-utc-pin.sh",
+                home / "scripts" / "maint" / "timer-utc-pin.sh")
+    (home / ".config" / "systemd" / "user").mkdir(parents=True)
+    (home / ".config" / "systemd" / "user" / "bare.timer").write_text(
+        "[Timer]\nOnCalendar=*:5/15\n", newline="\n")
     calls = tmp_path / "calls.log"
     calls.write_text("", newline="\n")
     script = tmp_path / "unitscript.sh"
