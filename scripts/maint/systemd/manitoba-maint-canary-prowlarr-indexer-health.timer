@@ -13,7 +13,7 @@ Description=Manitoba canary — Prowlarr indexer health (429 cascade + RSS stale
 # which several canaries size their own lookback windows against. Moving the
 # phase keeps consecutive runs exactly one period apart and leaves every
 # downstream tuning valid.
-OnCalendar=*:12/15
+OnCalendar=*:12/15 UTC
 RandomizedDelaySec=60
 Persistent=true
 
