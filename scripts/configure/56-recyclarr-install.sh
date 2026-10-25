@@ -157,7 +157,7 @@ cat > ~/.config/systemd/user/recyclarr.timer <<'UNIT'
 Description=Recyclarr weekly sync (Sun 04:30 + 30min jitter)
 
 [Timer]
-OnCalendar=Sun *-*-* 04:30:00
+OnCalendar=Sun *-*-* 04:30:00 UTC
 RandomizedDelaySec=1800
 Persistent=true
 Unit=recyclarr.service

@@ -13,7 +13,7 @@ Description=Manitoba canary — Hardlink integrity (every 30 min)
 # which several canaries size their own lookback windows against. Moving the
 # phase keeps consecutive runs exactly one period apart and leaves every
 # downstream tuning valid.
-OnCalendar=*:7/30
+OnCalendar=*:7/30 UTC
 RandomizedDelaySec=120
 Persistent=true
 

@@ -2,7 +2,7 @@
 Description=Manitoba — weekly *arr stack audit (Sun 04:00 UTC)
 
 [Timer]
-OnCalendar=Sun 04:00
+OnCalendar=Sun 04:00 UTC
 Persistent=true
 RandomizedDelaySec=5min
 

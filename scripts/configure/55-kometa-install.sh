@@ -179,7 +179,7 @@ cat > ~/.config/systemd/user/kometa.timer <<'UNIT'
 Description=Kometa daily run (03:30 + 15min jitter)
 
 [Timer]
-OnCalendar=*-*-* 03:30:00
+OnCalendar=*-*-* 03:30:00 UTC
 RandomizedDelaySec=900
 Persistent=true
 Unit=kometa.service

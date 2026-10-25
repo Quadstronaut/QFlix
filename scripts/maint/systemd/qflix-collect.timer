@@ -4,7 +4,7 @@ Description=QFlix hourly collector (top of hour) — feeds the "QFlix Collect" K
 [Timer]
 # Hourly at the top of the hour. The Kuma monitor threshold is 5400s (90 min),
 # so one missed run is tolerated; two consecutive misses page.
-OnCalendar=*:00
+OnCalendar=*:00 UTC
 RandomizedDelaySec=90
 Persistent=true
 Unit=qflix-collect.service
