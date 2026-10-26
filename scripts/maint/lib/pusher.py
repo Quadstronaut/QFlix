@@ -237,21 +237,6 @@ def push_once(
         if result.latency_ms is not None:
             params["ping"] = result.latency_ms
 
-        try:
-            resp = _push_get(kuma_url, token, params)
-            if resp.status_code == 200:
-                results[app.name] = "ok"
-                log.info("pushed %s → %s (%s)", app.name, status, result.reason)
-            else:
-                results[app.name] = f"http_{resp.status_code}"
-                log.warning(
-                    "push %s → %s but Kuma returned HTTP %s",
-                    app.name, status, resp.status_code,
-                )
-        except Exception as exc:
-            results[app.name] = f"error: {exc}"
-            log.error("push %s failed: %s", app.name, exc)
-
         # Auto-heal: track CONSECUTIVE failures and only invoke recovery
         # after _STRIKE_THRESHOLD strikes (default 3). The webhook receiver
         # was the original auto-heal entry point but Kuma in its isolated
@@ -325,6 +310,25 @@ def push_once(
                     decision = recovery_mod.trigger_async(app, manifest=manifest)
                     log.info("auto-heal %s: strike %d/%d -> recovery=%s (reason: %s)",
                              app.name, n, _STRIKE_THRESHOLD, decision, result.reason)
+
+        # QFLX-84: push LAST. The strike / perma-failed / parity / ucc-maint
+        # annotations above all edit params["msg"]; pushing before them (as
+        # this did) sent the previous, unannotated text and the dashboard never
+        # showed the triage note those branches exist to provide.
+        try:
+            resp = _push_get(kuma_url, token, params)
+            if resp.status_code == 200:
+                results[app.name] = "ok"
+                log.info("pushed %s → %s (%s)", app.name, status, result.reason)
+            else:
+                results[app.name] = f"http_{resp.status_code}"
+                log.warning(
+                    "push %s → %s but Kuma returned HTTP %s",
+                    app.name, status, resp.status_code,
+                )
+        except Exception as exc:
+            results[app.name] = f"error: {exc}"
+            log.error("push %s failed: %s", app.name, exc)
 
     # -----------------------------------------------------------------------
     # Fleet aggregate push + storm collapse (sub-project C).
