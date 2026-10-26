@@ -71,6 +71,13 @@ unpackerr_leg() {
   if [ -f "$conf" ] && grep -qiE "^[[:space:]]*\[\[?[[:space:]]*general[[:space:]]*\]\]?" "$conf"; then
     FAILED+=("unpackerr:conf-general-header")
   fi
+  # QFLX-88: an installed unpackerr (conf present) with NO durable log is red
+  # whatever journald holds. The no-journal pass below used to return before
+  # this was ever looked at, so a vacuumed journal made a missing log green.
+  if [ -f "$conf" ] && [ ! -f "$log" ]; then
+    FAILED+=("log-missing-unpackerr")
+    return 0
+  fi
   line=$(journalctl --user -u qflix-unpackerr.service _COMM=unpackerr -n 1 -o short-unix --no-pager 2>/dev/null | grep -E "^[0-9]" | tail -1)
   jt=${line%% *}
   jt=${jt%%.*}
