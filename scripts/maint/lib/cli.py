@@ -536,6 +536,52 @@ def _cmd_manifest_validate(args: argparse.Namespace, manifest_path: Path) -> int
         return 2
 
 
+# QFLX-85: canary scripts had NO timeout. A hung ssh/curl/API call held the
+# oneshot forever, later timer ticks could not start another run, and the Kuma
+# monitor sat on its last heartbeat until its window expired -- a silent canary
+# reads exactly like a passing one until then. Measured 2026-10-26: the slowest
+# canary on the box finishes in ~9s, so 600s is a hang, never a slow pass.
+_CANARY_TIMEOUT_DEFAULT_S = 600
+
+
+def _canary_timeout_s() -> float:
+    try:
+        v = float(os.environ.get("MANITOBA_CANARY_TIMEOUT_S", _CANARY_TIMEOUT_DEFAULT_S))
+        return v if v > 0 else _CANARY_TIMEOUT_DEFAULT_S
+    except ValueError:
+        return _CANARY_TIMEOUT_DEFAULT_S
+
+
+def _run_canary_script(script_path, timeout_s: float):
+    """bash <script> with a hard deadline. On timeout the WHOLE process group
+    is killed (a canary's ssh/curl children would otherwise keep the output
+    pipes open and communicate() would block anyway) and a red result with
+    STAGE=canary-timeout is returned instead of raising."""
+    import signal
+    posix = os.name == "posix"
+    proc = subprocess.Popen(["bash", str(script_path)], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True,
+                            start_new_session=posix)
+    try:
+        out, err = proc.communicate(timeout=timeout_s)
+        return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        try:
+            if posix:
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.communicate(timeout=10)
+        except Exception:
+            pass
+        return subprocess.CompletedProcess(
+            proc.args, 124, "",
+            f"STAGE=canary-timeout msg=no-result-after-{int(timeout_s)}s-killed")
+
+
 def _cmd_canary_push(args: argparse.Namespace, manifest) -> int:
     """`manitoba-maint canary push <name>` — run canary script and push to Kuma.
 
@@ -603,11 +649,7 @@ def _cmd_canary_push(args: argparse.Namespace, manifest) -> int:
 
     # Run the canary script
     try:
-        result = subprocess.run(
-            ["bash", str(script_path)],
-            capture_output=True,
-            text=True,
-        )
+        result = _run_canary_script(script_path, _canary_timeout_s())
     except FileNotFoundError:
         result_returncode = 127
         result_stdout = ""
