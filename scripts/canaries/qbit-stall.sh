@@ -71,7 +71,12 @@ dl = sum(1 for x in tors if x.get("state") == "downloading")
 md = sum(1 for x in tors if x.get("state") == "metaDL")
 print(t["dl_info_speed"], t["up_info_speed"], qd, dl, md)
 PY
-)
+) || { rm -f /tmp/qbit-canary-payload.json; printf "STAGE=qbit-up-fail msg=torrents-json-parse\n" >&2; exit 1; }
+# QFLX-79: without the guard above, a non-JSON or stale body made python fail,
+# "read" hit EOF, the zero-initialised counters survived, and the script took
+# the HEALTHY branch (exit 0) on a client it could not read. Same pattern as
+# sab-stall.sh. The zero init stays: it is what keeps set -u from aborting
+# before the STAGE label on a partial read.
 rm -f /tmp/qbit-canary-payload.json
 
 NOW=$(date +%s)
