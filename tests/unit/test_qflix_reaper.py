@@ -560,8 +560,19 @@ def test_partial_delete_failure_exit_1(reaper, tmpdir, monkeypatch):
 # 8. Boundary: item exactly at the age cutoff is NOT a candidate
 # ===========================================================================
 def test_item_exactly_at_threshold_not_deleted(reaper, tmpdir, monkeypatch):
-    import time
-    exactly = int(time.time()) - 60 * reaper.DAY_SECONDS    # age == threshold, not >
+    # QFLX-91: freeze the reaper's clock. Building `exactly` from time.time()
+    # while run() read the clock again later flaked whenever a second ticked
+    # over in between: the item became 1s past the cutoff and was deleted.
+    from datetime import datetime as _dt, timezone as _tz
+    fixed = _dt.now(_tz.utc).replace(microsecond=0)
+
+    class _Frozen(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed if tz is not None else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(reaper, "datetime", _Frozen)
+    exactly = int(fixed.timestamp()) - 60 * reaper.DAY_SECONDS    # age == threshold, not >
     movie = {"ratingKey": "1", "title": "Edge Movie", "year": 1999,
              "addedAt": exactly, "sizeGB": 5.0}
     _install_plex(reaper, monkeypatch, {"QFlix - Movies": [movie]},
