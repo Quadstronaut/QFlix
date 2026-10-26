@@ -434,7 +434,23 @@ def serve(
     try:
         while not _stop:
             log.info("pusher: starting push cycle")
-            results = push_once(manifest=manifest, kuma_url=kuma_url, tokens=tokens)
+            try:
+                results = push_once(manifest=manifest, kuma_url=kuma_url, tokens=tokens)
+            except Exception:
+                # QFLX-80: an escaped error used to end serve(), systemd
+                # restarted the pusher, and the in-memory strike counts and
+                # 15-minute perma-failed latch reset with it. Log, skip this
+                # cycle's self-heartbeat (so "Manitoba Pusher" still goes
+                # stale if this repeats), and keep the loop and its state.
+                log.exception("pusher: push cycle crashed; continuing")
+                results = None
+            if results is None:
+                if run_once:
+                    return
+                deadline = time.monotonic() + interval_s
+                while not _stop and time.monotonic() < deadline:
+                    time.sleep(1)
+                continue
             ok_count = sum(1 for v in results.values() if v == "ok")
             log.info(
                 "pusher: cycle complete — %d/%d ok", ok_count, len(results)
