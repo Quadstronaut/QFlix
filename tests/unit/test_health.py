@@ -887,3 +887,23 @@ def test_http_api_hostname_ref_reads_secret(tmp_path, monkeypatch):
     with patch("requests.get", return_value=mock_resp) as g:
         probe(app)
     assert g.call_args[0][0].startswith("http://10.9.9.9:17002")
+
+
+# ---------------------------------------------------------------------------
+# QFLX-80: probe() never raises, whatever the kind lets escape
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("exc", [requests.TooManyRedirects("loop"),
+                                 requests.exceptions.ContentDecodingError("gzip"),
+                                 requests.exceptions.InvalidURL("bad"),
+                                 FileNotFoundError("systemctl")])
+def test_probe_converts_unexpected_errors_to_failed_result(tmp_path, monkeypatch, exc):
+    secrets_dir = tmp_path / "secrets"
+    _write_secret(secrets_dir, "myapp.key", "KEY")
+    _write_secret(secrets_dir, "myapp.port", "17001")
+    _write_secret(secrets_dir, "myapp.urlbase", "sonarr")
+    monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(secrets_dir))
+    with patch("requests.get", side_effect=exc):
+        result = probe(_make_app("http_api"))
+    assert result.ok is False
+    assert result.reason.startswith("probe error: " + type(exc).__name__)

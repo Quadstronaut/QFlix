@@ -13,6 +13,7 @@ from typing import Optional
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+import requests
 
 # Ensure lib/ is importable
 import sys
@@ -331,6 +332,28 @@ apps:
             )
 
         assert push_once_mock.call_count == 1
+
+    def test_serve_survives_a_crashing_cycle(self, tmp_path):
+        """QFLX-80: an escaped error must not end serve() (systemd restart
+        resets strike state). The crashed cycle sends no self-heartbeat."""
+        from lib import pusher
+
+        manifest_file = self._make_manifest_file(tmp_path)
+        tokens_file = self._make_tokens_file(
+            tmp_path, {"sonarr": "tok-abc", "manitoba-pusher": "self-tok"})
+        calls = {"n": 0}
+
+        def flaky(**kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise requests.TooManyRedirects("boom")
+            raise KeyboardInterrupt
+
+        with patch("lib.pusher.push_once", side_effect=flaky),              patch("lib.pusher._push_get") as pg,              patch("lib.pusher.time.sleep"),              patch("lib.pusher.time.monotonic", side_effect=[0, 10**9, 10**9]):
+            pusher.serve(manifest_path=manifest_file, tokens_path=tokens_file,
+                         kuma_url="http://127.0.0.1:42005", interval_s=60)
+        assert calls["n"] == 2, "loop must continue after the crashed cycle"
+        assert pg.call_count == 0, "no self-heartbeat for a crashed cycle"
 
     def test_serve_loops_until_signal(self, tmp_path):
         """serve() exits cleanly when KeyboardInterrupt is raised inside the loop.
