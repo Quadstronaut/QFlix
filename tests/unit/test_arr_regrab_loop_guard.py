@@ -728,3 +728,33 @@ def test_adds_are_only_recorded_for_a_delete_that_succeeded(
                delete_code=500)
     sw.run()
     assert sw.ledger() == {}, "a failed DELETE blocklisted nothing to count"
+
+
+# QFLX-90: the excluded-payload shape, wording read live from Sonarr 2026-10-26.
+def _excluded_row(path_tail: str) -> dict:
+    return {"status": "completed", "trackedDownloadState": "importPending",
+            "title": "South Park S29E04 1080p WEB H264-FLUX",
+            "statusMessages": [{"title": "South Park S29E04 1080p WEB H264-FLUX",
+                                "messages": ["No files found are eligible for import in "
+                                             "/home/quadstronaut/downloads/qbittorrent/tv-sonarr/"
+                                             + path_tail]}]}
+
+
+def test_excluded_executable_payload_is_poison():
+    row = _excluded_row("South Park S29E04 1080p WEB H264-FLUX.exe")
+    assert arrhk._is_poison_payload(row) is True
+    assert arrhk._classify_stuck(row, {}) == arrhk.MODE_POISON
+
+
+@pytest.mark.parametrize("tail", ["South.Park.S29E04.1080p",          # sample-only / empty dir
+                                  "Some.Show.exe.1080p",              # .exe mid-name, not the payload
+                                  "Show.S01E01.mkv"])
+def test_no_eligible_files_alone_is_not_poison(tail):
+    row = _excluded_row(tail)
+    assert arrhk._is_poison_payload(row) is False
+    assert arrhk._classify_stuck(row, {}) == arrhk.MODE_IMPORT
+
+
+def test_excluded_phrase_still_respects_inv1():
+    row = dict(_excluded_row("X.exe"), status="downloading", trackedDownloadState="downloading")
+    assert arrhk._classify_stuck(row, {}) is None
