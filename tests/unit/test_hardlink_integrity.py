@@ -307,6 +307,31 @@ def test_vanished_content_paths_still_red(code, tmp_path):
     )
 
 
+def test_fully_excluded_torrents_are_not_a_storage_alarm(code, tmp_path):
+    """QFLX-89 (live 2026-10-26): two fake .exe releases, payload excluded by
+    qBit, sat in the completed pool at progress 0 with nothing on disk; the
+    canary read that as lost storage. They carry no storage fact at all."""
+    _seed_library(tmp_path)
+    gone = tmp_path / "downloads" / "tv-sonarr"
+    fakes = [dict(_torrent(gone / "South Park S29E04.exe", "f" * 40, name="South Park S29E04"),
+                  progress=0, size=0),
+             dict(_torrent(gone / "Avatar S01E10.exe", "a" * 40, name="Avatar S01E10"),
+                  progress=0, size=0)]
+    r = _run(code, tmp_path, fakes)
+    assert "STAGE=qbit-no-completed" not in r.stderr, r.stderr
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "ignored 2 completed torrent(s)" in r.stdout and "South Park" in r.stdout
+
+
+def test_excluded_torrents_do_not_mask_real_storage_loss(code, tmp_path):
+    _seed_library(tmp_path)
+    gone = tmp_path / "downloads" / "evaporated"
+    r = _run(code, tmp_path, [dict(_torrent(gone / "fake.exe", "f" * 40), progress=0, size=0),
+                              dict(_torrent(gone / "Real.Movie", "b" * 40), progress=1, size=10)])
+    assert r.returncode == 1 and "STAGE=qbit-no-completed" in r.stderr, r.stdout + r.stderr
+    assert "torrents=1" in r.stderr
+
+
 def test_an_unclassifiable_pool_still_evaluates_the_accumulated_ledger(code, tmp_path):
     """WHY THE OLD BEHAVIOUR WAS BACKWARDS, stated as a test. On 2026-08-19 the
     ledger already held 7 hardlinked observations -- more than MIN_SAMPLE -- so
