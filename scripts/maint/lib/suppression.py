@@ -101,23 +101,38 @@ def lock_stale_reason(lock_path: Path, *, now: Optional[datetime] = None,
       * pre-boot   -- taken before the kernel booted (catches pid REUSE after
                       a reboot, which pid-dead alone would miss);
       * hard-max   -- older than any live window run can be.
-    Each leg that cannot judge (unparseable lock, no /proc/stat, no stamp)
-    abstains; all abstaining = honour the lock, i.e. the pre-QFLX-62 behaviour.
+    Each leg that cannot judge (no /proc/stat, no stamp) abstains; all
+    abstaining = honour the lock, i.e. the pre-QFLX-62 behaviour.
+
+    QFLX-77: a lock that does not PARSE is litter, not "cannot judge".
+    window.open() publishes atomically, so no live window ever has an empty or
+    garbled lock; honouring one muted recovery and pushed every app UP until the
+    next Monday 15:00 watchdog -- up to a week. Likewise a pid owned by another
+    user (EPERM) cannot be our orchestrator on this shared box.
     """
     try:
         lines = lock_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return "vanished (window closed between exists() and read)"
+    except (OSError, ValueError) as exc:   # ValueError covers UnicodeDecodeError
+        return f"unreadable ({type(exc).__name__})"
+    try:
         pid = int(lines[0].strip())
-    except (OSError, ValueError, IndexError):
-        return None                       # unreadable: cannot judge, honour it
+    except (ValueError, IndexError):
+        return "unparseable (no pid on line 1)"
     start_iso = lines[1].strip() if len(lines) > 1 else ""
 
-    if os.name == "posix" and pid > 0:
+    if pid <= 0:
+        return f"pid-invalid (pid={pid})"
+    if os.name == "posix":
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
             return f"pid-dead (pid={pid})"
-        except OSError:
-            pass                          # EPERM etc: exists, not ours -- alive
+        except PermissionError:
+            return f"pid-foreign (pid={pid} belongs to another user)"
+        except (OSError, OverflowError) as exc:
+            return f"pid-invalid (pid={pid}: {exc})"
 
     started = _lock_started(lock_path, start_iso)
     if started is None:
@@ -147,7 +162,8 @@ def in_maintenance_window(*, state_dir: Optional[Path] = None,
     skip recovery until the 15:00 watchdog. lock_stale_reason() ignores such a
     lock, but only on clear evidence; when it cannot judge, the lock wins.
     Fail-open on path errors: any error -> False (recover as normal), never
-    silence a real outage on a path glitch.
+    silence a real outage on a path glitch. QFLX-77: that includes a crash in
+    the stale judge itself -- a judge bug must not become a box-wide mute.
     """
     try:
         sd = state_dir if state_dir is not None else _state_dir()
@@ -159,10 +175,10 @@ def in_maintenance_window(*, state_dir: Optional[Path] = None,
         return False
     try:
         why = lock_stale_reason(lock, now=now, boot_time=boot_time)
-    except Exception as exc:              # judging failed: honour the lock
-        print(f"WARNING: suppression.in_maintenance_window: stale check: {exc}",
-              file=sys.stderr)
-        return True
+    except Exception as exc:              # judging failed: fail OPEN (QFLX-77)
+        print(f"WARNING: suppression.in_maintenance_window: stale check: {exc}; "
+              "treating lock as absent, recovery proceeds", file=sys.stderr)
+        return False
     if why is None:
         return True
     key = (str(lock), why)
