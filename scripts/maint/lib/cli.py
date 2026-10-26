@@ -577,8 +577,9 @@ def _cmd_canary_push(args: argparse.Namespace, manifest) -> int:
     # while apps are stopped/upgraded/restarted on purpose. Running the (often
     # heavyweight) canary script then would false-alarm — the very thing the
     # pusher now skips. Push UP with a [maint-window] note and skip the run.
-    # The window-watchdog clears a stale lock at 15:00, so this can't mute a
-    # canary indefinitely.
+    # A dead/foreign/old/unparseable lock is ignored by the predicate itself
+    # (QFLX-62, QFLX-77), so a stale lock cannot mute a canary until the next
+    # Monday 15:00 watchdog.
     if _suppression_mod.in_maintenance_window():
         try:
             with open(_tokens_path(), "r", encoding="utf-8") as fh:
