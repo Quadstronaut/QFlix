@@ -182,6 +182,15 @@ MODE_PARKED = "regrab-loop-parked"
 # RTFM section of the module docstring). A phrase nobody has seen in the wild
 # is a phrase that silently never matches.
 POISON_PHRASES = frozenset({"executable file with extension"})
+# QFLX-90, read LIVE from Sonarr 2026-10-26 (two fake South Park / Avatar
+# releases): when qBit's excluded_file_names skips the payload, Sonarr never
+# sees the executable at all and reports, verbatim,
+#   "No files found are eligible for import in /home/.../X 1080p WEB H264-FLUX.exe"
+# so the phrase above never matched and they waited the 6h import grace. Unlike
+# POISON_PHRASES this one is benign on its own (any empty/sample-only release
+# says it), so it only counts when the path it names ENDS in an executable
+# extension -- the single-file torrent IS the executable.
+POISON_PATH_PHRASES = frozenset({"no files found are eligible for import in"})
 POISON_EXTENSIONS = frozenset({
     ".exe", ".bat", ".scr", ".lnk", ".cmd", ".com", ".msi",
     ".ps1", ".vbs", ".js", ".jar",
@@ -462,6 +471,10 @@ def _is_poison_payload(item: dict) -> bool:
     """
     for text in _status_message_texts(item):
         low = text.lower()
+        if any(p in low for p in POISON_PATH_PHRASES):
+            tail = low.rstrip().rstrip("'\".")
+            if any(tail.endswith(e) for e in POISON_EXTENSIONS):
+                return True
         if not any(p in low for p in POISON_PHRASES):
             continue
         if any(_has_ext_token(low, e) for e in POISON_EXTENSIONS):
