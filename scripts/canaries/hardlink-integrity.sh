@@ -276,6 +276,20 @@ def _vacuous_exit(reason, detail):
 with open("/tmp/qfh-completed.json") as f:
     torrents = json.load(f)
 
+# QFLX-89: a torrent whose EVERY file was skipped is "completed" to qBit at
+# progress 0 with nothing on disk. qBit excluded_file_names does exactly that to
+# fake .exe/.iso releases, and on 2026-10-26 two of them were the whole pool:
+# present=0, STAGE=qbit-no-completed, a storage alarm on a healthy box for 2h.
+# Nothing was ever written for such a torrent, so it carries no storage fact
+# either way. Drop it from the sample and name it in the output.
+empty_selection = [t for t in torrents
+                   if t.get("progress") == 0 or t.get("size") == 0]
+if empty_selection:
+    torrents = [t for t in torrents if t not in empty_selection]
+    print("note: ignored %d completed torrent(s) with nothing selected/downloaded"
+          " (all files excluded): %s" % (len(empty_selection),
+          ", ".join((t.get("name") or "?")[:60] for t in empty_selection)))
+
 # --- rolling observation ledger (2026-08-06) --------------------------------
 # STRUCTURAL FIX for the tiny-denominator trap that retired the OLD design and
 # nearly retired this one too: this box deliberately runs the qBit completed
