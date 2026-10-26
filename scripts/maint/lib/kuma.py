@@ -248,6 +248,13 @@ STANDALONE_SELF_PUSH_HEARTBEATS = {
     # runs -- enough to ride out a slow plex.tv or one hung run without
     # flapping, tight enough that a stuck gate is visible the same morning.
     "QFlix Entitlement Gate": 3600,
+    # QFLX-81: hourly at :00 UTC. 90 min = one missed run tolerated, two page.
+    # Its timer comment promised 5400s since the box migration; nothing set it,
+    # so it was born with the 25h daily default.
+    "QFlix Collect (seedbox)": 5400,
+    # QFLX-81: every 6h (02/08/14/20:15 UTC). 6.5h = the 'every-6h' window the
+    # canaries use: one late run tolerated, a missed run pages.
+    "QFlix Audit Live": 23400,
 }
 
 
