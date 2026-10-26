@@ -27,9 +27,17 @@ from typing import Optional
 # {"reason": str, "since": iso}. When an app is listed here the pusher pushes
 # it UP (with a [SUPPRESSED] note) and skips probe/recovery — used to mute a
 # monitor for an app awaiting an upstream fix, without touching Kuma's admin
-# API (operator-only). A self-destructing watcher removes the entry once the
-# app is live again.
+# API (operator-only).
+#
+# QFLX-82: every mute EXPIRES. The "self-destructing watcher" this comment once
+# promised no longer exists, so an entry left by a swap that died before its
+# `remove` kept the app green AND unhealed indefinitely. Entries now carry
+# `until`; past it the entry is ignored (one warning per process) and the app
+# is probed and healed again. A mute that must last longer is re-added.
 _PUSH_SUPPRESS_FILE = "push-suppress.json"
+_PUSH_SUPPRESS_DEFAULT_TTL = timedelta(hours=24)
+_PUSH_SUPPRESS_MAX_TTL = timedelta(days=14)
+_reported_expired: set = set()
 
 # Lockfile written by the window orchestrator (lib/window.py) for the duration
 # of the Monday maintenance window — which overlaps the 11:30 UTC cp-upgrade
@@ -189,6 +197,31 @@ def in_maintenance_window(*, state_dir: Optional[Path] = None,
     return False
 
 
+def _parse_utc(v) -> Optional[datetime]:
+    if not isinstance(v, str) or not v:
+        return None
+    try:
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _entry_until(entry) -> Optional[datetime]:
+    """When *entry* stops muting, or None = treat as already expired.
+
+    `until` wins; a pre-QFLX-82 entry with only `since` gets the default TTL;
+    a bare string or an entry with no usable stamp is undated -> expired. Every
+    unknown resolves toward recovery, never toward a permanent mute."""
+    if not isinstance(entry, dict):
+        return None
+    until = _parse_utc(entry.get("until"))
+    if until is not None:
+        return until
+    since = _parse_utc(entry.get("since"))
+    return since + _PUSH_SUPPRESS_DEFAULT_TTL if since is not None else None
+
+
 def push_suppressed(app_name: str) -> Optional[str]:
     """Return the suppression reason if *app_name* is in the push-suppress
     registry, else None. Best-effort; None on any error (fail toward normal
@@ -201,9 +234,15 @@ def push_suppressed(app_name: str) -> Optional[str]:
         entry = data.get(app_name)
         if not entry:
             return None
-        if isinstance(entry, dict):
-            return entry.get("reason") or "suppressed"
-        return str(entry)
+        until = _entry_until(entry)
+        if until is None or datetime.now(timezone.utc) >= until:
+            key = (app_name, str(entry))
+            if key not in _reported_expired:
+                _reported_expired.add(key)
+                print(f"WARNING: push-suppress entry for {app_name} expired or undated "
+                      f"(until={until}); ignoring it, probe + recovery resume", file=sys.stderr)
+            return None
+        return entry.get("reason") or "suppressed"
     except Exception as exc:
         print(f"WARNING: suppression.push_suppressed({app_name}): {exc}",
               file=sys.stderr)
@@ -346,14 +385,25 @@ def _locked_rmw(mutate) -> dict:
         lock.close()
 
 
-def add_push_suppress(names, reason: str) -> dict:
-    """Mute *names*. Idempotent: an existing entry keeps its original `since`."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def add_push_suppress(names, reason: str, ttl: Optional[timedelta] = None) -> dict:
+    """Mute *names* until now + *ttl* (default 24h, capped at 14d).
+
+    Re-adding refreshes `until` and takes the NEW reason (it used to keep the
+    old one silently and still exit 0); `since` keeps the original start so the
+    episode's age stays visible."""
+    ttl = _PUSH_SUPPRESS_DEFAULT_TTL if ttl is None else ttl
+    if ttl <= timedelta(0):
+        raise SuppressionWriteError(f"ttl must be positive, got {ttl}")
+    ttl = min(ttl, _PUSH_SUPPRESS_MAX_TTL)
+    now_dt = datetime.now(timezone.utc)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    now, until = now_dt.strftime(fmt), (now_dt + ttl).strftime(fmt)
 
     def m(cur):
         for n in names:
-            if not isinstance(cur.get(n), dict):
-                cur[n] = {"reason": reason, "since": now}
+            old = cur.get(n)
+            since = old.get("since") if isinstance(old, dict) and old.get("since") else now
+            cur[n] = {"reason": reason, "since": since, "until": until}
         return cur
     return _locked_rmw(m)
 
@@ -373,6 +423,8 @@ def main(argv=None) -> int:
     a = sub.add_parser("add")
     a.add_argument("names", nargs="+")
     a.add_argument("--reason", required=True)
+    a.add_argument("--ttl-hours", type=float, default=None,
+                   help="mute duration (default 24, max 336); the entry is ignored after it")
     r = sub.add_parser("remove")
     r.add_argument("names", nargs="+")
     h = sub.add_parser("has")
@@ -380,8 +432,10 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     try:
         if args.cmd == "add":
-            add_push_suppress(args.names, args.reason)
-            print("suppressed: " + " ".join(args.names))
+            ttl = None if args.ttl_hours is None else timedelta(hours=args.ttl_hours)
+            new = add_push_suppress(args.names, args.reason, ttl=ttl)
+            print("suppressed: " + " ".join(args.names)
+                  + " until " + new[args.names[0]]["until"])
             return 0
         if args.cmd == "remove":
             remove_push_suppress(args.names)
