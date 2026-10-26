@@ -907,3 +907,29 @@ def test_probe_converts_unexpected_errors_to_failed_result(tmp_path, monkeypatch
         result = probe(_make_app("http_api"))
     assert result.ok is False
     assert result.reason.startswith("probe error: " + type(exc).__name__)
+# QFLX-83: a unit systemd does not have is not a healthy unit that never ran
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("load", ["not-found", "masked", "error", "bad-setting"])
+def test_systemd_oneshot_unloaded_unit_is_down(load):
+    app = _make_app("systemd_oneshot", port_secret=None, auth_header=None,
+                    auth_secret=None, urlbase_secret=None, unit="gone.service")
+    app.health.raw["unit"] = "gone.service"
+    cp = CompletedProcess(args=[], returncode=0,
+                          stdout=f"Result=success\nActiveState=inactive\nLoadState={load}\n",
+                          stderr="")
+    with patch("subprocess.run", return_value=cp) as run:
+        result = probe(app)
+    assert result.ok is False
+    assert f"LoadState={load}" in result.reason
+    assert "LoadState" in run.call_args.args[0]
+
+
+def test_systemd_oneshot_loaded_never_ran_still_ok():
+    app = _make_app("systemd_oneshot", port_secret=None, auth_header=None,
+                    auth_secret=None, urlbase_secret=None, unit="new.service")
+    app.health.raw["unit"] = "new.service"
+    cp = CompletedProcess(args=[], returncode=0,
+                          stdout="Result=\nActiveState=inactive\nLoadState=loaded\n", stderr="")
+    with patch("subprocess.run", return_value=cp):
+        assert probe(app).ok is True
