@@ -189,7 +189,7 @@ class TestCanaryPushSuccess:
         resp.status_code = 200
         mock_get.return_value = resp
 
-        with patch("lib.cli.subprocess.run", return_value=fake_result), \
+        with patch("lib.cli._run_canary_script", return_value=fake_result), \
              patch("lib.cli.requests.get", mock_get):
             rc = cli.main(["canary", "push", "movie"], manifest_path=None,
                           _manifest=manifest)
@@ -219,7 +219,7 @@ class TestCanaryPushSuccess:
         resp = MagicMock(); resp.status_code = 200
         mock_get.return_value = resp
 
-        with patch("lib.cli.subprocess.run", return_value=fake_result), \
+        with patch("lib.cli._run_canary_script", return_value=fake_result), \
              patch("lib.cli.requests.get", mock_get):
             cli.main(["canary", "push", "movie"], manifest_path=None,
                      _manifest=manifest)
@@ -250,7 +250,7 @@ class TestCanaryPushFailure:
         resp = MagicMock(); resp.status_code = 200
         mock_get.return_value = resp
 
-        with patch("lib.cli.subprocess.run", return_value=fake_result), \
+        with patch("lib.cli._run_canary_script", return_value=fake_result), \
              patch("lib.cli.requests.get", mock_get):
             rc = cli.main(["canary", "push", "movie"], manifest_path=None,
                           _manifest=manifest)
@@ -279,7 +279,7 @@ class TestCanaryPushFailure:
         resp = MagicMock(); resp.status_code = 200
         mock_get.return_value = resp
 
-        with patch("lib.cli.subprocess.run", return_value=fake_result), \
+        with patch("lib.cli._run_canary_script", return_value=fake_result), \
              patch("lib.cli.requests.get", mock_get):
             cli.main(["canary", "push", "movie"], manifest_path=None,
                      _manifest=manifest)
@@ -311,7 +311,7 @@ class TestCanaryPushMissingScript:
         resp = MagicMock(); resp.status_code = 200
         mock_get.return_value = resp
 
-        with patch("lib.cli.subprocess.run", return_value=fake_result), \
+        with patch("lib.cli._run_canary_script", return_value=fake_result), \
              patch("lib.cli.requests.get", mock_get):
             rc = cli.main(["canary", "push", "movie"], manifest_path=None,
                           _manifest=manifest)
@@ -357,7 +357,7 @@ class TestCanaryPushMissingToken:
 
         mock_get = MagicMock()
 
-        with patch("lib.cli.subprocess.run", return_value=fake_result), \
+        with patch("lib.cli._run_canary_script", return_value=fake_result), \
              patch("lib.cli.requests.get", mock_get):
             rc = cli.main(["canary", "push", "movie"], manifest_path=None,
                           _manifest=manifest)
@@ -390,7 +390,7 @@ class TestCanaryPushDuringMaintenanceWindow:
         resp = MagicMock(); resp.status_code = 200
         mock_get.return_value = resp
 
-        with patch("lib.cli.subprocess.run", mock_run), \
+        with patch("lib.cli._run_canary_script", mock_run), \
              patch("lib.cli.requests.get", mock_get):
             rc = cli.main(["canary", "push", "movie"], manifest_path=None,
                           _manifest=manifest)
@@ -422,7 +422,7 @@ class TestCanaryPushDuringMaintenanceWindow:
         resp = MagicMock(); resp.status_code = 200
         mock_get.return_value = resp
 
-        with patch("lib.cli.subprocess.run", return_value=fake_result) as mock_run, \
+        with patch("lib.cli._run_canary_script", return_value=fake_result) as mock_run, \
              patch("lib.cli.requests.get", mock_get):
             rc = cli.main(["canary", "push", "movie"], manifest_path=None,
                           _manifest=manifest)
@@ -471,3 +471,43 @@ class TestAuditIncludesCanaries:
         # NEXT self-pusher does not need this literal edited again.
         from lib.kuma import STANDALONE_SELF_PUSH_MONITORS
         assert report["manifest_count"] == 4 + len(STANDALONE_SELF_PUSH_MONITORS)
+
+
+# ---------------------------------------------------------------------------
+# QFLX-85: a hung canary script must not hold the oneshot (and its monitor) forever
+# ---------------------------------------------------------------------------
+
+import shutil  # noqa: E402
+
+needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+
+
+@needs_bash
+def test_run_canary_script_kills_a_hang_and_reports_timeout(tmp_path):
+    from lib import cli
+    import time
+    script = tmp_path / "hang.sh"
+    script.write_text("sleep 30\n", newline="\n")
+    t0 = time.monotonic()
+    r = cli._run_canary_script(script, 1.5)
+    assert time.monotonic() - t0 < 20
+    assert r.returncode == 124
+    assert "STAGE=canary-timeout" in r.stderr
+
+
+@needs_bash
+def test_run_canary_script_passes_through_a_normal_run(tmp_path):
+    from lib import cli
+    script = tmp_path / "ok.sh"
+    script.write_text("echo PASS; echo detail >&2; exit 3\n", newline="\n")
+    r = cli._run_canary_script(script, 30)
+    assert (r.returncode, r.stdout.strip(), r.stderr.strip()) == (3, "PASS", "detail")
+
+
+def test_canary_timeout_env_override(monkeypatch):
+    from lib import cli
+    monkeypatch.setenv("MANITOBA_CANARY_TIMEOUT_S", "42")
+    assert cli._canary_timeout_s() == 42
+    for bad in ("nope", "-1", "0"):
+        monkeypatch.setenv("MANITOBA_CANARY_TIMEOUT_S", bad)
+        assert cli._canary_timeout_s() == cli._CANARY_TIMEOUT_DEFAULT_S
