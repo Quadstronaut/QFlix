@@ -30,7 +30,7 @@ bash = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
 
 def _tree(tmp_path: Path, next_mono: str, next_real: str = "", then_mono: str | None = None,
-          svc_state: str = "inactive") -> Path:
+          svc_state: str = "inactive", unit: str = "ingest", svc_result: str = "success") -> Path:
     """then_mono: what the timer reports on the 2nd+ sample (default: unchanged)."""
     then_mono = next_mono if then_mono is None else then_mono
     root = tmp_path / "root"
@@ -40,7 +40,7 @@ def _tree(tmp_path: Path, next_mono: str, next_real: str = "", then_mono: str | 
     shutil.copy(SCRIPT, root / "scripts" / "canaries" / "timer-liveness.sh")
     (root / "scripts" / "lib" / "ssh.sh").write_text('sshm() { bash -c "$*"; }\n', newline="\n")
     (root / "manifest" / "jobs.yaml").write_text(
-        "jobs:\n  ingest:\n    timer: scripts/maint/systemd/ingest.timer\n", newline="\n")
+        f"jobs:\n  {unit}:\n    timer: scripts/maint/systemd/{unit}.timer\n", newline="\n")
     stub = root / "bin"
     stub.mkdir()
     # Property order mirrors the box (Id mid-block); blank line ends the block.
@@ -48,11 +48,11 @@ def _tree(tmp_path: Path, next_mono: str, next_real: str = "", then_mono: str | 
     show = (
         f'n=$(cat "{count}" 2>/dev/null || echo 0)\n'
         "case \"$*\" in\n"
-        f'  *ingest.timer*) echo $((n+1)) > "{count}"; mono={next_mono!r}; [ "$n" -gt 0 ] && mono={then_mono!r}\n'
+        f'  *{unit}.timer*) echo $((n+1)) > "{count}"; mono={next_mono!r}; [ "$n" -gt 0 ] && mono={then_mono!r}\n'
         "    printf '%s\\n' "
         f"'NextElapseUSecRealtime={next_real}' \"NextElapseUSecMonotonic=$mono\" "
-        "'Id=ingest.timer' 'LoadState=loaded' 'ActiveState=active' '' ;;\n"
-        f"  *ingest.service*) printf '%s\\n' 'Id=ingest.service' 'Result=success' 'ActiveState={svc_state}' ;;\n"
+        f"'Id={unit}.timer' 'LoadState=loaded' 'ActiveState=active' '' ;;\n"
+        f"  *{unit}.service*) printf '%s\\n' 'Id={unit}.service' 'Result={svc_result}' 'ActiveState={svc_state}' ;;\n"
         "esac\n"
     )
     (stub / "systemctl").write_text("#!/usr/bin/env bash\n" + show, newline="\n")
@@ -114,3 +114,20 @@ def test_no_repo_timer_uses_onbootsec():
     offenders = [p.name for p in SYSTEMD_DIR.glob("*.timer")
                  if re.search(r"^OnBootSec=", p.read_text(encoding="utf-8"), re.M)]
     assert not offenders, f"use OnStartupSec in --user timers (QFLX-55): {offenders}"
+
+
+# QFLX-86: predicate 4 split -- a non-canary job failing every run must page;
+# a canary's own non-zero exit stays a WARN (its subject has its own monitor).
+@bash
+def test_failed_job_service_is_red(tmp_path):
+    r = _run(_tree(tmp_path, "3w 1h", unit="manitoba-maint-reaper", svc_result="exit-code"))
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "STAGE=timer-job-failing" in r.stderr
+    assert "manitoba-maint-reaper.service=exit-code" in r.stderr
+
+
+@bash
+def test_failed_canary_service_is_only_a_warning(tmp_path):
+    r = _run(_tree(tmp_path, "3w 1h", unit="manitoba-maint-canary-quota", svc_result="exit-code"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "PASS-WARN" in r.stdout and "manitoba-maint-canary-quota.service" in r.stdout

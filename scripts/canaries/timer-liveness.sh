@@ -42,9 +42,13 @@
 #   4. RESULT    — the timer's .service last exited success. A unit failing every
 #                  run is the arr-audit shape: it runs, it fails, nobody hears.
 #
-# Predicate 4 is a WARN not a FAIL: a canary service legitimately exits non-zero
-# to report ITS subject being down, and that is already someone else's monitor.
-# Escalating it here would double-page one fault.
+# Predicate 4 is a WARN for CANARY services only: a canary legitimately exits
+# non-zero to report ITS subject being down, and that is already someone else's
+# monitor. Escalating it here would double-page one fault.
+# For every OTHER service (reaper, janitors, arr-audit, collect...) a failed last
+# run is a FAIL (QFLX-86): those jobs have no second monitor that is guaranteed
+# to notice, and a WARN keeps Kuma green -- the arr-audit shape this predicate
+# was written for went unheard precisely because it was only a warning.
 #
 # Stage labels (stderr -> Kuma msg=):
 #   STAGE=timer-missing    — declared in jobs.yaml, not loaded on the box
@@ -53,11 +57,14 @@
 #   STAGE=timer-read-fail  — could not read the ledger or systemd
 #   STAGE=timer-local-tz   — a loaded timer's OnCalendar has no timezone even
 #                            after timer-utc-pin.sh ran (predicate 5, QFLX-75)
+#   STAGE=timer-job-failing — a NON-canary timer's service last exited non-success
+#                            (predicate 4, QFLX-86)
 #
 # Exit:
-#   0 — every declared timer is loaded, active and scheduled (failed .service
-#       results are reported as PASS-WARN)
-#   1 — at least one timer is missing, inactive or stuck
+#   0 — every declared timer is loaded, active and scheduled (failed CANARY
+#       .service results are reported as PASS-WARN)
+#   1 — at least one timer is missing, inactive or stuck, or a non-canary
+#       job's last run failed
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -286,6 +293,14 @@ if [ -n "$(trim "$BARE_TZ")" ]; then
   echo "STAGE=timer-local-tz msg=OnCalendar-without-timezone-survived-utc-pin:$(trim "$BARE_TZ")" >&2
   exit 1
 fi
+# Split predicate 4 (QFLX-86): canary failures stay a WARN, job failures FAIL.
+JOB_FAILED=$(printf '%s' "$FAILED" | tr ',' '\n' | grep -v '^manitoba-maint-canary-' | paste -sd, - || true)
+CANARY_FAILED=$(printf '%s' "$FAILED" | tr ',' '\n' | grep '^manitoba-maint-canary-' | paste -sd, - || true)
+if [ -n "$(trim "$JOB_FAILED")" ]; then
+  echo "STAGE=timer-job-failing msg=last-run-not-success:$(trim "$JOB_FAILED")" >&2
+  exit 1
+fi
+FAILED="$CANARY_FAILED"
 if [ -n "$(trim "$FAILED")" ] || [ -n "$TZ_HEALED" ]; then
   # WARN, not FAIL — see the header. Still UP, but the message names them.
   W=""
