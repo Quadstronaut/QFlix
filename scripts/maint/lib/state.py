@@ -63,6 +63,10 @@ def write(path: str | Path, data: dict) -> None:
 # One process-wide lock serialises the RMW; write() stays atomic on disk.
 _RECORD_LOCK = threading.RLock()
 
+# Fields that describe the INSTALLED build, not the latest event. See
+# _record_locked: they survive records that do not mention them.
+_STICKY_FIELDS = ("version", "previous_version")
+
 
 def record(path: str | Path, app: str, **fields) -> None:
     with _RECORD_LOCK:
@@ -75,5 +79,19 @@ def _record_locked(path: str | Path, app: str, **fields) -> None:
         data["apps"] = {}
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     entry = {"updated_at": now, **fields}
+    # QFLX-78: the entry is otherwise REPLACED wholesale, and every recovery /
+    # webhook event records without a version -- which erased the
+    # previous_version that recovery's auto-downgrade reads, so a bad upgrade
+    # had nothing to roll back to by the time recovery gave up. Version facts
+    # are sticky: carried forward unless the caller states a new value.
+    old = data["apps"].get(app)
+    if isinstance(old, dict):
+        for key in _STICKY_FIELDS:
+            if entry.get(key) is None and old.get(key) is not None:
+                entry[key] = old[key]
+    # A downgrade/rollback lands ON previous_version; keeping it would make the
+    # next auto-downgrade "roll back" to the version already running.
+    if entry.get("previous_version") is not None and entry.get("previous_version") == entry.get("version"):
+        entry.pop("previous_version")
     data["apps"][app] = entry
     write(path, data)
