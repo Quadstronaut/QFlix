@@ -114,3 +114,20 @@ def test_auto_restarts_unknown_is_none(monkeypatch):
         assert lifecycle_mod.auto_restarts(_app()) is None
     assert lifecycle_mod.auto_restarts(_app(class_="ucc")) is None
     assert lifecycle_mod.auto_restarts(_app(unit=None)) is None
+
+
+def test_crash_loop_tries_auto_downgrade_first():
+    """QFLX-78: a bad upgrade that answers once then dies is a crash loop; it
+    must get the one-shot rollback, not just a page."""
+    sentinel = {"event": "auto_downgraded", "app": "unpackerr"}
+    with patch("lib.recovery._attempt_auto_downgrade", return_value=sentinel) as ad:
+        result, _ = _run(_app(), probes=[UP, UP], restarts=2)
+    assert result is sentinel
+    ad.assert_called_once()
+
+
+def test_crash_loop_without_rollback_target_still_pages():
+    with patch("lib.recovery._attempt_auto_downgrade", return_value=None):
+        result, msg = _run(_app(), probes=[UP, UP], restarts=2)
+    assert result["event"] == "crash_looping"
+    assert "crash-looping" in msg

@@ -109,3 +109,39 @@ def test_record_is_safe_under_concurrent_threads(tmp_path):
     apps = read(path)["apps"]
     assert set(apps) == {"sonarr", "listmonk", "radarr"}, apps
     assert all(v["event"] == "e149" for v in apps.values()), apps
+
+
+# QFLX-78: version facts must survive event-only records, or auto-downgrade
+# loses its target the moment recovery records its first attempt.
+def test_record_carries_version_fields_forward(tmp_path):
+    p = tmp_path / "state.json"
+    record(p, "radarr", event="upgraded", version="5.2", previous_version="5.1")
+    record(p, "radarr", event="recovery_failed", attempts=3)
+    e = read(p)["apps"]["radarr"]
+    assert e["event"] == "recovery_failed"
+    assert e["version"] == "5.2" and e["previous_version"] == "5.1"
+
+
+def test_record_other_fields_still_replaced(tmp_path):
+    p = tmp_path / "state.json"
+    record(p, "radarr", event="recovery_failed", attempts=3, final_health="down")
+    record(p, "radarr", event="up")
+    e = read(p)["apps"]["radarr"]
+    assert "attempts" not in e and "final_health" not in e
+
+
+def test_record_explicit_version_wins(tmp_path):
+    p = tmp_path / "state.json"
+    record(p, "radarr", event="upgraded", version="5.2", previous_version="5.1")
+    record(p, "radarr", event="upgraded", version="5.3", previous_version="5.2")
+    e = read(p)["apps"]["radarr"]
+    assert (e["version"], e["previous_version"]) == ("5.3", "5.2")
+
+
+def test_downgrade_onto_previous_clears_it(tmp_path):
+    """Landing on previous_version must not leave a self-pointing rollback target."""
+    p = tmp_path / "state.json"
+    record(p, "radarr", event="upgraded", version="5.2", previous_version="5.1")
+    record(p, "radarr", event="downgraded", version="5.1")
+    e = read(p)["apps"]["radarr"]
+    assert e["version"] == "5.1" and "previous_version" not in e

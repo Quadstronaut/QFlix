@@ -127,7 +127,8 @@ def _mark_permanently_failed(app_name: str) -> None:
 # upgrade, OOM) and an in-memory cooldown would reset with it — the storm would
 # come straight back on the first restart, which is exactly when an operator is
 # least able to tell a new fault from an old one. The ledger is separate from
-# state.json because state.record() REPLACES the per-app entry wholesale, so a
+# state.json because state.record() REPLACES the per-app entry wholesale (only
+# version/previous_version are carried forward, QFLX-78), so a
 # field parked there would be wiped by the very next record() call.
 _ESCALATION_PAGE_LEDGER: Path = _state_dir() / "escalation-pages.json"
 
@@ -470,6 +471,14 @@ def _recovery_loop(app: App) -> dict:
             restarts = lifecycle.auto_restarts(app)
             reprobe = health.probe(app)
             if (restarts or 0) > 0 or not reprobe.ok:
+                # QFLX-78: a bad upgrade that answers once and then dies is the
+                # textbook crash loop, and it used to return here without ever
+                # trying the rollback the exhausted-attempts path gets. Same
+                # one-shot downgrade; None (no previous_version, UCC) falls
+                # through to the crash-loop page unchanged.
+                auto_down = _attempt_auto_downgrade(app, attempt)
+                if auto_down is not None:
+                    return auto_down
                 unit = app.raw.get("unit") or app_name
                 seen = (f"{restarts} auto-restart(s)" if restarts
                         else "local probe failed again")
