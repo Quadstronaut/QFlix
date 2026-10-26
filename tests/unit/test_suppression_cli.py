@@ -46,11 +46,37 @@ def test_add_keeps_other_entries_and_remove_lifts_only_named(tmp_path):
     assert set(_reg(tmp_path)) == {"flaresolverr"}
 
 
-def test_add_is_idempotent_and_keeps_first_since(tmp_path):
+def test_readd_keeps_first_since_but_takes_new_reason(tmp_path):
+    """QFLX-82: re-adding used to keep the OLD reason and still exit 0."""
     _cli(tmp_path, "add", "unpackerr", "--reason", "a")
     first = _reg(tmp_path)["unpackerr"]["since"]
     assert _cli(tmp_path, "add", "unpackerr", "--reason", "b").returncode == 0
-    assert _reg(tmp_path)["unpackerr"]["since"] == first
+    e = _reg(tmp_path)["unpackerr"]
+    assert e["since"] == first and e["reason"] == "b"
+
+
+def _until_hours(state):
+    from datetime import datetime, timezone
+    e = _reg(state)["unpackerr"]
+    u = datetime.fromisoformat(e["until"].replace("Z", "+00:00"))
+    return (u - datetime.now(timezone.utc)).total_seconds() / 3600
+
+
+def test_add_sets_default_24h_expiry(tmp_path):
+    r = _cli(tmp_path, "add", "unpackerr", "--reason", "swap")
+    assert r.returncode == 0 and "until" in r.stdout
+    assert 23.9 < _until_hours(tmp_path) <= 24.0
+
+
+def test_ttl_is_honoured_and_capped(tmp_path):
+    assert _cli(tmp_path, "add", "unpackerr", "--reason", "x", "--ttl-hours", "2").returncode == 0
+    assert 1.9 < _until_hours(tmp_path) <= 2.0
+    assert _cli(tmp_path, "add", "unpackerr", "--reason", "x", "--ttl-hours", "9999").returncode == 0
+    assert 335.9 < _until_hours(tmp_path) <= 336.0
+
+
+def test_non_positive_ttl_is_refused(tmp_path):
+    assert _cli(tmp_path, "add", "unpackerr", "--reason", "x", "--ttl-hours", "0").returncode == 2
 
 
 def test_remove_of_absent_entry_is_ok(tmp_path):

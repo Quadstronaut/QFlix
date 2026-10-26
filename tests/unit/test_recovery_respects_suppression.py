@@ -28,7 +28,9 @@ _DOWN_PAYLOAD = Path(__file__).parent.parent / "fixtures" / "kuma-payloads" / "d
 def _suppress(state_dir: Path, app_name: str) -> None:
     (state_dir / "push-suppress.json").write_text(
         json.dumps({app_name: {"reason": "pending-swap: container dormant",
-                               "since": "2026-10-20T00:00:00Z"}}),
+                               "since": "2026-10-20T00:00:00Z",
+                               # QFLX-82: undated mutes are ignored; this one is live.
+                               "until": "2099-01-01T00:00:00Z"}}),
         encoding="utf-8")
 
 

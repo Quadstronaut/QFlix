@@ -144,7 +144,8 @@ class TestPushSuppressed:
         from lib import suppression
         monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
         (tmp_path / "push-suppress.json").write_text(
-            json.dumps({"flaresolverr": {"reason": "awaiting UCC ticket", "since": "2026-05-25T23:00:00Z"}}),
+            json.dumps({"flaresolverr": {"reason": "awaiting UCC ticket", "since": "2026-05-25T23:00:00Z",
+                                         "until": _now_iso(timedelta(hours=1))}}),
             encoding="utf-8",
         )
         assert suppression.push_suppressed("flaresolverr") == "awaiting UCC ticket"
@@ -156,12 +157,34 @@ class TestPushSuppressed:
             json.dumps({"flaresolverr": {"reason": "x"}}), encoding="utf-8")
         assert suppression.push_suppressed("sonarr") is None
 
-    def test_bare_string_entry_supported(self, tmp_path, monkeypatch):
+    # QFLX-82: an entry with no usable expiry is an infinite mute -- the bug.
+    @pytest.mark.parametrize("entry", ["quick mute", {"reason": "x"},
+                                       {"reason": "x", "since": "garbage"}])
+    def test_undated_entry_is_ignored(self, tmp_path, monkeypatch, entry, capsys):
         from lib import suppression
         monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
         (tmp_path / "push-suppress.json").write_text(
-            json.dumps({"flaresolverr": "quick mute"}), encoding="utf-8")
-        assert suppression.push_suppressed("flaresolverr") == "quick mute"
+            json.dumps({"flaresolverr": entry}), encoding="utf-8")
+        assert suppression.push_suppressed("flaresolverr") is None
+        assert "probe + recovery resume" in capsys.readouterr().err
+
+    def test_expired_until_is_ignored(self, tmp_path, monkeypatch):
+        from lib import suppression
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        (tmp_path / "push-suppress.json").write_text(json.dumps(
+            {"radarr": {"reason": "dead swap", "since": _now_iso(-timedelta(days=3)),
+                        "until": _now_iso(-timedelta(minutes=1))}}), encoding="utf-8")
+        assert suppression.push_suppressed("radarr") is None
+
+    def test_legacy_since_only_gets_default_ttl(self, tmp_path, monkeypatch):
+        from lib import suppression
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        reg = tmp_path / "push-suppress.json"
+        reg.write_text(json.dumps({"a": {"reason": "fresh", "since": _now_iso(-timedelta(hours=1))},
+                                   "b": {"reason": "old", "since": _now_iso(-timedelta(hours=25))}}),
+                       encoding="utf-8")
+        assert suppression.push_suppressed("a") == "fresh"
+        assert suppression.push_suppressed("b") is None
 
     def test_corrupt_file_returns_none(self, tmp_path, monkeypatch):
         from lib import suppression
@@ -175,7 +198,8 @@ class TestPushSuppressed:
         from lib import suppression
         monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
         (tmp_path / "push-suppress.json").write_text(
-            json.dumps({"flaresolverr": {"reason": "muted"}}), encoding="utf-8")
+            json.dumps({"flaresolverr": {"reason": "muted", "until": _now_iso(timedelta(hours=1))}}),
+            encoding="utf-8")
         app = _make_app("ucc", name="flaresolverr")
         with patch("lib.suppression.ucc_active", return_value=False):
             assert suppression.recovery_suppressed(app) is True
