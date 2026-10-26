@@ -65,12 +65,17 @@ if [ \"\$PCT_INT\" -ge \"\$FAIL_PCT\" ]; then
 fi
 
 # 90% CRITICAL — autonomously fire qflix-reaper --execute, push DOWN. The
-# reaper's own default caps (max-items/max-pct, abort-before-mutation) +
-# run-lock ARE the safety envelope; the caps are NOT overridden. Fold the
+# reaper's max-items cap (default 50/run) + abort-before-mutation + run-lock ARE
+# the safety envelope. The per-library --max-pct tripwire is set to 100 -- the
+# SAME value the box's armed nightly reaper drop-in uses (verified 2026-10-26,
+# QFLX-87). At the default 30 any small library aborted the WHOLE emergency run
+# before a single delete, the canary paged quota-reclaim-fail every 15 minutes,
+# and quota never moved: the safety envelope made reclaim impossible exactly
+# when it was needed. The emergency path is no looser than the nightly. Fold the
 # reaper's stdout+stderr into REAPER_OUT so they never reach the canary's
 # PASS/PASS-WARN stdout contract, and capture \$? immediately.
 if [ \"\$PCT_INT\" -ge \"\$CRIT_PCT\" ]; then
-  REAPER_OUT=\$(python3 ~/scripts/maint/qflix-reaper.py --execute --json 2>&1)
+  REAPER_OUT=\$(python3 ~/scripts/maint/qflix-reaper.py --execute --max-pct 100 --json 2>&1)
   REAPER_RC=\$?
   if [ \"\$REAPER_RC\" -eq 0 ]; then
     echo \"STAGE=quota-critical msg=quota-\${PCT}%-of-\${LIMIT_G}G-FIRED-reaper-rc=0\" >&2
