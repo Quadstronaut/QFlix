@@ -130,6 +130,19 @@ def test_open_creates_lockfile_with_pid_and_iso(tmp_path):
     assert dt.year >= 2020, "timestamp must be a plausible UTC datetime"
 
 
+def test_open_publishes_lock_atomically(tmp_path):
+    """QFLX-77: readers treat an unparseable lock as litter, so open() must
+    never leave a partial one -- temp file + os.replace, no temp left behind."""
+    manifest = _simple_manifest()
+    w = WindowOrchestrator(state_dir=tmp_path, manifest=manifest)
+    with patch("os.replace", wraps=os.replace) as rep:
+        w.open()
+    assert rep.call_count == 1
+    src, dst = rep.call_args.args
+    assert Path(dst) == tmp_path / "lock"
+    assert not list(tmp_path.glob(".lock.*")), "temp file must not survive"
+
+
 # ---------------------------------------------------------------------------
 # 2. open() refuses when lock present with live PID
 # ---------------------------------------------------------------------------

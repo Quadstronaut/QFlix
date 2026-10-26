@@ -324,7 +324,22 @@ class WindowOrchestrator:
 
         self._started_at = _utc_now_iso()
         content = f"{os.getpid()}\n{self._started_at}\n"
-        self._lock_path.write_text(content, encoding="utf-8")
+        # QFLX-77: publish atomically. An in-place write that dies half way
+        # (ENOSPC under the hard quota, a kill) left a partial lock, and readers
+        # now treat an unparseable lock as litter -- so it must never be the
+        # shape of a live window's lock.
+        import tempfile
+        fd, tmp = tempfile.mkstemp(dir=str(self._state_dir), prefix=".lock.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            os.replace(tmp, self._lock_path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     # ------------------------------------------------------------------ drain_queue
 

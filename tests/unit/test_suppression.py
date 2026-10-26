@@ -206,7 +206,9 @@ class TestInMaintenanceWindow:
 
     def test_explicit_state_dir_overrides_env(self, tmp_path):
         from lib import suppression
-        (tmp_path / "lock").write_text("1\n", encoding="utf-8")
+        # Our own pid: pid 1 would be another user's process (EPERM) on a CI
+        # runner and is now stale under QFLX-77.
+        (tmp_path / "lock").write_text(f"{os.getpid()}\n", encoding="utf-8")
         assert suppression.in_maintenance_window(state_dir=tmp_path) is True
 
     def test_false_on_error(self):
@@ -266,17 +268,51 @@ class TestStaleWindowLock:
             assert suppression.in_maintenance_window(
                 state_dir=tmp_path, now=self.NOW) is True
 
-    def test_unparseable_lock_is_honoured(self, tmp_path):
+    # QFLX-77: an unparseable lock used to be "cannot judge -> honour", which
+    # muted recovery (and pushed every app UP) until the NEXT Monday watchdog.
+    # window.open() writes atomically, so no live window has such a lock.
+    @pytest.mark.parametrize("body", ["not-a-pid\n", "", "\n\n", "0\n2026-10-19T11:00:00Z\n",
+                                      "-5\n2026-10-19T11:00:00Z\n"])
+    def test_unparseable_or_invalid_lock_is_stale(self, tmp_path, body):
         from lib import suppression
-        (tmp_path / "lock").write_text("not-a-pid\n", encoding="utf-8")
+        (tmp_path / "lock").write_text(body, encoding="utf-8")
         assert suppression.in_maintenance_window(
-            state_dir=tmp_path, now=self.NOW, boot_time=0.0) is True
+            state_dir=tmp_path, now=self.NOW, boot_time=0.0) is False
 
-    def test_stale_check_crash_honours_lock(self, tmp_path):
+    def test_binary_garbage_lock_is_stale(self, tmp_path):
+        from lib import suppression
+        (tmp_path / "lock").write_bytes(b"\xff\xfe\x00garbage")
+        assert suppression.in_maintenance_window(
+            state_dir=tmp_path, now=self.NOW, boot_time=0.0) is False
+
+    def test_stale_check_crash_fails_open(self, tmp_path, capsys):
         from lib import suppression
         self._lock(tmp_path, os.getpid(), "2026-10-19T11:00:00Z")
         with patch("lib.suppression.lock_stale_reason", side_effect=RuntimeError("x")):
-            assert suppression.in_maintenance_window(state_dir=tmp_path) is True
+            assert suppression.in_maintenance_window(state_dir=tmp_path) is False
+        assert "recovery proceeds" in capsys.readouterr().err
+
+    def test_lock_vanishing_mid_read_is_not_a_window(self, tmp_path):
+        from lib import suppression
+        lock = tmp_path / "lock"
+        assert suppression.lock_stale_reason(lock).startswith("vanished")
+
+    def test_foreign_pid_is_stale(self, tmp_path):
+        """EPERM = the pid is another tenant's: our orchestrator runs as us."""
+        from lib import suppression
+        self._lock(tmp_path, 4242, "2026-10-19T11:00:00Z")
+        with patch.object(suppression.os, "name", "posix"), \
+             patch.object(suppression.os, "kill", side_effect=PermissionError(1, "EPERM"), create=True):
+            why = suppression.lock_stale_reason(tmp_path / "lock", now=self.NOW, boot_time=0.0)
+        assert why and why.startswith("pid-foreign")
+
+    def test_absurd_pid_is_stale_not_a_crash(self, tmp_path):
+        from lib import suppression
+        self._lock(tmp_path, 10**30, "2026-10-19T11:00:00Z")
+        with patch.object(suppression.os, "name", "posix"), \
+             patch.object(suppression.os, "kill", side_effect=OverflowError("too big"), create=True):
+            why = suppression.lock_stale_reason(tmp_path / "lock", now=self.NOW, boot_time=0.0)
+        assert why and why.startswith("pid-invalid")
 
     @pytest.mark.skipif(os.name != "posix", reason="kill(0) liveness is posix-only")
     def test_dead_pid_lock_is_stale(self, tmp_path):
