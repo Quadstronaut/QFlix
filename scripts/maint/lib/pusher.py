@@ -159,8 +159,9 @@ def push_once(
         # Manual push-suppression: a monitor knowingly muted (e.g. app awaiting
         # an upstream fix). Push UP with a note so Kuma stays green and neither
         # an alert nor recovery fires, and skip probing entirely. Count it as
-        # healthy for the fleet storm calc. The self-destructing unsuppress
-        # watcher removes the registry entry once the app is live again. This
+        # healthy for the fleet storm calc. Every entry expires (QFLX-82):
+        # past its `until` push_suppressed() returns None and this app is
+        # probed and healed like any other. This
         # is the only local-file lever that silences a PUSH monitor — Kuma's
         # admin pause API is operator-only.
         sup_reason = suppression_mod.push_suppressed(app.name)
