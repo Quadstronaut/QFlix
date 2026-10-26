@@ -318,7 +318,7 @@ def _probe_systemd_oneshot(app: App, timeout_s: float) -> HealthResult:
     try:
         cp = subprocess.run(
             ["systemctl", "--user", "show", unit,
-             "-p", "Result", "-p", "ActiveState", "--no-pager"],
+             "-p", "Result", "-p", "ActiveState", "-p", "LoadState", "--no-pager"],
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -339,7 +339,17 @@ def _probe_systemd_oneshot(app: App, timeout_s: float) -> HealthResult:
 
     result = props.get("Result", "")
     state = props.get("ActiveState", "")
+    load = props.get("LoadState", "")
 
+    # QFLX-83: `systemctl show` exits 0 for a unit that does not exist and
+    # reports Result=success / ActiveState=inactive for it -- so a renamed,
+    # removed or masked job read as a healthy one that had simply not run, and
+    # the pusher re-beat its monitor green every 60s. LoadState is the only
+    # field that tells them apart. (Absent = an older caller's fake; real
+    # systemctl always answers it when asked.)
+    if load and load != "loaded":
+        return HealthResult(ok=False, latency_ms=None,
+                            reason=f"unit {unit} LoadState={load}")
     if state in ("activating", "deactivating", "reloading"):
         return HealthResult(ok=True, latency_ms=None, reason=f"in-flight ({state})")
     if state == "active" or result == "success" or result == "":
