@@ -437,6 +437,32 @@ class TestAutoHealStrikeThreshold:
             f"expected single trigger on 3rd failure; got {triggered!r}"
         )
 
+    def test_pushed_msg_carries_this_cycles_strike_note(self, monkeypatch):
+        """QFLX-84: the strike annotation was written into params AFTER the
+        push, so Kuma always showed the previous cycle's (or no) note."""
+        from lib import pusher, health, recovery
+        pusher.reset_strike_counter()
+        app = _make_app("sonarr", "Sonarr")
+        manifest = Manifest({"sonarr": app})
+        monkeypatch.setattr(health, "probe", lambda a, **kw: HealthResult(
+            ok=False, latency_ms=42, reason="connection refused"))
+        monkeypatch.setattr(recovery, "trigger_async", lambda a, **kw: "started")
+        monkeypatch.setattr(recovery, "is_permanently_failed", lambda name: False)
+        msgs = []
+
+        def fake_get(url, params=None, **kw):
+            msgs.append(dict(params)["msg"])   # snapshot AT SEND TIME
+            r = MagicMock()
+            r.status_code = 200
+            return r
+
+        with patch("lib.pusher.requests.get", side_effect=fake_get):
+            for _ in range(3):
+                pusher.push_once(manifest=manifest, tokens={"sonarr": "tok"})
+        assert msgs == ["connection refused [strike 1/3]",
+                        "connection refused [strike 2/3]",
+                        "connection refused [strike 3/3: recovery]"]
+
     def test_success_resets_strike_counter(self, monkeypatch):
         from lib import pusher, health, recovery
         pusher.reset_strike_counter()
