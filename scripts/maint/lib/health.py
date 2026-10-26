@@ -447,8 +447,18 @@ def probe(app: App, *, timeout_s: float | None = None) -> HealthResult:
     if fn is None:
         raise ValueError(f"Unknown health kind '{kind}' for app '{app.name}'")
 
-    result = fn(app, timeout_s)
-    return _apply_require_unit_active(app, result, timeout_s)
+    # QFLX-80: the module contract is "never raises", but each kind only
+    # catches the errors its author expected (http: Timeout/ConnectionError).
+    # TooManyRedirects, ContentDecodingError, InvalidURL, a missing binary...
+    # escaped, and one throwing app aborted the pusher's whole cycle. Enforce
+    # the contract here, once, for every kind: an unexpected error IS a failed
+    # probe, with the exception named so it is diagnosable from Kuma.
+    try:
+        result = fn(app, timeout_s)
+        return _apply_require_unit_active(app, result, timeout_s)
+    except Exception as exc:
+        return HealthResult(ok=False, latency_ms=None,
+                            reason=f"probe error: {type(exc).__name__}: {exc}"[:200])
 
 
 def _apply_require_unit_active(app: App, result: HealthResult,
