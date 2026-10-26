@@ -1,6 +1,6 @@
 {
-  "week_of": "2026-10-19",
-  "generated_at": "2026-10-19T14:14:25Z",
-  "since": "2026-10-12T14:14:25Z",
-  "html": "<p>We squashed an annoying bug in the request system (the thing you use to ask for new movies and shows): it was stuck showing a \"refresh now\" pop-up over and over, even when there was nothing new to refresh. That's fixed now, so it'll stay quiet unless there's an actual update worth telling you about.</p><p>A few reliability tune-ups round things out. 🔧</p>"
+  "week_of": "2026-10-26",
+  "generated_at": "2026-10-26T14:14:59Z",
+  "since": "2026-10-19T14:14:59Z",
+  "html": "<p>A little extra security behind the scenes this week: we caught and blocked a run of fake \"episode\" downloads that were actually disguised malware, and demoted the source that kept serving them, so your library stays safe and clean.</p><p>We also gave TV shows more breathing room before a stalled episode gets parked, so your favorites have a better shot at catching up on their own.</p><p>A few smaller reliability tune-ups round things out. 🎬</p>"
 }
