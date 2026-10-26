@@ -617,11 +617,16 @@ def main() -> int:
     _STANDALONE_HB_S = 90000  # 24h + buffer, matching the daily-0430 canary heartbeat
 
     for mon_name in STANDALONE_SELF_PUSH_MONITORS:
+        hb = STANDALONE_SELF_PUSH_HEARTBEATS.get(mon_name, _STANDALONE_HB_S)
         if mon_name in existing:
+            # QFLX-81: reconcile the window on EXISTING monitors too, as the
+            # canary loop above does. Without this, correcting a heartbeat in
+            # lib.kuma fixed only monitors created afterwards; a live one kept
+            # the window it was born with forever.
+            _ensure_monitor_interval(api, existing[mon_name], hb)
             print(f"  [skip]{mon_name:25s} (already exists)")
             skipped += 1
             continue
-        hb = STANDALONE_SELF_PUSH_HEARTBEATS.get(mon_name, _STANDALONE_HB_S)
         try:
             tok = _add_push_monitor(api, mon_name, interval=hb)
             created_names.add(mon_name)
