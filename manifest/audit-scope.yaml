@@ -429,7 +429,9 @@ residuals:
     # timer ran Result=success 2026-09-26 20:18Z, next run scheduled; no change.
     # This review lapsed at UTC midnight and blocked PR #43 - the full-stop
     # described above is real.
-    last_reviewed: 2026-09-26
+    # Reviewed 2026-10-27: still true, bounded by cadence. audit-live timer
+    # Result=success 2026-10-27 02:16Z. Lapsed again at 31 days (audit exit 2).
+    last_reviewed: 2026-10-27
     residual: Live box drift between audit runs (L-01..L-07). Bounded only by cadence.
   - id: R3
     owner: operator
@@ -473,7 +475,9 @@ residuals:
     # still missing. Residual stays open.
     # Reviewed 2026-09-26: unchanged. Last master run success 2026-09-26
     # 18:40Z; assertion still unbuilt; residual stays open.
-    last_reviewed: 2026-09-26
+    # Reviewed 2026-10-27: unchanged. Last master run success 2026-10-26
+    # 19:52Z; assertion still unbuilt; residual stays open.
+    last_reviewed: 2026-10-27
     residual: >-
       CI itself. The last-successful-run-age assertion is NOT implemented (it
       needs network + a token; this regime is offline by construction).
