@@ -1286,6 +1286,24 @@ classes:
       under their own classes.
     added: 2026-10-20
 
+  - id: plex-aresample-timestamp-compensation
+    title: 'Plex transcoder ffmpeg "[SWR] Failed to compensate for timestamp delta of N"'
+    rx: '(?i)failed to compensate for timestamp delta'
+    field: excerpt
+    prompt_clause: 'Plex transcoder ffmpeg aresample "Failed to compensate for timestamp delta" lines'
+    why: >-
+      Paged 2026-10-30 17:07 as plex:timestamp-compensation-error, 2/3. CENSUS
+      2026-10-30, every retained PMS rotation (~25 days): 2 lines, 2s apart, one
+      transcode session, deltas 55.3 then 987.2, no transcoder crash or
+      exit-failure lines. The ffmpeg resampler hit a timestamp jump larger than
+      it could smooth and carried on; worst case is a brief audio blip in one
+      stream. Plex stamps it ERROR because ffmpeg stderr passes through. WHO
+      OWNS THE REAL VERSION: a transcoder that cannot transcode reds
+      manitoba-maint-canary-plex-transcoder and -plex-playback. field: excerpt
+      on purpose - the every-line-claimed check then pages any finding that
+      bundles this line with another fault (quota, corrupt DB, crash).
+    added: 2026-10-30
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1424,6 +1442,9 @@ prompt_segments:
   - index: 43
     marker: '*arr "Resource temporarily unavailable (services.sonarr.tv:443)" / SocketException (11) / EAI_AGAIN DNS failures against the vendor metadata hosts services.sonarr.tv, skyhook.sonarr.tv, *.radarr.video or *.servarr.com'
     classes: [arr-upstream-metadata-dns-eagain]
+  - index: 44
+    marker: 'Plex transcoder ffmpeg aresample "Failed to compensate for timestamp delta" lines'
+    classes: [plex-aresample-timestamp-compensation]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths

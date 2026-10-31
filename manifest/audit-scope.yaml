@@ -61,7 +61,8 @@ surfaces:
         policy_extract: null
         loader: null
         review_cadence_days: 90
-        last_reviewed: 2026-07-29
+        # Reviewed 2026-10-30: tunnel launcher unchanged since 2026-05-11; still untracked.
+        last_reviewed: 2026-10-30
 
   S3:
     title: seedbox runtime state
@@ -412,7 +413,8 @@ residuals:
   - id: R1
     owner: operator
     review_cadence_days: 90
-    last_reviewed: 2026-07-29
+    # Reviewed 2026-10-30: unbounded by nature, still true. Ownership unchanged.
+    last_reviewed: 2026-10-30
     residual: Upstream / platform change (Tdarr, *arr, Plex, SAB, Ultra.cc). Unbounded.
   - id: R2
     owner: operator
@@ -436,7 +438,8 @@ residuals:
   - id: R3
     owner: operator
     review_cadence_days: 90
-    last_reviewed: 2026-07-29
+    # Reviewed 2026-10-30: undecidable in general, still true. REA covers the residual.
+    last_reviewed: 2026-10-30
     residual: >-
       Semantic defects with no syntactic signature — a policy contradiction
       between two config surfaces that share no token, a wrong threshold, wrong
@@ -511,7 +514,8 @@ residuals:
   - id: R-WORKSTATION-OLLAMA-SERVICE
     owner: operator
     review_cadence_days: 90
-    last_reviewed: 2026-07-29
+    # Reviewed 2026-10-30: serve answering, v0.34.4; workstation state, stays residual.
+    last_reviewed: 2026-10-30
     residual: >-
       The local ollama service and its model set. Live workstation state; the
       store was relocated to B:\AIModels 2026-07-24 after a deletion killed
@@ -519,7 +523,8 @@ residuals:
   - id: R-DASH-CI
     owner: operator
     review_cadence_days: 90
-    last_reviewed: 2026-07-29
+    # Reviewed 2026-10-30: tests.yml still has no svelte-check; residual stays open.
+    last_reviewed: 2026-10-30
     residual: >-
       apps/qflix-dash has a `svelte-check` gate that is NOT run by this repo's
       CI. 16 errors -> 0 was a manual milestone (8a694da), not an enforced one.
