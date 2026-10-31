@@ -231,6 +231,10 @@ def test_rules_match_their_canonical_log_lines(ledgers):
          "Sep 25, 2026 05:03:51.918 [139868007598904] ERROR - Exception "
          "caught determining whether we could skip 'Law & Order/Season 2' ~ "
          "Null value not allowed for this type"),
+        # QFLX-94. Paged 2026-10-30; verbatim.
+        ("plex-aresample-timestamp-compensation",
+         "[Parsed_aresample_0 @ 0x7f2319b85640] [SWR @ 0x7f2311cae600] Failed "
+         "to compensate for timestamp delta of 987.157000"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -394,7 +398,10 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
              "'Movies/Heat (1995)' ~ Null value not allowed for this type"),
             ("plex-season-skip-null-value",
              "ERROR - Exception caught determining whether we could skip "
-             "'Show/Season 1' ~ database disk image is malformed")):
+             "'Show/Season 1' ~ database disk image is malformed"),
+            ("plex-aresample-timestamp-compensation",
+             "[Parsed_aresample_0 @ 0x7f2319b85640] Failed to initialize "
+             "filter")):
         assert not re.search(by[cid], still_pages), (
             cid + " must not suppress an uncensused neighbour: " + still_pages)
 

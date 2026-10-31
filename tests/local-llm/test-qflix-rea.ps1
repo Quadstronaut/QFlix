@@ -1870,6 +1870,18 @@ Test-Case 'Test-IsNoiseFinding suppresses *arr upstream-metadata DNS EAI_AGAIN b
     Assert-Equal $null (Test-IsNoiseFinding $tb) 'DNS record bundled with a Python Traceback still pages'
 }
 
+# QFLX-94: the 2026-10-30 17:07 plex:timestamp-compensation-error page. A
+# field: excerpt rule, so a bundled real fault fails open via the every-line check.
+Test-Case 'Test-IsNoiseFinding suppresses aresample timestamp compensation, not a bundled fault' {
+    $line = '[Parsed_aresample_0 @ 0x7f2319b85640] [SWR @ 0x7f2311cae600] Failed to compensate for timestamp delta of 987.157000'
+    $swr = @{ signature = 'plex:timestamp-compensation-error'; summary = 'Failed to compensate for timestamp delta'; excerpt = $line }
+    Assert-Equal 'plex-aresample-timestamp-compensation' (Test-IsNoiseFinding $swr) 'real 17:07 record suppressed'
+    $quota = @{ signature = 'plex:timestamp-compensation-error'; summary = 'transcode error'; excerpt = $line + "`nERROR - Unknown system error -122: Disk quota exceeded" }
+    Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
+    $near = @{ signature = 'plex:transcode-error'; summary = 'transcode error'; excerpt = '[Parsed_aresample_0 @ 0x7f2319b85640] Failed to initialize filter' }
+    Assert-Equal $null (Test-IsNoiseFinding $near) 'other aresample failure still pages'
+}
+
 # ---------------------------------------------------------------------------
 # 2026-09-02: cross-run page ledger.
 #
