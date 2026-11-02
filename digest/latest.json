@@ -1,6 +1,6 @@
 {
-  "week_of": "2026-10-26",
-  "generated_at": "2026-10-26T14:14:59Z",
-  "since": "2026-10-19T14:14:59Z",
-  "html": "<p>A little extra security behind the scenes this week: we caught and blocked a run of fake \"episode\" downloads that were actually disguised malware, and demoted the source that kept serving them, so your library stays safe and clean.</p><p>We also gave TV shows more breathing room before a stalled episode gets parked, so your favorites have a better shot at catching up on their own.</p><p>A few smaller reliability tune-ups round things out. 🎬</p>"
+  "week_of": "2026-11-02",
+  "generated_at": "2026-11-02T14:45:48Z",
+  "since": "2026-10-26T14:45:37Z",
+  "html": "<p>Quiet week behind the scenes — no flashy new features to report, just a round of under-the-hood upkeep to keep everything running smoothly. The team spent the time double-checking the systems that watch for trouble and smoothing out a few rough edges, so streaming stays dependable.</p><p>Nothing for you to do — just enjoy the shows. 🎬</p>"
 }
