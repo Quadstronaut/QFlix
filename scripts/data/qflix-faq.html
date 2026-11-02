@@ -1075,7 +1075,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
         <h3>Tdarr queue isn't moving <a class="qhash" href="#q-tdarr-queue">#</a></h3>
         <ul>
           <li>Verify the <em>node</em> service is up: <code>systemctl --user status tdarr-node.service</code>. Heartbeat cron restarts on inactive.</li>
-          <li>Verify the node is connected to the server in the Tdarr UI (<code>localhost:42018/tdarr</code> via tunnel).</li>
+          <li>Verify the node is connected to the server in the Tdarr UI (<code>localhost:42018/</code> via tunnel).</li>
           <li>If both are up but queue is empty: Tdarr scan hasn't picked up new files. Tdarr &rarr; Libraries &rarr; Scan / Run.</li>
         </ul>
       </article>

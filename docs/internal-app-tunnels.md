@@ -1,11 +1,12 @@
 # Internal app tunnels
 
 For apps marked INTERNAL in the public/internal audit (2026-05-10), admin
-access is via SSH tunnel — not the public FQDN. The outer Ultra.cc nginx
-gates them with `htpasswd`, but the canonical, no-CSS-quirks experience is
-the tunnel: the SPA frontend sees itself at `/` and all routes work
-without subpath rewriting (this is why we couldn't host Listmonk admin
-publicly under `/listmonk/`; same logic applies to most modern admin UIs).
+access is via SSH tunnel — not the public FQDN. Public routes are protected
+only by each app's own login (see "Public route auth model" below), so an app
+with no working auth must have no route at all. The tunnel is also the
+canonical, no-CSS-quirks experience: the SPA frontend sees itself at `/` and
+all routes work without subpath rewriting (this is why we couldn't host Listmonk
+admin publicly under `/listmonk/`; same logic applies to most modern admin UIs).
 
 The recommended pattern is the operator's permanent tunnel daemon at
 `~/Documents/GIT/Ultra.cc/QFlix/scripts/manitoba-tunnel.ps1` — it forwards every
@@ -47,7 +48,7 @@ Then open `http://localhost:<local>/` in a browser.
 | Bazarr 2 (anime; internal-only — no nginx proxy) | 17032 | `ssh -L 17032:127.0.0.1:17032 quadstronaut@<fqdn>` — bare-Python install under `~/.apps/bazarr2/` |
 | qBittorrent | 17041 | `ssh -L 17041:127.0.0.1:17041 quadstronaut@<fqdn>` |
 | SABnzbd (Usenet DL client) | 17007 | `ssh -L 17007:127.0.0.1:17007 quadstronaut@<fqdn>` — then `http://localhost:17007/sabnzbd/`. The *arr reach it at `172.17.0.1:17007` (Docker bridge), not loopback. |
-| Tdarr | 42018 | `ssh -L 42018:127.0.0.1:42018 quadstronaut@<fqdn>` |
+| Tdarr (tunnel-only, no public route; see caveat below) | 42018 | `ssh -L 42018:127.0.0.1:42018 quadstronaut@<fqdn>` |
 | Uptime Kuma admin | 42005 | `ssh -L 42005:127.0.0.1:42005 quadstronaut@<fqdn>` |
 | Tautulli (also public) | 17014 | `ssh -L 17014:127.0.0.1:17014 quadstronaut@<fqdn>` |
 | Buildarr (new) | — | n/a — cron-class, no UI; check `~/.apps/buildarr/logs/buildarr.log` |
@@ -63,6 +64,23 @@ qBittorrent is exposed at `https://<fqdn>/qbittorrent/` for the operator's
 casual remote-control use — it's behind htpasswd but its OWN auth is also
 required (qBit user/password). The tunnel form (`localhost:17041`) is the
 no-htpasswd path that the *arr stack uses internally for API calls.
+
+## Tdarr caveat
+
+Tdarr 2.17.01 has no working auth, so the tunnel is the only way in and the
+listener is the only access control. The server is patched to bind `127.0.0.1`
+(`scripts/configure/50a-tdarr-server-loopback.py`); there is no nginx route.
+
+- **Never add a `/tdarr/` route.** It would publish an unauthenticated admin API.
+- **After a re-unzip or upgrade,** re-run `50-tdarr-install.sh`. The vendor file
+  comes back with a wildcard bind and a redirect that loops on any `Host`
+  carrying the port (a tunnel always sends one). Smoke `tdarr-loopback-bound`
+  catches it.
+- **Limits of the UI:** status tables work, but Nodes, OS Mem, Libraries and
+  Flows render empty, because the server answers `Invalid namespace` for the
+  `/webui` socket they read from. That is server-side, reproduced on raw loopback
+  with no tunnel in the path; cause not established. For node state, use
+  `curl http://localhost:42018/api/v2/get-nodes`.
 
 ## Maintainerr caveat (retired)
 
@@ -80,12 +98,17 @@ points to the right thing whether you're on the workstation tunnel or
 SSH-forwarding ad-hoc. Adding a new INTERNAL app to the daemon is a
 one-line edit to the `$Forwards` array.
 
-## Outer-nginx auth model (background)
+## Public route auth model (background)
 
-Ultra.cc's root-managed outer nginx terminates HTTPS and applies
-`htpasswd` to the public FQDN. User-level proxy fragments (in
-`~/.apps/nginx/proxy.d/<app>.conf`) can override with `auth_basic off`
-to make a path public. Most INTERNAL apps inherit the outer htpasswd by
-not specifying `auth_basic` at all; PUBLIC apps explicitly opt out via
-`auth_basic off`. Tunnels skip the outer nginx entirely and hit the
+Ultra.cc's root-managed outer nginx terminates HTTPS and forwards to the
+user-level nginx, whose fragments live in `~/.apps/nginx/proxy.d/<app>.conf`.
+**Neither layer applies `htpasswd` to those routes.** This page used to say the
+outer nginx did and that `auth_basic off` opted a path out. Measured 2026-11-02
+(QFLX-96), that is false: `auth_basic` exists only on `/webdav` and PHP, the
+`auth_basic off` lines change nothing, and anonymous requests reach the app.
+`/sonarr/` redirects to Sonarr's own login page, not a 401 from nginx, and
+`/tdarr/` served the whole admin UI until its route was retired.
+
+So a route is exactly as private as the app behind it. Before adding one, check
+the app's API refuses a clean request. Tunnels skip nginx entirely and hit the
 user-level loopback port directly.

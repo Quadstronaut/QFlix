@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-11-02 - Tdarr is off the internet; its tunnel works (QFLX-96)
+
+Tdarr 2.17.01 has no working auth, and it was reachable two ways without a
+login: the `/tdarr/` nginx route, and the raw port on the box's public address.
+Both closed live, with one Tdarr restart while no worker was busy.
+
+- **Route retired.** `proxy.d/tdarr.conf` moved aside and nginx reloaded. Its
+  comment said the parent server block enforced `auth_basic`; nothing did. The
+  installer now retires the fragment instead of writing it.
+- **Loopback bind.** `listen(port, cb)` passes no host, so `serverIP` and the
+  unit's `HOST=` never bound anything. New `50a-tdarr-server-loopback.py` patches
+  `srcug/api/servers.js`, marker-guarded and all-or-nothing, in the same way as
+  the existing `worker1.js` patch. Hardcoded so a rewritten config fails closed.
+- **Tunnel loop.** Any `Host` containing `serverPort` was redirected to
+  `webUIPort`, and this box pins the two equal, so a tunnel looped on every path
+  outside `api/v2`. The same patch gates the redirect on the ports differing.
+- **Installer verify fails closed** on a public 200 or a non-loopback bind. Smoke
+  gains `tdarr-loopback-bound` and `tdarr-no-public-route`.
+- **Docs:** the claim that the outer nginx applies htpasswd was false and is
+  corrected. Each route is only as private as the app behind it.
+
+Not fixed: the `/webui` socket namespace answers `Invalid namespace`, so UI panels
+fed by it are empty. Reproduced with no tunnel in the path; cause not established.
+Loopback is shared with other tenants on this slot.
+
 ## 2026-10-10 - Postgres goes native by dump/restore; the upgrade child is retired (QFLX-37)
 
 **UCC divorce A13.** `scripts/configure/312-native-postgres-install.sh` moves
