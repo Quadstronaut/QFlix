@@ -439,7 +439,25 @@ if [ -n "$TD_PORT" ]; then
   else
     record "tdarr-worker-patch" fail "patch missing — re-run 50-tdarr-install.sh"
   fi
+  # QFLX-96: Tdarr has no working auth, so its listener is its only access
+  # control. Three separate questions, because each failure looks fine to the
+  # other two: was the file patched (a re-unzip reverts it), did the RUNNING
+  # process take it (ss, not the marker), and is a route back in nginx.
+  TD_BIND_MARK=$(sshm "grep -c QFLIX-LOOPBACK-BIND ~/.apps/tdarr/Tdarr_Server/srcug/api/servers.js 2>/dev/null" 2>/dev/null)
+  TD_BIND=$(sshm "ss -ltnH 'sport = :$TD_PORT' 2>/dev/null | awk '{print \$4}' | sort -u | tr '\n' ' '" 2>/dev/null)
+  if [ "${TD_BIND_MARK:-0}" -ge 1 ] && [ "$TD_BIND" = "127.0.0.1:$TD_PORT " ]; then
+    record "tdarr-loopback-bound" pass "listening on 127.0.0.1 only"
+  else
+    record "tdarr-loopback-bound" fail "bind '${TD_BIND:-none}' marker ${TD_BIND_MARK:-0} — re-run 50-tdarr-install.sh, then restart tdarr-server"
+  fi
+  TD_ROUTE=$(curl -sk -m 10 -o /dev/null -w '%{http_code}' "https://${PUBLIC_HOST}/tdarr/api/v2/status" 2>/dev/null)
+  case "$TD_ROUTE" in
+    401|403|404) record "tdarr-no-public-route" pass "public /tdarr/ denied (HTTP $TD_ROUTE)" ;;
+    *)           record "tdarr-no-public-route" fail "public /tdarr/ HTTP ${TD_ROUTE:-none}, expected a denial" ;;
+  esac
 else
+  record "tdarr-loopback-bound" skip "no server_port"
+  record "tdarr-no-public-route" skip "no server_port"
   record "tdarr-up" skip "no server_port"
   record "tdarr-node-registered" skip "no server_port"
   record "tdarr-flow-engaged" skip "no server_port"
