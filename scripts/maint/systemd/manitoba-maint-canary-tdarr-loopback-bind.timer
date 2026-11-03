@@ -1,0 +1,12 @@
+[Unit]
+Description=Manitoba canary - Tdarr loopback bind (hourly)
+
+[Timer]
+# :55 was one of the two minutes no hourly timer used (2026-11-03), so this
+# adds no burst to Kuma's push pool (the 2026-09-12 KnexTimeoutError class).
+OnCalendar=*:55:00 UTC
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

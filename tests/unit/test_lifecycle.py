@@ -619,6 +619,48 @@ def test_systemd_zip_swap_substitutes_version_in_target_dir_and_post_steps():
     assert not any("{version}" in s for s in cmd_strs), cmd_strs
 
 
+def test_real_tdarr_server_zip_swap_repatches_before_the_restart():
+    """QFLX-96: the unzip restores the vendor servers.js, and Tdarr has no
+    working auth. Against the REAL manifest: 50a must run after the unzip and
+    before the restart that loads the files, or a same-version reinstall puts
+    the admin API back on the wildcard while the loopback health probe passes."""
+    from lib import manifest
+    repo = os.path.join(os.path.dirname(__file__), "..", "..")
+    app = manifest.load(os.path.join(repo, "manifest", "apps.yaml")).app("tdarr-server")
+
+    with patch("subprocess.run", return_value=_ok_cp()) as mock_run, \
+         patch("lib.lifecycle._post_health_probe", return_value=(True, "ok")):
+        result = upgrade(app, target_version="2.17.01")
+
+    assert result.ok is True
+    cmd_strs = [" ".join(c.args[0]) for c in mock_run.call_args_list]
+    unzip = next(i for i, s in enumerate(cmd_strs) if "unzip" in s)
+    patch_ = next(i for i, s in enumerate(cmd_strs)
+                  if "~/scripts/configure/50a-tdarr-server-loopback.py" in s)
+    restart_ = next(i for i, s in enumerate(cmd_strs)
+                    if "restart" in s and "tdarr-server.service" in s)
+    assert unzip < patch_ < restart_, cmd_strs
+
+
+def test_real_tdarr_server_zip_swap_stops_before_restart_if_the_patch_refuses():
+    from lib import manifest
+    repo = os.path.join(os.path.dirname(__file__), "..", "..")
+    app = manifest.load(os.path.join(repo, "manifest", "apps.yaml")).app("tdarr-server")
+
+    def fake_run(argv, *a, **kw):
+        joined = " ".join(argv)
+        rc = 1 if "50a-tdarr-server-loopback.py" in joined else 0
+        return CompletedProcess(argv, rc, stdout="", stderr="REFUSED" if rc else "")
+
+    with patch("subprocess.run", side_effect=fake_run) as mock_run, \
+         patch("lib.lifecycle._post_health_probe", return_value=(True, "ok")):
+        result = upgrade(app, target_version="2.17.01")
+
+    assert result.ok is False
+    cmd_strs = [" ".join(c.args[0]) for c in mock_run.call_args_list]
+    assert not any("restart" in s and "tdarr-server.service" in s for s in cmd_strs), cmd_strs
+
+
 # ---- cron upgrade (no service restart) ------------------------------------
 
 def test_cron_tarball_swap_upgrade_does_not_restart():

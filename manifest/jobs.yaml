@@ -227,6 +227,9 @@ jobs:
   manitoba-maint-canary-tdarr-throttle-integrity:
     timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-throttle-integrity.timer
     kuma_monitor: "Canary Tdarr Throttle Integrity"
+  manitoba-maint-canary-tdarr-loopback-bind:
+    timer: scripts/maint/systemd/manitoba-maint-canary-tdarr-loopback-bind.timer
+    kuma_monitor: "Canary Tdarr Loopback Bind"
   manitoba-maint-canary-stream-cap-liveness:
     timer: scripts/maint/systemd/manitoba-maint-canary-stream-cap-liveness.timer
     kuma_monitor: "Canary Stream Cap Liveness"

@@ -99,7 +99,8 @@ INSTSCRIPT
 # ── Step 3b: loopback bind, self-redirect gate, shared /webui (QFLX-96) ─────
 # A re-unzip above restores the vendor files (servers.js, mainApi.js), so this
 # runs on every install and before the restart in step 6d that loads it. Its
-# own header says why.
+# own header says why. manifest/apps.yaml runs the same file as the
+# tdarr-server zip_swap post step, so lifecycle upgrades keep it too.
 sshm 'python3 -' < "$HERE/50a-tdarr-server-loopback.py"
 
 # ── Step 4: server config ──────────────────────────────────────────────────

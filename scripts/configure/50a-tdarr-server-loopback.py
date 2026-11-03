@@ -6,10 +6,17 @@ Runs ON THE BOX, piped from the workstation (same as the worker1.js patch in
 
     sshm 'python3 -' < scripts/configure/50a-tdarr-server-loopback.py
 
+or, once 240-maintenance-install.sh has shipped it, as the tdarr-server
+`upgrade.post_steps` in manifest/apps.yaml (lifecycle zip_swap re-unzips the
+vendor tree, so the patch must ride every upgrade, downgrade and rollback):
+
+    python3 ~/scripts/configure/50a-tdarr-server-loopback.py
+
 Idempotent. Takes effect on the next tdarr-server restart. A Tdarr upgrade or
-re-unzip restores the vendor files, so 50-tdarr-install.sh re-applies this, and
-smoke-test.sh asserts the marker, the live bind and a real /webui handshake.
-A refusal exits 1.
+re-unzip restores the vendor files, so 50-tdarr-install.sh and the lifecycle
+post step re-apply this, and smoke-test.sh asserts the markers, the live bind
+and a real /webui handshake. A refusal exits 1, which fails the post step
+BEFORE lifecycle restarts the unit.
 
 Why patch at all: Tdarr 2.17.01 has NO working auth. `auth` and `seededApiKey`
 in its config are inert, and a keyless POST /api/v2/cruddb answers 200, so
