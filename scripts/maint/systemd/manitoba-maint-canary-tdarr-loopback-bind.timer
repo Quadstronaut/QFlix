@@ -1,11 +1,15 @@
 [Unit]
-Description=Manitoba canary - Tdarr loopback bind (hourly)
+Description=Manitoba canary - Tdarr uid relay / unix socket (every 15 min)
 
 [Timer]
-# :55 was one of the two minutes no hourly timer used (2026-11-03), so this
-# adds no burst to Kuma's push pool (the 2026-09-12 KnexTimeoutError class).
-OnCalendar=*:55:00 UTC
-RandomizedDelaySec=120
+# Every 15 min since QFLX-97 (was hourly at :55). The canary now owns the uid
+# relay's liveness, and while the relay is down any tenant can squat Tdarr's
+# port and hand our Node jobs: an hour is too long to be blind to that.
+# Phase :1 had the fewest neighbours of the free 15-minute phases (2026-11-03;
+# 2-6, 8, 9 and 11-14 were taken), keeping the 2026-09-12 KnexTimeoutError
+# lesson: never stack canaries in one minute.
+OnCalendar=*:1/15 UTC
+RandomizedDelaySec=45
 Persistent=true
 
 [Install]

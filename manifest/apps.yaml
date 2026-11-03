@@ -702,6 +702,9 @@ apps:
     class: systemd
     unit: tdarr-server.service
     kuma_monitor: "Tdarr"
+    # QFLX-97: the probe below hits 127.0.0.1:<serverPort>, which is
+    # tdarr-uid-relay, not Tdarr: Tdarr itself listens only on a unix socket
+    # in a 0700 dir. Same address, same answer, and a dead relay reds here too.
     health:
       kind: http_api
       path_template: "/api/v2/status"
@@ -719,8 +722,15 @@ apps:
       # reinstall, downgrade, rollback. It exits 1 on a layout it does not
       # recognise, which fails the step BEFORE the restart. Shipped to the box
       # by 240-maintenance-install.sh.
+      # QFLX-97: 50a now moves Tdarr onto a unix socket, so the restart that
+      # follows leaves 127.0.0.1:<serverPort> to tdarr-uid-relay. The second
+      # step makes sure the relay is there to take it: a missing unit fails
+      # the upgrade before the restart, instead of after it with Tdarr
+      # reachable by nobody. (The relay is not part of the vendor tree, so the
+      # unzip never touches it.)
       post_steps:
         - "python3 ~/scripts/configure/50a-tdarr-server-loopback.py"
+        - "systemctl --user start tdarr-uid-relay.service"
       version_pin:
         source: versions.env
         key: TDARR_VERSION
@@ -1185,18 +1195,23 @@ canaries:
     script: "scripts/canaries/tdarr-throttle-integrity.sh"
     schedule: "hourly"
   tdarr-loopback-bind:
-    # QFLX-96. Tdarr 2.17.01 has no working auth, so the 50a loopback patch on
-    # servers.js is its only access control, and anything that restores the
-    # vendor file (re-unzip, restore, an old zip_swap) puts the admin API back
-    # on the wildcard at the next restart. The "Tdarr" probe and every other
-    # Tdarr canary hit 127.0.0.1, which a wildcard listener also answers, and
-    # no timer runs smoke - so nothing scheduled could see it. Asserts the LIVE
-    # listener (ss) is 127.0.0.1 only AND the file still carries the marker.
-    # Detect-only: re-patching and restarting here would fold an install step
-    # into a check (compartmentalize). Liveness stays "Tdarr"'s job.
+    # QFLX-96, reshaped by QFLX-97. Tdarr 2.17.01 has no working auth, and
+    # every tenant on this slot shares our network namespace, so ANY TCP
+    # listener of Tdarr's is reachable by ~150 other uids. Tdarr now listens
+    # on a unix socket in a 0700 dir (50a) and tdarr-uid-relay owns
+    # 127.0.0.1:<serverPort>, forwarding only our uid (50d). Asserts: the
+    # port's only listener is the relay's MainPID, no Tdarr process owns TCP,
+    # the socket dir is ours and 0700, both patch markers are present, the
+    # RUNNING relay's heartbeat is fresh / allows only our uid / passed its
+    # kernel-lookup selftest / runs the code on disk, and that code refuses a
+    # foreign uid (--selftest). The "Tdarr" probe goes THROUGH the relay, so
+    # it reds on a dead relay too, but cannot say why; this does. Every 15 min
+    # because a down relay leaves the port open to a squatter. Detect-only:
+    # re-patching and restarting here would fold an install step into a check
+    # (compartmentalize); heartbeat-tdarr-server.sh restarts a dead relay.
     kuma_monitor: "Canary Tdarr Loopback Bind"
     script: "scripts/canaries/tdarr-loopback-bind.sh"
-    schedule: "hourly"
+    schedule: "every-15min"
   bazarr-ingest:
     # Added 2026-08-06. Both Bazarr instances hold a language profile their
     # config still points at, and hold >0 items whenever their *arr does.

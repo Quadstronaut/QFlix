@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QFLX-96: keep Tdarr 2.17.01 Server off the internet, and usable over a tunnel.
+"""QFLX-96 + QFLX-97: Tdarr 2.17.01 Server gets no TCP port at all.
 
 Runs ON THE BOX, piped from the workstation (same as the worker1.js patch in
 50-tdarr-install.sh):
@@ -14,51 +14,59 @@ vendor tree, so the patch must ride every upgrade, downgrade and rollback):
 
 Idempotent. Takes effect on the next tdarr-server restart. A Tdarr upgrade or
 re-unzip restores the vendor files, so 50-tdarr-install.sh and the lifecycle
-post step re-apply this, and smoke-test.sh asserts the markers, the live bind
-and a real /webui handshake. A refusal exits 1, which fails the post step
-BEFORE lifecycle restarts the unit.
+post step re-apply this; smoke-test.sh and the tdarr-loopback-bind canary
+assert the markers, that no Tdarr process owns a TCP listener, and a real
+/webui handshake. A refusal exits 1, which fails the post step BEFORE
+lifecycle restarts the unit. (The file name predates QFLX-97 and is kept
+because the manifest, the installers and deploy-drift all name it.)
 
 Why patch at all: Tdarr 2.17.01 has NO working auth. `auth` and `seededApiKey`
 in its config are inert, and a keyless POST /api/v2/cruddb answers 200, so
-whoever reaches the port owns the database. Where it listens is the only access
-control there is, and it cannot be moved upstream of the process: the slot has
-no firewall access, and GLIBC 2.31 caps the version at 2.17.01.
+whoever reaches the listener owns the database and runs code as our uid. Where
+it listens is the only access control there is.
 
-The three edits, all in srcug/api/servers.js:
+  QFLX-96 bound it to 127.0.0.1, which took it off the internet. It did NOT
+  make it private: every tenant on this slot shares the host network
+  namespace, so 127.0.0.1:<port> is reachable by ~150 other uids.
 
-  1 and 2. Bind loopback. listen(port, cb) passes no host, so Node takes the
-     wildcard and the raw port answers on the box's public address. `serverIP`
-     and the unit's HOST= look like bind settings; serverIP is only ever logged
-     and HOST is never read. Hardcoded rather than read from `serverIP` so a
-     rewritten config fails closed instead of republishing the port.
+  QFLX-97 takes the TCP port away. Tdarr listens on a unix socket in
+  /run/user/<uid>/qflix-tdarr (0700, checked to be ours), which no other uid
+  can traverse. scripts/ops/tdarr-uid-relay.py holds 127.0.0.1:<serverPort>
+  and forwards only connections whose peer socket the kernel says is ours,
+  so Tdarr Node and every API caller keep using the same address.
+
+The edits, in srcug/api/servers.js:
+
+  1 and 2. Listen on the unix socket. `server` takes tdarr.sock (the one the
+     relay forwards to); `server2` takes its own tdarr-webui.sock, which never
+     receives traffic while webUIPort == serverPort (edit 4 moves /webui off
+     it) but must not share a path: binding it would unlink tdarr.sock. The
+     helper creates the directory 0700, refuses one we do not own, and removes
+     a stale socket file (a unix socket path outlives its process). Any throw
+     happens before listen(): Tdarr fails to start rather than listen
+     somewhere else. Each listener also reports remoteAddress 127.0.0.1 for
+     its connections, which is what it saw before (nodeRelay stores it on the
+     node record) and is true: everything on the socket came through the
+     relay from loopback. Accepts the vendor text or the QFLX-96 loopback form.
 
   3. Stop the self-redirect. Any request whose Host contains serverPort, unless
      the URL has "api/v2", is redirected to http://<host>:<webUIPort><url>. That
      is the stock split-port hand-off, but this box pins webUIPort == serverPort
-     (see 50b-tdarr-config.py), so it redirects to itself forever. A tunnel
-     always sends Host: localhost:<port>, which is why the UI looped while
-     /api/v2/status answered, and why nginx (Host with no port) never saw it.
-     The gate keeps the stock behaviour if the ports are ever split again.
+     (see 50b-tdarr-config.py), so it redirects to itself forever. The gate
+     keeps the stock behaviour if the ports are ever split again.
 
 And one in srcug/api/mainApi.js:
 
   4. Give /webui a listener. Tdarr builds TWO socket.io servers: servers.js
      attaches `ioServer` (namespaces / and /node) to `server`, and mainApi.js
-     attaches a second one, carrying /webui and every UI sync handler
-     (syncNodes, syncResStats, library and flow sync), to `server2`. With
-     webUIPort == serverPort, server2.listen() hits EADDRINUSE, the vendor
-     error handler swallows it, and server2 never binds for the life of the
-     process. Every browser socket lands on `server`, whose instance has no
-     /webui, and gets CONNECT_ERROR "Invalid namespace": the UI loads but
-     Nodes, OS Mem, Libraries and Flows stay empty while REST answers fine.
-     Logged on 18 of 18 starts from 2026-08-20, on the wildcard before this
-     patch and on 127.0.0.1 after it, so edits 1-3 did not cause it.
-     Fix: when the ports are equal, register /webui on `ioServer`. Namespaces
-     are independent, so /node's register middleware never runs for /webui.
-     Repointing the second instance at `server` instead would NOT work: two
-     socket.io servers on one http server fight over /socket.io/ and /node
-     answers "Invalid namespace" — that breaks the Tdarr Node.
-     Same gate as edit 3, so a split-port config keeps stock behaviour.
+     attaches a second one, carrying /webui and every UI sync handler, to
+     `server2`. With webUIPort == serverPort that second server never got
+     traffic, so the browser got "Invalid namespace" and Nodes, OS Mem,
+     Libraries and Flows stayed empty. Fix: when the ports are equal,
+     register /webui on `ioServer`. Repointing the second instance at `server`
+     instead would NOT work: two socket.io servers on one http server fight
+     over /socket.io/ and /node answers "Invalid namespace", which drops the
+     Tdarr Node.
 """
 from __future__ import annotations
 
@@ -69,23 +77,60 @@ import time
 
 DEFAULT_API_DIR = "~/.apps/tdarr/Tdarr_Server/srcug/api"
 
-BIND = "/*QFLIX-LOOPBACK-BIND*/'127.0.0.1',"
+UNIX_MARK = "QFLIX-UNIX-SOCKET"
 WEBUI_MARK = "QFLIX-WEBUI-SHARED-IO"
+SOCK_DIR_JS = "'/run/user/'+process.getuid()+'/qflix-tdarr'"
 
-# (vendor text, replacement). Exact and whole-statement on purpose: the files
-# are obfuscated, so anything looser could match the wrong call.
+# The QFLX-96 form, accepted as a needle so a box patched by it migrates.
+_OLD_BIND = "/*QFLIX-LOOPBACK-BIND*/'127.0.0.1',"
+
+
+def _sock_expr(server_expr: str, name: str) -> str:
+    """JS: make the private dir, clear a stale socket, return its path.
+
+    448 is 0o700. The uid check refuses a directory someone else made (it
+    cannot happen under a 0700 /run/user/<uid>, but a check is cheaper than an
+    argument). 'connection' rewrites remoteAddress once per server object, so
+    a restartServer() cycle does not stack listeners.
+    """
+    return (
+        f"/*{UNIX_MARK}*/(function(s,n){{var f=require('fs'),d={SOCK_DIR_JS};"
+        "f.mkdirSync(d,{recursive:true,mode:448});"
+        "var t=f.lstatSync(d);if(!t.isDirectory()||t.uid!==process.getuid())"
+        "throw new Error('qflix: '+d+' is not our directory');"
+        "f.chmodSync(d,448);var p=d+'/'+n;try{f.unlinkSync(p)}catch(e){}"
+        "if(!s.__qflixRA){s.__qflixRA=1;s.on('connection',function(c){try{"
+        "Object.defineProperty(c,'remoteAddress',{value:'127.0.0.1',configurable:true});"
+        "Object.defineProperty(c,'remoteFamily',{value:'IPv4',configurable:true});"
+        f"}}catch(e){{}}}})}}return p}})({server_expr},'{name}'),"
+    )
+
+
+_SRV = "exports['servers']['server']"
+_SRV2 = "exports[o(0x1cc)]['server2']"
+
+# (accepted needles, replacement). Exact and whole-statement on purpose: the
+# files are obfuscated, so anything looser could match the wrong call.
 EDITS = (
     (
-        "exports['servers']['server']['listen'](serverPort,function(){",
-        f"exports['servers']['server']['listen'](serverPort,{BIND}function(){{",
+        (
+            f"{_SRV}['listen'](serverPort,function(){{",
+            f"{_SRV}['listen'](serverPort,{_OLD_BIND}function(){{",
+        ),
+        f"{_SRV}['listen']({_sock_expr(_SRV, 'tdarr.sock')}function(){{",
     ),
     (
-        "exports[o(0x1cc)]['server2'][o(0x1b4)](webUIPort,function(){",
-        f"exports[o(0x1cc)]['server2'][o(0x1b4)](webUIPort,{BIND}function(){{",
+        (
+            f"{_SRV2}[o(0x1b4)](webUIPort,function(){{",
+            f"{_SRV2}[o(0x1b4)](webUIPort,{_OLD_BIND}function(){{",
+        ),
+        f"{_SRV2}[o(0x1b4)]({_sock_expr(_SRV2, 'tdarr-webui.sock')}function(){{",
     ),
     (
-        "if(a[l(0x1c9)][l(0x1cd)]['includes'](serverPort)"
-        "&&!a['url']['includes'](l(0x1a8))){",
+        (
+            "if(a[l(0x1c9)][l(0x1cd)]['includes'](serverPort)"
+            "&&!a['url']['includes'](l(0x1a8))){",
+        ),
         "if(/*QFLIX-NO-SELF-REDIRECT*/String(webUIPort)!==String(serverPort)&&"
         "a[l(0x1c9)][l(0x1cd)]['includes'](serverPort)"
         "&&!a['url']['includes'](l(0x1a8))){",
@@ -99,7 +144,7 @@ EDITS = (
 _CFG = "require('../commonModules/configGetter')['configGetter']"
 MAINAPI_EDITS = (
     (
-        "sockManager['io']=require(az(0x145))(server2),",
+        ("sockManager['io']=require(az(0x145))(server2),",),
         f"sockManager['io']=/*{WEBUI_MARK}*/"
         f"String({_CFG}('webUIPort'))===String({_CFG}('serverPort'))"
         "?servers_1['ioServer']:require(az(0x145))(server2),",
@@ -118,19 +163,26 @@ class PatchError(RuntimeError):
 def patch_text(txt: str, edits=EDITS) -> str:
     """Return the patched text. Every edit for this file lands or none do.
 
-    A half-applied patch is the failure to design out: a listener still on the
-    wildcard behind a marker that smoke reads as fixed.
+    A half-applied patch is the failure to design out: one listener on a TCP
+    port behind a marker that smoke reads as fixed. Each edit must find exactly
+    one of its needles exactly once, or already be present.
     """
-    if all(new in txt for _, new in edits):
-        return txt
-    missing = [old for old, _ in edits if txt.count(old) != 1]
-    if missing:
-        raise PatchError(
-            f"{len(missing)} of {len(edits)} needles not found exactly once: "
-            "Tdarr_Server layout changed or the patch is partial. Nothing written."
-        )
-    for old, new in edits:
+    plan = []
+    for olds, new in edits:
+        if new in txt:
+            continue
+        hits = [old for old in olds if txt.count(old) == 1]
+        if len(hits) != 1 or any(txt.count(old) > 1 for old in olds):
+            raise PatchError(
+                f"needle for edit {edits.index((olds, new)) + 1} of {len(edits)} not found "
+                "exactly once: Tdarr_Server layout changed or the patch is partial. "
+                "Nothing written."
+            )
+        plan.append((hits[0], new))
+    for old, new in plan:
         txt = txt.replace(old, new)
+    if any(new not in txt for _, new in edits):
+        raise PatchError("patch did not land completely. Nothing written.")
     return txt
 
 
@@ -160,8 +212,7 @@ def apply_all(api_dir: str, stamp: str) -> list:
     """Patch every target under `api_dir`. Returns the names it changed.
 
     All files are read and patched in memory FIRST, so a refusal on the second
-    file leaves the first untouched too: a loopback bind without a working UI,
-    or the reverse, is not a state this script can leave behind.
+    file leaves the first untouched too.
     """
     planned = []
     for name, edits in TARGETS:
@@ -182,7 +233,7 @@ def main() -> int:
     try:
         changed = apply_all(api_dir, stamp)
     except (OSError, PatchError) as exc:
-        print(f"tdarr loopback patch REFUSED: {exc}", file=sys.stderr)
+        print(f"tdarr unix-socket patch REFUSED: {exc}", file=sys.stderr)
         return 1
     print(
         f"tdarr patch applied to {', '.join(changed)} (backup .qflix-bak-{stamp}); restart needed"

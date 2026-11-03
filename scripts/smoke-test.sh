@@ -439,16 +439,37 @@ if [ -n "$TD_PORT" ]; then
   else
     record "tdarr-worker-patch" fail "patch missing — re-run 50-tdarr-install.sh"
   fi
-  # QFLX-96: Tdarr has no working auth, so its listener is its only access
-  # control. Three separate questions, because each failure looks fine to the
-  # other two: was the file patched (a re-unzip reverts it), did the RUNNING
-  # process take it (ss, not the marker), and is a route back in nginx.
-  TD_BIND_MARK=$(sshm "grep -c QFLIX-LOOPBACK-BIND ~/.apps/tdarr/Tdarr_Server/srcug/api/servers.js 2>/dev/null" 2>/dev/null)
+  # QFLX-96/97: Tdarr has no working auth, and every tenant shares our network
+  # namespace, so WHO CAN CONNECT is its only access control. Separate
+  # questions, because each failure looks fine to the others: was the file
+  # patched (a re-unzip reverts it), did the RUNNING process take it (no Tdarr
+  # TCP listener, the port held by the relay, a 0700 socket dir), does the
+  # relay actually refuse a foreign uid, and is a route back in nginx.
+  # (Record name kept from QFLX-96 so smoke history stays comparable.)
+  TD_BIND_MARK=$(sshm "grep -c QFLIX-UNIX-SOCKET ~/.apps/tdarr/Tdarr_Server/srcug/api/servers.js 2>/dev/null" 2>/dev/null)
   TD_BIND=$(sshm "ss -ltnH 'sport = :$TD_PORT' 2>/dev/null | awk '{print \$4}' | sort -u | tr '\n' ' '" 2>/dev/null)
-  if [ "${TD_BIND_MARK:-0}" -ge 1 ] && [ "$TD_BIND" = "127.0.0.1:$TD_PORT " ]; then
-    record "tdarr-loopback-bound" pass "listening on 127.0.0.1 only"
+  TD_OWNER=$(sshm "ss -ltnpH 'sport = :$TD_PORT' 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' '" 2>/dev/null)
+  TD_RELAY=$(sshm 'systemctl --user show -p MainPID --value tdarr-uid-relay.service 2>/dev/null' 2>/dev/null)
+  TD_TCP=$(sshm "ss -ltnpH 2>/dev/null | grep -c '\"Tdarr_'" 2>/dev/null)
+  TD_MODE=$(sshm 'stat -c %a "/run/user/$(id -u)/qflix-tdarr" 2>/dev/null' 2>/dev/null)
+  if [ "${TD_BIND_MARK:-0}" -ge 2 ] && [ "$TD_BIND" = "127.0.0.1:$TD_PORT " ] \
+     && [ -n "$TD_RELAY" ] && [ "$TD_RELAY" != 0 ] && [ "$TD_OWNER" = "$TD_RELAY " ] \
+     && [ "${TD_TCP:-1}" = 0 ] && [ "$TD_MODE" = 700 ]; then
+    record "tdarr-loopback-bound" pass "Tdarr on a 0700 unix socket, no Tdarr TCP listener, 127.0.0.1:$TD_PORT held by tdarr-uid-relay"
   else
-    record "tdarr-loopback-bound" fail "bind '${TD_BIND:-none}' marker ${TD_BIND_MARK:-0} — re-run 50-tdarr-install.sh, then restart tdarr-server"
+    record "tdarr-loopback-bound" fail "port '${TD_BIND:-none}' owner '${TD_OWNER:-?}' relay '${TD_RELAY:-?}' tdarr-tcp ${TD_TCP:-?} dir ${TD_MODE:-?} marker ${TD_BIND_MARK:-0} — re-run 50-tdarr-install.sh, then restart tdarr-server"
+  fi
+  # QFLX-97: the relay's uid gate, end to end on throwaway sockets: our uid is
+  # forwarded, a foreign uid and a failed kernel lookup are refused without
+  # ever reaching the upstream. No second account exists on this slot, so the
+  # foreign case is our own connection judged against a uid that is not ours.
+  TD_ST=$(sshm 'python3 ~/scripts/ops/tdarr-uid-relay.py --selftest 2>&1' 2>/dev/null)
+  TD_GATE=$(printf '%s\n' "$TD_ST" | grep -c '^PASS')
+  TD_GATE_FAIL=$(printf '%s\n' "$TD_ST" | grep '^FAIL' | head -1)
+  if [ "${TD_GATE:-0}" -ge 5 ] && [ -z "$TD_GATE_FAIL" ]; then
+    record "tdarr-relay-uid-gate" pass "own uid forwarded; foreign uid and lookup failure refused"
+  else
+    record "tdarr-relay-uid-gate" fail "${TD_GATE_FAIL:-selftest did not run} (${TD_GATE:-0}/5 pass)"
   fi
   # QFLX-96: the UI's socket.io namespace really answers. /webui lives on a
   # second socket.io server attached to server2, which never binds while
@@ -492,6 +513,7 @@ PY
   esac
 else
   record "tdarr-loopback-bound" skip "no server_port"
+  record "tdarr-relay-uid-gate" skip "no server_port"
   record "tdarr-webui-namespace" skip "no server_port"
   record "tdarr-no-public-route" skip "no server_port"
   record "tdarr-up" skip "no server_port"

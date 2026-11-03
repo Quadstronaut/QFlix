@@ -1,4 +1,4 @@
-"""QFLX-96: Tdarr stays off the internet, and its tunnel stays usable.
+"""QFLX-96 + QFLX-97: Tdarr has no TCP port; only our uid reaches it.
 
 Tdarr 2.17.01 has no working auth (a keyless /api/v2/cruddb answers 200, `auth`
 and `seededApiKey` in its config are inert), so where it listens IS the access
@@ -9,6 +9,11 @@ control. Two things went wrong at once and both are pinned here:
     the nginx route alone would have left that open.
   * An nginx /tdarr/ route carried a comment claiming "parent server block
     enforces auth_basic". No such directive exists: it was public.
+
+QFLX-97 then took the TCP port away entirely: the slot shares one network
+namespace with every tenant, so 127.0.0.1 was reachable by ~150 other uids.
+Tdarr now listens on a unix socket in a 0700 dir and tdarr-uid-relay holds the
+old address (tests/unit/test_tdarr_uid_relay.py).
 
 The patch fixtures below are literal fragments of the vendor file. Keeping them
 literal is the point: if the patch script's needles drift from these, the test
@@ -63,11 +68,47 @@ def _code(path: str) -> str:
     )
 
 
-def test_every_listener_is_pinned_to_loopback():
+_OLD = "/*QFLIX-LOOPBACK-BIND*/'127.0.0.1',"
+# The QFLX-96 form of servers.js, which is what the live box carries today.
+_QFLX96 = _VENDOR.replace("(serverPort,function(){", "(serverPort," + _OLD + "function(){").replace(
+    "(webUIPort,function(){", "(webUIPort," + _OLD + "function(){")
+
+
+def test_no_listener_takes_a_tcp_port():
     out = _load().patch_text(_VENDOR)
-    assert "(serverPort,/*QFLIX-LOOPBACK-BIND*/'127.0.0.1',function(){" in out
-    assert "(webUIPort,/*QFLIX-LOOPBACK-BIND*/'127.0.0.1',function(){" in out
-    assert _BIND_SERVER not in out and _BIND_UI not in out
+    assert "['listen'](/*QFLIX-UNIX-SOCKET*/(function(s,n){" in out
+    assert "[o(0x1b4)](/*QFLIX-UNIX-SOCKET*/(function(s,n){" in out
+    assert out.count("QFLIX-UNIX-SOCKET") == 2
+    assert "(serverPort," not in out and "(webUIPort," not in out
+    assert "127.0.0.1'," not in out.replace("value:'127.0.0.1'", "")
+
+
+def test_the_two_listeners_never_share_a_socket_path():
+    """server2 binding tdarr.sock would unlink the main listener's socket."""
+    out = _load().patch_text(_VENDOR)
+    assert "(exports['servers']['server'],'tdarr.sock')" in out
+    assert "(exports[o(0x1cc)]['server2'],'tdarr-webui.sock')" in out
+
+
+def test_socket_dir_is_private_and_must_be_ours():
+    out = _load().patch_text(_VENDOR)
+    assert "mkdirSync(d,{recursive:true,mode:448})" in out  # 448 == 0o700
+    assert "f.chmodSync(d,448)" in out
+    assert "t.uid!==process.getuid()" in out and "throw new Error" in out
+    assert "'/run/user/'+process.getuid()+'/qflix-tdarr'" in out
+
+
+def test_remote_address_stays_loopback_for_tdarr():
+    """nodeRelay stores remoteAddress on the node record; a unix socket has
+    none. Everything on the socket came through the relay from 127.0.0.1."""
+    out = _load().patch_text(_VENDOR)
+    assert "defineProperty(c,'remoteAddress',{value:'127.0.0.1'" in out
+    assert "if(!s.__qflixRA){s.__qflixRA=1;" in out, "restartServer must not stack listeners"
+
+
+def test_a_qflx96_box_migrates_to_the_same_text_as_a_vendor_box():
+    mod = _load()
+    assert mod.patch_text(_QFLX96) == mod.patch_text(_VENDOR)
 
 
 def test_self_redirect_is_gated_on_the_ports_actually_differing():
@@ -95,10 +136,9 @@ def test_refuses_a_file_it_does_not_recognise(needle):
 
 def test_refuses_a_partially_patched_file():
     mod = _load()
-    half = mod.patch_text(_VENDOR).replace(
-        "(webUIPort,/*QFLIX-LOOPBACK-BIND*/'127.0.0.1',function(){",
-        "(webUIPort,function(){",
-    ).replace(_BIND_UI, "changed-upstream")
+    full = mod.patch_text(_VENDOR)
+    i = full.index("[o(0x1b4)](/*QFLIX-UNIX-SOCKET*/")
+    half = full[:i] + "[o(0x1b4)](changed-upstream" + full[full.index("function(){", i + 40):]
     with pytest.raises(mod.PatchError):
         mod.patch_text(half)
 
@@ -110,7 +150,7 @@ def test_apply_backs_up_before_writing_and_keeps_the_mode(tmp_path):
     mod = _load()
 
     assert mod.apply(str(target), stamp="20261102T000000Z") is True
-    assert "QFLIX-LOOPBACK-BIND" in target.read_text(encoding="utf-8")
+    assert "QFLIX-UNIX-SOCKET" in target.read_text(encoding="utf-8")
     baks = list(tmp_path.glob("servers.js.qflix-bak-*"))
     assert [b.name for b in baks] == ["servers.js.qflix-bak-20261102T000000Z"]
     assert baks[0].read_text(encoding="utf-8") == _VENDOR
@@ -164,7 +204,7 @@ def test_apply_all_patches_both_files_with_one_stamp(tmp_path):
 
     assert mod.apply_all(str(tmp_path), stamp="20261103T000000Z") == [
         "servers.js", "mainApi.js"]
-    assert "QFLIX-LOOPBACK-BIND" in (tmp_path / "servers.js").read_text(encoding="utf-8")
+    assert "QFLIX-UNIX-SOCKET" in (tmp_path / "servers.js").read_text(encoding="utf-8")
     assert "QFLIX-WEBUI-SHARED-IO" in (tmp_path / "mainApi.js").read_text(encoding="utf-8")
     assert (tmp_path / "mainApi.js.qflix-bak-20261103T000000Z").read_text(
         encoding="utf-8") == _MAINAPI
@@ -174,14 +214,27 @@ def test_apply_all_patches_both_files_with_one_stamp(tmp_path):
 
 
 def test_apply_all_patches_only_what_is_missing(tmp_path):
-    """The live box today: servers.js already carries edits 1-3, mainApi.js is
-    vendor. Only mainApi.js may be rewritten or backed up."""
+    """A box with servers.js fully patched and mainApi.js vendor: only
+    mainApi.js may be rewritten or backed up."""
     mod = _load()
     (tmp_path / "servers.js").write_text(mod.patch_text(_VENDOR), encoding="utf-8")
     (tmp_path / "mainApi.js").write_text(_MAINAPI, encoding="utf-8")
     assert mod.apply_all(str(tmp_path), stamp="20261103T000000Z") == ["mainApi.js"]
     assert [p.name for p in tmp_path.glob("*.qflix-bak-*")] == [
         "mainApi.js.qflix-bak-20261103T000000Z"]
+
+
+def test_apply_all_migrates_the_qflx96_box(tmp_path):
+    """The live box on 2026-11-03: servers.js in the QFLX-96 loopback form,
+    mainApi.js already patched. Only servers.js changes, with a backup."""
+    mod = _load()
+    (tmp_path / "servers.js").write_text(_QFLX96, encoding="utf-8")
+    (tmp_path / "mainApi.js").write_text(mod.patch_text(_MAINAPI, mod.MAINAPI_EDITS),
+                                         encoding="utf-8")
+    assert mod.apply_all(str(tmp_path), stamp="20261103T000000Z") == ["servers.js"]
+    assert (tmp_path / "servers.js.qflix-bak-20261103T000000Z").read_text(
+        encoding="utf-8") == _QFLX96
+    assert "QFLIX-LOOPBACK-BIND" not in (tmp_path / "servers.js").read_text(encoding="utf-8")
 
 
 def test_apply_all_writes_nothing_if_either_file_is_unrecognised(tmp_path):
@@ -238,26 +291,31 @@ def test_installer_verify_fails_closed_on_public_exposure():
     assert "die " in code[code.index("/tdarr/"):]
 
 
-def test_installer_polls_the_bind_and_names_the_two_faults_apart():
+def test_installer_polls_the_start_and_names_the_faults_apart():
     """One sample ~15s after the restart raced starts measured at 52-124s on
-    this box and died "bound to '', not loopback" on a good install."""
+    this box. The poll waits for Tdarr on its own socket, ONE remote session."""
     code = _code(_INSTALL)
-    verify = code[code.index("BIND=$(sshm"):]
+    verify = code[code.index("UP=$(sshm"):]
     assert "seq 1 60" in verify and "sleep 3" in verify
-    assert '[ -n "$BIND" ] || die "tdarr not listening' in verify
-    assert '[ "$BIND" = "127.0.0.1:${SERVER_PORT}" ] || die "tdarr listening on' in verify
-    # The poll is ONE remote session, not an SSH connection per tick.
-    assert verify.count("sshm ") == 1 or verify.index("ROUTE=") > verify.index("sleep 3")
+    assert "--unix-socket" in verify.split("\n", 1)[0]
+    assert '[ "$UP" = up ] || die "tdarr not answering on its unix socket' in verify
+    assert '[ -n "$BIND" ] || die "nothing listening' in verify
+    assert '[ "$BIND" = "127.0.0.1:${SERVER_PORT} " ] || die' in verify
+    assert '[ "$OWNER" = "${RELAY_PID} " ] || die' in verify
+    assert '[ "${TCP_TDARR:-1}" = 0 ] || die' in verify
+    assert '[ "$MODE" = 700 ] || die' in verify
 
 
-def test_smoke_asserts_the_bind_not_just_the_marker():
+def test_smoke_asserts_the_running_processes_not_just_the_marker():
     """The marker says the file was edited; only `ss` says the running process
     took it, and a Tdarr restart is what makes the two agree."""
     src = _read(_SMOKE)
-    assert "QFLIX-LOOPBACK-BIND" in src
+    assert "QFLIX-UNIX-SOCKET" in src
     assert "tdarr-loopback-bound" in src
     assert "tdarr-no-public-route" in src
-    assert "ss -ltn" in src
+    assert "ss -ltn" in src and "tdarr-uid-relay.service" in src
+    assert "grep -c '\\\"Tdarr_'" in src  # no Tdarr-owned TCP listener
+    assert "tdarr-relay-uid-gate" in src and "tdarr-uid-relay.py --selftest" in src
 
 
 def test_smoke_speaks_socket_io_to_webui():
