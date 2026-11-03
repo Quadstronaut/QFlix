@@ -167,10 +167,10 @@ scpm_to "$HERE/../ops/tdarr-port-drain.sh"     '~/scripts/ops/tdarr-port-drain.s
 scpm_to "$HERE/../ops/ffmpeg-threadcap-shim.sh" '~/scripts/ops/ffmpeg-threadcap-shim.sh' >/dev/null
 sshm 'chmod +x ~/scripts/ops/tdarr-port-drain.sh ~/scripts/ops/ffmpeg-threadcap-shim.sh'
 
-# 6a2: the uid relay (QFLX-97), BEFORE the restart in 6d that moves Tdarr onto
-# its unix socket, so the TCP address is never left without its gatekeeper for
-# longer than the relay's bind retry. Writes the relay unit and the Wants=
-# drop-ins for both Tdarr units; never restarts Tdarr itself.
+# 6a2: the uid relay (QFLX-97), BEFORE step 6d moves Tdarr onto its unix
+# socket. Writes tdarr-uid-relay.socket (systemd holds the port) and .service,
+# plus Wants= drop-ins for both Tdarr units; never touches Tdarr itself. While
+# Tdarr still holds the port it installs without starting, and 6d hands over.
 bash "$HERE/50d-tdarr-uid-relay.sh"
 
 # 6b: server unit.
@@ -285,7 +285,13 @@ UNIT
 
 systemctl --user daemon-reload
 systemctl --user enable tdarr-server.service tdarr-node.service
-systemctl --user restart tdarr-server.service
+# Stop, take the port, start (QFLX-97). A Tdarr still on the QFLX-96 TCP bind
+# holds 127.0.0.1:<port> until it stops; the relay socket takes it the moment
+# it is free, before the patched Tdarr comes up on its unix socket. On a box
+# already moved over, the socket start is a no-op and this is a plain restart.
+systemctl --user stop tdarr-server.service
+systemctl --user start tdarr-uid-relay.socket tdarr-uid-relay.service
+systemctl --user start tdarr-server.service
 sleep 5
 systemctl --user restart tdarr-node.service
 NODEUNIT
@@ -342,9 +348,16 @@ UP=$(sshm "for _ in \$(seq 1 60); do curl -sfm 5 --unix-socket ${SOCK_DIR}/tdarr
 BIND=$(sshm "ss -ltnH 'sport = :${SERVER_PORT}' | awk '{print \$4}' | sort -u | tr '\n' ' '" || true)
 [ -n "$BIND" ] || die "nothing listening on :${SERVER_PORT} — tdarr-uid-relay is down; check ~/.apps/tdarr/logs/relay.log"
 [ "$BIND" = "127.0.0.1:${SERVER_PORT} " ] || die "listening on '${BIND}', not 127.0.0.1 only"
+# The fd is shared by the systemd user manager (tdarr-uid-relay.socket) and the
+# relay it was passed to; nobody else may hold it.
 OWNER=$(sshm "ss -ltnpH 'sport = :${SERVER_PORT}' | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' '" || true)
 RELAY_PID=$(sshm 'systemctl --user show -p MainPID --value tdarr-uid-relay.service' || true)
-[ "$OWNER" = "${RELAY_PID} " ] || die "port :${SERVER_PORT} owned by pid '${OWNER}', not tdarr-uid-relay (${RELAY_PID}) — is 50a applied and tdarr-server restarted?"
+MGR_PID=$(sshm "ps -o ppid= -p '${RELAY_PID:-0}' | tr -d ' '" || true)
+[ "$(sshm 'systemctl --user is-active tdarr-uid-relay.socket' || true)" = active ] || die "tdarr-uid-relay.socket is not active — the port is not held by systemd"
+case " $OWNER" in *" ${RELAY_PID} "*) ;; *) die "port :${SERVER_PORT} owned by pid '${OWNER}', not tdarr-uid-relay (${RELAY_PID}) — is 50a applied and tdarr-server restarted?" ;; esac
+for P in $OWNER; do
+  [ "$P" = "$RELAY_PID" ] || [ "$P" = "$MGR_PID" ] || die "port :${SERVER_PORT} also held by pid $P, which is neither the relay nor its systemd manager"
+done
 TCP_TDARR=$(sshm "ss -ltnpH | grep -c '\"Tdarr_' || true" || true)
 [ "${TCP_TDARR:-1}" = 0 ] || die "a Tdarr process still owns a TCP listener — is 50a applied and tdarr-server restarted?"
 MODE=$(sshm "stat -c %a ${SOCK_DIR}" || true)

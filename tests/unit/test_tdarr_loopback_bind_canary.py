@@ -30,6 +30,7 @@ REPO = Path(__file__).resolve().parents[2]
 CANARY = REPO / "scripts" / "canaries" / "tdarr-loopback-bind.sh"
 PORT = 40999      # fixture port, not the live one
 RELAY_PID = 4321
+MANAGER_PID = 1777   # the systemd user manager holding tdarr-uid-relay.socket
 
 posix = pytest.mark.skipif(os.name != "posix", reason="uids and file modes")
 
@@ -52,9 +53,11 @@ def test_body_survives_the_remote_quoting():
     assert "\\" not in body
 
 
-def _ss(addr, pid=RELAY_PID, comm="python3"):
-    return 'LISTEN 0      128        %s      0.0.0.0:*    users:(("%s",pid=%d,fd=6))' % (
-        addr, comm, pid)
+def _ss(addr, pid=RELAY_PID, comm="python3", manager=MANAGER_PID, extra=""):
+    users = '("%s",pid=%d,fd=3)' % (comm, pid)
+    if manager:
+        users += ',("systemd",pid=%d,fd=41)' % manager
+    return 'LISTEN 0      128        %s      0.0.0.0:*    users:(%s%s)' % (addr, users, extra)
 
 
 RELAY_CODE = "# relay code fixture\n"
@@ -62,7 +65,7 @@ RELAY_CODE = "# relay code fixture\n"
 
 def _hb(**kw):
     hb = {"pid": RELAY_PID, "ts": int(time.time()), "allow_uid": os.getuid() if os.name == "posix" else 0,
-          "refuse_own": False, "selftest": "pass", "accepted": 3, "refused_foreign": 1,
+          "refuse_own": False, "selftest": "pass", "listen_held_by": "systemd", "accepted": 3, "refused_foreign": 1,
           "refused_lookup": 0, "code_sha256": hashlib.sha256(RELAY_CODE.encode()).hexdigest()}
     hb.update(kw)
     return hb
@@ -103,6 +106,7 @@ def _run(tmp_path, *, ss_lines=None, ss_all=None, servers_js="x/*QFLIX-UNIX-SOCK
         "QFLIX_CANARY_TDARR_LB_SOCK_DIR": str(sock_dir),
         "QFLIX_CANARY_TDARR_LB_STATE": str(state),
         "QFLIX_CANARY_TDARR_LB_RELAY_PID": str(relay_pid),
+        "QFLIX_CANARY_TDARR_LB_MANAGER_PID": str(MANAGER_PID),
         "QFLIX_CANARY_TDARR_LB_RELAY": relay,
         "HOME": str(tmp_path),
         "PATH": "",
@@ -142,7 +146,7 @@ def test_any_non_loopback_listener_is_red(tmp_path, addr):
 @posix
 def test_tdarr_back_on_tcp_is_red(tmp_path):
     """A reverted servers.js + restart: Tdarr itself on 127.0.0.1:port."""
-    line = _ss("127.0.0.1:%d" % PORT, pid=999, comm="Tdarr_Server")
+    line = _ss("127.0.0.1:%d" % PORT, pid=999, comm="Tdarr_Server", manager=0)
     r = _run(tmp_path, ss_lines=[line])
     assert r.returncode == 1
     assert "STAGE=tdarr-port-not-relay" in r.stderr
@@ -157,6 +161,23 @@ def test_squatter_with_invisible_pid_is_red(tmp_path):
 
 
 @posix
+def test_an_extra_holder_beside_the_relay_is_red(tmp_path):
+    line = _ss("127.0.0.1:%d" % PORT, extra=',("x",pid=5555,fd=9)')
+    r = _run(tmp_path, ss_lines=[line])
+    assert r.returncode == 1
+    assert "STAGE=tdarr-port-not-relay" in r.stderr
+
+
+@posix
+def test_relay_that_bound_the_port_itself_is_red(tmp_path):
+    """Without the socket unit a relay restart frees the port for a squatter."""
+    r = _run(tmp_path, ss_lines=[_ss("127.0.0.1:%d" % PORT, manager=0)],
+             hb=_hb(listen_held_by="self"))
+    assert r.returncode == 1
+    assert "STAGE=tdarr-relay-port-not-held" in r.stderr
+
+
+@posix
 def test_relay_unit_not_running_is_red(tmp_path):
     r = _run(tmp_path, relay_pid=0)
     assert r.returncode == 1
@@ -166,7 +187,7 @@ def test_relay_unit_not_running_is_red(tmp_path):
 @posix
 def test_any_tdarr_tcp_listener_is_red(tmp_path):
     """Tdarr listening on some OTHER TCP port is just as reachable."""
-    extra = _ss("127.0.0.1:45555", pid=999, comm="Tdarr_Server")
+    extra = _ss("127.0.0.1:45555", pid=999, comm="Tdarr_Server", manager=0)
     r = _run(tmp_path, ss_all=[_ss("127.0.0.1:%d" % PORT), extra])
     assert r.returncode == 1
     assert "STAGE=tdarr-own-tcp-listener" in r.stderr and "45555" in r.stderr

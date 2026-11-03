@@ -723,14 +723,14 @@ apps:
       # recognise, which fails the step BEFORE the restart. Shipped to the box
       # by 240-maintenance-install.sh.
       # QFLX-97: 50a now moves Tdarr onto a unix socket, so the restart that
-      # follows leaves 127.0.0.1:<serverPort> to tdarr-uid-relay. The second
-      # step makes sure the relay is there to take it: a missing unit fails
-      # the upgrade before the restart, instead of after it with Tdarr
-      # reachable by nobody. (The relay is not part of the vendor tree, so the
-      # unzip never touches it.)
+      # follows leaves 127.0.0.1:<serverPort> to tdarr-uid-relay (its .socket
+      # unit holds the port, the .service forwards). The second step makes
+      # sure both are there: a missing unit fails the upgrade before the
+      # restart, instead of after it with Tdarr reachable by nobody. (The relay
+      # is not part of the vendor tree, so the unzip never touches it.)
       post_steps:
         - "python3 ~/scripts/configure/50a-tdarr-server-loopback.py"
-        - "systemctl --user start tdarr-uid-relay.service"
+        - "systemctl --user start tdarr-uid-relay.socket tdarr-uid-relay.service"
       version_pin:
         source: versions.env
         key: TDARR_VERSION

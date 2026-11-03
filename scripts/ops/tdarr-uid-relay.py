@@ -37,6 +37,15 @@ is read from the client before the decision, so a refused peer has spoken to
 nothing but accept(2) and a netlink query about itself. Refusals are reset
 (SO_LINGER 0) rather than closed politely.
 
+THE PORT IS NEVER FREE
+----------------------
+In production the listening socket belongs to tdarr-uid-relay.socket: the
+systemd user manager binds 127.0.0.1:<serverPort> and passes the fd in
+(LISTEN_FDS). A relay crash or restart therefore queues connections instead of
+freeing the port, which matters because whoever holds that port is "the
+server" to our Tdarr Node, and the Node runs the server's flows as our uid.
+Without systemd (tests, --port) the relay binds the port itself.
+
 HEARTBEAT
 ---------
 Every HEARTBEAT_S the relay re-proves its own lookup (an ephemeral loopback
@@ -295,6 +304,27 @@ def listen_socket(port: int, host: str = LISTEN_HOST, wait_s: float = 0) -> sock
             time.sleep(0.2)
 
 
+def systemd_listen_socket(port: int, env=None) -> socket.socket | None:
+    """The listening socket systemd passed us (tdarr-uid-relay.socket), if any.
+
+    Socket activation is why the port is never free between relay restarts:
+    the user manager holds 127.0.0.1:<port> for as long as it runs, so a
+    crash-and-restart of this process queues connections instead of leaving
+    the port for a co-tenant to bind and impersonate Tdarr to our Node. The
+    fd is checked to be exactly the address we expect before it is used.
+    """
+    env = os.environ if env is None else env
+    if env.get("LISTEN_PID") != str(os.getpid()) or env.get("LISTEN_FDS") != "1":
+        return None
+    s = socket.socket(fileno=3)
+    if (s.family, s.type) != (socket.AF_INET, socket.SOCK_STREAM) or \
+            s.getsockname()[:2] != (LISTEN_HOST, port):
+        s.detach()
+        raise SystemExit("tdarr-uid-relay: systemd passed an unexpected socket, refusing")
+    s.setblocking(False)
+    return s
+
+
 def own_lookup_selftest(lookup=peer_uid) -> str:
     """Prove, in THIS process, that the kernel still reports our uid for a peer."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -347,17 +377,20 @@ async def serve(args) -> int:
     rdir = runtime_dir()
     upstream = args.upstream or os.path.join(rdir, SOCK_NAME)
     port = args.port or read_port(args.conf)
-    lsock = listen_socket(port, wait_s=BIND_WAIT_S)
+    lsock = None if args.port else systemd_listen_socket(port)
+    held_by = "systemd" if lsock is not None else "self"
+    if lsock is None:
+        lsock = listen_socket(port, wait_s=BIND_WAIT_S)
     relay = Relay(upstream, refuse_own=args.test_refuse_own)
     server = await asyncio.start_server(relay.handle, sock=lsock)
-    relay.log(f"tdarr-uid-relay: {LISTEN_HOST}:{port} -> {upstream}, "
+    relay.log(f"tdarr-uid-relay: {LISTEN_HOST}:{port} ({held_by}) -> {upstream}, "
               f"allow uid {relay.allowed_uid}{' [TEST: refusing own uid]' if args.test_refuse_own else ''}")
     hb = None
     # A test instance must never overwrite the live relay's heartbeat.
     if not args.no_state and not (args.test_refuse_own and not args.state):
         state_path = args.state or os.path.join(rdir, STATE_NAME)
         base = {"pid": os.getpid(), "started": int(time.time()), "listen": f"{LISTEN_HOST}:{port}",
-                "upstream": upstream, "allow_uid": relay.allowed_uid,
+                "upstream": upstream, "allow_uid": relay.allowed_uid, "listen_held_by": held_by,
                 "refuse_own": relay.refuse_own, "code_sha256": code_sha256()}
         hb = asyncio.ensure_future(_heartbeat(relay, state_path, base))
     async with server:

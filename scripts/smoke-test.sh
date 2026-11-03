@@ -450,14 +450,21 @@ if [ -n "$TD_PORT" ]; then
   TD_BIND=$(sshm "ss -ltnH 'sport = :$TD_PORT' 2>/dev/null | awk '{print \$4}' | sort -u | tr '\n' ' '" 2>/dev/null)
   TD_OWNER=$(sshm "ss -ltnpH 'sport = :$TD_PORT' 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' '" 2>/dev/null)
   TD_RELAY=$(sshm 'systemctl --user show -p MainPID --value tdarr-uid-relay.service 2>/dev/null' 2>/dev/null)
+  TD_MGR=$(sshm "ps -o ppid= -p '${TD_RELAY:-0}' 2>/dev/null | tr -d ' '" 2>/dev/null)
+  TD_SOCKU=$(sshm 'systemctl --user is-active tdarr-uid-relay.socket 2>/dev/null' 2>/dev/null)
   TD_TCP=$(sshm "ss -ltnpH 2>/dev/null | grep -c '\"Tdarr_'" 2>/dev/null)
   TD_MODE=$(sshm 'stat -c %a "/run/user/$(id -u)/qflix-tdarr" 2>/dev/null' 2>/dev/null)
+  # The port's fd is shared by the relay and the systemd manager holding it
+  # for tdarr-uid-relay.socket; any other holder is a squatter or Tdarr.
+  TD_OWNERS_OK=no
+  case " $TD_OWNER" in *" $TD_RELAY "*) TD_OWNERS_OK=yes ;; esac
+  for P in $TD_OWNER; do [ "$P" = "$TD_RELAY" ] || [ "$P" = "$TD_MGR" ] || TD_OWNERS_OK=no; done
   if [ "${TD_BIND_MARK:-0}" -ge 2 ] && [ "$TD_BIND" = "127.0.0.1:$TD_PORT " ] \
-     && [ -n "$TD_RELAY" ] && [ "$TD_RELAY" != 0 ] && [ "$TD_OWNER" = "$TD_RELAY " ] \
+     && [ -n "$TD_RELAY" ] && [ "$TD_RELAY" != 0 ] && [ "$TD_OWNERS_OK" = yes ] && [ "$TD_SOCKU" = active ] \
      && [ "${TD_TCP:-1}" = 0 ] && [ "$TD_MODE" = 700 ]; then
     record "tdarr-loopback-bound" pass "Tdarr on a 0700 unix socket, no Tdarr TCP listener, 127.0.0.1:$TD_PORT held by tdarr-uid-relay"
   else
-    record "tdarr-loopback-bound" fail "port '${TD_BIND:-none}' owner '${TD_OWNER:-?}' relay '${TD_RELAY:-?}' tdarr-tcp ${TD_TCP:-?} dir ${TD_MODE:-?} marker ${TD_BIND_MARK:-0} — re-run 50-tdarr-install.sh, then restart tdarr-server"
+    record "tdarr-loopback-bound" fail "port '${TD_BIND:-none}' owner '${TD_OWNER:-?}' relay '${TD_RELAY:-?}' socket ${TD_SOCKU:-?} tdarr-tcp ${TD_TCP:-?} dir ${TD_MODE:-?} marker ${TD_BIND_MARK:-0} — re-run 50-tdarr-install.sh, then restart tdarr-server"
   fi
   # QFLX-97: the relay's uid gate, end to end on throwaway sockets: our uid is
   # forwarded, a foreign uid and a failed kernel lookup are refused without

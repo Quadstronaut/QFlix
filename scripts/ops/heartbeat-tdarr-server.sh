@@ -15,9 +15,12 @@ set -uo pipefail
 # process it does not touch.
 SOCK="/run/user/$(id -u)/qflix-tdarr/tdarr.sock"
 if curl -sfm 5 --unix-socket "$SOCK" -o /dev/null http://localhost/api/v2/status; then
-  systemctl --user is-active --quiet tdarr-uid-relay.service && exit 0
+  systemctl --user is-active --quiet tdarr-uid-relay.socket \
+    && systemctl --user is-active --quiet tdarr-uid-relay.service && exit 0
   # Restart=always normally beats this tick; reaching here means it did not.
+  # `start` on the socket is a no-op while it holds the port, and never frees it.
   logger -t tdarr-server-heartbeat "tdarr up but tdarr-uid-relay inactive — restarting the relay"
+  systemctl --user start tdarr-uid-relay.socket
   systemctl --user restart tdarr-uid-relay.service
   exit 0
 fi

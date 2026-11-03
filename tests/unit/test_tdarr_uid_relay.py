@@ -268,6 +268,54 @@ def test_socket_path_matches_the_one_50a_patches_in():
 
 
 # ------------------------------------------------------------------ deployment
+def test_systemd_holds_the_port_not_the_relay():
+    """A relay restart must queue connections, never free the port: whoever
+    holds it is "the server" to our Node."""
+    src = _read(_50D)
+    assert "ListenStream=127.0.0.1:${PORT}" in src
+    assert "ReusePort=yes" not in src and "Accept=yes" not in src
+    assert "Requires=tdarr-uid-relay.socket" in src
+    assert "WantedBy=sockets.target" in src
+    # The socket is restarted ONLY when its own unit changed.
+    i = src.index("systemctl --user restart tdarr-uid-relay.socket")
+    assert 'if [ "$SOCK_CHANGED" = 1 ]' in src[i - 300:i]
+
+
+def test_50d_never_starts_the_socket_while_tdarr_holds_the_port():
+    src = _read(_50D)
+    guard = src.index("grep -q '\"Tdarr_'")
+    assert guard < src.index("systemctl --user start tdarr-uid-relay.socket")
+    assert "exit 0" in src[guard:guard + 400]
+
+
+TAKE_FD = """
+import importlib.util, os, socket, sys
+spec = importlib.util.spec_from_file_location("r", sys.argv[1])
+r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(1); port = s.getsockname()[1]
+os.dup2(s.fileno(), 3)
+env = {"LISTEN_PID": str(os.getpid()), "LISTEN_FDS": "1"}
+assert r.systemd_listen_socket(port, {"LISTEN_PID": "1", "LISTEN_FDS": "1"}) is None
+got = r.systemd_listen_socket(port, env)
+assert got.getsockname()[1] == port
+try:
+    r.systemd_listen_socket(port + 1, env)
+    print("ACCEPTED-WRONG")
+except SystemExit:
+    print("OK")
+"""
+
+
+@linux_only
+def test_takes_the_listening_fd_from_systemd():
+    """Run in a child so fd 3 can be a real listening socket, as systemd
+    passes it. The wrong address is refused, not silently served."""
+    import subprocess
+    out = subprocess.run([sys.executable, "-c", TAKE_FD, _RELAY],
+                         capture_output=True, text=True, timeout=30)
+    assert out.stdout.strip() == "OK", out.stderr
+
+
 def test_unit_restarts_forever_and_runs_the_shipped_file():
     src = _read(_50D)
     assert "Restart=always" in src
@@ -280,9 +328,9 @@ def test_relay_never_stops_with_tdarr():
     """Wants=, never BindsTo=/PartOf=/Requires=: a Tdarr restart must not take
     the port's gatekeeper down with it (a squatter could take the port)."""
     src = _read(_50D)
-    for bad in ("BindsTo=", "PartOf=", "Requires=tdarr"):
+    for bad in ("BindsTo=", "PartOf=", "Requires=tdarr-server", "Requires=tdarr-node"):
         assert bad not in src
-    assert src.count("Wants=tdarr-uid-relay.service") == 2
+    assert src.count("Wants=tdarr-uid-relay.socket tdarr-uid-relay.service") == 2
 
 
 def test_50d_refuses_code_whose_selftest_fails_before_installing_it():
@@ -299,7 +347,18 @@ def test_50d_backs_up_what_it_replaces():
 def test_installer_runs_the_relay_before_the_restart_that_needs_it():
     code = "\n".join(ln for ln in _read(_INSTALL).splitlines() if not ln.lstrip().startswith("#"))
     assert code.index("50d-tdarr-uid-relay.sh") < code.index(
-        "systemctl --user restart tdarr-server.service")
+        "systemctl --user start tdarr-server.service")
+
+
+def test_installer_hands_the_port_over_with_no_gap():
+    """Stop Tdarr (it may still hold the port on TCP), let the socket unit take
+    the port, THEN start the patched Tdarr on its unix socket."""
+    code = "\n".join(ln for ln in _read(_INSTALL).splitlines() if not ln.lstrip().startswith("#"))
+    stop = code.index("systemctl --user stop tdarr-server.service")
+    take = code.index("systemctl --user start tdarr-uid-relay.socket tdarr-uid-relay.service")
+    start = code.index("systemctl --user start tdarr-server.service")
+    assert stop < take < start
+    assert "systemctl --user restart tdarr-server.service" not in code
 
 
 def test_zip_swap_post_step_starts_the_relay():
@@ -308,13 +367,15 @@ def test_zip_swap_post_step_starts_the_relay():
     steps = manifest.load(os.path.join(_REPO, "manifest", "apps.yaml")).app(
         "tdarr-server").upgrade.raw["post_steps"]
     assert steps == ["python3 ~/scripts/configure/50a-tdarr-server-loopback.py",
-                     "systemctl --user start tdarr-uid-relay.service"]
+                     "systemctl --user start tdarr-uid-relay.socket tdarr-uid-relay.service"]
 
 
 def test_heartbeat_judges_tdarr_on_its_socket_and_heals_the_relay_separately():
     src = _read(_HEARTBEAT)
     assert "--unix-socket" in src
     assert "systemctl --user restart tdarr-uid-relay.service" in src
+    assert "systemctl --user start tdarr-uid-relay.socket" in src
+    assert "systemctl --user restart tdarr-uid-relay.socket" not in src
     # The relay branch must exit before the Tdarr restart path is reachable.
     relay = src.index("systemctl --user restart tdarr-uid-relay.service")
     assert src.index("exit 0", relay) < src.index("systemctl --user restart tdarr-server.service")

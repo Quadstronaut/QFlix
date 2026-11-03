@@ -279,7 +279,7 @@ def test_installer_patches_before_the_restart_that_loads_it():
     code = _code(_INSTALL)
     assert "50a-tdarr-server-loopback.py" in code
     assert code.index("50a-tdarr-server-loopback.py") < code.index(
-        "systemctl --user restart tdarr-server.service"
+        "systemctl --user start tdarr-server.service"
     )
 
 
@@ -301,7 +301,9 @@ def test_installer_polls_the_start_and_names_the_faults_apart():
     assert '[ "$UP" = up ] || die "tdarr not answering on its unix socket' in verify
     assert '[ -n "$BIND" ] || die "nothing listening' in verify
     assert '[ "$BIND" = "127.0.0.1:${SERVER_PORT} " ] || die' in verify
-    assert '[ "$OWNER" = "${RELAY_PID} " ] || die' in verify
+    assert 'case " $OWNER" in *" ${RELAY_PID} "*)' in verify
+    assert '[ "$P" = "$RELAY_PID" ] || [ "$P" = "$MGR_PID" ] || die' in verify
+    assert "is-active tdarr-uid-relay.socket" in verify
     assert '[ "${TCP_TDARR:-1}" = 0 ] || die' in verify
     assert '[ "$MODE" = 700 ] || die' in verify
 
