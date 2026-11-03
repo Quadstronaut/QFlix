@@ -142,7 +142,7 @@ def test_flow_graph_is_still_whole(flow):
         targets.add(e["target"])
     for n in flow["flowPlugins"]:
         if n["pluginName"] in ("checkVideoCodec", "checkAudioCodec",
-                               "checkStreamProperty"):
+                               "checkStreamProperty", "checkFileExtension"):
             assert handles.get(n["id"]) == {"1", "2"}, \
                 "%s does not wire both handles" % n["id"]
     assert len({e["id"] for e in flow["flowEdges"]}) == len(flow["flowEdges"]), \
