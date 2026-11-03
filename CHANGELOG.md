@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-11-03 - MP4s keep their container; Verity un-parked, Kuma 126 green (QFLX-97)
+
+`Canary Tdarr Transcode Error` (Kuma 126) had been red for ~167h on one file,
+`Verity (2026) WEBDL-1080p.mp4`. The file and the canary were fine; the flow was
+wrong.
+
+- **Cause.** Both ffmpeg paths in `qflix-direct-play-fix` ended in an
+  unconditional `Set Container mkv`, with every source stream copied. Matroska
+  cannot hold `mov_text` subtitles or the MP4 chapter text track (`bin_data`),
+  so the muxer aborted: `[matroska] Subtitle codec 94213 is not supported`.
+  Verity was the only one of the library's MP4s with non-AAC audio (EAC3), so
+  it was the only one that ever reached ffmpeg.
+- **Fix.** New `checkFileExtension` gates `qfxCheckMp4Audio` / `qfxCheckMp4Video`
+  ("mp4") between Ensure-AAC and Set-Container. An MP4 goes straight to Execute
+  and keeps its own container, gaining only the AAC track (or the h264 re-encode
+  on the video path). Every other container takes the old mkv path unchanged.
+  `forceConform` was rejected: it would have deleted all 36 subtitle tracks.
+  Pinned by `tests/unit/test_tdarr_flow_mp4_keep_container.py`.
+- **Proof before the real file.** A harness ran Tdarr's own installed plugin JS
+  and ffmpeg 5.0.1 over the flow graph on a 60s clip cut from Verity with the
+  same 40-stream layout. The old flow reproduced the matroska error. The new flow
+  returned every source stream plus AAC. A 10s HEVC MP4 took the video path and
+  stayed MP4 (h264 High@4.1, yuv420p). An MKV control still went to mkv.
+- **Live.** The flow was pushed through Tdarr's `cruddb` API (in memory) and
+  `50b`'s `ensure_flow` (on disk plus the sidecar). The repo, memory, disk and
+  sidecar are byte-identical, with no restart. A verified backup was taken.
+  Plex and Tautulli showed 0 sessions. Only Verity was requeued, and it took
+  `.. qfxEnsureAacAudio > qfxCheckMp4Audio > qfxExecuteAudio > qfxReplace` in
+  3m45s.
+- **Result.** Before: 40 streams (h264, eac3 5.1, 36 mov_text, bin_data chapter
+  track, mjpeg cover), 8,909,853,470 B. After: all 40 still present, with every
+  subtitle language in order, plus `aac` 2.0 128k, plus a regenerated chapter
+  track, 9,027,303,132 B. Duration is identical (7256.834s) and the 9 chapters
+  are identical. Plex re-analysed it as mp4, h264, eac3+aac, with 36 subtitles
+  and 9 chapters, and its decision is `directplay`. Kuma 126 went green on a
+  manual canary run (0 parked beyond 48h).
+- **Known side effect.** ffmpeg writes a fresh chapter track from the parsed
+  chapters and keeps the original as a plain data stream (re-tagged `gpmd`). The
+  output therefore has one extra data stream. Plex ignores data streams.
+- **Other MP4s.** All 14 MP4 records were dry-run through the old and new flows
+  with the real plugins. The 12 h264+AAC files route identically and never reach
+  ffmpeg (`qfxCheckAac > qfxReplace`). Verity now does the same, so there is no
+  re-process loop.
+- **Open: `Primetime (2026) WEBDL-1080p.mp4`** arrived about 1h before the
+  deploy with the same shape (h264, eac3, mov_text, cover) and hit the old flow.
+  It is in `Transcode error` inside the 48h grace. The new flow routes it down
+  the keep-container path, so a one-file requeue fixes it. It is left for the
+  operator because this change was scoped to Verity.
+- **Rollback.** Revert the commit and redeploy the flow the same way (`cruddb`
+  update, then `ensure_flow`). Copies of the pre-change live flow are kept on
+  the box in the QFLX-97 proof directory.
 ## 2026-11-03 - Only our uid can reach Tdarr (QFLX-97)
 
 QFLX-96 took Tdarr off the internet, but `127.0.0.1` on this slot is shared by
