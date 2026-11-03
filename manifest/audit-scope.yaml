@@ -517,6 +517,25 @@ residuals:
       `backup-untracked.ps1 -VerifyOnly` fails on a receipt older than 48h, so
       anything that asks — including tests/local-llm/test-backup-untracked.ps1
       on this workstation — sees the staleness.
+  - id: R-TDARR-COTENANT-LOOPBACK
+    owner: operator
+    review_cadence_days: 30
+    # Registered 2026-11-02 (QFLX-96 review F3). Measured that day: the slot
+    # shares the host network namespace with every tenant (148 listening uids,
+    # 947 loopback listeners across 110 uids, 109 of them not ours), and Tdarr
+    # answers keyless on 127.0.0.1. No per-uid filter is readable (netfilter is
+    # root-only), so reachability by a co-tenant is inferred, not demonstrated.
+    last_reviewed: 2026-11-02
+    residual: >-
+      Tdarr 2.17.01 has no working auth (`auth`/`seededApiKey` inert, keyless
+      /api/v2/cruddb answers 200), and QFLX-96's loopback bind only removed the
+      INTERNET path. 127.0.0.1 on this Ultra.cc slot is shared with every other
+      tenant's uid, so any of them can read or rewrite Tdarr's DB and reach
+      its plugin and ffmpeg-argv routes as our uid. Closing it means either a
+      unix socket in a 0700 dir behind a uid-checked loopback relay, or an
+      upgrade to a Tdarr with a working auth gate (2.91.01+; 2.18-2.90 gate on
+      originalUrl and look bypassable). Both are operator decisions, not yet
+      taken; until one lands this row keeps the risk open, dated and owned.
   - id: R-WORKSTATION-OLLAMA-SERVICE
     owner: operator
     review_cadence_days: 90
