@@ -21,9 +21,31 @@ Both closed live, with one Tdarr restart while no worker was busy.
 - **Docs:** the claim that the outer nginx applies htpasswd was false and is
   corrected. Each route is only as private as the app behind it.
 
-Not fixed: the `/webui` socket namespace answers `Invalid namespace`, so UI panels
-fed by it are empty. Reproduced with no tunnel in the path; cause not established.
-Loopback is shared with other tenants on this slot.
+- **UI panels fill (2026-11-03).** The `/webui` socket.io namespace lived on a
+  second server bound to `webUIPort`, which never listens while it equals
+  `serverPort` (a swallowed `EADDRINUSE` on 18 of 18 starts since 2026-08-20,
+  before and after the loopback patch). The browser got `Invalid namespace`, so
+  Nodes, OS Mem, Libraries and Flows were empty. 50a's fourth edit, in
+  `srcug/api/mainApi.js`, registers `/webui` on the one listener when the ports
+  are equal. Applied live with one Tdarr restart at 0 busy workers; the node
+  re-registered and a browser over the tunnel shows every panel. Smoke gains
+  `tdarr-webui-namespace`, a real socket.io handshake: nothing spoke socket.io
+  before, which is how this survived.
+- **Upgrades keep the patch.** The tdarr-server `zip_swap` unzipped the vendor
+  files and restarted with no re-patch, while its loopback health probe passed
+  on a wildcard bind. 50a is now its post step (shipped by 240), and a refusal
+  stops the upgrade before the restart.
+- **A scheduled bind watcher.** New hourly canary `tdarr-loopback-bind` (Kuma
+  "Canary Tdarr Loopback Bind") asserts the live listener is `127.0.0.1` only
+  and servers.js still carries the patch. Every other Tdarr probe asks over
+  loopback, which a wildcard listener also answers, so a revert stayed green
+  until someone ran smoke by hand. Ships with the next 240 deploy.
+- **Installer verify polls the bind** for up to 180s instead of sampling once
+  ~15s after the restart (starts here have taken 52-124s), and says "not
+  listening" apart from "listening on the wrong address".
+
+Loopback is shared with other tenants on this slot: see residual
+R-TDARR-COTENANT-LOOPBACK.
 
 ## 2026-10-10 - Postgres goes native by dump/restore; the upgrade child is retired (QFLX-37)
 

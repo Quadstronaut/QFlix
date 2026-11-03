@@ -72,15 +72,21 @@ listener is the only access control. The server is patched to bind `127.0.0.1`
 (`scripts/configure/50a-tdarr-server-loopback.py`); there is no nginx route.
 
 - **Never add a `/tdarr/` route.** It would publish an unauthenticated admin API.
-- **After a re-unzip or upgrade,** re-run `50-tdarr-install.sh`. The vendor file
-  comes back with a wildcard bind and a redirect that loops on any `Host`
-  carrying the port (a tunnel always sends one). Smoke `tdarr-loopback-bound`
-  catches it.
-- **Limits of the UI:** status tables work, but Nodes, OS Mem, Libraries and
-  Flows render empty, because the server answers `Invalid namespace` for the
-  `/webui` socket they read from. That is server-side, reproduced on raw loopback
-  with no tunnel in the path; cause not established. For node state, use
-  `curl http://localhost:42018/api/v2/get-nodes`.
+- **After a re-unzip or upgrade,** re-run `50-tdarr-install.sh`. The vendor
+  files come back with a wildcard bind, a redirect that loops on any `Host`
+  carrying the port (a tunnel always sends one), and no `/webui` socket on the
+  one port. A `manitoba-maint upgrade`/`downgrade` re-applies 50a itself (the
+  tdarr-server `zip_swap` post step) before it restarts the unit. Smoke
+  `tdarr-loopback-bound` and `tdarr-webui-namespace` catch a miss.
+- **The UI's live panels** (Nodes, OS Mem, Libraries, Flows) read from the
+  `/webui` socket.io namespace. Stock 2.17.01 registers it on a second listener
+  for `webUIPort`; with `webUIPort == serverPort` that listener dies on a
+  swallowed `EADDRINUSE` at every start, so the browser got `Invalid namespace`
+  and the panels stayed empty while REST answered. 50a's fourth edit puts
+  `/webui` on the one listener. Live 2026-11-03: the handshake answers
+  `40/webui`, and a browser over the tunnel shows the node, OS Mem, all five
+  libraries and the flow. The first load reads ~9.8k DB records over the
+  socket, which took about two minutes on this box.
 
 ## Maintainerr caveat (retired)
 
