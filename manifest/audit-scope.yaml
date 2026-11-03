@@ -495,7 +495,13 @@ residuals:
   - id: R-WORKSTATION-SCHEDULED-TASKS
     owner: operator
     review_cadence_days: 90
-    last_reviewed: 2026-08-03
+    # Reviewed 2026-11-02: both tasks Ready, enabled, hourly, 0 missed. REA last
+    # ok verdict 18:09 -07:00 (conhost rc says nothing; audit.log does); backup
+    # receipt status=ok 02:05Z, 0 problems. Lapsed at 91d (audit exit 2). Stays
+    # open: REA's hard dependency \QFlix\Manitoba SSH Tunnel is unnamed here and
+    # can show Running with no listener; TaskScheduler/Operational log is off;
+    # \Archangel\Shield\Shield-Maintenance (not QFlix) has failed since 09-15.
+    last_reviewed: 2026-11-02
     residual: >-
       The Windows scheduled tasks behind the workstation half of the system.
       Their existence, schedule and enabled-state are live registry state, and a
@@ -511,6 +517,25 @@ residuals:
       `backup-untracked.ps1 -VerifyOnly` fails on a receipt older than 48h, so
       anything that asks — including tests/local-llm/test-backup-untracked.ps1
       on this workstation — sees the staleness.
+  - id: R-TDARR-COTENANT-LOOPBACK
+    owner: operator
+    review_cadence_days: 30
+    # Registered 2026-11-02 (QFLX-96 review F3). Measured that day: the slot
+    # shares the host network namespace with every tenant (148 listening uids,
+    # 947 loopback listeners across 110 uids, 109 of them not ours), and Tdarr
+    # answers keyless on 127.0.0.1. No per-uid filter is readable (netfilter is
+    # root-only), so reachability by a co-tenant is inferred, not demonstrated.
+    last_reviewed: 2026-11-02
+    residual: >-
+      Tdarr 2.17.01 has no working auth (`auth`/`seededApiKey` inert, keyless
+      /api/v2/cruddb answers 200), and QFLX-96's loopback bind only removed the
+      INTERNET path. 127.0.0.1 on this Ultra.cc slot is shared with every other
+      tenant's uid, so any of them can read or rewrite Tdarr's DB and reach
+      its plugin and ffmpeg-argv routes as our uid. Closing it means either a
+      unix socket in a 0700 dir behind a uid-checked loopback relay, or an
+      upgrade to a Tdarr with a working auth gate (2.91.01+; 2.18-2.90 gate on
+      originalUrl and look bypassable). Both are operator decisions, not yet
+      taken; until one lands this row keeps the risk open, dated and owned.
   - id: R-WORKSTATION-OLLAMA-SERVICE
     owner: operator
     review_cadence_days: 90

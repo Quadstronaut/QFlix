@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Phase 27 + 28 — Tdarr Server + Node install. Idempotent.
 #  - Tdarr_Updater downloads pinned Server + Node binaries
-#  - Server config: 127.0.0.1:<port>, auth=true, seeded API key
+#  - Server patched to bind loopback only (50a-tdarr-server-loopback.py)
+#  - Server config: 127.0.0.1:<port>, seeded API key
 #  - Node config: points at local Server
 #  - user-systemd services for both
-#  - nginx /tdarr/ fragment (htpasswd-protected by parent server block)
+#  - NO public route: Tdarr is tunnel-only (QFLX-96), any legacy one is retired
 #  - heartbeat crons for both
 #  - Phases 29-31 (library config + workflows + ops cleanup) stay operator-deferred
 set -euo pipefail
@@ -27,10 +28,13 @@ TDARR_VER="2.17.01"
 # Hard requirement — placeholder must never reach a live curl/nginx.
 PUBLIC_HOST="$(secret_read seedbox.host)"
 
-# ── Step 1: claim port (Tdarr 2.17 serves Web UI + API + Node-protocol on
-#    a single serverPort. webUIPort is NOT bound, but the server's
-#    internal redirect builder defaults to :8265 unless we set it — so
-#    pin it to the same value as serverPort below). ──────────────────────
+# ── Step 1: claim port. ONE port for UI + API + Node protocol, because
+#    webUIPort == serverPort below. Stock Tdarr 2.17 assumes two: the second
+#    listener (server2) dies on a swallowed EADDRINUSE at every start, and it
+#    was NOT harmless — the UI's /webui socket.io namespace lived only there,
+#    so the browser got "Invalid namespace" and every panel stayed empty. 50a
+#    moves /webui onto the one listener and gates the self-redirect the same
+#    equality would loop on. ───────────────────────────────────────────────
 claim_port tdarr.server_port
 SERVER_PORT=$(secret_read tdarr.server_port)
 log_info "tdarr port (UI + API + Node) = $SERVER_PORT"
@@ -92,7 +96,17 @@ print("QFlix worker1.js null-guard applied")
 PY
 INSTSCRIPT
 
+# ── Step 3b: loopback bind, self-redirect gate, shared /webui (QFLX-96) ─────
+# A re-unzip above restores the vendor files (servers.js, mainApi.js), so this
+# runs on every install and before the restart in step 6d that loads it. Its
+# own header says why. manifest/apps.yaml runs the same file as the
+# tdarr-server zip_swap post step, so lifecycle upgrades keep it too.
+sshm 'python3 -' < "$HERE/50a-tdarr-server-loopback.py"
+
 # ── Step 4: server config ──────────────────────────────────────────────────
+# `auth` and `seededApiKey` are INERT on 2.17.01: a keyless /api/v2/cruddb
+# answers 200. `serverIP` does not bind anything either. Do not read this file
+# as a security control; the loopback bind from step 3b is the only one.
 sshm "cat > ~/.apps/tdarr/configs/Tdarr_Server_Config.json" <<JSON
 {
   "serverIP": "127.0.0.1",
@@ -281,41 +295,47 @@ sshm 'chmod +x ~/scripts/ops/heartbeat-tdarr-*.sh
  echo "*/5 * * * * /home/quadstronaut/scripts/ops/heartbeat-tdarr-node.sh") | crontab -'
 log_info "heartbeat crons installed"
 
-# ── Step 8: nginx /tdarr/ fragment (Tdarr supports webUIBaseUrl natively) ──
-sshm "PORT=${SERVER_PORT} bash -s" <<'NGXSCRIPT'
-cat > ~/.apps/nginx/proxy.d/tdarr.conf <<NGX
-location /tdarr/ {
-    # Parent server block enforces auth_basic. Tdarr's own auth=true is
-    # defense in depth on the API itself.
-    proxy_pass http://127.0.0.1:${PORT}/;
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-    proxy_set_header X-Forwarded-Prefix /tdarr;
-
-    # WebSockets — Tdarr Web UI streams job updates live
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_read_timeout 1d;
-    proxy_send_timeout 1d;
-    proxy_buffering off;
-}
-NGX
+# ── Step 8: no public route (QFLX-96) ──────────────────────────────────────
+# This step used to write proxy.d/tdarr.conf, with a comment claiming the parent
+# server block enforced auth_basic. It never did: nothing in nginx.conf or
+# sites-available/default sets auth_basic for it, so the fragment published the
+# admin UI and API to anyone. Tdarr has no auth of its own, so there is nothing
+# for a route to lean on. Reach it over the tunnel (docs/internal-app-tunnels.md).
+# Retiring here, not just no longer writing, means a re-run cleans an old slot.
+sshm 'bash -s' <<'NGXSCRIPT'
+set -euo pipefail
+F=~/.apps/nginx/proxy.d/tdarr.conf
+[ -e "$F" ] || exit 0
+mv "$F" "$F.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 /usr/sbin/nginx -p ~/.apps/nginx/ -c nginx.conf -t
 systemctl --user reload nginx
 NGXSCRIPT
-log_info "nginx /tdarr/ fragment live"
+log_info "no public /tdarr/ route"
 
 # ── Step 9: verify (allow server boot time) ────────────────────────────────
+# Fails closed. A public 200 from either path is an open admin API, so it stops
+# the install; the bind check is what proves the running process took the patch.
 sleep 5
-HTPW=$(secret_read htpasswd.password)
-HTTP=$(curl -sk -m 10 -u "quadstronaut:${HTPW}" -o /dev/null -w '%{http_code}' "https://${PUBLIC_HOST}/tdarr/api/v2/status")
-case "$HTTP" in
-  200|401) log_info "✓ tdarr reachable through nginx (HTTP $HTTP — 401 is OK if Tdarr auth gates the path)" ;;
-  *)       log_warn "tdarr returned HTTP $HTTP — give it 60s and try again, or check ~/.apps/tdarr/logs/server.err" ;;
-esac
+LOOPBACK=$(sshm "curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:${SERVER_PORT}/api/v2/status" || true)
+[ "$LOOPBACK" = 200 ] || log_warn "tdarr loopback HTTP $LOOPBACK — give it 60s, or check ~/.apps/tdarr/logs/server.err"
 
-log_info "Phase 27+28 complete — Tdarr Server + Node running. Web UI: https://${PUBLIC_HOST}/tdarr/"
+# Polled, not sampled once. Only ~15s separate the step 6d restart from here,
+# and this box has measured 10.8s, 52s, 54s and (first start after a reboot)
+# ~124s from start to listen. One sample turned a slow-but-good start into
+# "bound to '', not loopback" AFTER every step had applied. The loop runs on the
+# box in ONE session (no SSH per tick) and stops at the first listener, so a
+# normal start costs nothing. "Not listening" and "listening somewhere else"
+# are different faults with different fixes, so they die with different words.
+BIND=$(sshm "for _ in \$(seq 1 60); do B=\$(ss -ltnH 'sport = :${SERVER_PORT}' | awk '{print \$4}' | sort -u); [ -n \"\$B\" ] && break; sleep 3; done; printf '%s' \"\$B\"" || true)
+[ -n "$BIND" ] || die "tdarr not listening on :${SERVER_PORT} after 180s — a start problem, not a bind-address one; check ~/.apps/tdarr/logs/server.err"
+[ "$BIND" = "127.0.0.1:${SERVER_PORT}" ] || die "tdarr listening on '${BIND}', not loopback only — is 50a applied and the server restarted?"
+
+ROUTE=$(curl -sk -m 10 -o /dev/null -w '%{http_code}' "https://${PUBLIC_HOST}/tdarr/api/v2/status" || true)
+[ "$ROUTE" != 200 ] || die "tdarr answers 200 on the public route"
+
+DIRECT=$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://${PUBLIC_HOST}:${SERVER_PORT}/api/v2/status" || true)
+[ "$DIRECT" != 200 ] || die "tdarr answers 200 on the public port"
+log_info "✓ tdarr loopback-only (route HTTP $ROUTE, port HTTP $DIRECT)"
+
+log_info "Phase 27+28 complete — Tdarr Server + Node running. Web UI over the tunnel: http://localhost:${SERVER_PORT}/"
 log_info "Phase 29-31 (library config + workflows + ops) stay operator-deferred — see docs/operator-deferred.md"

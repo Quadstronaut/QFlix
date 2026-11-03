@@ -439,7 +439,61 @@ if [ -n "$TD_PORT" ]; then
   else
     record "tdarr-worker-patch" fail "patch missing — re-run 50-tdarr-install.sh"
   fi
+  # QFLX-96: Tdarr has no working auth, so its listener is its only access
+  # control. Three separate questions, because each failure looks fine to the
+  # other two: was the file patched (a re-unzip reverts it), did the RUNNING
+  # process take it (ss, not the marker), and is a route back in nginx.
+  TD_BIND_MARK=$(sshm "grep -c QFLIX-LOOPBACK-BIND ~/.apps/tdarr/Tdarr_Server/srcug/api/servers.js 2>/dev/null" 2>/dev/null)
+  TD_BIND=$(sshm "ss -ltnH 'sport = :$TD_PORT' 2>/dev/null | awk '{print \$4}' | sort -u | tr '\n' ' '" 2>/dev/null)
+  if [ "${TD_BIND_MARK:-0}" -ge 1 ] && [ "$TD_BIND" = "127.0.0.1:$TD_PORT " ]; then
+    record "tdarr-loopback-bound" pass "listening on 127.0.0.1 only"
+  else
+    record "tdarr-loopback-bound" fail "bind '${TD_BIND:-none}' marker ${TD_BIND_MARK:-0} — re-run 50-tdarr-install.sh, then restart tdarr-server"
+  fi
+  # QFLX-96: the UI's socket.io namespace really answers. /webui lives on a
+  # second socket.io server attached to server2, which never binds while
+  # webUIPort == serverPort; the browser then gets "Invalid namespace" and every
+  # panel (Nodes, OS Mem, Libraries, Flows) stays empty while REST is fine. 18
+  # starts went by with nothing noticing, because nothing here spoke socket.io.
+  # This does what the browser does over engine.io v4 polling: open, CONNECT
+  # /webui, read the reply, close. 40/webui = connected, 44/webui = refused.
+  # Never CONNECTs /node: its register middleware has side effects.
+  TD_WEBUI=$(sshm "python3 - $TD_PORT" 2>/dev/null <<'PY'
+import json, sys, urllib.request
+base = "http://127.0.0.1:%s/socket.io/?EIO=4&transport=polling" % sys.argv[1]
+def rq(url, data=None):
+    hdr = {"Content-Type": "text/plain;charset=UTF-8"} if data else {}
+    with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=hdr), timeout=8) as r:
+        return r.read().decode("utf-8", "replace")
+try:
+    url = base + "&sid=" + json.loads(rq(base)[1:])["sid"]
+    rq(url, b"40/webui,")
+    reply = rq(url)
+    try:
+        rq(url, b"1")  # engine.io close: the server drops the socket now
+    except Exception:
+        pass
+except Exception as exc:
+    print("error-" + type(exc).__name__)
+    sys.exit(0)
+print("connected" if "40/webui," in reply else
+      "invalid-namespace" if "44/webui," in reply else "unexpected")
+PY
+)
+  case "$TD_WEBUI" in
+    connected) record "tdarr-webui-namespace" pass "/webui socket.io namespace connects" ;;
+    invalid-namespace) record "tdarr-webui-namespace" fail "/webui Invalid namespace — UI panels empty; re-run 50-tdarr-install.sh, then restart tdarr-server" ;;
+    *) record "tdarr-webui-namespace" fail "/webui handshake ${TD_WEBUI:-no answer}" ;;
+  esac
+  TD_ROUTE=$(curl -sk -m 10 -o /dev/null -w '%{http_code}' "https://${PUBLIC_HOST}/tdarr/api/v2/status" 2>/dev/null)
+  case "$TD_ROUTE" in
+    401|403|404) record "tdarr-no-public-route" pass "public /tdarr/ denied (HTTP $TD_ROUTE)" ;;
+    *)           record "tdarr-no-public-route" fail "public /tdarr/ HTTP ${TD_ROUTE:-none}, expected a denial" ;;
+  esac
 else
+  record "tdarr-loopback-bound" skip "no server_port"
+  record "tdarr-webui-namespace" skip "no server_port"
+  record "tdarr-no-public-route" skip "no server_port"
   record "tdarr-up" skip "no server_port"
   record "tdarr-node-registered" skip "no server_port"
   record "tdarr-flow-engaged" skip "no server_port"
