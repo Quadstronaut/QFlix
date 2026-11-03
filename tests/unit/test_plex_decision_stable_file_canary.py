@@ -130,7 +130,13 @@ class Fixture:
                 return _dt.datetime.min
 
         body = "\n".join(sorted(self.lines, key=_key))
-        self.log.write_text(body + "\n", encoding="utf-8", newline="\n")
+        data = (body + "\n").encode("utf-8")
+        if getattr(self, "binary_line", None):
+            # Spliced in right after the first (oldest) line so the log stays
+            # chronological; see test_a_binary_byte_in_the_log_*.
+            first, rest = data.split(b"\n", 1)
+            data = first + b"\n" + self.binary_line + b"\n" + rest
+        self.log.write_bytes(data)
 
     def run(self, **env_overrides):
         self.write()
@@ -324,6 +330,50 @@ def test_bad_numeric_config_is_cannot_assert(tmp_path):
             assert res.returncode == 2, (knob, bad, res.stdout, res.stderr)
             assert _stage(res) == "plex-canary-bad-config", (knob, bad)
             assert "PASS" not in res.stdout, (knob, bad)
+
+
+# The live line that turned this canary red on 2026-11-02 (QFLX-97): Plex logs
+# the raw bytes of a request it could not parse. A NUL or any invalid-UTF-8 byte
+# makes GNU grep classify the WHOLE log as binary and print only "binary file
+# matches", so `grep -o` found no timestamp (plex-log-unparseable) and `grep -F`
+# would have handed the loop that notice instead of the failure lines.
+BINARY_LINE = (b"Sep 09, 2026 05:00:00.000 [139926999395128] ERROR - Error parsing "
+               b"HTTP request: \x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03\x00\xff\xfe")
+
+
+def test_a_binary_byte_in_the_log_does_not_blind_the_freshness_probe(tmp_path):
+    f = Fixture(tmp_path)
+    f.binary_line = BINARY_LINE
+    res = f.run()
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    assert _stage(res) is None
+    assert "PASS" in res.stdout
+    assert _bucket(res, "seen") == 0
+
+
+def test_a_binary_byte_in_the_log_does_not_hide_a_finding(tmp_path):
+    """The worse half of the bug: the decision-failure scan. Without -a it
+    yields 'binary file matches', the loop sees no failure line, and a stable
+    unplayable file reads as seen=0 and a clean PASS."""
+    f = Fixture(tmp_path)
+    f.binary_line = BINARY_LINE
+    f.add(f.episode("Frieren", exists=True, mtime="2026-09-08 00:00:00"))
+    res = f.run()
+    assert res.returncode == 1, (res.stdout, res.stderr)
+    assert _stage(res) == "plex-decision-stable-file"
+    assert _bucket(res, "seen") == 1
+
+
+def test_every_log_read_is_binary_safe():
+    """Pin the mechanism, not just the two call sites: any future grep of $LOG
+    without -a reopens the same hole."""
+    code = [ln for ln in SCRIPT.read_text(encoding="utf-8").splitlines()
+            if not ln.lstrip().startswith("#")]
+    reads = [ln for ln in code if re.search(r"\bgrep\b", ln) and '"$LOG"' in ln]
+    assert reads, "no grep of the PMS log found -- the canary changed shape"
+    for ln in reads:
+        flags = re.search(r"\bgrep\s+(-\S+)", ln)
+        assert flags and "a" in flags.group(1), "grep of $LOG without -a: " + ln.strip()
 
 
 def test_unparseable_now_override_is_cannot_assert(tmp_path):
