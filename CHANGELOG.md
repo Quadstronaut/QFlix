@@ -73,6 +73,24 @@ wrong.
   (`cruddb` update, then `ensure_flow`). The files need no rollback, since they
   only gained a stream.
 
+## 2026-11-03 - Plex decision canary reads a log with binary bytes in it (QFLX-97)
+
+`Canary Plex Decision Stable File` had been red since 2026-11-02T14:35Z as
+`plex-log-unparseable`, and Plex was fine. Line 43 of `Plex Media Server.log` is
+an "Error parsing HTTP request" line carrying raw request bytes. One such byte
+makes GNU grep treat the whole file as binary and print only "binary file
+matches".
+
+- **Probe 0** (`grep -oE` for the newest timestamp) found nothing, which is the
+  red.
+- **Probe 1** (`grep -F` for decision failures) was the worse half. It would have
+  fed that notice to the loop instead of the failure lines, so a real finding
+  would have read as `seen=0` and a clean PASS.
+
+Both reads now use `grep -a`. New tests splice a binary line into the fixture
+log. They check that the freshness probe still passes, that a stable unplayable
+file still reds through the binary line, and that every `grep` of `$LOG` carries
+`-a`. All three fail on the old script.
 ## 2026-11-03 - Only our uid can reach Tdarr (QFLX-97)
 
 QFLX-96 took Tdarr off the internet, but `127.0.0.1` on this slot is shared by

@@ -202,8 +202,16 @@ case "x${NOW_EPOCH:-}" in
 esac
 CUTOFF_EPOCH=$(( NOW_EPOCH - WINDOW_H * 3600 ))
 
+# EVERY read of the PMS log uses `grep -a` (QFLX-97). Plex writes raw request
+# bytes into "Error parsing HTTP request" lines, and one NUL or high byte is
+# enough for GNU grep to call the whole file binary. It then prints only
+# "binary file matches": `-o` yields nothing (seen live 2026-11-02, red as
+# plex-log-unparseable for a day) and `-F` yields that notice instead of the
+# matching lines, which would read as seen=0 and a clean PASS. -a treats the
+# log as the text it is. Pinned by tests/unit/test_plex_decision_stable_file_canary.py.
+
 # --- Probe 0: is Plex writing at all? --------------------------------------
-NEWEST=$(grep -oE "$TS_RX" "$LOG" | tail -1)
+NEWEST=$(grep -aoE "$TS_RX" "$LOG" | tail -1)
 if [ -z "$NEWEST" ]; then
   printf 'STAGE=plex-log-unreadable msg=no-timestamped-line-in-%s-cannot-assert\n' "$LOG" >&2
   note "plex-log-unparseable $LOG"; exit 2
@@ -259,7 +267,7 @@ while IFS= read -r ln; do
     # Could not look. NEVER count this as a benign delete.
     UNREACHABLE=$(( UNREACHABLE + 1 ))
   fi
-done < <( grep -F 'Failed to get a decision for: ' "$LOG" )
+done < <( grep -aF 'Failed to get a decision for: ' "$LOG" )
 
 SUMMARY="window=${WINDOW_H}h seen=$SEEN gone=$GONE replaced=$REPLACED unreachable=$UNREACHABLE"
 
