@@ -43,14 +43,17 @@ wrong.
   with the real plugins. The 12 h264+AAC files route identically and never reach
   ffmpeg (`qfxCheckAac > qfxReplace`). Verity now does the same, so there is no
   re-process loop.
-- **Open: `Primetime (2026) WEBDL-1080p.mp4`** arrived about 1h before the
-  deploy with the same shape (h264, eac3, mov_text, cover) and hit the old flow.
-  It is in `Transcode error` inside the 48h grace. The new flow routes it down
-  the keep-container path, so a one-file requeue fixes it. It is left for the
-  operator because this change was scoped to Verity.
-- **Rollback.** Revert the commit and redeploy the flow the same way (`cruddb`
-  update, then `ensure_flow`). Copies of the pre-change live flow are kept on
-  the box in the QFLX-97 proof directory.
+- **`Primetime (2026) WEBDL-1080p.mp4`** arrived about 1h before the deploy
+  with the same shape and hit the old flow. It was fixed the same way, on the
+  operator's instruction, with the same safeguards: probe recorded, verified
+  backup, 0 sessions, one-file requeue, and the same node trail. Before: 5
+  streams (h264, eac3 5.1, 2 mov_text, mjpeg cover), 8,440,657,046 B, 6589.44s.
+  After: all 5 plus `aac` 2.0, 8,544,683,234 B, and the same duration. Plex
+  reports `directplay`. The canary now shows 0 Transcode-error records in total.
+- **Rollback.** Revert the commit and redeploy master's flow JSON the same way
+  (`cruddb` update, then `ensure_flow`). The files need no rollback, since they
+  only gained a stream.
+
 ## 2026-11-03 - Only our uid can reach Tdarr (QFLX-97)
 
 QFLX-96 took Tdarr off the internet, but `127.0.0.1` on this slot is shared by
