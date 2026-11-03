@@ -523,19 +523,43 @@ residuals:
     # Registered 2026-11-02 (QFLX-96 review F3). Measured that day: the slot
     # shares the host network namespace with every tenant (148 listening uids,
     # 947 loopback listeners across 110 uids, 109 of them not ours), and Tdarr
-    # answers keyless on 127.0.0.1. No per-uid filter is readable (netfilter is
-    # root-only), so reachability by a co-tenant is inferred, not demonstrated.
-    last_reviewed: 2026-11-02
+    # answered keyless on 127.0.0.1.
+    # NARROWED 2026-11-03 (QFLX-97): Tdarr has no TCP listener any more. It
+    # listens on a unix socket in /run/user/<uid>/qflix-tdarr (0700), and
+    # tdarr-uid-relay owns 127.0.0.1:<serverPort>, forwarding only peers that
+    # NETLINK_SOCK_DIAG attributes to our uid (fail closed on any lookup
+    # error). Proved live: our uid passes, the relay refuses our own real
+    # connection when told our uid is foreign, and the kernel reports another
+    # tenant's socket with that tenant's uid. The port is held by
+    # tdarr-uid-relay.socket (systemd), not by the relay process. Canary
+    # tdarr-loopback-bind asserts the model hourly.
+    last_reviewed: 2026-11-03
     residual: >-
-      Tdarr 2.17.01 has no working auth (`auth`/`seededApiKey` inert, keyless
-      /api/v2/cruddb answers 200), and QFLX-96's loopback bind only removed the
-      INTERNET path. 127.0.0.1 on this Ultra.cc slot is shared with every other
-      tenant's uid, so any of them can read or rewrite Tdarr's DB and reach
-      its plugin and ffmpeg-argv routes as our uid. Closing it means either a
-      unix socket in a 0700 dir behind a uid-checked loopback relay, or an
-      upgrade to a Tdarr with a working auth gate (2.91.01+; 2.18-2.90 gate on
-      originalUrl and look bypassable). Both are operator decisions, not yet
-      taken; until one lands this row keeps the risk open, dated and owned.
+      Tdarr 2.17.01 still has no working auth; only WHO CAN CONNECT protects
+      it. Since QFLX-97 a co-tenant can no longer connect: Tdarr is on a 0700
+      unix socket and the only TCP door, tdarr-uid-relay, forwards our uid
+      alone, with the port held by the systemd user manager
+      (tdarr-uid-relay.socket) so a relay crash or restart never frees it.
+      What REMAINS: (1) a squatter. A tenant who binds the port before our
+      socket unit does (a box reboot or user-manager restart before
+      sockets.target, or the 50-tdarr-install.sh handover between `stop
+      tdarr-server` and `start tdarr-uid-relay.socket`) keeps it for as long
+      as they like, because the socket unit then FAILS. Since the PR #131
+      review the Tdarr Node REQUIRES that socket, so it does not start and
+      cannot be handed the squatter's flows (with the original Wants= it
+      started anyway and ran them as our uid; reproduced under user systemd).
+      What a winning squatter still gets: a Tdarr outage that lasts until
+      they let go ("Tdarr", "Tdarr Node" and the canary go red), and every
+      script or probe that calls 127.0.0.1:<port> (the pusher probe, the
+      canaries, 50b, the janitors) talking to them instead of Tdarr. Closing
+      it fully needs the port held from before any tenant can run, or a
+      server identity check our clients do not have. (2) Availability: a tenant can
+      flood the relay with connections it refuses; denial of service only.
+      (3) Every process running as OUR uid is trusted by design, so a
+      compromise of any of our apps reaches Tdarr. A Tdarr with a working
+      auth gate (2.91.01+) would cover (1) and (3); that upgrade is its own
+      project (QFLX-97 item 4; the box runs glibc 2.41, so GLIBC is not the
+      blocker).
   - id: R-WORKSTATION-OLLAMA-SERVICE
     owner: operator
     review_cadence_days: 90

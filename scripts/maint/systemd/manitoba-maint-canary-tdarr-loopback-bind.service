@@ -1,5 +1,5 @@
 [Unit]
-Description=Manitoba canary - Tdarr loopback bind (keyless admin API must listen on 127.0.0.1 only, and servers.js must stay patched)
+Description=Manitoba canary - Tdarr reachable by our uid only (unix socket 0700, uid relay owns the port, patches present)
 After=network-online.target
 
 [Service]

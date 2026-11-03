@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Phase 27 + 28 — Tdarr Server + Node install. Idempotent.
 #  - Tdarr_Updater downloads pinned Server + Node binaries
-#  - Server patched to bind loopback only (50a-tdarr-server-loopback.py)
-#  - Server config: 127.0.0.1:<port>, seeded API key
-#  - Node config: points at local Server
+#  - Server patched to listen on a unix socket only (50a-tdarr-server-loopback.py)
+#  - uid relay on 127.0.0.1:<port> -> that socket, our uid only (50d, QFLX-97)
+#  - Server config: <port>, seeded API key
+#  - Node config: points at local Server (through the relay)
 #  - user-systemd services for both
 #  - NO public route: Tdarr is tunnel-only (QFLX-96), any legacy one is retired
 #  - heartbeat crons for both
@@ -96,17 +97,19 @@ print("QFlix worker1.js null-guard applied")
 PY
 INSTSCRIPT
 
-# ── Step 3b: loopback bind, self-redirect gate, shared /webui (QFLX-96) ─────
-# A re-unzip above restores the vendor files (servers.js, mainApi.js), so this
-# runs on every install and before the restart in step 6d that loads it. Its
-# own header says why. manifest/apps.yaml runs the same file as the
-# tdarr-server zip_swap post step, so lifecycle upgrades keep it too.
+# ── Step 3b: unix-socket listener, self-redirect gate, shared /webui ───────
+# (QFLX-96, QFLX-97.) A re-unzip above restores the vendor files (servers.js,
+# mainApi.js), so this runs on every install and before the restart in step 6d
+# that loads it. Its own header says why. manifest/apps.yaml runs the same file
+# as the tdarr-server zip_swap post step, so lifecycle upgrades keep it too.
 sshm 'python3 -' < "$HERE/50a-tdarr-server-loopback.py"
 
 # ── Step 4: server config ──────────────────────────────────────────────────
 # `auth` and `seededApiKey` are INERT on 2.17.01: a keyless /api/v2/cruddb
 # answers 200. `serverIP` does not bind anything either. Do not read this file
-# as a security control; the loopback bind from step 3b is the only one.
+# as a security control; the unix socket from step 3b and the uid relay from
+# step 6a2 are the only ones. serverPort is still the address every client
+# uses: the relay listens on it.
 sshm "cat > ~/.apps/tdarr/configs/Tdarr_Server_Config.json" <<JSON
 {
   "serverIP": "127.0.0.1",
@@ -164,6 +167,12 @@ scpm_to "$HERE/../ops/tdarr-port-drain.sh"     '~/scripts/ops/tdarr-port-drain.s
 scpm_to "$HERE/../ops/ffmpeg-threadcap-shim.sh" '~/scripts/ops/ffmpeg-threadcap-shim.sh' >/dev/null
 sshm 'chmod +x ~/scripts/ops/tdarr-port-drain.sh ~/scripts/ops/ffmpeg-threadcap-shim.sh'
 
+# 6a2: the uid relay (QFLX-97), BEFORE step 6d moves Tdarr onto its unix
+# socket. Writes tdarr-uid-relay.socket (systemd holds the port) and .service,
+# plus Wants= drop-ins for both Tdarr units; never touches Tdarr itself. While
+# Tdarr still holds the port it installs without starting, and 6d hands over.
+bash "$HERE/50d-tdarr-uid-relay.sh"
+
 # 6b: server unit.
 sshm "bash -s" <<'SERVERUNIT'
 set -euo pipefail
@@ -180,9 +189,9 @@ StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
-# serverIP/HOST pin the listener to loopback (nginx fronts it). This lived only
-# on the box until 2026-08-20 — the installer wrote a unit without it, so any
-# re-run silently un-pinned the listener.
+# serverIP/HOST are INERT (Tdarr never reads HOST, and serverIP is only
+# logged); the listener is pinned by the 50a patch, to a unix socket since
+# QFLX-97. Kept so the unit text stays what the box has run since 2026-08-20.
 Environment="HOST=127.0.0.1" "serverIP=127.0.0.1"
 Type=simple
 WorkingDirectory=%h/.apps/tdarr/Tdarr_Server
@@ -276,7 +285,13 @@ UNIT
 
 systemctl --user daemon-reload
 systemctl --user enable tdarr-server.service tdarr-node.service
-systemctl --user restart tdarr-server.service
+# Stop, take the port, start (QFLX-97). A Tdarr still on the QFLX-96 TCP bind
+# holds 127.0.0.1:<port> until it stops; the relay socket takes it the moment
+# it is free, before the patched Tdarr comes up on its unix socket. On a box
+# already moved over, the socket start is a no-op and this is a plain restart.
+systemctl --user stop tdarr-server.service
+systemctl --user start tdarr-uid-relay.socket tdarr-uid-relay.service
+systemctl --user start tdarr-server.service
 sleep 5
 systemctl --user restart tdarr-node.service
 NODEUNIT
@@ -314,28 +329,49 @@ log_info "no public /tdarr/ route"
 
 # ── Step 9: verify (allow server boot time) ────────────────────────────────
 # Fails closed. A public 200 from either path is an open admin API, so it stops
-# the install; the bind check is what proves the running process took the patch.
-sleep 5
-LOOPBACK=$(sshm "curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:${SERVER_PORT}/api/v2/status" || true)
-[ "$LOOPBACK" = 200 ] || log_warn "tdarr loopback HTTP $LOOPBACK — give it 60s, or check ~/.apps/tdarr/logs/server.err"
-
+# the install; the listener checks are what prove the running processes took
+# the patch: Tdarr on its unix socket, and the ONLY TCP listener on the port
+# being the relay.
+#
 # Polled, not sampled once. Only ~15s separate the step 6d restart from here,
 # and this box has measured 10.8s, 52s, 54s and (first start after a reboot)
-# ~124s from start to listen. One sample turned a slow-but-good start into
-# "bound to '', not loopback" AFTER every step had applied. The loop runs on the
-# box in ONE session (no SSH per tick) and stops at the first listener, so a
-# normal start costs nothing. "Not listening" and "listening somewhere else"
+# ~124s from start to listen. One sample turned a slow-but-good start into a
+# false failure AFTER every step had applied. The loop runs on the box in ONE
+# session (no SSH per tick) and stops once Tdarr answers on its socket, so a
+# normal start costs nothing.
+SOCK_DIR='/run/user/$(id -u)/qflix-tdarr'
+UP=$(sshm "for _ in \$(seq 1 60); do curl -sfm 5 --unix-socket ${SOCK_DIR}/tdarr.sock -o /dev/null http://localhost/api/v2/status && { echo up; break; }; sleep 3; done" || true)
+[ "$UP" = up ] || die "tdarr not answering on its unix socket after 180s — a start problem; check ~/.apps/tdarr/logs/server.err"
+
+# "Not listening", "listening somewhere else" and "a Tdarr process owns TCP"
 # are different faults with different fixes, so they die with different words.
-BIND=$(sshm "for _ in \$(seq 1 60); do B=\$(ss -ltnH 'sport = :${SERVER_PORT}' | awk '{print \$4}' | sort -u); [ -n \"\$B\" ] && break; sleep 3; done; printf '%s' \"\$B\"" || true)
-[ -n "$BIND" ] || die "tdarr not listening on :${SERVER_PORT} after 180s — a start problem, not a bind-address one; check ~/.apps/tdarr/logs/server.err"
-[ "$BIND" = "127.0.0.1:${SERVER_PORT}" ] || die "tdarr listening on '${BIND}', not loopback only — is 50a applied and the server restarted?"
+BIND=$(sshm "ss -ltnH 'sport = :${SERVER_PORT}' | awk '{print \$4}' | sort -u | tr '\n' ' '" || true)
+[ -n "$BIND" ] || die "nothing listening on :${SERVER_PORT} — tdarr-uid-relay is down; check ~/.apps/tdarr/logs/relay.log"
+[ "$BIND" = "127.0.0.1:${SERVER_PORT} " ] || die "listening on '${BIND}', not 127.0.0.1 only"
+# The fd is shared by the systemd user manager (tdarr-uid-relay.socket) and the
+# relay it was passed to; nobody else may hold it.
+OWNER=$(sshm "ss -ltnpH 'sport = :${SERVER_PORT}' | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' '" || true)
+RELAY_PID=$(sshm 'systemctl --user show -p MainPID --value tdarr-uid-relay.service' || true)
+MGR_PID=$(sshm "ps -o ppid= -p '${RELAY_PID:-0}' | tr -d ' '" || true)
+[ "$(sshm 'systemctl --user is-active tdarr-uid-relay.socket' || true)" = active ] || die "tdarr-uid-relay.socket is not active — the port is not held by systemd"
+case " $OWNER" in *" ${RELAY_PID} "*) ;; *) die "port :${SERVER_PORT} owned by pid '${OWNER}', not tdarr-uid-relay (${RELAY_PID}) — is 50a applied and tdarr-server restarted?" ;; esac
+for P in $OWNER; do
+  [ "$P" = "$RELAY_PID" ] || [ "$P" = "$MGR_PID" ] || die "port :${SERVER_PORT} also held by pid $P, which is neither the relay nor its systemd manager"
+done
+TCP_TDARR=$(sshm "ss -ltnpH | grep -c '\"Tdarr_' || true" || true)
+[ "${TCP_TDARR:-1}" = 0 ] || die "a Tdarr process still owns a TCP listener — is 50a applied and tdarr-server restarted?"
+MODE=$(sshm "stat -c %a ${SOCK_DIR}" || true)
+[ "$MODE" = 700 ] || die "tdarr socket directory mode '${MODE}', expected 700"
+
+LOOPBACK=$(sshm "curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:${SERVER_PORT}/api/v2/status" || true)
+[ "$LOOPBACK" = 200 ] || die "tdarr via the relay HTTP $LOOPBACK — check ~/.apps/tdarr/logs/relay.log"
 
 ROUTE=$(curl -sk -m 10 -o /dev/null -w '%{http_code}' "https://${PUBLIC_HOST}/tdarr/api/v2/status" || true)
 [ "$ROUTE" != 200 ] || die "tdarr answers 200 on the public route"
 
 DIRECT=$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://${PUBLIC_HOST}:${SERVER_PORT}/api/v2/status" || true)
 [ "$DIRECT" != 200 ] || die "tdarr answers 200 on the public port"
-log_info "✓ tdarr loopback-only (route HTTP $ROUTE, port HTTP $DIRECT)"
+log_info "✓ tdarr on a 0700 unix socket, relay owns 127.0.0.1:${SERVER_PORT} (route HTTP $ROUTE, port HTTP $DIRECT)"
 
-log_info "Phase 27+28 complete — Tdarr Server + Node running. Web UI over the tunnel: http://localhost:${SERVER_PORT}/"
+log_info "Phase 27+28 complete — Tdarr Server + Node running. API/UI: 127.0.0.1:${SERVER_PORT} through tdarr-uid-relay (our uid only)"
 log_info "Phase 29-31 (library config + workflows + ops) stay operator-deferred — see docs/operator-deferred.md"
