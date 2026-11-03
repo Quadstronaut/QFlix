@@ -11,7 +11,7 @@ _One operator. One manifest. One maintenance window. Everything else is wires._
 <p>
   <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-55%2F55_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-30_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
-  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-84%2F84_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-85%2F85_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
   <a href="#notification-channel"><img alt="Discord webhook" src="https://img.shields.io/badge/alerts-Discord_+_@ping-5865F2?style=for-the-badge&labelColor=0a1628&logo=discord&logoColor=white"></a>
 </p>
@@ -65,7 +65,7 @@ The kickoff defines a non-negotiable core. Every other app exists to feed, obser
 | 🟠 Subtitles | **Bazarr** + **Bazarr 2** (anime branch) | One per arr-pair — Bazarr is hard-capped at one Sonarr + one Radarr each, so the second anime instance is a bare-Python install pinned to Bazarr-1's version (`bazarr2-sync.timer`) |
 | 🟠 Retention | **qflix-reaper** | **Per-file 45-day retention** (option D, shipped 2026-09-15): every episode file / movie file is available to members for 45 days from the moment Plex imported it — graded on the Plex **leaf** `addedAt` corroborated by the *arr's `dateAdded` (always the newer; the Plex *container* clock and file mtime are rejected — the container clock deleted Futurama 70 minutes after it was requested on 2026-09-12). Whether a show is airing is not a consideration. Deleting an episode file unmonitors its episode(s) in the same operation so Sonarr never re-grabs what just expired; a series RECORD is removed only when the show has **ended AND holds zero files** and does not carry the `permanent` tag (`scripts/maint/qflix-permanent.py --auto` tags every continuing series; a permanent show keeps its record at zero files so new episodes keep arriving), and the Plex show item is deleted with it (a removed folder is never re-scanned, so refresh+emptyTrash left ghosts). Floor `MIN_FILE_AGE_FLOOR_DAYS=45` is raise-only; a file with no determinable clock is withheld, counted and named. Script-driven (`scripts/maint/qflix-reaper.py`, daily timer, `--max-items 50` shared between file deletes and record removals, audit manifest with `series_removals[]` written before any delete, run lock; the 30%-per-library tripwire is disabled live via the on-box `--max-pct 100` drop-in — operator decision 2026-07-13). Media that can't resolve to a single *arr id is an **orphan** — never deleted, and graced: a fresh orphan reds the run for 24h, then downgrades to a weekly WARN ([2026-07-14 spec](docs/superpowers/specs/2026-07-14-reaper-orphan-grace-design.md)). Seerr reconciliation sweeps every status and clears stuck DELETED seasons so reaped titles are re-requestable; a member's live request on a cleared row is re-created on their behalf (the clear cascades requests — Yellowjackets 2026-09-15), and a row whose requests cannot be read is withheld. Plex-watchlist auto-request is disabled for every member (operator ruling 2026-09-15): requests are made in Seerr, never inferred from a watchlist. Spec: [2026-09-12 per-file retention](docs/superpowers/specs/2026-09-12-reaper-d-per-file-retention-spec.md). Replaced Maintainerr 2026-06-20. |
 
-Surrounding cast (qBittorrent, SABnzbd, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, qflix-dash, Kuma, manitoba-maint, 42 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Download clients are now dual-stack: **torrent** (qBittorrent) and **Usenet** (SABnzbd + NZBgeek indexer + Frugal block account). Full breakdown in [`inventory.md`](inventory.md).
+Surrounding cast (qBittorrent, SABnzbd, Tautulli, Tdarr, Listmonk, qflix-newsletter, Buildarr, Recyclarr, Kometa, qflix-dash, Kuma, manitoba-maint, 43 canaries, python-plexapi venv, postgres, unpackerr, upgradinatorr): same single-source-of-truth manifest, same maintenance window. Download clients are now dual-stack: **torrent** (qBittorrent) and **Usenet** (SABnzbd + NZBgeek indexer + Frugal block account). Full breakdown in [`inventory.md`](inventory.md).
 
 ---
 
@@ -399,7 +399,7 @@ apps/
   smoke-test.sh              # production smoke (~51 checks across the whole stack)
   smoke-test-plex.sh         # Plex-ecosystem-only smoke
   qflix-top.sh               # htop-style CPU/RAM viewer — your components vs other tenants
-  canaries/                  # 42 end-to-end pipeline checks (bash)
+  canaries/                  # 43 end-to-end pipeline checks (bash)
   configure/                 # phased install/configure scripts (numbered)
   install/                   # lower-level installer libs
   lib/                       # shared bash helpers
