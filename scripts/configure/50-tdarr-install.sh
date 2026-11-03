@@ -28,10 +28,13 @@ TDARR_VER="2.17.01"
 # Hard requirement — placeholder must never reach a live curl/nginx.
 PUBLIC_HOST="$(secret_read seedbox.host)"
 
-# ── Step 1: claim port (Tdarr 2.17 serves Web UI + API + Node-protocol on
-#    a single serverPort. webUIPort == serverPort below, so its own listener
-#    dies on a swallowed EADDRINUSE at every start. That is harmless; the
-#    redirect the same equality would loop on is gated by 50a). ───────────
+# ── Step 1: claim port. ONE port for UI + API + Node protocol, because
+#    webUIPort == serverPort below. Stock Tdarr 2.17 assumes two: the second
+#    listener (server2) dies on a swallowed EADDRINUSE at every start, and it
+#    was NOT harmless — the UI's /webui socket.io namespace lived only there,
+#    so the browser got "Invalid namespace" and every panel stayed empty. 50a
+#    moves /webui onto the one listener and gates the self-redirect the same
+#    equality would loop on. ───────────────────────────────────────────────
 claim_port tdarr.server_port
 SERVER_PORT=$(secret_read tdarr.server_port)
 log_info "tdarr port (UI + API + Node) = $SERVER_PORT"
@@ -93,9 +96,10 @@ print("QFlix worker1.js null-guard applied")
 PY
 INSTSCRIPT
 
-# ── Step 3b: loopback bind + self-redirect gate (QFLX-96) ──────────────────
-# A re-unzip above restores the vendor file, so this runs on every install and
-# before the restart in step 6d that loads it. Its own header says why.
+# ── Step 3b: loopback bind, self-redirect gate, shared /webui (QFLX-96) ─────
+# A re-unzip above restores the vendor files (servers.js, mainApi.js), so this
+# runs on every install and before the restart in step 6d that loads it. Its
+# own header says why.
 sshm 'python3 -' < "$HERE/50a-tdarr-server-loopback.py"
 
 # ── Step 4: server config ──────────────────────────────────────────────────

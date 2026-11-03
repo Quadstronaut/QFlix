@@ -35,6 +35,14 @@ _REDIRECT = (
 )
 _VENDOR = f"'use strict';{_REDIRECT}var x;{_BIND_SERVER}y();{_BIND_UI}z();"
 
+# mainApi.js: the second socket.io instance, the one carrying /webui.
+_WEBUI_IO = "sockManager['io']=require(az(0x145))(server2),"
+_MAINAPI = (
+    "'use strict';var servers_1=require(a7r(0x13c));"
+    f"newSocketManager=function(){{var az=a7r;{_WEBUI_IO}"
+    "sockManager['io']['of'](az(0x124))['on'](az(0x1ef),f);}"
+)
+
 
 def _load():
     spec = importlib.util.spec_from_file_location("tdarr_loopback", _PATCH)
@@ -122,6 +130,83 @@ def test_apply_leaves_the_file_alone_on_a_refusal(tmp_path):
     assert not list(tmp_path.glob("servers.js.qflix-bak-*"))
 
 
+def test_webui_shares_the_one_listener_when_the_ports_are_equal():
+    """/webui lives on a second socket.io instance bound to server2, which can
+    never listen while webUIPort == serverPort (EADDRINUSE, swallowed). The
+    browser then gets "Invalid namespace" and every UI panel stays empty."""
+    mod = _load()
+    out = mod.patch_text(_MAINAPI, mod.MAINAPI_EDITS)
+    assert _WEBUI_IO not in out
+    assert "/*QFLIX-WEBUI-SHARED-IO*/" in out
+    # Same comparison as the redirect gate, same config source as servers.js.
+    assert (
+        "String(require('../commonModules/configGetter')['configGetter']('webUIPort'))"
+        "===String(require('../commonModules/configGetter')['configGetter']('serverPort'))"
+    ) in out
+    # Equal ports share ioServer; split ports keep the stock second instance.
+    assert "?servers_1['ioServer']:require(az(0x145))(server2)," in out
+
+
+def test_webui_is_never_repointed_at_server():
+    """A second instance on `server` steals /socket.io/ from ioServer and /node
+    answers "Invalid namespace": the Tdarr Node would drop. Pinned so nobody
+    'simplifies' the fix into that."""
+    mod = _load()
+    out = mod.patch_text(_MAINAPI, mod.MAINAPI_EDITS)
+    assert "(servers_1['servers']['server'])" not in out
+    assert "['server'])" not in out
+
+
+def test_apply_all_patches_both_files_with_one_stamp(tmp_path):
+    (tmp_path / "servers.js").write_text(_VENDOR, encoding="utf-8")
+    (tmp_path / "mainApi.js").write_text(_MAINAPI, encoding="utf-8")
+    mod = _load()
+
+    assert mod.apply_all(str(tmp_path), stamp="20261103T000000Z") == [
+        "servers.js", "mainApi.js"]
+    assert "QFLIX-LOOPBACK-BIND" in (tmp_path / "servers.js").read_text(encoding="utf-8")
+    assert "QFLIX-WEBUI-SHARED-IO" in (tmp_path / "mainApi.js").read_text(encoding="utf-8")
+    assert (tmp_path / "mainApi.js.qflix-bak-20261103T000000Z").read_text(
+        encoding="utf-8") == _MAINAPI
+    # Idempotent across both, with no second backup.
+    assert mod.apply_all(str(tmp_path), stamp="20261103T000001Z") == []
+    assert len(list(tmp_path.glob("*.qflix-bak-*"))) == 2
+
+
+def test_apply_all_patches_only_what_is_missing(tmp_path):
+    """The live box today: servers.js already carries edits 1-3, mainApi.js is
+    vendor. Only mainApi.js may be rewritten or backed up."""
+    mod = _load()
+    (tmp_path / "servers.js").write_text(mod.patch_text(_VENDOR), encoding="utf-8")
+    (tmp_path / "mainApi.js").write_text(_MAINAPI, encoding="utf-8")
+    assert mod.apply_all(str(tmp_path), stamp="20261103T000000Z") == ["mainApi.js"]
+    assert [p.name for p in tmp_path.glob("*.qflix-bak-*")] == [
+        "mainApi.js.qflix-bak-20261103T000000Z"]
+
+
+def test_apply_all_writes_nothing_if_either_file_is_unrecognised(tmp_path):
+    """A loopback bind with a broken UI patch, or the reverse, is a state the
+    script must never leave: validate every file before writing any."""
+    (tmp_path / "servers.js").write_text(_VENDOR, encoding="utf-8")
+    (tmp_path / "mainApi.js").write_text("changed upstream", encoding="utf-8")
+    mod = _load()
+    with pytest.raises(mod.PatchError):
+        mod.apply_all(str(tmp_path), stamp="20261103T000000Z")
+    assert (tmp_path / "servers.js").read_text(encoding="utf-8") == _VENDOR
+    assert not list(tmp_path.glob("*.qflix-bak-*"))
+
+
+def test_main_refuses_with_exit_1(tmp_path, capsys, monkeypatch):
+    """lifecycle runs this as a zip_swap post step: a refusal must be a
+    non-zero exit so the upgrade stops before the restart that loads it."""
+    (tmp_path / "servers.js").write_text("not vendor", encoding="utf-8")
+    (tmp_path / "mainApi.js").write_text(_MAINAPI, encoding="utf-8")
+    mod = _load()
+    monkeypatch.setattr(mod.sys, "argv", ["50a", str(tmp_path)])
+    assert mod.main() == 1
+    assert "REFUSED" in capsys.readouterr().err
+
+
 def test_installer_ships_no_public_route():
     code = _code(_INSTALL)
     assert not re.search(r"location\s+[\^~ ]*/tdarr", code)
@@ -161,3 +246,14 @@ def test_smoke_asserts_the_bind_not_just_the_marker():
     assert "tdarr-loopback-bound" in src
     assert "tdarr-no-public-route" in src
     assert "ss -ltn" in src
+
+
+def test_smoke_speaks_socket_io_to_webui():
+    """REST answered all along while the UI was empty: only a real /webui
+    CONNECT tells the two apart. Both verdict packets must be told apart."""
+    src = _read(_SMOKE)
+    assert "tdarr-webui-namespace" in src
+    assert 'b"40/webui,"' in src
+    assert '"40/webui," in reply' in src and '"44/webui," in reply' in src
+    # /node's register middleware has side effects; the gate must not touch it.
+    assert '"40/node' not in src
