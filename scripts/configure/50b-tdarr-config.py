@@ -742,8 +742,12 @@ def ensure_library_processing() -> int:
 
 
 def patch_server_config() -> bool:
-    """Add webUIPort to Tdarr_Server_Config.json so its self-redirect uses
-    the right port (instead of defaulting to :8265)."""
+    """Pin webUIPort to serverPort: one port is all the tunnel forwards.
+
+    The vendor self-redirect would loop on this equality for any Host carrying
+    the port, which is what a tunnel sends. 50a-tdarr-server-loopback.py gates
+    that redirect (QFLX-96), so this pin depends on that patch being applied.
+    """
     config_path = f"{HOME}/.apps/tdarr/configs/Tdarr_Server_Config.json"
     try:
         with open(config_path, "r", encoding="utf-8") as f:

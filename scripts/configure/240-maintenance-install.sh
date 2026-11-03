@@ -228,6 +228,8 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/systemd/manitoba-maint-canary-bazarr-ingest.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-throttle-integrity.service \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-throttle-integrity.timer \
+    scripts/maint/systemd/manitoba-maint-canary-tdarr-loopback-bind.service \
+    scripts/maint/systemd/manitoba-maint-canary-tdarr-loopback-bind.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-error.service \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-error.timer \
     scripts/maint/systemd/manitoba-maint-canary-tdarr-transcode-stall.service \
@@ -292,6 +294,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/canaries/sab-stall.sh \
     scripts/canaries/bazarr-ingest.sh \
     scripts/canaries/tdarr-throttle-integrity.sh \
+    scripts/canaries/tdarr-loopback-bind.sh \
     scripts/canaries/tdarr-transcode-error.sh \
     scripts/canaries/tdarr-transcode-stall.sh \
     scripts/canaries/arr-plex-parity.sh \
@@ -315,6 +318,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/native_sanitize.py \
     scripts/configure/55-kometa-install.sh \
     scripts/configure/59b-plex-welcome-library.py \
+    scripts/configure/50a-tdarr-server-loopback.py \
     scripts/configure/240-maintenance-install.sh \
     scripts/configure/300-native-unpackerr-install.sh \
     scripts/configure/305-native-sonarr2-install.sh \
@@ -553,6 +557,10 @@ cp -f   "$STG"/scripts/configure/55-kometa-install.sh ~/scripts/configure/55-kom
 # plexapi venv (its docstring + the entitlement runbook). A box-run script is
 # shipped, not hand-copied, or deploy-drift reads it as deploy-unshipped (QFLX-52).
 cp -f   "$STG"/scripts/configure/59b-plex-welcome-library.py ~/scripts/configure/59b-plex-welcome-library.py
+# QFLX-96: the tdarr-server zip_swap post step (manifest/apps.yaml) runs this
+# ON THE BOX after every unzip. Without it resident, a lifecycle upgrade or
+# rollback restores the vendor files and restarts Tdarr onto the wildcard.
+cp -f   "$STG"/scripts/configure/50a-tdarr-server-loopback.py ~/scripts/configure/50a-tdarr-server-loopback.py
 # THIS SCRIPT, copied to the box on purpose. It is workstation-side and nothing
 # on the box ever runs it -- but a copy has been resident under ~/scripts since
 # some past manual scp, and deploy-drift.sh walks EVERY *.sh under ~/scripts and
@@ -883,6 +891,8 @@ for unit in \
     manitoba-maint-canary-bazarr-ingest.timer \
     manitoba-maint-canary-tdarr-throttle-integrity.service \
     manitoba-maint-canary-tdarr-throttle-integrity.timer \
+    manitoba-maint-canary-tdarr-loopback-bind.service \
+    manitoba-maint-canary-tdarr-loopback-bind.timer \
     manitoba-maint-canary-tdarr-transcode-error.service \
     manitoba-maint-canary-tdarr-transcode-error.timer \
     manitoba-maint-canary-tdarr-transcode-stall.service \
@@ -1226,6 +1236,7 @@ systemctl --user enable --now manitoba-maint-canary-bazarr-ingest.timer
 # streaming peak with every monitor green. Asserts the node is INACTIVE during
 # the window; first hour is grace. Detect-only.
 systemctl --user enable --now manitoba-maint-canary-tdarr-throttle-integrity.timer
+systemctl --user enable --now manitoba-maint-canary-tdarr-loopback-bind.timer
 systemctl --user enable --now manitoba-maint-canary-tdarr-transcode-error.timer
 systemctl --user enable --now manitoba-maint-canary-tdarr-transcode-stall.timer
 systemctl --user enable --now manitoba-maint-canary-arr-plex-parity.timer
@@ -1444,7 +1455,7 @@ fi
 # Smoke 9–12: canary timers scheduled
 # Every canary in manifest/apps.yaml must appear here - tests/unit/test_canary_wiring.py
 # asserts that, so a new canary cannot ship with a timer nobody checks.
-for canary in movie anime mobile-ux vlogs-stall vlogs-time-integrity qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched plex-intro-markers newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity seerr-arr-parity seerr-commit-tag; do
+for canary in movie anime mobile-ux vlogs-stall vlogs-time-integrity qbit-stall sab-stall bazarr-ingest tdarr-throttle-integrity tdarr-loopback-bind tdarr-transcode-error tdarr-transcode-stall stream-cap-liveness cron-liveness entitlement-service unstick-rate kometa-libraries stale-log-watchdog kometa-deploy-drift prowlarr-indexer-health prowlarr-app-sync prowlarr-proxy-link-fatal plex-decision-stable-file tautulli-plex-link quota hardlink-integrity library-container-sanity plex-transcoder plex-playback plex-unmatched plex-intro-markers newsletter-digest thread-ceiling tdarr-scanner tdarr-healthcheck ucc-gate-stuck dash-asset-integrity timer-liveness deploy-drift rea-liveness arr-plex-parity seerr-arr-parity seerr-commit-tag; do
   CT=$(remote_count "systemctl --user list-timers manitoba-maint-canary-${canary}.timer --no-pager 2>/dev/null | grep -c manitoba-maint-canary-${canary}.timer")
   if [ "${CT:-0}" -ge 1 ]; then
     gate "canary-timer-${canary}" pass "scheduled"

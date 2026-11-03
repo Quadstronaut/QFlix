@@ -711,6 +711,16 @@ apps:
       kind: zip_swap
       url_template: "https://storage.tdarr.io/versions/{version}/linux_x64/Tdarr_Server.zip"
       target_dir: "~/.apps/tdarr/Tdarr_Server"
+      # QFLX-96: the unzip restores the vendor servers.js and mainApi.js, and
+      # the restart that follows would put Tdarr (no working auth) back on the
+      # wildcard with the UI broken, while the loopback /api/v2/status health
+      # probe still passed and recorded "upgraded ok". 50a re-patches before
+      # that restart, on every path through zip_swap: upgrade, same-version
+      # reinstall, downgrade, rollback. It exits 1 on a layout it does not
+      # recognise, which fails the step BEFORE the restart. Shipped to the box
+      # by 240-maintenance-install.sh.
+      post_steps:
+        - "python3 ~/scripts/configure/50a-tdarr-server-loopback.py"
       version_pin:
         source: versions.env
         key: TDARR_VERSION
@@ -1173,6 +1183,19 @@ canaries:
     # clock, so "Tdarr Node" already owns that direction.
     kuma_monitor: "Canary Tdarr Throttle Integrity"
     script: "scripts/canaries/tdarr-throttle-integrity.sh"
+    schedule: "hourly"
+  tdarr-loopback-bind:
+    # QFLX-96. Tdarr 2.17.01 has no working auth, so the 50a loopback patch on
+    # servers.js is its only access control, and anything that restores the
+    # vendor file (re-unzip, restore, an old zip_swap) puts the admin API back
+    # on the wildcard at the next restart. The "Tdarr" probe and every other
+    # Tdarr canary hit 127.0.0.1, which a wildcard listener also answers, and
+    # no timer runs smoke - so nothing scheduled could see it. Asserts the LIVE
+    # listener (ss) is 127.0.0.1 only AND the file still carries the marker.
+    # Detect-only: re-patching and restarting here would fold an install step
+    # into a check (compartmentalize). Liveness stays "Tdarr"'s job.
+    kuma_monitor: "Canary Tdarr Loopback Bind"
+    script: "scripts/canaries/tdarr-loopback-bind.sh"
     schedule: "hourly"
   bazarr-ingest:
     # Added 2026-08-06. Both Bazarr instances hold a language profile their

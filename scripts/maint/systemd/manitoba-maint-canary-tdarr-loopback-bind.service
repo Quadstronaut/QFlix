@@ -1,0 +1,9 @@
+[Unit]
+Description=Manitoba canary - Tdarr loopback bind (keyless admin API must listen on 127.0.0.1 only, and servers.js must stay patched)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/scripts/maint/manitoba-maint canary push tdarr-loopback-bind
+StandardOutput=journal
+StandardError=journal
