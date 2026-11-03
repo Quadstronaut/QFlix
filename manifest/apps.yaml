@@ -1205,13 +1205,15 @@ canaries:
     # RUNNING relay's heartbeat is fresh / allows only our uid / passed its
     # kernel-lookup selftest / runs the code on disk, and that code refuses a
     # foreign uid (--selftest). The "Tdarr" probe goes THROUGH the relay, so
-    # it reds on a dead relay too, but cannot say why; this does. Every 15 min
-    # because a down relay leaves the port open to a squatter. Detect-only:
+    # it reds on a dead relay within minutes, but cannot say why; this does.
+    # Hourly is enough: tdarr-uid-relay.socket keeps the port held by systemd
+    # while the relay is down, so a dead relay is an outage, not an opening
+    # (and every 15-minute phase collides with an hourly timer). Detect-only:
     # re-patching and restarting here would fold an install step into a check
     # (compartmentalize); heartbeat-tdarr-server.sh restarts a dead relay.
     kuma_monitor: "Canary Tdarr Loopback Bind"
     script: "scripts/canaries/tdarr-loopback-bind.sh"
-    schedule: "every-15min"
+    schedule: "hourly"
   bazarr-ingest:
     # Added 2026-08-06. Both Bazarr instances hold a language profile their
     # config still points at, and hold >0 items whenever their *arr does.

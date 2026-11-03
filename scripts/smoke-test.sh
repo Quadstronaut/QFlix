@@ -446,7 +446,9 @@ if [ -n "$TD_PORT" ]; then
   # TCP listener, the port held by the relay, a 0700 socket dir), does the
   # relay actually refuse a foreign uid, and is a route back in nginx.
   # (Record name kept from QFLX-96 so smoke history stays comparable.)
-  TD_BIND_MARK=$(sshm "grep -c QFLIX-UNIX-SOCKET ~/.apps/tdarr/Tdarr_Server/srcug/api/servers.js 2>/dev/null" 2>/dev/null)
+  # -o | wc -l, not -c: servers.js is minified onto ONE line, and -c counts
+  # lines, so it reads 1 for the two markers 50a writes.
+  TD_BIND_MARK=$(sshm "grep -o QFLIX-UNIX-SOCKET ~/.apps/tdarr/Tdarr_Server/srcug/api/servers.js 2>/dev/null | wc -l" 2>/dev/null)
   TD_BIND=$(sshm "ss -ltnH 'sport = :$TD_PORT' 2>/dev/null | awk '{print \$4}' | sort -u | tr '\n' ' '" 2>/dev/null)
   TD_OWNER=$(sshm "ss -ltnpH 'sport = :$TD_PORT' 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' '" 2>/dev/null)
   TD_RELAY=$(sshm 'systemctl --user show -p MainPID --value tdarr-uid-relay.service 2>/dev/null' 2>/dev/null)

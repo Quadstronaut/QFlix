@@ -68,6 +68,7 @@ import hashlib
 import json
 import os
 import socket
+import stat
 import struct
 import sys
 import tempfile
@@ -375,6 +376,13 @@ def read_port(conf: str) -> int:
 
 async def serve(args) -> int:
     rdir = runtime_dir()
+    # The relay can start before Tdarr has made its directory (it does at
+    # boot, and at cutover). Same rules as 50a's helper: 0700, and ours.
+    os.makedirs(rdir, mode=0o700, exist_ok=True)
+    st = os.lstat(rdir)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise SystemExit(f"tdarr-uid-relay: {rdir} is not our directory, refusing")
+    os.chmod(rdir, 0o700)
     upstream = args.upstream or os.path.join(rdir, SOCK_NAME)
     port = args.port or read_port(args.conf)
     lsock = None if args.port else systemd_listen_socket(port)

@@ -15,12 +15,12 @@
 # Name kept from QFLX-96 because the Kuma monitor and timer carry it.
 #
 # What it asserts, each because the others cannot see it:
-#   1. the ONLY listener on serverPort is 127.0.0.1, held by the relay's
-#      MainPID and the systemd user manager that keeps it for
-#      tdarr-uid-relay.socket (anything else is Tdarr back on TCP, or a
-#      squatter: the Node would hand its jobs to whoever holds the port), and
-#      the relay got it from systemd rather than binding it itself, so a relay
-#      restart never frees it;
+#   1. the ONLY listener on serverPort is 127.0.0.1, its only visible holder
+#      is the relay's MainPID (or its systemd manager, whose /proc entry this
+#      slot hides), tdarr-uid-relay.socket is active on exactly that address,
+#      and the relay took the fd from systemd rather than binding it itself,
+#      so a relay restart never frees it. Anything else is Tdarr back on TCP,
+#      or a squatter: the Node would hand its jobs to whoever holds the port;
 #   2. no Tdarr process owns ANY TCP listener;
 #   3. the socket directory is ours and 0700, and the socket exists;
 #   4. both patch markers are in the files (a reverted file is open at the
@@ -37,8 +37,8 @@
 #
 # Overrides (tests): QFLIX_CANARY_TDARR_LB_CONF, _SERVERS_JS, _MAINAPI_JS,
 # _SS (canned `ss -ltnpH sport = :port`), _SS_ALL (canned `ss -ltnpH`),
-# _RELAY_PID, _MANAGER_PID, _SOCK_DIR, _STATE, _RELAY (script path; "skip"
-# skips 6).
+# _RELAY_PID, _MANAGER_PID, _SOCKET_UNIT (canned `systemctl show` of the
+# socket unit), _SOCK_DIR, _STATE, _RELAY (script path; "skip" skips 6).
 #
 # Lives on the seedbox at ~/scripts/canaries/tdarr-loopback-bind.sh (deployed
 # by 240-maintenance-install.sh). Invoked by
@@ -201,9 +201,19 @@ if hb.get("pid") != relay_pid:
 if hb.get("allow_uid") != UID or hb.get("refuse_own") is not False:
     fail("tdarr-relay-not-enforcing",
          "relay-allows-uid-%s-refuse_own-%s-expected-%d-False" % (hb.get("allow_uid"), hb.get("refuse_own"), UID), 1)
-if hb.get("listen_held_by") != "systemd" or manager_pid not in owners:
+# The manager is not visible in /proc on this slot, so ss never shows its fd:
+# ask systemd whether the socket unit holds exactly this address instead.
+sockunit = E("QFLIX_CANARY_TDARR_LB_SOCKET_UNIT")
+if sockunit is None:
+    try:
+        sockunit = run(["systemctl", "--user", "show", "-p", "ActiveState", "-p", "Listen",
+                        "tdarr-uid-relay.socket"])
+    except Exception:
+        sockunit = ""
+held = "ActiveState=active" in sockunit and ("Listen=%s (Stream)" % want) in sockunit
+if not held or hb.get("listen_held_by") != "systemd":
     fail("tdarr-relay-port-not-held",
-         "relay-bound-the-port-itself-not-via-tdarr-uid-relay.socket-a-relay-restart-frees-it-for-a-squatter", 1)
+         "tdarr-uid-relay.socket-does-not-hold-%s-or-the-relay-bound-it-itself-a-relay-restart-frees-it-for-a-squatter" % want, 1)
 if hb.get("selftest") != "pass":
     fail("tdarr-relay-lookup-broken",
          "relay-cannot-read-peer-uids-%s-it-refuses-everything" % str(hb.get("selftest"))[:80].replace(" ", "-"), 1)

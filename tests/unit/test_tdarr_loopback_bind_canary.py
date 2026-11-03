@@ -73,7 +73,7 @@ def _hb(**kw):
 
 def _run(tmp_path, *, ss_lines=None, ss_all=None, servers_js="x/*QFLIX-UNIX-SOCKET*/" * 2,
          mainapi_js="/*QFLIX-WEBUI-SHARED-IO*/", conf=None, hb=None, dir_mode=0o700,
-         make_sock=True, relay="skip", relay_pid=RELAY_PID):
+         make_sock=True, relay="skip", relay_pid=RELAY_PID, socket_unit=None):
     conf_p = tmp_path / "conf.json"
     conf_p.write_text(json.dumps(conf if conf is not None else {"serverPort": PORT}),
                       encoding="utf-8")
@@ -91,6 +91,9 @@ def _run(tmp_path, *, ss_lines=None, ss_all=None, servers_js="x/*QFLIX-UNIX-SOCK
         s.bind(str(sock_dir / "tdarr.sock"))
         s.close()
     sock_dir.chmod(dir_mode)
+    (tmp_path / "sockunit.txt").write_text(
+        socket_unit if socket_unit is not None
+        else "ActiveState=active\nListen=127.0.0.1:%d (Stream)\n" % PORT, encoding="utf-8")
     state = tmp_path / "relay.json"
     state.write_text(hb if isinstance(hb, str) else json.dumps(_hb() if hb is None else hb),
                      encoding="utf-8")
@@ -107,6 +110,7 @@ def _run(tmp_path, *, ss_lines=None, ss_all=None, servers_js="x/*QFLIX-UNIX-SOCK
         "QFLIX_CANARY_TDARR_LB_STATE": str(state),
         "QFLIX_CANARY_TDARR_LB_RELAY_PID": str(relay_pid),
         "QFLIX_CANARY_TDARR_LB_MANAGER_PID": str(MANAGER_PID),
+        "QFLIX_CANARY_TDARR_LB_SOCKET_UNIT": (tmp_path / "sockunit.txt").read_text(encoding="utf-8"),
         "QFLIX_CANARY_TDARR_LB_RELAY": relay,
         "HOME": str(tmp_path),
         "PATH": "",
@@ -169,10 +173,24 @@ def test_an_extra_holder_beside_the_relay_is_red(tmp_path):
 
 
 @posix
-def test_relay_that_bound_the_port_itself_is_red(tmp_path):
+def test_hidden_manager_is_still_green(tmp_path):
+    """This slot hides the user manager's /proc entry, so ss shows the relay
+    alone even though systemd holds the fd. The socket unit proves the hold."""
+    r = _run(tmp_path, ss_lines=[_ss("127.0.0.1:%d" % PORT, manager=0)])
+    assert r.returncode == 0, r.stderr
+
+
+@posix
+@pytest.mark.parametrize("unit,held_by", [
+    ("ActiveState=inactive\nListen=127.0.0.1:%d (Stream)\n" % PORT, "systemd"),
+    ("ActiveState=active\nListen=127.0.0.1:1 (Stream)\n", "systemd"),
+    ("", "systemd"),
+    ("ActiveState=active\nListen=127.0.0.1:%d (Stream)\n" % PORT, "self"),
+])
+def test_port_not_held_by_systemd_is_red(tmp_path, unit, held_by):
     """Without the socket unit a relay restart frees the port for a squatter."""
     r = _run(tmp_path, ss_lines=[_ss("127.0.0.1:%d" % PORT, manager=0)],
-             hb=_hb(listen_held_by="self"))
+             hb=_hb(listen_held_by=held_by), socket_unit=unit)
     assert r.returncode == 1
     assert "STAGE=tdarr-relay-port-not-held" in r.stderr
 
