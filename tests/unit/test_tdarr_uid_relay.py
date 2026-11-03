@@ -325,12 +325,43 @@ def test_unit_restarts_forever_and_runs_the_shipped_file():
 
 
 def test_relay_never_stops_with_tdarr():
-    """Wants=, never BindsTo=/PartOf=/Requires=: a Tdarr restart must not take
-    the port's gatekeeper down with it (a squatter could take the port)."""
+    """The relay never depends on Tdarr: a Tdarr restart must not take the
+    port's gatekeeper down with it (a squatter could take the port)."""
     src = _read(_50D)
     for bad in ("BindsTo=", "PartOf=", "Requires=tdarr-server", "Requires=tdarr-node"):
         assert bad not in src
-    assert src.count("Wants=tdarr-uid-relay.socket tdarr-uid-relay.service") == 2
+    assert src.count("Wants=tdarr-uid-relay.socket tdarr-uid-relay.service") == 1  # server
+
+
+def _dropin(src: str, unit: str) -> str:
+    start = src.index(f'put "$UD/{unit}.service.d/50-qflix-uid-relay.conf"')
+    body = src[src.index("\n", start) + 1:]
+    return body[:body.index("\nDROPIN\n")]
+
+
+def test_node_never_starts_without_our_socket_holding_the_port():
+    """PR #131 review, reproduced under user systemd: with Wants= a co-tenant
+    who binds the port first fails the socket, the Node starts anyway and runs
+    the squatter's flows as our uid. Requires= + After= fails the Node's start
+    job instead. The relay SERVICE stays Wants=, so a relay restart never
+    bounces the Node."""
+    node = _dropin(_read(_50D), "tdarr-node")
+    lines = [ln.strip() for ln in node.splitlines() if not ln.lstrip().startswith("#")]
+    assert "Requires=tdarr-uid-relay.socket" in lines
+    assert "After=tdarr-uid-relay.socket tdarr-uid-relay.service" in lines
+    assert "Wants=tdarr-uid-relay.service" in lines
+    assert not any("Wants=tdarr-uid-relay.socket" in ln for ln in lines), \
+        "Wants= on the socket is the bug: it lets the Node start beside a squatter"
+    assert not any(ln.startswith("BindsTo=") for ln in lines)
+
+
+def test_dropin_changes_never_restart_the_relay():
+    """A dependency edit applies with daemon-reload; restarting the relay for it
+    would drop the Node's session for nothing."""
+    src = _read(_50D)
+    assert src.count("|| DROPIN_CHANGED=1") == 2
+    restart_gate = src[src.index('if [ "$CODE_CHANGED$SVC_CHANGED$SOCK_CHANGED"'):]
+    assert "DROPIN_CHANGED" not in restart_gate.split("\n", 1)[0]
 
 
 def test_50d_refuses_code_whose_selftest_fails_before_installing_it():

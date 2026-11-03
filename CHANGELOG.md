@@ -25,7 +25,7 @@ restart at 0 busy workers (after the Verity requeue finished).
   without a listener.
 - **Install and upgrade reproduce it.** New `50d-tdarr-uid-relay.sh` (refuses
   relay code whose `--selftest` fails on the box, backs up what it replaces,
-  adds `Wants=` drop-ins to both Tdarr units). `50-tdarr-install.sh` calls it and
+  adds dependency drop-ins to both Tdarr units). `50-tdarr-install.sh` calls it and
   hands the port over with stop Tdarr, start socket, start Tdarr. The
   tdarr-server `zip_swap` post steps are now 50a, then start socket + service.
 - **Heal the right thing.** `heartbeat-tdarr-server.sh` probes Tdarr on its
@@ -43,9 +43,15 @@ restart at 0 busy workers (after the Verity requeue finished).
   probe goes through it. Smoke `tdarr-loopback-bound` asserts the same model;
   new `tdarr-relay-uid-gate`.
 
-Residual R-TDARR-COTENANT-LOOPBACK is narrowed, not closed: a squat window
-remains only when the user manager is not holding the socket (boot, or the
-installer handover), plus relay DoS and same-uid trust.
+- **The Node never serves a squatter.** It `Requires=` the socket unit (PR #131
+  review): if a co-tenant binds the port first, the socket fails and the Node
+  does not start, instead of starting beside the squatter and running their
+  flows as our uid, as the first draft's `Wants=` allowed.
+
+Residual R-TDARR-COTENANT-LOOPBACK is narrowed, not closed: a co-tenant who
+binds the port before our socket (boot, or the installer handover) can hold it
+and cause an outage that our API scripts talk into; plus relay DoS and
+same-uid trust.
 
 ## 2026-11-02 - Tdarr is off the internet; its tunnel works (QFLX-96)
 

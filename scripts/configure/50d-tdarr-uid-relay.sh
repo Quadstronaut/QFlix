@@ -40,6 +40,7 @@ UD=~/.config/systemd/user
 CODE_CHANGED=0
 SVC_CHANGED=0
 SOCK_CHANGED=0
+DROPIN_CHANGED=0
 PORT=$(python3 -c 'import json,os,sys; print(int(json.load(open(os.path.expanduser(sys.argv[1])))["serverPort"]))' \
   ~/.apps/tdarr/configs/Tdarr_Server_Config.json)
 
@@ -103,21 +104,39 @@ WantedBy=default.target
 UNIT
 
 # Drop-ins, not edits to the Tdarr units, so this script alone reproduces the
-# wiring on a box whose units 50-tdarr-install.sh wrote earlier. Wants= only:
-# the relay must keep running across Tdarr restarts, never stop with them.
-put "$UD/tdarr-server.service.d/50-qflix-uid-relay.conf" <<'DROPIN' || SVC_CHANGED=1
+# wiring on a box whose units 50-tdarr-install.sh wrote earlier. They only
+# change dependencies, so a change needs a daemon-reload, never a relay
+# restart (DROPIN_CHANGED is deliberately not one of the restart triggers).
+# The dependencies point one way: the relay must keep running across Tdarr
+# restarts, so nothing here makes the relay depend on Tdarr.
+put "$UD/tdarr-server.service.d/50-qflix-uid-relay.conf" <<'DROPIN' || DROPIN_CHANGED=1
 # QFLX-97: Tdarr listens on a unix socket; its TCP address is the relay's.
 [Unit]
 Wants=tdarr-uid-relay.socket tdarr-uid-relay.service
 DROPIN
-put "$UD/tdarr-node.service.d/50-qflix-uid-relay.conf" <<'DROPIN' || SVC_CHANGED=1
-# QFLX-97: the Node reaches the server through the relay on 127.0.0.1.
+# The Node REQUIRES the socket. Whoever holds 127.0.0.1:<port> is "the server"
+# to the Node, which runs that server's flows and plugins as our uid. If a
+# co-tenant binds the port first (at boot, before sockets.target), the socket
+# unit fails; with Wants= the Node started anyway and served the squatter
+# (reproduced under user systemd, PR #131 review). Requires= + After= fails the
+# Node's start job instead: an outage the "Tdarr Node" monitor reds, not a
+# hijack. Not BindsTo: that would also stop the Node, killing in-flight
+# jobs, on any later socket state change, and the threat is a socket that
+# never started. The relay service stays Wants=: the socket alone holds the
+# port, and a relay restart must not bounce the Node.
+put "$UD/tdarr-node.service.d/50-qflix-uid-relay.conf" <<'DROPIN' || DROPIN_CHANGED=1
+# QFLX-97: the Node reaches the server through the relay on 127.0.0.1, and
+# must never start unless OUR socket unit holds that port.
 [Unit]
-Wants=tdarr-uid-relay.socket tdarr-uid-relay.service
+Requires=tdarr-uid-relay.socket
+Wants=tdarr-uid-relay.service
 After=tdarr-uid-relay.socket tdarr-uid-relay.service
 DROPIN
 
 systemctl --user daemon-reload
+if [ "$DROPIN_CHANGED" = 1 ]; then
+  echo "Tdarr drop-ins updated: daemon-reload only, they apply to the next start"
+fi
 systemctl --user enable tdarr-uid-relay.socket tdarr-uid-relay.service >/dev/null 2>&1
 
 if ss -ltnpH "sport = :$PORT" | grep -q '"Tdarr_'; then
