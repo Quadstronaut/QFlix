@@ -238,6 +238,18 @@ def test_installer_verify_fails_closed_on_public_exposure():
     assert "die " in code[code.index("/tdarr/"):]
 
 
+def test_installer_polls_the_bind_and_names_the_two_faults_apart():
+    """One sample ~15s after the restart raced starts measured at 52-124s on
+    this box and died "bound to '', not loopback" on a good install."""
+    code = _code(_INSTALL)
+    verify = code[code.index("BIND=$(sshm"):]
+    assert "seq 1 60" in verify and "sleep 3" in verify
+    assert '[ -n "$BIND" ] || die "tdarr not listening' in verify
+    assert '[ "$BIND" = "127.0.0.1:${SERVER_PORT}" ] || die "tdarr listening on' in verify
+    # The poll is ONE remote session, not an SSH connection per tick.
+    assert verify.count("sshm ") == 1 or verify.index("ROUTE=") > verify.index("sleep 3")
+
+
 def test_smoke_asserts_the_bind_not_just_the_marker():
     """The marker says the file was edited; only `ss` says the running process
     took it, and a Tdarr restart is what makes the two agree."""

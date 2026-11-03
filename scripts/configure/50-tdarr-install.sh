@@ -318,8 +318,16 @@ sleep 5
 LOOPBACK=$(sshm "curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:${SERVER_PORT}/api/v2/status" || true)
 [ "$LOOPBACK" = 200 ] || log_warn "tdarr loopback HTTP $LOOPBACK — give it 60s, or check ~/.apps/tdarr/logs/server.err"
 
-BIND=$(sshm "ss -ltnH 'sport = :${SERVER_PORT}' | awk '{print \$4}' | sort -u")
-[ "$BIND" = "127.0.0.1:${SERVER_PORT}" ] || die "tdarr bound to '${BIND}', not loopback — is 50a applied and the server restarted?"
+# Polled, not sampled once. Only ~15s separate the step 6d restart from here,
+# and this box has measured 10.8s, 52s, 54s and (first start after a reboot)
+# ~124s from start to listen. One sample turned a slow-but-good start into
+# "bound to '', not loopback" AFTER every step had applied. The loop runs on the
+# box in ONE session (no SSH per tick) and stops at the first listener, so a
+# normal start costs nothing. "Not listening" and "listening somewhere else"
+# are different faults with different fixes, so they die with different words.
+BIND=$(sshm "for _ in \$(seq 1 60); do B=\$(ss -ltnH 'sport = :${SERVER_PORT}' | awk '{print \$4}' | sort -u); [ -n \"\$B\" ] && break; sleep 3; done; printf '%s' \"\$B\"" || true)
+[ -n "$BIND" ] || die "tdarr not listening on :${SERVER_PORT} after 180s — a start problem, not a bind-address one; check ~/.apps/tdarr/logs/server.err"
+[ "$BIND" = "127.0.0.1:${SERVER_PORT}" ] || die "tdarr listening on '${BIND}', not loopback only — is 50a applied and the server restarted?"
 
 ROUTE=$(curl -sk -m 10 -o /dev/null -w '%{http_code}' "https://${PUBLIC_HOST}/tdarr/api/v2/status" || true)
 [ "$ROUTE" != 200 ] || die "tdarr answers 200 on the public route"
