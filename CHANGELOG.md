@@ -1,5 +1,52 @@
 # Changelog
 
+## 2026-11-03 - Only our uid can reach Tdarr (QFLX-97)
+
+QFLX-96 took Tdarr off the internet, but `127.0.0.1` on this slot is shared by
+every tenant (one network namespace, ~150 listening uids), and Tdarr 2.17.01
+has no working auth: whoever connects can rewrite its DB and reach its plugin
+and ffmpeg-argv routes as our uid. Cut over live at 06:44 UTC with one Tdarr
+restart at 0 busy workers (after the Verity requeue finished).
+
+- **Tdarr has no TCP port.** `50a` now makes it listen on
+  `/run/user/<uid>/qflix-tdarr/tdarr.sock` (dir 0700, ownership checked, stale
+  socket cleared) and keeps reporting `remoteAddress 127.0.0.1`, which nodeRelay
+  stores on the node record. It migrates a QFLX-96-patched `servers.js` in place.
+- **uid relay.** New `scripts/ops/tdarr-uid-relay.py` serves
+  `127.0.0.1:<serverPort>` and forwards a connection only when
+  `NETLINK_SOCK_DIAG` (exact 4-tuple lookup of the peer socket, reply verified)
+  says it belongs to our uid. Any lookup error is a refusal. It reads nothing
+  from a client before deciding. Tdarr Node, the pusher probe and every API
+  script keep the same address and need no changes.
+- **The port is never free.** `tdarr-uid-relay.socket` holds it in the systemd
+  user manager, so a relay crash or restart queues connections instead of
+  leaving the port for a co-tenant to bind and impersonate the server to our
+  Node. Measured live: during a relay restart, no 100 ms sample saw the port
+  without a listener.
+- **Install and upgrade reproduce it.** New `50d-tdarr-uid-relay.sh` (refuses
+  relay code whose `--selftest` fails on the box, backs up what it replaces,
+  adds `Wants=` drop-ins to both Tdarr units). `50-tdarr-install.sh` calls it and
+  hands the port over with stop Tdarr, start socket, start Tdarr. The
+  tdarr-server `zip_swap` post steps are now 50a, then start socket + service.
+- **Heal the right thing.** `heartbeat-tdarr-server.sh` probes Tdarr on its
+  socket and restarts only the relay when Tdarr is up but the relay is not;
+  previously a relay outage would have looked like Tdarr down and cost
+  in-flight transcodes. `tdarr-port-drain.sh` drains the unix socket (the
+  relay owns the TCP port for good).
+- **Watched.** Canary `tdarr-loopback-bind` (still hourly at :55: every
+  15-minute phase collides with an hourly timer) now asserts the port's only
+  holder is the relay, that the socket unit holds the exact address, that no
+  Tdarr process owns any TCP listener, the 0700 dir, both markers, and the
+  running relay's heartbeat (fresh, unit MainPID, allows only our uid, own
+  kernel-lookup selftest passing, code matches disk), plus the on-disk
+  `--selftest`. A dead relay also reds the per-minute "Tdarr" monitor, whose
+  probe goes through it. Smoke `tdarr-loopback-bound` asserts the same model;
+  new `tdarr-relay-uid-gate`.
+
+Residual R-TDARR-COTENANT-LOOPBACK is narrowed, not closed: a squat window
+remains only when the user manager is not holding the socket (boot, or the
+installer handover), plus relay DoS and same-uid trust.
+
 ## 2026-11-02 - Tdarr is off the internet; its tunnel works (QFLX-96)
 
 Tdarr 2.17.01 has no working auth, and it was reachable two ways without a

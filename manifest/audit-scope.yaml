@@ -553,7 +553,9 @@ residuals:
       flood the relay with connections it refuses; denial of service only.
       (3) Every process running as OUR uid is trusted by design, so a
       compromise of any of our apps reaches Tdarr. A Tdarr with a working
-      auth gate (2.91.01+) would cover (1) and (3) but needs GLIBC 2.34.
+      auth gate (2.91.01+) would cover (1) and (3); that upgrade is its own
+      project (QFLX-97 item 4; the box runs glibc 2.41, so GLIBC is not the
+      blocker).
   - id: R-WORKSTATION-OLLAMA-SERVICE
     owner: operator
     review_cadence_days: 90
