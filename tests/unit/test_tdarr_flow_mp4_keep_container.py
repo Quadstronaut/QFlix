@@ -18,10 +18,20 @@ cover art. Its 12 sibling MP4s were h264 + AAC, never reached ffmpeg, and so
 never showed the bug.
 
 THE FIX the tests pin: a `checkFileExtension` gate ("mp4") on each path, between
-the Ensure-AAC node and the Set-Container node. MP4 goes straight to Execute, so
-the output container is the source's own and the only change is the added AAC
-track (plus the h264 re-encode on the video path). Every other container keeps
-the old mkv path unchanged.
+the Ensure-AAC node and the Set-Container node. An MP4 keeps its own container,
+so the only change is the added AAC track (plus the h264 re-encode on the video
+path). Every other container keeps the old mkv path unchanged.
+
+BEING IN AN MP4 IS NOT PROOF A STREAM CAN BE COPIED INTO A NEW MP4 (review
+finding). Tdarr's ffmpeg 5.0.1 refuses `flac` and `truehd` in MP4 as experimental
+(Execute never passes `-strict -2`) and has no MP4 tag for `pcm_*`, so those
+exited 1 on the keep-container path where the old mkv path exited 0. A second
+gate on each path (`qfxCheckNoMp4Copy*`, audio codec_name includes
+flac/truehd/pcm_) sends them back to mkv. Measured with Tdarr's own plugins and
+ffmpeg 5.0.1 on generated MP4s: aac/ac3/eac3/mp3/mp2/opus/vorbis/dts/alac copy
+into MP4 cleanly; flac/truehd/pcm_s16le/pcm_s24le do not and now take mkv (exit
+0, as before). An MP4 carrying a refused codec AND mov_text fits neither
+container without dropping a stream and still fails, exactly as it did before.
 
 HOW: a tiny interpreter walks the real flow JSON with the same branch rules the
 installed plugins use (read from the Tdarr 2.17.01 plugin source on the box), so
@@ -191,10 +201,61 @@ def test_no_set_container_node_force_conforms(flow):
 
 
 def test_mp4_gates_are_exact(flow):
-    for nid, execute, setmkv in (("qfxCheckMp4Audio", "qfxExecuteAudio", "qfxSetMkvAudio"),
-                                 ("qfxCheckMp4Video", "qfxExecuteVideo", "qfxSetMkvVideo")):
-        n = next(n for n in flow["flowPlugins"] if n["id"] == nid)
+    for path in ("Audio", "Video"):
+        mp4, nocopy = "qfxCheckMp4" + path, "qfxCheckNoMp4Copy" + path
+        execute, setmkv = "qfxExecute" + path, "qfxSetMkv" + path
+        n = next(n for n in flow["flowPlugins"] if n["id"] == mp4)
         assert n["pluginName"] == "checkFileExtension"
         assert n["inputsDB"] == {"extensions": "mp4"}
-        out = {e["sourceHandle"]: e["target"] for e in flow["flowEdges"] if e["source"] == nid}
-        assert out == {"1": execute, "2": setmkv}
+        out = {e["sourceHandle"]: e["target"] for e in flow["flowEdges"] if e["source"] == mp4}
+        assert out == {"1": nocopy, "2": setmkv}
+        g = next(n for n in flow["flowPlugins"] if n["id"] == nocopy)
+        assert g["pluginName"] == "checkStreamProperty"
+        assert g["inputsDB"] == {"streamType": "audio", "propertyToCheck": "codec_name",
+                                 "condition": "includes", "valuesToMatch": "flac,truehd,pcm_"}
+        out = {e["sourceHandle"]: e["target"] for e in flow["flowEdges"] if e["source"] == nocopy}
+        # handle 1 = a refused codec is present -> the old mkv path
+        assert out == {"1": setmkv, "2": execute}
+
+
+# ---------------------------------------------------------------------------
+# Codec cases measured with Tdarr's ffmpeg 5.0.1 (see module docstring)
+# ---------------------------------------------------------------------------
+
+MP4_REFUSED = ["flac", "truehd", "pcm_s16le", "pcm_s24le", "pcm_s16be"]
+MP4_COPIES = ["ac3", "eac3", "mp3", "mp2", "opus", "vorbis", "dts", "alac"]
+
+
+@pytest.mark.parametrize("codec", MP4_REFUSED)
+def test_mp4_with_audio_the_mp4_muxer_refuses_takes_the_mkv_path(flow, codec):
+    """The review regression: flac/truehd exit 1 as 'experimental' and pcm has
+    no MP4 tag, so keeping MP4 parks the file. The old mkv path exits 0."""
+    f = {"path": "/m/Movies/Z/z.mp4", "streams": [_v(), _a(codec)]}
+    trail, container, _ = walk(flow, f)
+    assert trail[-5:] == ["qfxCheckMp4Audio", "qfxCheckNoMp4CopyAudio", "qfxSetMkvAudio",
+                          "qfxExecuteAudio", "qfxReplace"]
+    assert container == "mkv"
+
+
+@pytest.mark.parametrize("codec", MP4_COPIES)
+def test_mp4_with_audio_the_mp4_muxer_copies_keeps_mp4(flow, codec):
+    f = {"path": "/m/Movies/Z/z.mp4", "streams": [_v(), _a(codec), *SUBS[:2]]}
+    trail, container, set_containers = walk(flow, f)
+    assert trail[-4:] == ["qfxCheckMp4Audio", "qfxCheckNoMp4CopyAudio", "qfxExecuteAudio", "qfxReplace"]
+    assert set_containers == [] and container == "mp4"
+
+
+def test_a_refused_secondary_track_is_enough_to_leave_mp4(flow):
+    """Every stream is copied, so a FLAC commentary track behind an EAC3 primary
+    fails the MP4 muxer just the same. The gate is ANY-match for that reason."""
+    f = {"path": "/m/Movies/Z/z.mp4", "streams": [_v(), _a("eac3"), _a("flac")]}
+    _, container, _ = walk(flow, f)
+    assert container == "mkv"
+
+
+def test_hevc_mp4_with_flac_takes_the_mkv_video_path(flow):
+    f = {"path": "/m/Movies/Z/z.mp4", "streams": [_v("hevc", "yuv420p10le", 120), _a("flac")]}
+    trail, container, _ = walk(flow, f)
+    assert trail[-5:] == ["qfxCheckMp4Video", "qfxCheckNoMp4CopyVideo", "qfxSetMkvVideo",
+                          "qfxExecuteVideo", "qfxReplace"]
+    assert container == "mkv"

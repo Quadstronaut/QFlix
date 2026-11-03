@@ -50,6 +50,25 @@ wrong.
   streams (h264, eac3 5.1, 2 mov_text, mjpeg cover), 8,440,657,046 B, 6589.44s.
   After: all 5 plus `aac` 2.0, 8,544,683,234 B, and the same duration. Plex
   reports `directplay`. The canary now shows 0 Transcode-error records in total.
+- **Review fix: not every MP4 stream copies back into MP4.** Tdarr's ffmpeg
+  5.0.1 refuses `flac` and `truehd` in MP4 as experimental (Execute never passes
+  `-strict -2`) and has no MP4 tag for `pcm_*`. Such MP4s exited 1 on the
+  keep-container path, where the old mkv path exited 0. A second gate on each path
+  (`qfxCheckNoMp4CopyAudio` / `qfxCheckNoMp4CopyVideo`, audio `codec_name`
+  includes `flac,truehd,pcm_`) sends them back to mkv.
+  - **Measured:** I generated MP4s on the box and ran them through Tdarr's own
+    plugins and ffmpeg. aac, ac3, eac3, mp3, mp2, opus, vorbis, dts and alac copy
+    into MP4 cleanly. flac, truehd, pcm_s16le and pcm_s24le now take mkv and exit
+    0, the same as the old flow. An HEVC+FLAC MP4 takes the mkv video path.
+  - **Known limit:** an MP4 that carries one of those codecs *and* mov_text
+    cannot be remuxed into either container without dropping a stream, and it
+    still fails. It failed the same way before QFLX-97.
+  - **Wording:** the earlier claim that keep-container "cannot fail where mkv
+    did" was wrong and is corrected in the flow description and the test
+    docstring.
+  - **Live:** deployed the same way, with repo, memory and disk identical. All 14
+    MP4 records route identically under both flow versions, so no live file is
+    affected.
 - **Rollback.** Revert the commit and redeploy master's flow JSON the same way
   (`cruddb` update, then `ensure_flow`). The files need no rollback, since they
   only gained a stream.
