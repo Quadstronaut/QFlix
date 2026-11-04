@@ -989,3 +989,19 @@ def test_dual_default_never_installs_an_untagged_compat_beside_a_foreign_default
     assert plan["kind"] == "dual_default" and plan["target"] == 2 and sorted(plan["clear"]) == [0, 1]
     # The original Tdarr shape (no language tags anywhere) is untouched.
     assert adj.classify_streams([_v(), _a("eac3", 6, 1), _a("aac", 2, 1)])["target"] == 1
+
+
+def test_verify_fixed_ignores_dropped_data_streams():
+    # mp4 muxer drops a bin_data stream on remux (Verity 2026): 42 -> 41 raw
+    src = [{"codec_type": "video"}, {"codec_type": "data"}, {"codec_type": "data"}]
+    assert adj.countable_streams(src) == 1
+    fixed = [{"codec_type": "video"}, {"codec_type": "data"},
+             {"codec_type": "audio", "codec_name": "aac", "channels": 2,
+              "disposition": {"default": 1}, "tags": {"language": "eng"}}]
+    assert adj.verify_fixed(fixed, expect_stream_count=2)
+
+
+def test_verify_fixed_still_rejects_lost_real_stream():
+    fixed = [{"codec_type": "audio", "codec_name": "aac", "channels": 2,
+              "disposition": {"default": 1}, "tags": {"language": "eng"}}]
+    assert not adj.verify_fixed(fixed, expect_stream_count=2)

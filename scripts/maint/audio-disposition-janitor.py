@@ -493,6 +493,15 @@ def build_ffmpeg_cmd(src: str, dst: str, plan: dict, streams: list | None = None
     return cmd
 
 
+def countable_streams(streams: list) -> int:
+    """Stream count for the preservation check, EXCLUDING codec_type "data".
+    The mp4 muxer silently drops/merges unmappable data streams (bin_data
+    tmcd/timecode tracks): Verity (2026) had 42 streams in, 41 out, so the
+    count gate failed every night and the unit went red (2026-11-04). Real
+    video/audio/subtitle/attachment streams must still match exactly."""
+    return sum(1 for s in streams if s.get("codec_type") != "data")
+
+
 def verify_fixed(streams: list, expect_stream_count: int,
                   kind: str = "dual_default") -> bool:
     """Post-remux check: stream count preserved AND exactly one default
@@ -511,7 +520,7 @@ def verify_fixed(streams: list, expect_stream_count: int,
       - foreign_default: the sole default is tagged eng/en.
     `kind` defaults to "dual_default" for backward compatibility with
     existing callers/tests that predate the foreign_default class."""
-    if len(streams) != expect_stream_count:
+    if countable_streams(streams) != expect_stream_count:
         return False
     audio = [s for s in streams if s.get("codec_type") == "audio"]
     defaults = [s for s in audio if (s.get("disposition") or {}).get("default")]
@@ -649,7 +658,7 @@ def _remux_once(path: Path, tmp: Path, plan: dict, st) -> bool:
     either way; probing first is what lets the command carry the flags."""
     try:
         src_streams = ffprobe_streams(str(path))
-        src_count = len(src_streams)
+        src_count = countable_streams(src_streams)
         proc = subprocess.run(build_ffmpeg_cmd(str(path), str(tmp), plan, src_streams),
                               capture_output=True, text=True, timeout=3600)
         if proc.returncode != 0:
