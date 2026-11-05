@@ -118,15 +118,26 @@ set -euo pipefail
 cat > ~/.config/systemd/user/listmonk.service <<'UNIT'
 [Unit]
 Description=Listmonk newsletter / mailing list manager
-After=network-online.target
-Wants=network-online.target
+# QFLX-100: order after the native Postgres unit. After= alone is not enough:
+# qflix-postgres is Type=simple, so systemd calls it "started" the instant the
+# postmaster forks, while it is still replaying WAL. On the 2026-11-03 reboot
+# listmonk connected 26s later, got "the database system is starting up",
+# exited and paged REA before Restart= recovered it.
+After=network-online.target qflix-postgres.service
+Wants=network-online.target qflix-postgres.service
 
 [Service]
 Type=simple
 WorkingDirectory=%h/.apps/listmonk
+# Readiness wait: poll pg_isready (accepting connections, not just listening)
+# for up to 60s. Fails OPEN - after 60s listmonk starts anyway and Restart=
+# remains the backstop - so a moved port or missing binary can never wedge
+# the newsletter. $$ is systemd's escape for a literal $.
+ExecStartPre=-/bin/sh -c 'i=0; while [ $$i -lt 60 ]; do /usr/bin/pg_isready -q -h 127.0.0.1 -p 42009 && exit 0; i=$$((i+1)); sleep 1; done; exit 0'
 # Pre-start guard: cancel any campaign left `running` so a crash/restart
 # mid-send cannot auto-resume and re-send the whole list (root cause of the
 # 2026-05-18 + 2026-05-11 double-sends). Leading `-` = never blocks startup.
+# Runs AFTER the readiness wait, so it can actually reach the DB at boot.
 ExecStartPre=-%h/scripts/ops/listmonk-cancel-running.sh
 ExecStart=%h/.apps/listmonk/bin/listmonk --config %h/.apps/listmonk/etc/config.toml
 Restart=on-failure
