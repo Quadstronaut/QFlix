@@ -1882,6 +1882,18 @@ Test-Case 'Test-IsNoiseFinding suppresses aresample timestamp compensation, not 
     Assert-Equal $null (Test-IsNoiseFinding $near) 'other aresample failure still pages'
 }
 
+# QFLX-99: the 2026-11-02 14:09 sonarr:import-path-not-accessible page. The path
+# is a qBit-excluded fake payload; a media path must still page.
+Test-Case 'Test-IsNoiseFinding suppresses *arr import of an excluded payload, not a media path' {
+    $line = '2026-11-02 10:14:00.2|Error|DownloadedEpisodesImportService|Import failed, path does not exist or is not accessible by Sonarr: /home/(removed)/downloads/qbittorrent/tv-sonarr/Dexter Resurrection S02E02 Young Blood 1080p WEB H264 - FLUX.iso.'
+    $iso = @{ signature = 'sonarr:import-path-not-accessible'; summary = 'Failed to import downloaded episodes due to non-existent or inaccessible paths'; excerpt = $line }
+    Assert-Equal 'arr-import-excluded-payload-missing' (Test-IsNoiseFinding $iso) 'real 14:09 record suppressed'
+    $mkv = @{ signature = 'sonarr:import-path-not-accessible'; summary = 'import failed'; excerpt = ($line -replace 'FLUX\.iso\.', 'FLUX.mkv.') }
+    Assert-Equal $null (Test-IsNoiseFinding $mkv) 'media path still pages'
+    $quota = @{ signature = 'sonarr:import-path-not-accessible'; summary = 'import failed'; excerpt = $line + "`n2026-11-02 10:14:01.0|Error|DiskProvider|Disk quota exceeded" }
+    Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
+}
+
 # ---------------------------------------------------------------------------
 # 2026-09-02: cross-run page ledger.
 #

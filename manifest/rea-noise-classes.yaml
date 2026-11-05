@@ -1304,6 +1304,23 @@ classes:
       bundles this line with another fault (quota, corrupt DB, crash).
     added: 2026-10-30
 
+  - id: arr-import-excluded-payload-missing
+    title: '*arr "Import failed, path does not exist" for a qBit-excluded malware payload'
+    rx: '(?i)import failed, path does not exist or is not accessible by (?:sonarr|radarr):\s.*\.(?:iso|7z|img|exe|scr|msi|bat|cmd|lnk|vbs|ps1)(?=\.?(?:\s|$))'
+    field: excerpt
+    prompt_clause: 'Sonarr/Radarr "Import failed, path does not exist or is not accessible" lines whose path ends in .iso/.7z/.img/.exe/.scr/.msi/.bat/.cmd/.lnk/.vbs/.ps1'
+    why: >-
+      Paged 2026-11-02 14:09 as sonarr:import-path-not-accessible, 2/3. CENSUS
+      2026-11-05, every retained Sonarr/Sonarr2/Radarr/Radarr2 log: 8 distinct
+      paths, ALL fake releases (.7z, .exe x3, .scr, .iso x2) - none a media
+      file. The qBit excluded_file_names guard (59c, same extension list as this
+      rx) refuses the payload, the torrent "completes" empty, and the *arr
+      retries the never-written path once a minute until the queue item clears.
+      The guard working is not a fault. A REAL import break names a media path
+      (.mkv/.mp4/a folder) and is NOT matched, so it still pages. field: excerpt
+      so a bundled fault fails open via the every-line check.
+    added: 2026-11-05
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1445,6 +1462,9 @@ prompt_segments:
   - index: 44
     marker: 'Plex transcoder ffmpeg aresample "Failed to compensate for timestamp delta" lines'
     classes: [plex-aresample-timestamp-compensation]
+  - index: 45
+    marker: 'Sonarr/Radarr "Import failed, path does not exist or is not accessible" lines whose path ends in .iso/.7z/.img/.exe/.scr/.msi/.bat/.cmd/.lnk/.vbs/.ps1'
+    classes: [arr-import-excluded-payload-missing]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
