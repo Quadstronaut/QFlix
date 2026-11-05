@@ -243,6 +243,13 @@ def test_rules_match_their_canonical_log_lines(ledgers):
          "S02E02 Young Blood 1080p WEB H264 - FLUX.iso. Ensure the path exists "
          "and the user running Sonarr has the correct permissions to access "
          "this file/folder"),
+        # QFLX-100. Paged 2026-11-04 18:09; the excerpt as the model rendered it.
+        ("plex-binary-http-probe",
+         "ERROR - Error parsing HTTP request: ???+???d[g9|Vu???v???    <??r:"),
+        # ...and with the raw bytes still in it (collector-side shape).
+        ("plex-binary-http-probe",
+         "Nov 03, 2026 12:48:24.560 [139952965229368] ERROR - Error parsing "
+         "HTTP request: \x8b\x1fP\xe2\x91T"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -418,7 +425,11 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
             ("arr-import-excluded-payload-missing",
              "Import failed, path does not exist or is not accessible by "
              "Radarr: /home/(removed)/downloads/qbittorrent/radarr/Movie.2026"
-             ".iso.release/. Ensure the path exists")):
+             ".iso.release/. Ensure the path exists"),
+            # A readable malformed request is a real client bug, not a probe.
+            ("plex-binary-http-probe",
+             "ERROR - Error parsing HTTP request: GET /library/sections "
+             "HTTP/1.1 invalid header line")):
         assert not re.search(by[cid], still_pages), (
             cid + " must not suppress an uncensused neighbour: " + still_pages)
 
