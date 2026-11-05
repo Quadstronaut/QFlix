@@ -1894,6 +1894,17 @@ Test-Case 'Test-IsNoiseFinding suppresses *arr import of an excluded payload, no
     Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
 }
 
+# QFLX-100: the 2026-11-04 18:09 plex:http-request-parse-error page.
+Test-Case 'Test-IsNoiseFinding suppresses Plex binary HTTP probe, not a readable parse error' {
+    $line = 'ERROR - Error parsing HTTP request: ???+???d[g9|Vu???v???    <??r:???9?'
+    $bin = @{ signature = 'plex:http-request-parse-error'; summary = 'Error parsing HTTP request with invalid binary data'; excerpt = $line }
+    Assert-Equal 'plex-binary-http-probe' (Test-IsNoiseFinding $bin) 'real 18:09 record suppressed'
+    $txt = @{ signature = 'plex:http-request-parse-error'; summary = 'parse error'; excerpt = 'ERROR - Error parsing HTTP request: GET /library/sections HTTP/1.1 invalid header line' }
+    Assert-Equal $null (Test-IsNoiseFinding $txt) 'readable malformed request still pages'
+    $quota = @{ signature = 'plex:http-request-parse-error'; summary = 'parse error'; excerpt = $line + "`nERROR - Unknown system error -122: Disk quota exceeded" }
+    Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
+}
+
 # ---------------------------------------------------------------------------
 # 2026-09-02: cross-run page ledger.
 #

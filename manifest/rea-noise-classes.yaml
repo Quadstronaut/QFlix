@@ -1321,6 +1321,29 @@ classes:
       so a bundled fault fails open via the every-line check.
     added: 2026-11-05
 
+  - id: plex-binary-http-probe
+    title: 'Plex "Error parsing HTTP request: <binary bytes>" from a non-HTTP client'
+    rx: '(?i)error parsing http request:\s?.{0,15}(?:[^\x20-\x7e\s]|\?\?)'
+    field: excerpt
+    prompt_clause: 'Plex "Error parsing HTTP request:" lines whose payload is binary/unprintable bytes'
+    why: >-
+      Paged 2026-11-04 18:09 as plex:http-request-parse-error, 2/3. CENSUS
+      2026-11-05, every retained PMS rotation: 78 lines, all since 2026-11-02
+      13:53, 0 in the four older rotations, ~1 per 10-30 min, no crash or
+      restart. PMS listens on the public slot IP (:17025, manual port mapping
+      for remote access); something on the internet opens a TCP connection and
+      sends raw bytes. First byte is random every time - not a TLS record
+      (16 03) and not an HTTP verb - consistent with an encrypted-handshake
+      client (e.g. a BitTorrent MSE peer) or a scanner. PMS rejects it and
+      carries on. Plex does not log the peer IP, so the sender is unproven.
+      Also twinned by the plex_errors collector E6 (C-locale byte test, 78/78
+      matched on the box), because the binary payload ate the section budget
+      and once made the decision canary read the log as binary (QFLX-97). A
+      parse error on READABLE text is a real malformed client and still pages;
+      `??` is how a model renders the unprintable bytes. WHO OWNS THE REAL
+      VERSION: PMS down or unreachable reds manitoba-maint-canary-plex-playback.
+    added: 2026-11-05
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1465,6 +1488,9 @@ prompt_segments:
   - index: 45
     marker: 'Sonarr/Radarr "Import failed, path does not exist or is not accessible" lines whose path ends in .iso/.7z/.img/.exe/.scr/.msi/.bat/.cmd/.lnk/.vbs/.ps1'
     classes: [arr-import-excluded-payload-missing]
+  - index: 46
+    marker: 'Plex "Error parsing HTTP request:" lines whose payload is binary/unprintable bytes'
+    classes: [plex-binary-http-probe]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
