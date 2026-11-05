@@ -235,6 +235,14 @@ def test_rules_match_their_canonical_log_lines(ledgers):
         ("plex-aresample-timestamp-compensation",
          "[Parsed_aresample_0 @ 0x7f2319b85640] [SWR @ 0x7f2311cae600] Failed "
          "to compensate for timestamp delta of 987.157000"),
+        # QFLX-99. Paged 2026-11-02; verbatim (path as Sonarr redacts it).
+        ("arr-import-excluded-payload-missing",
+         "2026-11-02 10:14:00.2|Error|DownloadedEpisodesImportService|Import "
+         "failed, path does not exist or is not accessible by Sonarr: "
+         "/home/(removed)/downloads/qbittorrent/tv-sonarr/Dexter Resurrection "
+         "S02E02 Young Blood 1080p WEB H264 - FLUX.iso. Ensure the path exists "
+         "and the user running Sonarr has the correct permissions to access "
+         "this file/folder"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -401,7 +409,16 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
              "'Show/Season 1' ~ database disk image is malformed"),
             ("plex-aresample-timestamp-compensation",
              "[Parsed_aresample_0 @ 0x7f2319b85640] Failed to initialize "
-             "filter")):
+             "filter"),
+            # A real media file the *arr cannot reach is a genuine import break.
+            ("arr-import-excluded-payload-missing",
+             "Import failed, path does not exist or is not accessible by "
+             "Sonarr: /home/(removed)/downloads/qbittorrent/tv-sonarr/Show "
+             "S01E01 1080p WEB H264-GRP.mkv. Ensure the path exists"),
+            ("arr-import-excluded-payload-missing",
+             "Import failed, path does not exist or is not accessible by "
+             "Radarr: /home/(removed)/downloads/qbittorrent/radarr/Movie.2026"
+             ".iso.release/. Ensure the path exists")):
         assert not re.search(by[cid], still_pages), (
             cid + " must not suppress an uncensused neighbour: " + still_pages)
 
