@@ -140,6 +140,22 @@ def _login(api, candidates):
 # + a buffer or Kuma will mark them down between scheduled runs.
 APP_HEARTBEAT_S = 90
 
+# QFLX-104: missed windows Kuma tolerates before a PUSH monitor goes DOWN.
+# Kuma's built-in clear-old-data job (cron `14 03 * * *`) blocks /api/push ~70s
+# every night; with maxretries=0 one missed 90s window was a DOWN + page, and
+# ~32 monitors paged together every night 2026-11-01..07. Kuma (server/model/
+# monitor.js, push branch) marks a silent push monitor PENDING per retry and
+# DOWN only after `interval + maxretries * retryInterval`: 90 + 2*60 = 210s,
+# above the worst observed silence (stall ~70s + pusher cadence ~65s = ~140s).
+# Cost, read from the deployed tag (2.5.9 api-router.js determineStatus): an
+# explicit status=down push ALSO burns retries (UP->PENDING->PENDING->DOWN), so a
+# real outage the pusher reports pages ~2 cycles (~130s) later than before. That
+# is still ahead of the pusher's own auto-heal (3 strikes, ~180s), and Kuma
+# master's isExplicitDown bypass removes the delay once Kuma is upgraded.
+# retryInterval stays Kuma's 60s default.
+PUSH_MAXRETRIES = 2
+PUSH_RETRY_INTERVAL_S = 60
+
 # Heartbeat MUST exceed (schedule period + the timer's RandomizedDelaySec) or Kuma
 # flips the monitor to a false "no heartbeat" DOWN whenever the jitter grows between
 # two runs. Retuned 2026-06-27 from 40 days of beat history: the old 60s buffers were
@@ -182,7 +198,8 @@ def _add_push_monitor(api, name: str, interval: int = APP_HEARTBEAT_S) -> str:
         type=MonitorType.PUSH,
         name=name,
         interval=interval,
-        maxretries=0,
+        maxretries=PUSH_MAXRETRIES,
+        retryInterval=PUSH_RETRY_INTERVAL_S,
     )
     data["conditions"] = []
     _convert_monitor_input(data)
@@ -209,6 +226,33 @@ def _ensure_monitor_interval(api, monitor: dict, expected_interval: int) -> bool
     except Exception as exc:
         print(f"  [edit-FAIL]{monitor['name']:25s} {exc}")
         return False
+
+
+def _ensure_push_retries(api, skip_names=()) -> int:
+    """QFLX-104: reconcile maxretries/retryInterval on every existing PUSH
+    monitor. Creation alone is not enough: all 85 live monitors were born with
+    maxretries=0, and a value only applied to new monitors would leave every
+    one of them paging on a single missed window. `skip_names` = operator-owned
+    external monitors this script does not manage. Returns the edit count."""
+    changed = 0
+    for m in api.get_monitors():
+        if not str(m.get("type", "")).lower().endswith("push"):
+            continue
+        if m.get("name") in skip_names:
+            continue
+        cur = (m.get("maxretries"), m.get("retryInterval"))
+        want = (PUSH_MAXRETRIES, PUSH_RETRY_INTERVAL_S)
+        if cur == want:
+            continue
+        try:
+            api.edit_monitor(m["id"], maxretries=PUSH_MAXRETRIES,
+                             retryInterval=PUSH_RETRY_INTERVAL_S)
+            print(f"  [edit]{m['name']:25s} retries {cur[0]}x{cur[1]}s -> "
+                  f"{want[0]}x{want[1]}s")
+            changed += 1
+        except Exception as exc:
+            print(f"  [edit-FAIL]{m['name']:25s} retries: {exc}")
+    return changed
 
 
 _AUTOHEAL_WEBHOOK_NAME = "Manitoba auto-heal webhook"
@@ -770,6 +814,10 @@ def main() -> int:
         pass
     print(f"\nwrote {len(tokens)} token(s) to secrets/kuma-push-tokens.json")
     print(f"created: {created}  skipped(existed): {skipped}  failed: {failed}")
+
+    print("\n--- reconcile push retry tolerance (QFLX-104) ---")
+    retried = _ensure_push_retries(api, skip_names=set(manifest.external_monitors()))
+    print(f"push monitors retuned: {retried}")
 
     # Runs LAST, after every monitor exists, so anything created above is also
     # reconciled. A monitor with no notifications can go red in total silence —

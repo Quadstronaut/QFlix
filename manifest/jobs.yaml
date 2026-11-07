@@ -327,6 +327,11 @@ jobs:
   manitoba-maint-canary-seerr-commit-tag:
     timer: scripts/maint/systemd/manitoba-maint-canary-seerr-commit-tag.timer
     kuma_monitor: "Canary Seerr Commit Tag"
+  # QFLX-104: Kuma's nightly clear-old-data stall of /api/push, read from the
+  # pusher's stall ledger. Hourly; own timer, own Kuma push monitor.
+  manitoba-maint-canary-kuma-push-stall:
+    timer: scripts/maint/systemd/manitoba-maint-canary-kuma-push-stall.timer
+    kuma_monitor: "Canary Kuma Push Stall"
   manitoba-maint-canary-hardlink-integrity:
     timer: scripts/maint/systemd/manitoba-maint-canary-hardlink-integrity.timer
     kuma_monitor: "Canary Hardlink Integrity"

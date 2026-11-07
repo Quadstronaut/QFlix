@@ -1975,3 +1975,16 @@ canaries:
     kuma_monitor: "Canary Seerr Commit Tag"
     script: "scripts/canaries/seerr-commit-tag.sh"
     schedule: "every-6h"
+  kuma-push-stall:
+    # QFLX-104. Kuma's built-in clear-old-data job (cron 14 03 * * *) blocks
+    # /api/push for ~70s nightly; the pusher records each stall to
+    # kuma-push-stalls.jsonl. This reads that ledger and reds when a stall
+    # reaches 120s (a 90s push monitor with maxretries=2 / retry 60s goes DOWN
+    # after ~210s of silence, pusher cadence ~65s) or one is still open past
+    # the budget. Green still reports the trend (stalls24h / max) so the
+    # nightly stall is visible without paging. Absent ledger is green only if
+    # the state dir is readable (earned suppression). Read-only, own timer +
+    # own Kuma push monitor (born mute: wire channels 1+2 after bootstrap).
+    kuma_monitor: "Canary Kuma Push Stall"
+    script: "scripts/canaries/kuma-push-stall.sh"
+    schedule: "hourly"
