@@ -37,18 +37,24 @@ def test_budget_covers_observed_silence(mod):
     assert budget >= 180, budget
 
 
-def test_create_uses_retry_tolerance(mod):
+def test_create_uses_retry_tolerance(mod, monkeypatch):
+    # CI does not install uptime-kuma-api (bootstrap runs workstation-side), so
+    # stub the three names _add_push_monitor imports at call time.
+    import types
+    pkg = types.ModuleType("uptime_kuma_api")
+    pkg.MonitorType = types.SimpleNamespace(PUSH="push")
+    sub_api = types.ModuleType("uptime_kuma_api.api")
+    sub_api._convert_monitor_input = lambda d: None
+    sub_api._check_arguments_monitor = lambda d: None
+    sub_event = types.ModuleType("uptime_kuma_api.event")
+    sub_event.Event = types.SimpleNamespace(MONITOR_LIST="monitorList")
+    monkeypatch.setitem(sys.modules, "uptime_kuma_api", pkg)
+    monkeypatch.setitem(sys.modules, "uptime_kuma_api.api", sub_api)
+    monkeypatch.setitem(sys.modules, "uptime_kuma_api.event", sub_event)
     api = MagicMock()
     api._build_monitor_data.return_value = {}
     api.get_monitors.return_value = []
-    import uptime_kuma_api.api as kapi
-    orig = (kapi._convert_monitor_input, kapi._check_arguments_monitor)
-    kapi._convert_monitor_input = lambda d: None
-    kapi._check_arguments_monitor = lambda d: None
-    try:
-        mod._add_push_monitor(api, "X")
-    finally:
-        kapi._convert_monitor_input, kapi._check_arguments_monitor = orig
+    mod._add_push_monitor(api, "X")
     kw = api._build_monitor_data.call_args.kwargs
     assert kw["maxretries"] == mod.PUSH_MAXRETRIES
     assert kw["retryInterval"] == mod.PUSH_RETRY_INTERVAL_S
