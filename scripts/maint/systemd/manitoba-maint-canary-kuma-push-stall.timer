@@ -1,0 +1,15 @@
+[Unit]
+Description=Manitoba canary - Kuma push stall length (hourly)
+
+[Timer]
+# Hourly is plenty: the nightly clear-old-data stall is ~70s, the ledger keeps
+# 24h, and a stall over budget stays red for a full day. :01 was the ONLY
+# minute free of every fixed minute and N/10, N/15, N/30 step here (never :00 -
+# see the 2026-09-12 Kuma connection-pool incident in
+# manitoba-maint-canary-vlogs-stall.timer). Calendar, not OnBootSec (QFLX-55).
+OnCalendar=*:01:00 UTC
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
