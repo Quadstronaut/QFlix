@@ -52,14 +52,87 @@ _consecutive_failures: dict[str, int] = {}
 _PUSH_TIMEOUT_S = float(os.environ.get("MANITOBA_KUMA_PUSH_TIMEOUT", "15"))
 _PUSH_RETRIES = int(os.environ.get("MANITOBA_KUMA_PUSH_RETRIES", "1"))
 
+# QFLX-104 stall breaker. Kuma's built-in clear-old-data job (cron
+# `14 03 * * *`, container-local = 02:14 UTC in winter) blocks /api/push for
+# ~70s every night. Before this breaker, the cycle pushed apps one after
+# another, so a stalled Kuma cost 2 x 15s PER APP: Sonarr and Sonarr2 (first
+# in the manifest) burned 60s, everyone after them was pushed >90s after their
+# previous beat, and ~32 monitors flipped DOWN at once. Now the first push to
+# exhaust its retries trips the breaker; every later push in this cycle (and
+# in later cycles, until Kuma answers) is DEFERRED with no network call, so
+# probes, strikes and auto-heal keep their normal cadence. serve() re-probes
+# Kuma every _STALL_RECHECK_S and flushes the deferred pushes the moment it
+# answers, so the silence Kuma sees is the stall itself, not stall + backlog.
+_STALL_RECHECK_S = float(os.environ.get("MANITOBA_KUMA_STALL_RECHECK", "5"))
+_STALL_LEDGER_NAME = "kuma-push-stalls.jsonl"
 
-def _push_get(kuma_url: str, token: str, params: dict):
+
+class KumaStalled(Exception):
+    """Raised by _push_get instead of a network call while the breaker is
+    open. The push was queued, not lost: _flush_deferred() delivers it."""
+
+
+class _Breaker:
+    """Per-process breaker state. Module-level so it survives across cycles;
+    tests reset it with reset_breaker()."""
+
+    def __init__(self) -> None:
+        self.opened_at: Optional[float] = None   # wall clock of the hung request's start
+        # token -> (label, params). Latest push per token wins: a monitor only
+        # needs its newest status, and Kuma treats any push as a heartbeat.
+        self.deferred: dict[str, tuple[str, dict]] = {}
+
+    @property
+    def is_open(self) -> bool:
+        return self.opened_at is not None
+
+
+_breaker = _Breaker()
+
+
+def reset_breaker() -> None:
+    """Close the breaker and drop deferred pushes. For tests."""
+    global _breaker
+    _breaker = _Breaker()
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _stall_ledger_path() -> Path:
+    # Lazy, not at import: tests isolate MANITOBA_STATE_DIR after import.
+    base = os.environ.get("MANITOBA_STATE_DIR")
+    root = Path(base) if base else Path.home() / ".opt" / "maint"
+    return root / _STALL_LEDGER_NAME
+
+
+def _record_stall(event: dict) -> None:
+    """Append one JSON line to the stall ledger, read by the kuma-push-stall
+    canary. Single writer (this process), append-only, so no lock. Never
+    raises: losing a ledger line must not cost a heartbeat."""
+    try:
+        path = _stall_ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, sort_keys=True) + "\n")
+    except Exception as exc:
+        log.warning("kuma stall ledger write failed: %s", exc)
+
+
+def _push_get(kuma_url: str, token: str, params: dict, *, label: str = "?"):
     """GET Kuma's /api/push/<token> with a bounded timeout + retry on read
     timeout only. A timeout means Kuma is briefly slow (retry delivers the
     heartbeat); a ConnectionError means Kuma is actually down (fail fast, no
     retry — retrying a refused socket just wastes a cycle). Returns the
-    Response; re-raises the timeout if all attempts are exhausted."""
+    Response; re-raises the timeout if all attempts are exhausted, after
+    tripping the stall breaker. While the breaker is open, queues the push and
+    raises KumaStalled without touching the network."""
+    if _breaker.is_open:
+        _breaker.deferred[token] = (label, dict(params))
+        raise KumaStalled(f"kuma push deferred (stalled since {_iso(_breaker.opened_at)})")
     url = f"{kuma_url}/api/push/{token}"
+    started = time.time()
     for attempt in range(_PUSH_RETRIES + 1):
         try:
             return requests.get(url, params=params, timeout=_PUSH_TIMEOUT_S)
@@ -68,7 +141,50 @@ def _push_get(kuma_url: str, token: str, params: dict):
                 log.warning("push timeout (attempt %d/%d), retrying: %s",
                             attempt + 1, _PUSH_RETRIES + 1, exc)
                 continue
+            # Retries exhausted: Kuma is stalled, not blipping. Trip, and queue
+            # this push too so it is delivered on recovery rather than dropped.
+            _breaker.opened_at = started
+            _breaker.deferred[token] = (label, dict(params))
+            log.warning("kuma push breaker OPEN (%s timed out %d time(s)); "
+                        "deferring pushes until Kuma answers", label, _PUSH_RETRIES + 1)
+            _record_stall({"event": "open", "at": _iso(started)})
             raise
+
+
+def _flush_deferred(kuma_url: str) -> bool:
+    """Probe Kuma with ONE deferred push (single attempt, no retry). If Kuma
+    answers, close the breaker, record the stall, and deliver the rest.
+    Returns True when the breaker is closed afterwards."""
+    if not _breaker.is_open:
+        return True
+    if not _breaker.deferred:
+        # Nothing to probe with; let the next cycle's first push test Kuma.
+        _breaker.opened_at = None
+        return True
+    token, (label, params) = next(iter(_breaker.deferred.items()))
+    try:
+        requests.get(f"{kuma_url}/api/push/{token}", params=params, timeout=_PUSH_TIMEOUT_S)
+    except Exception as exc:
+        log.info("kuma still stalled (probe via %s: %s)", label, exc)
+        return False
+    now = time.time()
+    opened_at = _breaker.opened_at
+    pending = list(_breaker.deferred.items())[1:]
+    _breaker.opened_at = None
+    _breaker.deferred = {}
+    seconds = round(now - opened_at, 1)
+    log.warning("kuma push breaker CLOSED after %.1fs; flushing %d deferred push(es)",
+                seconds, len(pending) + 1)
+    _record_stall({"event": "close", "at": _iso(now), "opened_at": _iso(opened_at),
+                   "seconds": seconds, "deferred": len(pending) + 1})
+    for tok, (lbl, prm) in pending:
+        try:
+            _push_get(kuma_url, tok, prm, label=lbl)
+        except KumaStalled:
+            continue  # re-tripped mid-flush; already re-queued by _push_get
+        except Exception as exc:
+            log.warning("deferred push %s failed: %s", lbl, exc)
+    return not _breaker.is_open
 
 
 def _utcnow() -> datetime:
@@ -169,9 +285,11 @@ def push_once(
             _probe_ok[app.name] = True
             params = {"status": "up", "msg": f"[SUPPRESSED] {sup_reason}"}
             try:
-                resp = _push_get(kuma_url, token, params)
+                resp = _push_get(kuma_url, token, params, label=app.name)
                 results[app.name] = "ok" if resp.status_code == 200 else f"http_{resp.status_code}"
                 log.info("pushed %s → up [SUPPRESSED: %s]", app.name, sup_reason)
+            except KumaStalled:
+                results[app.name] = "deferred"
             except Exception as exc:
                 results[app.name] = f"error: {exc}"
                 log.error("push (suppressed) %s failed: %s", app.name, exc)
@@ -190,9 +308,11 @@ def push_once(
             _consecutive_failures.pop(app.name, None)
             params = {"status": "up", "msg": "[paused: fair-use quiet hours]"}
             try:
-                resp = _push_get(kuma_url, token, params)
+                resp = _push_get(kuma_url, token, params, label=app.name)
                 results[app.name] = "ok" if resp.status_code == 200 else f"http_{resp.status_code}"
                 log.info("pushed %s → up [PAUSED: quiet hours]", app.name)
+            except KumaStalled:
+                results[app.name] = "deferred"
             except Exception as exc:
                 results[app.name] = f"error: {exc}"
                 log.error("push (paused) %s failed: %s", app.name, exc)
@@ -206,9 +326,11 @@ def push_once(
             _consecutive_failures.pop(app.name, None)
             params = {"status": "up", "msg": "[maint-window: upgrades in progress]"}
             try:
-                resp = _push_get(kuma_url, token, params)
+                resp = _push_get(kuma_url, token, params, label=app.name)
                 results[app.name] = "ok" if resp.status_code == 200 else f"http_{resp.status_code}"
                 log.info("pushed %s → up [maint-window]", app.name)
+            except KumaStalled:
+                results[app.name] = "deferred"
             except Exception as exc:
                 results[app.name] = f"error: {exc}"
                 log.error("push (maint-window) %s failed: %s", app.name, exc)
@@ -317,7 +439,7 @@ def push_once(
         # this did) sent the previous, unannotated text and the dashboard never
         # showed the triage note those branches exist to provide.
         try:
-            resp = _push_get(kuma_url, token, params)
+            resp = _push_get(kuma_url, token, params, label=app.name)
             if resp.status_code == 200:
                 results[app.name] = "ok"
                 log.info("pushed %s → %s (%s)", app.name, status, result.reason)
@@ -327,6 +449,10 @@ def push_once(
                     "push %s → %s but Kuma returned HTTP %s",
                     app.name, status, resp.status_code,
                 )
+        except KumaStalled:
+            # Queued, not lost; one breaker line was logged at trip time, so
+            # no per-app ERROR spam for the length of the stall.
+            results[app.name] = "deferred"
         except Exception as exc:
             results[app.name] = f"error: {exc}"
             log.error("push %s failed: %s", app.name, exc)
@@ -357,7 +483,10 @@ def push_once(
                          else f"{down_count}/{total} down")
             try:
                 _push_get(kuma_url, fleet_token,
-                          {"status": fleet_status, "msg": fleet_msg})
+                          {"status": fleet_status, "msg": fleet_msg},
+                          label="qflix-fleet")
+            except KumaStalled:
+                pass
             except Exception as exc:
                 log.warning("fleet aggregate push failed: %s", exc)
 
@@ -467,14 +596,30 @@ def serve(
                 try:
                     _push_get(kuma_url, self_token,
                               {"status": "up",
-                               "msg": f"cycle ok={ok_count}/{len(results)}"})
+                               "msg": f"cycle ok={ok_count}/{len(results)}"},
+                              label=_SELF_TOKEN_KEY)
+                except KumaStalled:
+                    pass
                 except Exception as exc:
                     # Don't let a Kuma blip kill the pusher loop.
                     log.warning("pusher self-heartbeat failed: %s", exc)
             if run_once:
                 return
             deadline = time.monotonic() + interval_s
+            next_probe = 0.0
             while not _stop and time.monotonic() < deadline:
+                # QFLX-104: while Kuma is stalled, probe it every
+                # _STALL_RECHECK_S and flush the backlog the moment it
+                # answers, instead of waiting out the full interval. Closed
+                # breaker = the original loop, call for call.
+                if _breaker.is_open:
+                    now = time.monotonic()
+                    if now >= next_probe:
+                        try:
+                            _flush_deferred(kuma_url)
+                        except Exception:
+                            log.exception("pusher: deferred flush crashed; continuing")
+                        next_probe = time.monotonic() + _STALL_RECHECK_S
                 time.sleep(1)
     except KeyboardInterrupt:
         log.info("pusher received KeyboardInterrupt, exiting")

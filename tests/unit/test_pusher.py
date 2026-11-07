@@ -856,3 +856,132 @@ class TestFleetAggregate:
         info_notifies = [x for x in n2 if x["level"] == "info"]
         assert len(info_notifies) == 1, f"Expected 1 clear notify; got {info_notifies}"
         assert "clear" in info_notifies[0]["message"].lower()
+
+
+# ---------------------------------------------------------------------------
+# QFLX-104: Kuma stall breaker
+# ---------------------------------------------------------------------------
+
+class TestKumaStallBreaker:
+    """Kuma's nightly clear-old-data job blocks /api/push ~70s. Serial 2x15s
+    retries per app stretched one cycle past every monitor's 90s window and
+    ~32 monitors went DOWN at once (2026-11-01..07). The breaker must cap the
+    damage at ONE hung push and deliver the backlog the moment Kuma answers."""
+
+    def _ledger(self, tmp_path):
+        p = tmp_path / "kuma-push-stalls.jsonl"
+        return [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
+
+    def _apps(self, n):
+        apps = [_make_app(f"app{i}", f"App {i}") for i in range(n)]
+        return _make_manifest(*apps), {f"app{i}": f"tok{i}" for i in range(n)}
+
+    def test_stall_costs_one_push_not_one_per_app(self, tmp_path, monkeypatch):
+        """First app exhausts retries -> breaker opens -> the other apps are
+        deferred with NO network call, and their probes still run."""
+        import requests as _rq
+        from lib import pusher
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        manifest, tokens = self._apps(5)
+        probe = MagicMock(return_value=HealthResult(ok=True, latency_ms=1, reason="ok"))
+        with patch("lib.pusher.health_mod.probe", probe), \
+             patch("lib.pusher.requests.get", side_effect=_rq.ReadTimeout("stalled")) as g:
+            res = pusher.push_once(manifest=manifest, kuma_url="http://k", tokens=tokens)
+        assert g.call_count == pusher._PUSH_RETRIES + 1, "only the first push may hang"
+        assert res["app0"].startswith("error:")
+        assert [res[f"app{i}"] for i in range(1, 5)] == ["deferred"] * 4
+        assert probe.call_count == 5, "probes/strikes must keep their cadence"
+        assert pusher._breaker.is_open
+        assert set(pusher._breaker.deferred) == set(tokens.values()), "nothing dropped"
+        ev = self._ledger(tmp_path)
+        assert [e["event"] for e in ev] == ["open"]
+
+    def test_deferred_push_does_not_count_as_app_failure(self, tmp_path, monkeypatch):
+        """A Kuma stall is not an app outage: no strike, no recovery."""
+        from lib import pusher
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        pusher._breaker.opened_at = time.time()
+        pusher.reset_strike_counter()
+        manifest, tokens = self._apps(1)
+        rec = MagicMock()
+        with patch("lib.pusher.health_mod.probe",
+                   return_value=HealthResult(ok=True, latency_ms=1, reason="ok")), \
+             patch("lib.pusher.recovery_mod.trigger_async", rec), \
+             patch("lib.pusher.requests.get") as g:
+            res = pusher.push_once(manifest=manifest, kuma_url="http://k", tokens=tokens)
+        g.assert_not_called()
+        rec.assert_not_called()
+        assert res == {"app0": "deferred"}
+        assert "app0" not in pusher._consecutive_failures
+
+    def test_latest_push_per_token_wins(self):
+        from lib import pusher
+        pusher._breaker.opened_at = time.time()
+        for status in ("down", "up"):
+            with pytest.raises(pusher.KumaStalled):
+                pusher._push_get("http://k", "tokA", {"status": status}, label="a")
+        assert pusher._breaker.deferred == {"tokA": ("a", {"status": "up"})}
+
+    def test_flush_closes_breaker_and_delivers_backlog(self, tmp_path, monkeypatch):
+        from lib import pusher
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        pusher._breaker.opened_at = time.time() - 75
+        pusher._breaker.deferred = {"t1": ("a", {"status": "up"}),
+                                    "t2": ("b", {"status": "down"})}
+        with patch("lib.pusher.requests.get",
+                   return_value=MagicMock(status_code=200)) as g:
+            assert pusher._flush_deferred("http://k") is True
+        urls = [c.args[0] for c in g.call_args_list]
+        assert urls == ["http://k/api/push/t1", "http://k/api/push/t2"]
+        assert g.call_args_list[1].kwargs["params"] == {"status": "down"}
+        assert not pusher._breaker.is_open and pusher._breaker.deferred == {}
+        ev = self._ledger(tmp_path)
+        assert ev[-1]["event"] == "close"
+        assert 74 <= ev[-1]["seconds"] <= 80
+        assert ev[-1]["deferred"] == 2
+        assert ev[-1]["opened_at"].endswith("Z") and ev[-1]["at"].endswith("Z")
+
+    def test_flush_while_still_stalled_keeps_backlog(self, tmp_path, monkeypatch):
+        import requests as _rq
+        from lib import pusher
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path))
+        pusher._breaker.opened_at = time.time()
+        pusher._breaker.deferred = {"t1": ("a", {"status": "up"})}
+        with patch("lib.pusher.requests.get", side_effect=_rq.ReadTimeout("x")) as g:
+            assert pusher._flush_deferred("http://k") is False
+        assert g.call_count == 1, "probe is a single attempt, no retry"
+        assert pusher._breaker.is_open and "t1" in pusher._breaker.deferred
+        assert self._ledger(tmp_path) == []
+
+    def test_ledger_write_failure_never_raises(self, tmp_path, monkeypatch):
+        from lib import pusher
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("x")
+        monkeypatch.setenv("MANITOBA_STATE_DIR", str(blocker))
+        pusher._record_stall({"event": "open", "at": "x"})  # must not raise
+
+    def test_serve_probes_kuma_during_wait_when_open(self, tmp_path):
+        """While open, serve() calls _flush_deferred during the inter-cycle
+        wait instead of sleeping out the whole interval."""
+        from lib import pusher
+        mf = TestServe()._make_manifest_file(tmp_path)
+        tf = tmp_path / "tokens.json"
+        tf.write_text(json.dumps({"sonarr": "tok"}))
+        calls = {"n": 0}
+
+        def cycle(**kw):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise KeyboardInterrupt
+            pusher._breaker.opened_at = time.time()
+            pusher._breaker.deferred = {"tok": ("sonarr", {"status": "up"})}
+            return {"sonarr": "deferred"}
+
+        clock = iter(range(0, 10**6, 1))
+        with patch("lib.pusher.push_once", side_effect=cycle), \
+             patch("lib.pusher._flush_deferred", return_value=False) as fl, \
+             patch("lib.pusher.time.sleep"), \
+             patch("lib.pusher.time.monotonic", side_effect=lambda: next(clock)):
+            pusher.serve(manifest_path=mf, tokens_path=tf,
+                         kuma_url="http://k", interval_s=60)
+        assert fl.call_count >= 2, "must re-probe Kuma repeatedly within one interval"
