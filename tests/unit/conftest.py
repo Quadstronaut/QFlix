@@ -25,6 +25,7 @@ from __future__ import annotations
 import atexit
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -66,6 +67,22 @@ def _no_real_secrets_or_notifications(tmp_path, monkeypatch):
     monkeypatch.setenv("MANITOBA_SECRETS_DIR", str(isolated))
     monkeypatch.setenv("MANITOBA_SECRETS", str(isolated))
     monkeypatch.setenv("MANITOBA_STATE_DIR", str(tmp_path / "maint-state-isolated"))
+
+
+@pytest.fixture(autouse=True)
+def _pusher_breaker_closed():
+    # QFLX-104: lib.pusher's Kuma stall breaker is module-level state that
+    # survives across cycles by design. A test that exhausts push retries trips
+    # it, and every later test in ANY file would then see its pushes deferred
+    # with no network call. Close it around every test. sys.modules check: never
+    # import the pusher just to reset it.
+    mod = sys.modules.get("lib.pusher")
+    if mod is not None:
+        mod.reset_breaker()
+    yield
+    mod = sys.modules.get("lib.pusher")
+    if mod is not None:
+        mod.reset_breaker()
 
 
 # QFLX-44: scripts/mcp/logs.py reads zone-less LOCAL stamps in the box's zone.

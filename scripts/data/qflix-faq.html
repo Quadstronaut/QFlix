@@ -838,7 +838,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
 
     <section class="deck" id="sec-monitoring">
       <h2><span class="num">10</span>Kuma &amp; canaries</h2>
-      <p class="deck-sub">Push monitors, status page, and the 43 end-to-end canaries.</p>
+      <p class="deck-sub">Push monitors, status page, and the 44 end-to-end canaries.</p>
 
       <article class="card tut" id="q-kuma-arch" data-tags="kuma push monitor pusher webhook netns isolation 60 seconds">
         <h3>Why is auto-heal in the pusher and not in a Kuma webhook? <a class="qhash" href="#q-kuma-arch">#</a></h3>
@@ -849,7 +849,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
       </article>
 
       <article class="card tut" id="q-canaries" data-tags="canary movie anime deletion mobile-ux pipeline end-to-end hardlink qbit vlogs kometa quota prowlarr maintainerr">
-        <h3>What do the 43 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
+        <h3>What do the 44 canaries actually test? <a class="qhash" href="#q-canaries">#</a></h3>
         <table class="tbl">
           <thead><tr><th>Canary</th><th>Cadence</th><th>Asserts</th></tr></thead>
           <tbody>
@@ -890,6 +890,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
             <tr><td><code>canary-arr-plex-parity</code></td><td>daily</td><td>Every file the download managers say they imported must actually be visible in Plex. Two whole seasons of a show once sat invisible for weeks with every other check green &mdash; the files existed and were imported, but Plex could not match them, and nothing compared the two sides. This check does, daily, and only raises its hand when the same file is missing two days running, so a library scan that is merely slow never pages anyone.</td></tr>
             <tr><td><code>canary-seerr-arr-parity</code></td><td>hourly</td><td>When a season's files get cleaned up to make room for new requests, the request system is supposed to notice and let you ask for it again. One of the clean-up steps only checked part of its own to-do list, so dozens of seasons across nearly 30 shows sat marked "removed" forever &mdash; nobody could re-request them without an admin stepping in by hand. This check compares what the request system believes against what the download managers actually hold, hourly, and only speaks up once the same mismatch shows up two checks in a row. It only reports; it never changes anything itself.</td></tr>
             <tr><td><code>canary-seerr-commit-tag</code></td><td>every-6h</td><td>The request site's page in your browser and the server behind it each carry a build label, and they must match. When they did not, the site kept popping up "Seerr Updated &mdash; Reload" every minute, and reloading never made it stop. A member spotted that one before we did. This check compares the two labels every six hours and goes red the moment they differ.</td></tr>
+            <tr><td><code>canary-kuma-push-stall</code></td><td>hourly</td><td>The status monitor keeps answering our heartbeats. Every night its own housekeeping freezes it for about a minute, and our checks quietly wait it out and report afterwards. That is harmless at around 70 seconds; if the freeze grew past two minutes, healthy services would start showing as down for no reason. This one reads the log of those freezes, shows how long the longest was, and goes red before it gets that bad</td></tr>
             <tr><td><code>canary-vlogs-time-integrity</code></td><td>hourly</td><td>Every line in the log search is stamped with the moment it was written. Some apps write their clock in local time without saying so, which once made a restart look like it happened two hours in the future. This check looks for any entry dated after "now" and for any line stored twice, and names the app when it finds one.</td></tr>
             <tr><td><code>canary-rea-liveness</code></td><td>hourly</td><td>The one piece of QFlix that does <strong>not</strong> run on the server: a log-reading audit that lives on the operator's own PC and reports anything odd it finds. Nothing had ever watched it &mdash; every audit QFlix runs is server-scoped, so the auditor itself was the blind spot. Reviewing its entire history, 20 of 72 runs had failed with no notification anywhere at all. The check runs <em>here</em>, on the server, reading a heartbeat the PC leaves behind on the connection it already makes &mdash; deliberately, so that noticing the auditor is broken never depends on the auditor being well enough to notice it itself. It also reds if the audit is still running but its last verdict has frozen, which is the failure a simple &ldquo;did it check in?&rdquo; signal cannot see.</td></tr>
             <tr><td><code>canary-timer-liveness</code></td><td>every 15 min</td><td>Every scheduled job on the box, checked generically: is each timer installed, active, and actually scheduled to fire again? Four jobs &mdash; including the Monday maintenance orchestrator and its own watchdog &mdash; previously had nothing watching them, so they could stop and nobody would know. This is the watcher that watches the watchers; Uptime Kuma watches it in turn, so the chain ends somewhere visible.</td></tr>
@@ -931,7 +932,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
             <tr><td>1. Prowlarr</td><td>Indexer count &ge; 5; search round-trip for &ldquo;ubuntu&rdquo; returns &ge; 1</td></tr>
             <tr><td>2. *arr &harr; qBit</td><td><code>testall</code> returns 200 for sonarr / sonarr2 / radarr / radarr2</td></tr>
             <tr><td>3. Library hygiene</td><td>Hardlink count &ge; 2 on Movies samples</td></tr>
-            <tr><td>4. App liveness</td><td>qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 43 canaries</td></tr>
+            <tr><td>4. App liveness</td><td>qBit (torrent count), qflix-newsletter timer + dry-run, Buildarr timer + venv, python-plexapi venv, stream-stats freshness, upgradinatorr timer, Tdarr server + node, Kometa timer + last-run, Recyclarr timer + no-4k policy, Listmonk health + subscriber count, all 44 canaries</td></tr>
             <tr><td>5. Maintenance system</td><td>Webhook <code>/health</code>, window timer scheduled, manifest validates, pusher active, Kuma drift = 0, Kuma all-up (external + parked excluded)</td></tr>
           </tbody>
         </table>
