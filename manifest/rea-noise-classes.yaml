@@ -1344,6 +1344,28 @@ classes:
       VERSION: PMS down or unreachable reds manitoba-maint-canary-plex-playback.
     added: 2026-11-05
 
+  - id: plex-scan-file-size-enoent
+    title: 'Plex scanner "Couldn''t get size of file ... No such file or directory" for an already-deleted file'
+    rx: '(?i)could(?:n.?t| not) get size of file\b.{0,600}?no such file or directory'
+    field: excerpt
+    prompt_clause: 'Plex scanner "Couldn''t get size of file ... No such file or directory" lines for a file already deleted'
+    why: >-
+      Paged 2026-11-08 06:06 as plex:file-size-error, 2/3 (Law & Order
+      S05E04). The scanner stats a file that the reaper, an *arr upgrade or a
+      Tdarr/janitor replace removed after the scan was queued; boost reports
+      ENOENT [system:2] and Plex skips it. Same mechanism already proven for
+      plex-season-skip-null-value (2026-09-25 logged this exact line beside
+      the reaper's Law & Order S1 delete). OPERATOR 2026-11-08: files are
+      deleted by several mechanisms on purpose - not actionable, do not page.
+      Anchored on BOTH "get size of file" and ENOENT on ONE line (no (?s)), so
+      a size failure with any other cause (permission denied, I/O error) still
+      pages. `n.?t` instead of an apostrophe so a curly quote or a model's
+      "could not" still matches. field: excerpt - the every-line-claimed
+      check pages any finding that bundles another fault. WHO OWNS THE REAL
+      VERSION: a scanner that cannot read LIVE media reds
+      manitoba-maint-canary-plex-playback and -plex-transcoder.
+    added: 2026-11-08
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1491,6 +1513,9 @@ prompt_segments:
   - index: 46
     marker: 'Plex "Error parsing HTTP request:" lines whose payload is binary/unprintable bytes'
     classes: [plex-binary-http-probe]
+  - index: 47
+    marker: 'Plex scanner "Couldn''t get size of file ... No such file or directory" lines for a file already deleted'
+    classes: [plex-scan-file-size-enoent]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
