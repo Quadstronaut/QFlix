@@ -1924,15 +1924,27 @@ function Invoke-Model {
         # resident predecessor pushed the next model partly onto the CPU.
         keep_alive = 0
     } | ConvertTo-Json -Depth 10 -Compress
+    # Every no-answer path is LOGGED (2026-11-07): a bare catch made 7
+    # all_models_noop runs in one day undiagnosable.
+    $sw = [Diagnostics.Stopwatch]::StartNew()
     try {
         $resp = Invoke-RestMethod -Uri "$Script:OllamaBase/api/generate" `
                   -Method Post -Body $body -ContentType 'application/json' `
                   -TimeoutSec $TimeoutSec -ErrorAction Stop
         if ($resp.PSObject.Properties.Name -contains 'response') {
+            $ev = if ($resp.PSObject.Properties.Name -contains 'eval_count') { $resp.eval_count } else { '?' }
+            $pe = if ($resp.PSObject.Properties.Name -contains 'prompt_eval_count') { $resp.prompt_eval_count } else { '?' }
+            Write-AuditLog "model-done model=$Model s=$([int]$sw.Elapsed.TotalSeconds) prompt_tok=$pe out_tok=$ev chars=$(([string]$resp.response).Length)"
             return [string]$resp.response
         }
+        Write-AuditLog "model-noop model=$Model s=$([int]$sw.Elapsed.TotalSeconds) why=no-response-field"
         return $null
-    } catch { return $null }
+    } catch {
+        $msg = ($_.Exception.Message -replace '\s+', ' ')
+        if ($msg.Length -gt 160) { $msg = $msg.Substring(0, 160) }
+        Write-AuditLog "model-noop model=$Model s=$([int]$sw.Elapsed.TotalSeconds) why=$msg"
+        return $null
+    }
 }
 
 function Send-Discord {
@@ -2141,12 +2153,13 @@ function Get-LastTerminalAuditLine {
     # being well enough to diagnose itself.
     #
     # "Terminal" excludes the `suppressed n=` line, which Write-AuditLog emits
-    # mid-run immediately BEFORE the run's real verdict. A naive `tail -1` is a
+    # mid-run immediately BEFORE the run's real verdict, and the per-model
+    # `model-done` / `model-noop` lines (QFLX-106), also mid-run. A naive `tail -1` is a
     # KNOWN-WRONG implementation of this contract - the canary has a dedicated
     # branch for receiving that line, labelled
     # "writer-wrote-suppression-line-not-terminal-line". Terminal shapes are
     # `ok findings=...`, `fail reason=...` and `SKIPPED ...`; the filter stays
-    # minimal (one known non-terminal shape) precisely so new vocabulary reaches
+    # minimal (two known non-terminal shapes) precisely so new vocabulary reaches
     # the canary's closed table rather than being silently dropped here.
     #
     # Returns '' when there is nothing honest to report: no log yet, unreadable,
@@ -2164,7 +2177,8 @@ function Get-LastTerminalAuditLine {
         # message, so hand it something clean rather than something tolerated.
         $l = $lines[$i].TrimStart([char]0xFEFF).Trim()
         if (-not $l) { continue }
-        if ((($l -split ' ', 2)[-1]) -like 'suppressed n=*') { continue }
+        $body = ($l -split ' ', 2)[-1]
+        if ($body -like 'suppressed n=*' -or $body -like 'model-*') { continue }
         return $l
     }
     return ''
@@ -2648,7 +2662,11 @@ function Invoke-Main {
             $resp = Invoke-Model -Model $m -Prompt $user -SystemPrompt $sys
             if (-not $resp) { continue }
             $arr = Extract-JsonArray $resp
-            if ($null -eq $arr) { continue }
+            if ($null -eq $arr) {
+                $head = ($resp.Substring(0, [Math]::Min(80, $resp.Length)) -replace '\s+', ' ')
+                Write-AuditLog "model-noop model=$m why=unparseable head=$head"
+                continue
+            }
             $okModels++
             # COUNTED, never silent (council 2026-08-18): suppression has an
             # audit line, so the two lossy paths on this side get one too.

@@ -2491,12 +2491,51 @@ Test-Case 'live probes run on this box without throwing' {
 Test-Case 'Invoke-Model asks Ollama to unload the model when done (keep_alive=0)' {
     # Each model is used once per run; leaving it resident for Ollama's default
     # keep-alive holds 5-7 GB of VRAM after the run ends.
-    $Script:CapturedBody = $null
-    function Invoke-RestMethod { param($Uri,$Method,$Body,$ContentType,$TimeoutSec,$ErrorAction) $Script:CapturedBody = $Body; [pscustomobject]@{ response = '[]' } }
-    [void](Invoke-Model -Model 'm' -Prompt 'p' -SystemPrompt 's')
-    $b = $Script:CapturedBody | ConvertFrom-Json
-    Assert-True ($b.PSObject.Properties.Name -contains 'keep_alive') 'request carries keep_alive'
-    Assert-Equal 0 $b.keep_alive 'keep_alive is 0 (unload immediately)'
+    # Invoke-Model writes audit.log (QFLX-106), so isolate APPDATA explicitly
+    # rather than relying on an earlier case having left it pointed at temp.
+    $savedAppData = $env:APPDATA
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
+    try {
+        $Script:CapturedBody = $null
+        function Invoke-RestMethod { param($Uri,$Method,$Body,$ContentType,$TimeoutSec,$ErrorAction) $Script:CapturedBody = $Body; [pscustomobject]@{ response = '[]' } }
+        [void](Invoke-Model -Model 'm' -Prompt 'p' -SystemPrompt 's')
+        $b = $Script:CapturedBody | ConvertFrom-Json
+        Assert-True ($b.PSObject.Properties.Name -contains 'keep_alive') 'request carries keep_alive'
+        Assert-Equal 0 $b.keep_alive 'keep_alive is 0 (unload immediately)'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+        $env:APPDATA = $savedAppData
+    }
+}
+
+# QFLX-106: a bare catch in Invoke-Model made 7 all_models_noop runs in one day
+# undiagnosable (cause was Ollama's 300s load timeout on a defrag-starved HDD).
+# Every model outcome is now one audit line; the dead-man must not read them.
+Test-Case 'Invoke-Model logs model-done / model-noop why=, liveness skips them' {
+    $savedAppData = $env:APPDATA
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
+    try {
+        function Invoke-RestMethod { param($Uri,$Method,$Body,$ContentType,$TimeoutSec,$ErrorAction) [pscustomobject]@{ response = '[]'; eval_count = 7; prompt_eval_count = 42 } }
+        Assert-Equal '[]' (Invoke-Model -Model 'ok-model' -Prompt 'p' -SystemPrompt 's') 'response returned'
+        function Invoke-RestMethod { param($Uri,$Method,$Body,$ContentType,$TimeoutSec,$ErrorAction) throw "timed out waiting for`nllama-server to start" }
+        Assert-Equal $null (Invoke-Model -Model 'bad-model' -Prompt 'p' -SystemPrompt 's') 'throw returns null'
+        function Invoke-RestMethod { param($Uri,$Method,$Body,$ContentType,$TimeoutSec,$ErrorAction) [pscustomobject]@{ done = $true } }
+        Assert-Equal $null (Invoke-Model -Model 'odd-model' -Prompt 'p' -SystemPrompt 's') 'no response field returns null'
+
+        $log = Get-Content -Raw -LiteralPath (Join-Path (Get-StateDir) 'audit.log')
+        Assert-True ($log -match 'model-done model=ok-model s=\d+ prompt_tok=42 out_tok=7 chars=2') 'success line'
+        Assert-True ($log -match 'model-noop model=bad-model s=\d+ why=timed out waiting for llama-server to start') 'error cause logged on one line'
+        Assert-True ($log -match 'model-noop model=odd-model s=\d+ why=no-response-field') 'missing field logged'
+
+        # Dead-man contract: model-* lines are mid-run, never the terminal verdict.
+        Write-AuditLog 'ok findings=0 outcome=silent'
+        Write-AuditLog 'model-done model=late s=1 prompt_tok=1 out_tok=1 chars=1'
+        Write-AuditLog 'suppressed n=0'
+        Assert-True ((Get-LastTerminalAuditLine) -match 'ok findings=0 outcome=silent$') 'terminal line skips model-* and suppressed'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+        $env:APPDATA = $savedAppData
+    }
 }
 
 # Summary
