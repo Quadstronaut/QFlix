@@ -250,6 +250,15 @@ def test_rules_match_their_canonical_log_lines(ledgers):
         ("plex-binary-http-probe",
          "Nov 03, 2026 12:48:24.560 [139952965229368] ERROR - Error parsing "
          "HTTP request: \x8b\x1fP\xe2\x91T"),
+        # QFLX-109. Paged 2026-11-08 06:06 as plex:file-size-error.
+        ("plex-scan-file-size-enoent",
+         "Couldn't get size of file \"/home/user/media/TV Shows/Law & Order/"
+         "Season 5/Law & Order - S05E04 - Family Values WEBDL-1080p.mkv\": "
+         "boost::filesystem::file_size: No such file or directory [system:2]"),
+        # ...as a model may paraphrase it.
+        ("plex-scan-file-size-enoent",
+         "ERROR - Could not get size of file \"/x.mkv\": No such file or "
+         "directory"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
@@ -429,7 +438,11 @@ def test_new_rules_do_not_eat_real_faults(ledgers):
             # A readable malformed request is a real client bug, not a probe.
             ("plex-binary-http-probe",
              "ERROR - Error parsing HTTP request: GET /library/sections "
-             "HTTP/1.1 invalid header line")):
+             "HTTP/1.1 invalid header line"),
+            # A size failure with any other cause is a real access fault.
+            ("plex-scan-file-size-enoent",
+             "Couldn't get size of file \"/home/user/media/x.mkv\": "
+             "boost::filesystem::file_size: Permission denied [system:13]")):
         assert not re.search(by[cid], still_pages), (
             cid + " must not suppress an uncensused neighbour: " + still_pages)
 

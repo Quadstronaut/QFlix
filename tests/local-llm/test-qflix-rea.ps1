@@ -1905,6 +1905,17 @@ Test-Case 'Test-IsNoiseFinding suppresses Plex binary HTTP probe, not a readable
     Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
 }
 
+# QFLX-109: the 2026-11-08 06:06 plex:file-size-error page.
+Test-Case 'Test-IsNoiseFinding suppresses Plex file-size ENOENT, not other causes' {
+    $line = 'Couldn''t get size of file "/home/user/media/TV Shows/Law & Order/Season 5/Law & Order - S05E04 - Family Values WEBDL-1080p.mkv": boost::filesystem::file_size: No such file or directory [system:2]: "/home/user/media/TV Shows/Law & Order/Season 5/Law & Order - S05E04 - Family Values...'
+    $gone = @{ signature = 'plex:file-size-error'; summary = 'Plex scanner unable to get file size due to missing file'; excerpt = $line }
+    Assert-Equal 'plex-scan-file-size-enoent' (Test-IsNoiseFinding $gone) 'real 06:06 record suppressed'
+    $perm = @{ signature = 'plex:file-size-error'; summary = 'size failed'; excerpt = 'Couldn''t get size of file "/home/user/media/x.mkv": boost::filesystem::file_size: Permission denied [system:13]' }
+    Assert-Equal $null (Test-IsNoiseFinding $perm) 'permission-denied size failure still pages'
+    $quota = @{ signature = 'plex:file-size-error'; summary = 'size failed'; excerpt = $line + "`nERROR - Unknown system error -122: Disk quota exceeded" }
+    Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
+}
+
 # ---------------------------------------------------------------------------
 # 2026-09-02: cross-run page ledger.
 #
