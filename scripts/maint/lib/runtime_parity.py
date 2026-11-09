@@ -146,24 +146,26 @@ def is_descendant(pid: int, root: int, ppid_of, limit: int = 64) -> bool:
 _APPS_ROOT_RE = re.compile(r"/\.apps/([^/\s]+)/?$")
 
 
-def _mounts_sibling_config(host: Host, pid: int, slug: str) -> bool:
-    """True when *pid*'s container bind-mounts ANOTHER app's ~/.apps/<x> at
-    /config. sonarr and sonarr2 containers run the identical cmdline
-    (/app/sonarr/bin/Sonarr -data=/config, s6 "svc-sonarr"), so the cmdline
-    needle alone flags the live sibling as "sonarr woken" (box, 2026-10-10).
-    Only a POSITIVE identification of a different slug excludes the pid: an
-    unreadable mountinfo or no /config mount keeps the hit (fail toward red)."""
+def _config_mount_slug(host: Host, pid: int) -> Optional[str]:
+    """The <x> of the ~/.apps/<x> bind-mounted at /config in *pid*'s container,
+    or None when unreadable / absent / not under ~/.apps.
+
+    The mount is the one POSITIVE identity a UCC container carries. sonarr and
+    sonarr2 containers run the identical cmdline (/app/sonarr/bin/Sonarr
+    -data=/config, s6 "svc-sonarr"), so the cmdline alone can neither tell them
+    apart (box, 2026-10-10: the live sibling flagged as "sonarr woken") nor
+    find the "2" instance at all (QFLX-110, below)."""
     try:
         text = host.read(pid, "mountinfo")
     except OSError:
-        return False
+        return None
     for line in text.splitlines():
         f = line.split()
         if len(f) > 4 and f[4] == "/config":
             m = _APPS_ROOT_RE.search(f[3])
-            if m and m.group(1) != slug:
-                return True
-    return False
+            if m:
+                return m.group(1)
+    return None
 
 
 def woken_container(host: Host, app, uid: int) -> list[str]:
@@ -185,7 +187,16 @@ def woken_container(host: Host, app, uid: int) -> list[str]:
             cmd = host.read(pid, "cmdline").replace("\0", " ").lower()
         except OSError:
             continue                      # process exited mid-scan
-        if any(n in cmd for n in needles) and not _mounts_sibling_config(host, pid, slug):
+        # QFLX-110: a container that mounts OUR ~/.apps/<slug> at /config is
+        # ours whatever its cmdline says. The woken sonarr2 container
+        # (/app/sonarr/bin/Sonarr) never contains the needle "sonarr2", and
+        # the sonarr check skipped it as a sibling - so it ran beside native
+        # qflix-sonarr2 on one SQLite DB for 6 days (2026-11-03..09) with no
+        # violation. radarr2 has the same shape. Otherwise the cmdline needle
+        # decides, and only a POSITIVE sibling mount excludes it: unreadable
+        # or absent mountinfo keeps the hit (fail toward red).
+        owner = _config_mount_slug(host, pid)
+        if owner == slug or (owner is None and any(n in cmd for n in needles)):
             hits.append(pid)
     if hits:
         return [f"dormant container woken: {slug} pid(s) {','.join(map(str, hits[:5]))}"]
