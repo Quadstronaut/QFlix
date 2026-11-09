@@ -1916,6 +1916,17 @@ Test-Case 'Test-IsNoiseFinding suppresses Plex file-size ENOENT, not other cause
     Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
 }
 
+# QFLX-110: the 2026-11-09 14:08 UTC plex:scanner-missing-file page.
+Test-Case 'Test-IsNoiseFinding suppresses Plex season-skip file_size ENOENT, not other causes' {
+    $line = 'Exception caught determining whether we could skip ''Law & Order/Season 5'' ~ boost::filesystem::file_size: No such file or directory'
+    $gone = @{ signature = 'plex:scanner-missing-file'; summary = 'Plex scanner failed to determine skip for a season due to missing file'; excerpt = $line }
+    Assert-Equal 'plex-season-skip-file-size-enoent' (Test-IsNoiseFinding $gone) 'real 14:08 record suppressed'
+    $perm = @{ signature = 'plex:scanner-missing-file'; summary = 'skip failed'; excerpt = 'Exception caught determining whether we could skip ''Show/Season 1'' ~ boost::filesystem::file_size: Permission denied' }
+    Assert-Equal $null (Test-IsNoiseFinding $perm) 'permission-denied skip failure still pages'
+    $quota = @{ signature = 'plex:scanner-missing-file'; summary = 'skip failed'; excerpt = $line + "`nERROR - Unknown system error -122: Disk quota exceeded" }
+    Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
+}
+
 # ---------------------------------------------------------------------------
 # 2026-09-02: cross-run page ledger.
 #

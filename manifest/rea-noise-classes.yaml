@@ -1366,6 +1366,25 @@ classes:
       manitoba-maint-canary-plex-playback and -plex-transcoder.
     added: 2026-11-08
 
+  - id: plex-season-skip-file-size-enoent
+    title: 'Plex "Exception caught determining whether we could skip <Show/Season N> ~ boost::filesystem::file_size: No such file or directory"'
+    rx: '(?i)exception caught determining whether we could skip\s+''.+/season \d+''\s*~\s*(?:boost::filesystem::)?file_size:\s*no such file or directory'
+    field: excerpt
+    prompt_clause: 'Plex "Exception caught determining whether we could skip ''<Show>/Season N'' ~ boost::filesystem::file_size: No such file or directory" scanner lines'
+    why: >-
+      Paged 2026-11-09 14:08 UTC as plex:scanner-missing-file, 2/3 (Law &
+      Order/Season 5). Same mechanism as plex-season-skip-null-value and
+      plex-scan-file-size-enoent (the per-file twin, QFLX-109): the scanner's
+      skip-unchanged check stats a file in a season dir that the reaper, an
+      *arr upgrade or a Tdarr/janitor replace already removed; Plex skips and
+      continues. OPERATOR 2026-11-09: not actionable, do not page. Anchored on
+      '/Season N' AND file_size ENOENT, so a skip exception with any other
+      cause (permission denied, malformed DB, I/O error) still pages. field:
+      excerpt - the every-line-claimed check pages a bundled fault. WHO OWNS
+      THE REAL VERSION: a scanner that cannot read LIVE media reds
+      manitoba-maint-canary-plex-playback and -plex-transcoder.
+    added: 2026-11-09
+
 # Every ';'-delimited segment of the prompt's never-report sentence must be
 # claimed here by >=1 class, and every class above must be claimed by exactly
 # one segment. That two-way check is what would have caught the 2026-07-29 gap:
@@ -1516,6 +1535,9 @@ prompt_segments:
   - index: 47
     marker: 'Plex scanner "Couldn''t get size of file ... No such file or directory" lines for a file already deleted'
     classes: [plex-scan-file-size-enoent]
+  - index: 48
+    marker: 'Plex "Exception caught determining whether we could skip ''<Show>/Season N'' ~ boost::filesystem::file_size: No such file or directory" scanner lines'
+    classes: [plex-season-skip-file-size-enoent]
 
 # Deadman reasons, mirrored from $Script:DeadmanReasons. Kept here so C-09
 # (silent-exit-on-missing-prerequisite) can enumerate REA's early-return paths
