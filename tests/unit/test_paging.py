@@ -32,14 +32,20 @@ REAL_MANIFEST = REPO / "manifest" / "apps.yaml"
 # manifest edit that starts paging the operator again.
 EXPECTED = {
     "Plex", "Canary Plex Playback", "Seerr", "Canary Movie", "Canary Anime",
-    "QFlix Dashboard", "Canary Mobile-UX", "Canary Quota",
-    "QFlix Entitlement Gate", "Manitoba Pusher", "QFlix Fleet",
+    "QFlix Dashboard", "Canary Mobile-UX", "Canary Dash Asset Integrity",
+    "Canary Quota", "QFlix Entitlement Gate", "Manitoba Pusher", "QFlix Fleet",
+    "Canary REA Liveness",
 }
+
+
+def test_member_facing_count_is_thirteen():
+    assert len(EXPECTED) == 13
 
 
 def _load_script(name, rel):
     spec = importlib.util.spec_from_file_location(name, REPO / rel)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod  # dataclasses resolve their module via sys.modules
     spec.loader.exec_module(mod)
     return mod
 
@@ -124,6 +130,30 @@ def test_member_facing_source_pages(fixture_manifest):
 
 def test_other_source_does_not_page(fixture_manifest):
     assert paging.should_page("Sonarr") is False
+
+
+@pytest.mark.parametrize("body", ["apps: {}\n", "paging: {}\napps: {}\n",
+                                  "paging:\napps: {}\n"])
+def test_absent_or_empty_paging_block_fails_open(tmp_path, monkeypatch, body):
+    """Review finding A: {} would mean total silence - every tagged page quiet
+    and the bootstrap stripping Discord everywhere. It must read as unknown."""
+    m = tmp_path / "apps.yaml"
+    m.write_text(body, encoding="utf-8")
+    monkeypatch.setenv("MANITOBA_MANIFEST_PATH", str(m))
+    assert paging.paging_monitors() is None
+    assert paging.manifest_readable() is True
+    assert paging.should_page("Sonarr") is True
+    assert paging.should_page(None) is False
+
+
+def test_bootstrap_refuses_to_run_with_no_paging_block():
+    """Review finding A: guard sits before the reconcile and exits non-zero."""
+    src = (REPO / "scripts/maint/bootstrap-kuma-monitors.py").read_text(encoding="utf-8")
+    main = src[src.index("def main("):]
+    guard = main.index("FATAL: manifest has no paging: block")
+    reconcile = main.index("_ensure_notifications_attached(")
+    assert main.index("if not paging:") < guard < reconcile
+    assert "return 1" in main[guard:reconcile]
 
 
 def test_unreadable_manifest_fails_open_for_a_tagged_page(tmp_path, monkeypatch):
@@ -244,7 +274,31 @@ def test_storm_and_tripwire_are_tagged_member_facing():
     assert pusher.count('source="QFlix Fleet"') == 2
     ent = (REPO / "scripts/maint/qflix-entitlement.py").read_text(encoding="utf-8")
     assert 'GATE_MONITOR = "QFlix Entitlement Gate"' in ent
-    assert ent.count("source=GATE_MONITOR") == 1
+    # tripwire + per-account alert + countdown digest (arbiter ruling: the
+    # last two are the human check before a member loses access)
+    assert ent.count("source=GATE_MONITOR") == 3
+    for anchor in ('"QFlix entitlement: " + msg', "% p.alert",
+                   '"QFlix entitlement countdown'):
+        i = ent.index(anchor)
+        call = ent[ent.rindex("_notify(", 0, i):ent.index("\n\n", i)]
+        assert "source=GATE_MONITOR" in call, anchor
+    applied = ent[ent.index('"QFlix entitlement: %s" % line'):]
+    assert "source=" not in applied.split(")", 1)[0], "applied changes stay weekly"
+
+
+def test_entitlement_notifications_page_under_the_real_manifest(monkeypatch):
+    """With the real list, the gate's tagged notifies reach Discord WITH their
+    detail (the summary is only for the roll-up file)."""
+    from lib import notify
+    monkeypatch.setenv("MANITOBA_MANIFEST_PATH", str(REAL_MANIFEST))
+    ent = _load_script("qflix_entitlement_t", "scripts/maint/qflix-entitlement.py")
+    with patch.object(notify, "_try_read_webhook_url",
+                      return_value="https://discord.example/webhooks/1/y"), \
+         patch.object(notify, "_post_discord", return_value=(True, "")) as post:
+        ent._notify("QFlix entitlement countdown\nhousehold A: 3d", "info",
+                    source=ent.GATE_MONITOR, summary="entitlement: countdown digest")
+    assert post.call_count == 1
+    assert "household A" in post.call_args.args[1]
 
 
 # --- Kuma webhook: the eyes on every suppressed Kuma edge --------------------
@@ -290,6 +344,19 @@ def test_kuma_channels_missing_manifest_is_none(tmp_path):
     assert kc.paging_names(tmp_path / "nope.yaml") is None
 
 
+@pytest.mark.parametrize("body", ["apps: {}\n", "paging: {}\n", "paging:\n"])
+def test_kuma_channels_empty_block_fails_open_to_all_loud(tmp_path, body):
+    """Review finding A: the migration manifest has no block; loud must then
+    page on every monitor, never on none."""
+    kc = _load_script("kuma_channels", "scripts/migrate/kuma_channels.py")
+    m = tmp_path / "apps.yaml"
+    m.write_text(body, encoding="utf-8")
+    names = kc.paging_names(m)
+    assert names is None
+    mons = [{"id": 1, "name": "Sonarr", "notificationIDList": {"2": True}}]
+    assert kc.plan(mons, {1}, "loud", names) == [(1, {1, 2})]
+
+
 def test_cutover_loud_check_compares_against_the_paging_set():
     mm = _load_script("migrate_manifest", "scripts/migrate/migrate_manifest.py")
     rows_for = lambda kuma: [r for r in mm.evaluate_green(  # noqa: E731
@@ -327,6 +394,33 @@ def test_l09_catches_both_directions_and_the_born_mute_class():
                    ("Typo", "paging-monitor-absent")}
 
 
+def test_l09_empty_paging_set_is_a_finding_not_a_pass():
+    got = _live().channel_wiring_findings([("Sonarr", A)], set(), D, A)
+    assert [f["detail"] for f in got] == ["paging-block-missing"]
+
+
+def test_l09_leg_reports_missing_block_as_finding(tmp_path, monkeypatch):
+    live = _live()
+    m = tmp_path / "apps.yaml"
+    m.write_text("apps: {}\n", encoding="utf-8")
+    monkeypatch.setenv("MANITOBA_MANIFEST_PATH", str(m))
+    monkeypatch.setattr(live, "_monitor_channel_rows", lambda: [("Sonarr", A)])
+    findings, coverage = [], {}
+    live._channel_wiring_leg(findings, coverage)
+    assert coverage["L-09"] == "checked"
+    assert [f["detail"] for f in findings] == ["paging-block-missing"]
+
+
+def test_l09_leg_unreadable_manifest_is_unavailable(tmp_path, monkeypatch):
+    live = _live()
+    monkeypatch.setenv("MANITOBA_MANIFEST_PATH", str(tmp_path / "missing.yaml"))
+    monkeypatch.setattr(live, "_monitor_channel_rows", lambda: [("Sonarr", A)])
+    findings, coverage = [], {}
+    live._channel_wiring_leg(findings, coverage)
+    assert coverage["L-09"] == "unavailable" and findings == []
+
+
 def test_l09_skips_external_monitors():
     rows = [("Other Project", D)]
-    assert _live().channel_wiring_findings(rows, set(), D, A, skip={"Other Project"}) == []
+    assert _live().channel_wiring_findings(rows, {"Plex"}, D, A, skip={"Other Project"}) == [
+        {"class_id": "L-09", "instance_id": "Plex", "detail": "paging-monitor-absent"}]

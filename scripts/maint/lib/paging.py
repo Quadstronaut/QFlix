@@ -120,15 +120,31 @@ def _load(path: Optional[Path] = None) -> Optional[dict]:
 
 def paging_monitors(path: Optional[Path] = None) -> Optional[dict]:
     """{monitor: reason} for the member-facing set, or None when it cannot be
-    determined (manifest missing/unparseable/invalid block)."""
+    determined (manifest missing/unparseable/invalid block).
+
+    An ABSENT or EMPTY block is also None, never {}: "nobody is member-facing"
+    is not a policy anyone wrote, it is a manifest that predates QFLX-123 (the
+    feature/migration branch) or a block deleted by accident. Read as {} it
+    would mean total silence - every tagged page quiet and the bootstrap
+    stripping Discord from every monitor. As None, every consumer fails OPEN."""
     data = _load(path)
     if data is None:
         return None
     try:
-        return parse(data.get("paging"))
+        out = parse(data.get("paging"))
     except ValueError as exc:
         sys.stderr.write("paging: invalid paging block: %s\n" % exc)
         return None
+    if not out:
+        sys.stderr.write("paging: manifest has no paging: block - failing open\n")
+        return None
+    return out
+
+
+def manifest_readable(path: Optional[Path] = None) -> bool:
+    """True when the manifest itself parsed (so a None from paging_monitors()
+    means the BLOCK is missing/empty/invalid, not that the file is unreadable)."""
+    return _load(path) is not None
 
 
 def external_monitors(path: Optional[Path] = None) -> set:

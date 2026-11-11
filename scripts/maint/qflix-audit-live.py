@@ -314,7 +314,12 @@ def channel_wiring_findings(rows, paging, discord_name: str, autoheal_name: str,
                            monitors inherit Discord as a default channel)
       paging-monitor-absent a `paging:` name with no live monitor (a typo
                            pages nobody, silently)
+      paging-block-missing  the manifest declares NO member-facing monitor:
+                           that is a missing policy, never "all clean"
     Bootstrap reconciles this on demand; L-09 is the continuous guard."""
+    if not paging:
+        return [{"class_id": "L-09", "instance_id": "manifest:paging",
+                 "detail": "paging-block-missing"}]
     channels: dict = {}
     for name, chan in rows:
         if not name or name in skip:
@@ -362,17 +367,18 @@ def _monitor_channel_rows():
 
 
 def _channel_wiring_leg(findings: list, coverage: dict) -> None:
-    """L-09: an unreadable manifest or kuma.db is UNAVAILABLE, never clean."""
+    """L-09: an unreadable manifest or kuma.db is UNAVAILABLE, never clean; a
+    readable manifest with no/empty paging block is a FINDING."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from lib import paging as _paging
         members = _paging.paging_monitors()
         rows = _monitor_channel_rows()
-        if members is None or rows is None:
+        if rows is None or (members is None and not _paging.manifest_readable()):
             coverage["L-09"] = "unavailable"
             return
         findings.extend(channel_wiring_findings(
-            rows, set(members), _paging.DISCORD_CHANNEL_NAME,
+            rows, set(members or ()), _paging.DISCORD_CHANNEL_NAME,
             _paging.AUTOHEAL_CHANNEL_NAME, skip=_paging.external_monitors()))
         coverage["L-09"] = "checked"
     except Exception as exc:                                  # noqa: BLE001

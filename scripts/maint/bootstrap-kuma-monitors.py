@@ -858,6 +858,15 @@ def main() -> int:
     # exactly the manifest's member-facing `paging:` set.
     print("\n--- final: reconcile notification channels on every monitor ---")
     paging = set(manifest.paging_monitors())
+    if not paging:
+        # An absent/empty block would make the reconcile strip Discord from
+        # EVERY monitor and the verifier agree with it: total silence printed
+        # as "verified". A manifest that predates QFLX-123 (feature/migration)
+        # is exactly that shape. Refuse; touch no channel.
+        print("\nFATAL: manifest has no paging: block - refusing to strip "
+              "Discord from every monitor")
+        api.disconnect()
+        return 1
     external = set(manifest.external_monitors())
     try:
         discord_id, autoheal_id = _channel_roles(api.get_notifications())

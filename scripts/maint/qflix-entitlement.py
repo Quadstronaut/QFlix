@@ -1836,9 +1836,13 @@ def main(argv=None) -> int:
         # escalation, not a repeat.
         for p in plans:
             if p.alert and state.should_alert(p.email, p.alert, now):
-                # Per-account operator TODO, not a gate failure: weekly. The
-                # summary keeps the account out of the roll-up file.
+                # QFLX-123 arbiter ruling: the per-account alert is the human
+                # check before a member loses access - member-facing, pages
+                # with its detail. The summary only matters if the paging list
+                # ever drops the gate (then it keeps the account out of the
+                # roll-up file).
                 _notify("QFlix entitlement: %s" % p.alert, "warning",
+                        source=GATE_MONITOR,
                         summary="entitlement: per-account alert (detail in notify.log)")
                 state.mark_alert(p.email, p.alert, now)
         if execute:
@@ -1851,7 +1855,10 @@ def main(argv=None) -> int:
         if should_send_digest(plans, now) and state.should_digest(now):
             body = digest_lines(plans, now)
             if body:
+                # Same ruling: the countdown is the operator's last look before
+                # a reduction lands. Pages.
                 _notify("QFlix entitlement countdown\n" + "\n".join(body), "info",
+                        source=GATE_MONITOR,
                         summary="entitlement: countdown digest")
                 state.mark_digest(now)
         if state.dirty:

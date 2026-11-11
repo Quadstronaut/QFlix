@@ -46,10 +46,12 @@ paging:
   "Canary Anime": "end-to-end anime request pipeline broken = member requests never arrive"
   "QFlix Dashboard": "homepage down = members lose the front door to every service"
   "Canary Mobile-UX": "homepage broken on phones = most members' front door is broken"
+  "Canary Dash Asset Integrity": "dashboard shell 404s its assets = blank homepage while /healthz stays green (2026-07-29, 22h)"
   "Canary Quota": "goes DOWN only at >=90% (critical, autonomous reclaim fired) or >=98% (operator intervention); at 100% every app stops writing and members see 'apps won't load' (2026-05-21)"
   "QFlix Entitlement Gate": "gate failed or stopped = paying members are not provisioned and the blast-radius tripwire may be refusing reductions"
   "Manitoba Pusher": "pusher dead-man = every app monitor is blind at once; the total-outage signal"
   "QFlix Fleet": "correlated storm aggregate = many apps down together; members notice"
+  "Canary REA Liveness": "dead-man of the weekly summary itself; without it a dead weekly audit tells nobody"
 
 apps:
 
