@@ -26,8 +26,12 @@ kuma_external_monitors:
 # QFLX-123 (2026-11-11): the MEMBER-FACING set - the ONLY signals that page
 # Discord immediately. Operator: "qflix to basically be silent and stable, with
 # weekly notifications and checks." Every other monitor keeps running, keeps its
-# Kuma state and its auto-heal (channel 2), and rolls into the Monday summary
-# via ~/.opt/maint/weekly-events.jsonl instead of paging.
+# Kuma state and its auto-heal (run by the PUSHER after three failed probes -
+# the Kuma "auto-heal webhook", channel 2, is attached but has never received a
+# POST: the Kuma container cannot reach the maint daemon), and rolls into the
+# Monday summary instead of paging: notify() calls via
+# ~/.opt/maint/weekly-events.jsonl, Kuma DOWN edges read straight from kuma.db
+# by the weekly REA run.
 #
 # Keys are Kuma monitor names. The same names gate every Discord path:
 #   - Kuma channel 1 ("Mission Control - QFlix") is attached to EXACTLY these by

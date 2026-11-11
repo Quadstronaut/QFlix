@@ -1353,38 +1353,90 @@ for k in arr_logs journal_errors cron_mail maint_state nginx_errors plex_errors 
   sep=','
 done
 printf '}'
-# weekly_events: OUTSIDE "sources" on purpose. It is the QFLX-123 roll-up of
-# what did NOT page this week (lib/paging.py record_weekly), counted for the
-# weekly Discord summary - never handed to the models, which grade logs, not
-# our own alert bookkeeping. Last 7 days, recoveries (kuma state "up")
-# excluded: each counted event is one thing that WOULD have paged before
-# quiet paging. Names only (Kuma monitor, else the emitting program), never
-# msg: the summary must stay member-data-free. ok:false when the file is
-# absent; an empty field (no python3, any error) reads as "unavailable" on
-# the workstation - fail open, the summary still posts.
-WE=$(python3 - "$HOME/.opt/maint/weekly-events.jsonl" <<'PYEOF' 2>/dev/null | base64 -w0
-import collections, json, os, sys
+# weekly_events: OUTSIDE "sources" on purpose. The QFLX-123 roll-up of what
+# did NOT page this week, counted for the weekly Discord summary - never handed
+# to the models, which grade logs, not our own alert bookkeeping. ONE python
+# process, in this ONE ssh call, reads two read-only sources:
+#   1. ~/.opt/maint/weekly-events.jsonl (lib/paging.py record_weekly): every
+#      non-member-facing notify(). Kuma "up" (recovery) records are skipped.
+#   2. kuma.db, opened mode=ro: IMPORTANT DOWN beats in the last 7 days on
+#      monitors WITHOUT the "Mission Control - QFlix" Discord channel. This is
+#      the only place those edges exist: Kuma runs in a container that cannot
+#      reach the maint daemon, so the auto-heal webhook has never received a
+#      POST and never writes a "kuma" record into source 1.
+# Merged per monitor name: Kuma DOWNs = max(file "kuma" records, kuma.db
+# DOWNs) so the same edge is never counted twice if the webhook ever starts
+# working; notify() events add on top. Names only (monitor, else the emitting
+# program), never msg: member-data-free. A source that fails is named in
+# `partial`; ok:false only when NEITHER could be read. An empty field (no
+# python3, any crash) reads as "unknown" on the workstation - fail open, the
+# summary still posts. Last 7 days, box clock, UTC.
+WE=$(python3 - "$HOME/.opt/maint/weekly-events.jsonl" "$HOME/.apps/uptimekuma/kuma.db" <<'PYEOF' 2>/dev/null | base64 -w0
+import collections, json, os, sqlite3, sys
 from datetime import datetime, timedelta, timezone
-p = sys.argv[1]
-if not os.path.exists(p):
-    print(json.dumps({"ok": False, "why": "absent"}))
+ev_path, db_path = sys.argv[1], sys.argv[2]
+DISCORD = "Mission Control - QFlix"
+cut = datetime.now(timezone.utc) - timedelta(days=7)
+cut_iso = cut.strftime("%Y-%m-%dT%H:%M:%SZ")
+cut_db = cut.strftime("%Y-%m-%d %H:%M:%S")
+kfile = collections.Counter()
+other = collections.Counter()
+kdb = collections.Counter()
+partial = []
+file_ok = False
+if os.path.exists(ev_path):
+    try:
+        with open(ev_path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(r, dict) or str(r.get("ts", "")) < cut_iso:
+                    continue
+                name = str(r.get("monitor") or r.get("origin") or "unknown")[:60]
+                if r.get("kind") == "kuma":
+                    if r.get("state") != "up":
+                        kfile[name] += 1
+                else:
+                    other[name] += 1
+        file_ok = True
+    except OSError:
+        partial.append("roll-up file unreadable")
+else:
+    file_ok = True
+kuma_ok = False
+try:
+    # mode=ro: never creates or writes the live Kuma database. as_uri()
+    # percent-encodes the path, so any character in it stays a filename.
+    import pathlib
+    con = sqlite3.connect(pathlib.Path(db_path).absolute().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        rows = con.execute(
+            "SELECT m.name, COUNT(*) FROM heartbeat h JOIN monitor m ON m.id = h.monitor_id"
+            " WHERE h.important = 1 AND h.status = 0 AND h.time >= ?"
+            " AND m.id NOT IN (SELECT mn.monitor_id FROM monitor_notification mn"
+            " JOIN notification n ON n.id = mn.notification_id WHERE n.name = ?)"
+            " GROUP BY m.name", (cut_db, DISCORD)).fetchall()
+    finally:
+        con.close()
+    for name, cnt in rows:
+        kdb[str(name)[:60]] += int(cnt)
+    kuma_ok = True
+except Exception:
+    partial.append("kuma.db unreadable")
+if not (file_ok or kuma_ok):
+    print(json.dumps({"ok": False, "why": ", ".join(partial)}))
     sys.exit(0)
-cut = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-c = collections.Counter()
-n = 0
-with open(p, encoding="utf-8", errors="replace") as fh:
-    for line in fh:
-        try:
-            r = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(r, dict) or str(r.get("ts", "")) < cut:
-            continue
-        if r.get("kind") == "kuma" and r.get("state") == "up":
-            continue
-        n += 1
-        c[str(r.get("monitor") or r.get("origin") or "unknown")[:60]] += 1
-print(json.dumps({"ok": True, "n": n, "names": [{"name": k, "count": v} for k, v in c.most_common()]}))
+total = collections.Counter()
+for name in set(kfile) | set(kdb):
+    total[name] += max(kfile[name], kdb[name])
+for name, cnt in other.items():
+    total[name] += cnt
+names = sorted(total.items(), key=lambda kv: (-kv[1], kv[0]))
+print(json.dumps({"ok": True, "n": sum(total.values()),
+                  "names": [{"name": k, "count": v} for k, v in names],
+                  "partial": ", ".join(partial)}))
 PYEOF
 )
 printf ',"weekly_events":"%s"' "$WE"
@@ -2031,7 +2083,9 @@ function Get-WeeklyEventsRollup {
             if ($null -eq $e) { continue }
             [pscustomobject]@{ name = [string]$e.name; count = [int]$e.count }
         })
-        return [pscustomobject]@{ available = $true; n = [int]$w.n; names = $names }
+        $partial = ''
+        if ($w.PSObject.Properties.Name -contains 'partial') { $partial = [string]$w.partial }
+        return [pscustomobject]@{ available = $true; n = [int]$w.n; names = $names; partial = $partial }
     } catch { return $none }
 }
 
@@ -2041,11 +2095,15 @@ function Format-NotPagedLine {
     if ($null -eq $Rollup -or -not $Rollup.available) {
         return '**Not paged this week:** unknown (weekly roll-up not readable from the box)'
     }
-    if ($Rollup.n -le 0) { return '**Not paged this week:** 0' }
+    # A source the box could not read is NAMED, so a low count is never
+    # mistaken for a quiet week (e.g. "kuma.db unreadable").
+    $part = ''
+    if (($Rollup.PSObject.Properties.Name -contains 'partial') -and $Rollup.partial) { $part = " (partial: $($Rollup.partial))" }
+    if ($Rollup.n -le 0) { return "**Not paged this week:** 0$part" }
     $all = @($Rollup.names)
     $shown = @($all | Select-Object -First $MaxNames | ForEach-Object { "$($_.name) ($($_.count))" })
     $more = if ($all.Count -gt $MaxNames) { ", +$($all.Count - $MaxNames) more" } else { '' }
-    return "**Not paged this week:** $($Rollup.n) - $($shown -join ', ')$more"
+    return "**Not paged this week:** $($Rollup.n) - $($shown -join ', ')$more$part"
 }
 
 function Get-PreviousAuditStamp {

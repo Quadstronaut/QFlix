@@ -11,7 +11,8 @@ can reach Discord keys off those names:
 
   * Kuma channel 1 ("Mission Control - QFlix") is attached to exactly those
     monitors by bootstrap-kuma-monitors.py; channel 2 (auto-heal webhook) stays
-    on every monitor. qflix-audit-live.py L-09 flags drift either way.
+    on every monitor - attached, but the Kuma container cannot reach the maint
+    daemon, so it has never received a POST; auto-heal runs from the pusher. qflix-audit-live.py L-09 flags drift either way.
   * lib.notify.notify(..., source=<monitor name>) pages only when `source` is in
     the set. Untagged calls never page: membership is opt-in, default quiet.
   * Everything that did NOT page is appended to WEEKLY_EVENTS (one JSON line per
@@ -232,8 +233,10 @@ def record_weekly(kind: str, monitor: Optional[str], state: str, msg: object,
 
     Line format (JSON, one object per line, keys sorted):
       ts      ISO-8601 UTC, "YYYY-MM-DDTHH:MM:SSZ"
-      kind    "kuma"   - a Kuma DOWN/UP edge on a non-paging monitor
-                         (seen via the auto-heal webhook, channel 2)
+      kind    "kuma"   - a Kuma DOWN/UP edge on a non-paging monitor, IF the
+                         auto-heal webhook ever delivers one (it never has: the
+                         Kuma container cannot reach the daemon). The weekly REA
+                         run reads those edges from kuma.db instead.
               "notify" - a lib.notify call that was not member-facing
       monitor Kuma monitor name, or null for an untagged notify
       origin  the emitting program (argv[0] basename), for grouping

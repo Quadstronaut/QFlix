@@ -2669,6 +2669,10 @@ Test-Case 'weekly roll-up: fail-open reader and the "Not paged this week" line' 
     Assert-Equal '**Not paged this week:** 5 - Canary Tdarr Scanner (3), qflix-reaper.py (2)' (Format-NotPagedLine -Rollup $r) 'operator-specified line shape'
     $z = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 0, "names": []}'))
     Assert-Equal '**Not paged this week:** 0' (Format-NotPagedLine -Rollup $z) 'quiet week says 0'
+    $pt = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 2, "names": [{"name": "Canary Quota", "count": 2}], "partial": "kuma.db unreadable"}'))
+    Assert-Equal '**Not paged this week:** 2 - Canary Quota (2) (partial: kuma.db unreadable)' (Format-NotPagedLine -Rollup $pt) 'an unreadable source is named, never silently low'
+    $p0 = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 0, "names": [], "partial": "kuma.db unreadable"}'))
+    Assert-Equal '**Not paged this week:** 0 (partial: kuma.db unreadable)' (Format-NotPagedLine -Rollup $p0) 'a partial zero is not a quiet week'
     $many = [pscustomobject]@{ available = $true; n = 20; names = @(1..15 | ForEach-Object { [pscustomobject]@{ name = "m$_"; count = 1 } }) }
     Assert-True ((Format-NotPagedLine -Rollup $many) -match '\+3 more$') 'long lists are clipped and counted'
 
@@ -2683,8 +2687,15 @@ Test-Case 'heredoc ships weekly_events OUTSIDE sources, names only, last 7 days,
     Assert-True ($h.Contains('printf '',"weekly_events":"%s"'' "$WE"')) 'top-level weekly_events key'
     Assert-True ($h.Contains('$HOME/.opt/maint/weekly-events.jsonl')) 'reads the #160 roll-up file'
     Assert-True ($h.Contains('timedelta(days=7)')) 'last 7 days'
-    Assert-True ($h.Contains('r.get("state") == "up"')) 'recovery edges are not counted'
+    Assert-True ($h.Contains('r.get("state") != "up"')) 'recovery edges are not counted'
     Assert-False ($h -match 'r\.get\("msg"') 'msg text never leaves the box'
+    # H: kuma.db read in the SAME python process / ssh call, read-only.
+    Assert-Equal 1 ([regex]::Matches($h, 'python3 - ')).Count 'one python process for both sources'
+    Assert-True ($h.Contains('"$HOME/.apps/uptimekuma/kuma.db"')) 'kuma.db passed in'
+    Assert-True ($h.Contains('mode=ro')) 'kuma.db opened read-only'
+    Assert-True ($h.Contains('h.important = 1 AND h.status = 0')) 'important DOWN beats only'
+    Assert-True ($h.Contains('DISCORD = "Mission Control - QFlix"')) 'monitors WITH the Discord channel are excluded'
+    Assert-True ($h.Contains('max(kfile[name], kdb[name])')) 'same edge never counted twice'
     $i = $h.IndexOf('for k in arr_logs'); $j = $h.IndexOf('"weekly_events"')
     Assert-True ($i -gt 0 -and $j -gt $i) 'emitted after the sources loop, so models never see it'
 }

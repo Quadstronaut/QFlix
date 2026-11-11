@@ -415,9 +415,12 @@ def _record_unpaged_edge(manifest, monitor_name: str, status, body: dict) -> Non
     """QFLX-123 weekly roll-up: a DOWN/UP edge on a monitor that does NOT carry
     the Discord channel is a notification nobody saw. Record it.
 
-    The auto-heal webhook (channel 2) is attached to every monitor and Kuma
-    fires it on exactly the same edges it would fire Discord on, so this is
-    the one place that sees every suppressed Kuma notification. Membership is
+    The auto-heal webhook (channel 2) is attached to every monitor, but in
+    practice this never runs: Kuma lives in a container that cannot reach this
+    daemon, and the webhook has never received a POST (auto-heal runs from the
+    pusher). The weekly REA summary therefore reads suppressed DOWN edges
+    straight from kuma.db; this path stays as the in-process recorder should
+    delivery ever start, and the REA merge dedups the two by monitor name. Membership is
     read from the manifest the daemon loaded (the same `paging:` block the
     bootstrap wires channel 1 from; L-09 asserts the two agree). PENDING
     (status 2) is skipped - Kuma does not notify on it. Never raises: the

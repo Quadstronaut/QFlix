@@ -1093,7 +1093,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
           <thead><tr><th>Channel</th><th>Default</th><th>Purpose</th></tr></thead>
           <tbody>
             <tr><td><code>Mission Control - QFlix</code></td><td>yes</td><td>Discord embed for operator visibility &mdash; every Manitoba monitor wires to it</td></tr>
-            <tr><td><code>Manitoba auto-heal webhook</code></td><td>yes</td><td>Internal &mdash; fires <code>recovery.trigger_async</code> via the maint-webhook</td></tr>
+            <tr><td><code>Manitoba auto-heal webhook</code></td><td>yes</td><td>Internal &mdash; meant to fire <code>recovery.trigger_async</code> via the maint-webhook, but Kuma runs in a container that cannot reach it, so it has never received a POST. Auto-heal actually runs from the pusher (three failed probes).</td></tr>
           </tbody>
         </table>
         <p>Both must be wired on every monitor. Tautulli and the 4 canaries were wired only to the auto-heal one for a long stretch (silent failures); fixed 2026-05-11.</p>
