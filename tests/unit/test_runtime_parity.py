@@ -136,6 +136,34 @@ def test_our_own_container_mount_is_still_detected(healthy):
     assert len(v) == 1 and "781" in v[0]
 
 
+def test_numbered_sibling_container_is_found_by_its_mount(healthy):
+    """QFLX-110: the woken sonarr2 container ran beside native qflix-sonarr2 on
+    one SQLite DB for 6 days with NO violation. Its cmdline never contains the
+    needle "sonarr2" and the sonarr check (correctly) skipped it as a sibling,
+    so nobody owned it. The /config mount is the positive identity."""
+    root = healthy.proc_root
+    _proc(root, 134993, cgroup="0::/system.slice/docker-f5bb.scope",
+          cmdline="/app/sonarr/bin/Sonarr -nobrowser -data=/config")
+    _proc(root, 134821, cgroup="0::/system.slice/docker-f5bb.scope",
+          cmdline="s6-supervise svc-sonarr")
+    for pid in (134993, 134821):
+        _mountinfo(root, pid, "/quadstronaut/.apps/sonarr2")
+    s2 = _app(ucc_slug="sonarr2", unit="qflix-sonarr2.service")
+    v = rp.woken_container(healthy, s2, UID)
+    assert len(v) == 1 and "sonarr2" in v[0]
+    assert "134993" in v[0] and "134821" in v[0]
+    # ...and sonarr still does not claim it.
+    assert rp.woken_container(healthy, _app(), UID) == []
+
+
+def test_unrelated_container_without_needle_or_mount_is_ignored(healthy):
+    _proc(healthy.proc_root, 783, cgroup="0::/system.slice/docker-p.scope",
+          cmdline="/usr/lib/plexmediaserver/Plex Media Server")
+    _mountinfo(healthy.proc_root, 783, "/quadstronaut/.config/plex")
+    s2 = _app(ucc_slug="sonarr2", unit="qflix-sonarr2.service")
+    assert rp.woken_container(healthy, s2, UID) == []
+
+
 def test_unreadable_mountinfo_keeps_the_hit(healthy):
     """Fail toward red: no mountinfo = cannot prove it is the sibling."""
     _proc(healthy.proc_root, 782, cgroup="0::/user.slice/docker-x.scope",

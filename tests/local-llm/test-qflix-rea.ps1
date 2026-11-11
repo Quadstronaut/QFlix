@@ -1889,7 +1889,9 @@ Test-Case 'Test-IsNoiseFinding suppresses *arr import of an excluded payload, no
     $iso = @{ signature = 'sonarr:import-path-not-accessible'; summary = 'Failed to import downloaded episodes due to non-existent or inaccessible paths'; excerpt = $line }
     Assert-Equal 'arr-import-excluded-payload-missing' (Test-IsNoiseFinding $iso) 'real 14:09 record suppressed'
     $mkv = @{ signature = 'sonarr:import-path-not-accessible'; summary = 'import failed'; excerpt = ($line -replace 'FLUX\.iso\.', 'FLUX.mkv.') }
-    Assert-Equal $null (Test-IsNoiseFinding $mkv) 'media path still pages'
+    # QFLX-110 widened this: any download path is now owned by arr-import-path-missing
+    # (arr-housekeeping --unstick owns the real fault), so the media path no longer pages.
+    Assert-Equal 'arr-import-path-missing' (Test-IsNoiseFinding $mkv) 'media path now owned by the QFLX-110 class'
     $quota = @{ signature = 'sonarr:import-path-not-accessible'; summary = 'import failed'; excerpt = $line + "`n2026-11-02 10:14:01.0|Error|DiskProvider|Disk quota exceeded" }
     Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
 }
@@ -1913,6 +1915,28 @@ Test-Case 'Test-IsNoiseFinding suppresses Plex file-size ENOENT, not other cause
     $perm = @{ signature = 'plex:file-size-error'; summary = 'size failed'; excerpt = 'Couldn''t get size of file "/home/user/media/x.mkv": boost::filesystem::file_size: Permission denied [system:13]' }
     Assert-Equal $null (Test-IsNoiseFinding $perm) 'permission-denied size failure still pages'
     $quota = @{ signature = 'plex:file-size-error'; summary = 'size failed'; excerpt = $line + "`nERROR - Unknown system error -122: Disk quota exceeded" }
+    Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
+}
+
+# QFLX-110: the 2026-11-09 14:08 UTC plex:scanner-missing-file page.
+Test-Case 'Test-IsNoiseFinding suppresses Plex season-skip file_size ENOENT, not other causes' {
+    $line = 'Exception caught determining whether we could skip ''Law & Order/Season 5'' ~ boost::filesystem::file_size: No such file or directory'
+    $gone = @{ signature = 'plex:scanner-missing-file'; summary = 'Plex scanner failed to determine skip for a season due to missing file'; excerpt = $line }
+    Assert-Equal 'plex-season-skip-file-size-enoent' (Test-IsNoiseFinding $gone) 'real 14:08 record suppressed'
+    $perm = @{ signature = 'plex:scanner-missing-file'; summary = 'skip failed'; excerpt = 'Exception caught determining whether we could skip ''Show/Season 1'' ~ boost::filesystem::file_size: Permission denied' }
+    Assert-Equal $null (Test-IsNoiseFinding $perm) 'permission-denied skip failure still pages'
+    $quota = @{ signature = 'plex:scanner-missing-file'; summary = 'skip failed'; excerpt = $line + "`nERROR - Unknown system error -122: Disk quota exceeded" }
+    Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
+}
+
+# QFLX-110: the 2026-11-09 15:08 UTC sonarr:import-failed-path-not-accessible page.
+Test-Case 'Test-IsNoiseFinding suppresses *arr import path-missing for any path, not a bundled fault' {
+    $line = 'Error|DownloadedEpisodesImportService|Import failed, path does not exist or is not accessible by Sonarr: /home/(removed)/downloads/qbittorrent/tv-sonarr/Dexter Resurrection S02E03 Live Free and Die 1080p WEB H264-CAKES'
+    $gone = @{ signature = 'sonarr:import-failed-path-not-accessible'; summary = 'Import failed, path does not exist or is not accessible by Sonarr'; excerpt = $line }
+    Assert-Equal 'arr-import-path-missing' (Test-IsNoiseFinding $gone) 'real 15:08 record suppressed'
+    $other = @{ signature = 'sonarr:import-failed'; summary = 'import failed'; excerpt = 'Error|DownloadedEpisodesImportService|Import failed: Access to the path is denied' }
+    Assert-Equal $null (Test-IsNoiseFinding $other) 'a different import failure still pages'
+    $quota = @{ signature = 'sonarr:import-failed'; summary = 'import failed'; excerpt = $line + "`nERROR - Unknown system error -122: Disk quota exceeded" }
     Assert-Equal $null (Test-IsNoiseFinding $quota) 'bundled quota fault still pages'
 }
 
