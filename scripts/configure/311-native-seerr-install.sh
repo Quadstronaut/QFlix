@@ -794,8 +794,10 @@ PY
 # (node_modules read cold under IO pressure), with or without any preload. The
 # old 180 s budget gave up on a boot still in progress, and the refresh then
 # restarted (killed) it. Now the budget is 600 s (QFLIX_STATUS_TIMEOUT_S), and
-# the wait ends EARLY on a real failure: the unit stops being active, no native
-# process is left, or systemd's NRestarts climbs (crash loop). The unit cannot
+# the wait ends EARLY on a real failure: the unit is definitively inactive /
+# failed, no native process is left, or systemd's NRestarts climbs (crash
+# loop), each needing NATIVE_BAD_STREAK samples in a row (see native_sample;
+# an unreadable sample is "unknown", never failure). The unit cannot
 # fight this: it is Type=simple (active at exec, so no start timeout applies),
 # and StartLimitBurst=5/600 s is far above the 1-2 starts a verify spans.
 # Shared by --swap, --finish and --refresh-preload (and its restore).
@@ -805,31 +807,86 @@ native_restarts() {
   n="${n%$'\r'}"
   [[ "$n" =~ ^[0-9]+$ ]] && printf '%s' "$n"
 }
-# native_failed BASE_NRESTARTS: prints why and returns 0 if Seerr is not
-# booting any more (dead, not just slow).
-native_failed() {
-  local base="$1" n
-  sysd is-active "$UNIT" >/dev/null 2>&1 || { echo "$UNIT is no longer active (its process exited)"; return 0; }
-  [ -n "$(scan_pids native)" ] || { echo "no native seerr process is left in $UNIT"; return 0; }
-  if [ -n "$base" ] && n="$(native_restarts)" && [ "$n" -gt "$base" ]; then
-    echo "systemd restarted $UNIT $((n - base))x while it booted (crash loop)"; return 0
+# native_sample BASE_NRESTARTS: ONE look at the booting unit. Prints
+#   "ok"            alive (or nothing definitive against it),
+#   "unknown WHY"   could not tell (D-Bus timeout, "Failed to connect to bus",
+#                   empty or unparseable answer): keep waiting,
+#   "bad WHY"       a definitive bad state.
+# Only systemd's own words count: is-active's STDOUT `inactive|failed|
+# deactivating`, never its exit status (a busy user manager fails the call
+# without saying anything about the unit). One bad sample decides nothing:
+# verify_native needs NATIVE_BAD_STREAK of them in a row.
+NATIVE_BAD_STREAK=3
+native_sample() {
+  local base="$1" st n
+  st="$(sysd is-active "$UNIT" 2>/dev/null | head -n 1)"
+  st="${st%$'\r'}"
+  case "$st" in
+    inactive|failed|deactivating) echo "bad $UNIT is $st (its process exited)"; return ;;
+    active|activating|reloading) ;;
+    *) echo "unknown is-active answered '${st:-nothing}'"; return ;;
+  esac
+  if [ -z "$(scan_pids native)" ]; then
+    # /proc says no Seerr process; systemd says the unit is up. Usually the
+    # gap of an auto-restart: counts as bad, but only a streak decides.
+    echo "bad no native seerr process is left in $UNIT"; return
   fi
-  return 1
+  if [ -n "$base" ]; then
+    if ! n="$(native_restarts)"; then
+      echo "unknown NRestarts unreadable"; return
+    fi
+    if [ "$n" -gt "$base" ]; then
+      echo "bad systemd restarted $UNIT $((n - base))x while it booted (crash loop)"; return
+    fi
+  fi
+  echo ok
 }
+
+# retry_check WHAT CMD...: a post-200 check (login, vhost) is retried: a
+# momentary 502 from the panel proxy right after the bind must not restore
+# (restart) a Seerr that already serves. Up to POST_TRIES tries, POST_RETRY_S
+# apart, and only while the verify budget lasts (at least one try always).
+POST_TRIES="${QFLIX_POST_TRIES:-6}"
+POST_RETRY_S="${QFLIX_POST_RETRY_S:-10}"
+retry_check() {
+  local what="$1" i=1; shift
+  while :; do
+    "$@" && return 0
+    if [ "$i" -ge "$POST_TRIES" ] || [ $((SECONDS - VERIFY_START)) -ge "$STATUS_TIMEOUT" ]; then
+      echo "$what failed ($i tries)" >&2; return 1
+    fi
+    info "$what not ok yet (try $i/$POST_TRIES); retrying in ${POST_RETRY_S}s"
+    i=$((i + 1))
+    sleep "$POST_RETRY_S"
+  done
+}
+login_ok() { auth_probe "$SETTINGS" "$PROBE_PORT"; }
+vhost_ok() {
+  local vv
+  vv="$(vhost_probe)" || { echo "the seerr vhost does not answer" >&2; return 1; }
+  [ "$vv" = "$VERSION" ] || { echo "the seerr vhost reports '$vv', want $VERSION" >&2; return 1; }
+}
+
+VERIFY_START=0
 verify_native() {
-  local n ver vv start d base why tick=0
+  local ver start d base s streak=0 last="" tick=0
   sleep "$SETTLE"
-  sysd is-active "$UNIT" >/dev/null 2>&1 || { echo "unit not active" >&2; return 1; }
   [ -z "$(scan_pids container)" ] || { echo "a container process is running" >&2; return 1; }
-  n="$(scan_pids native | wc -l | tr -d ' ')"
-  [ "$n" -ge 1 ] || { echo "no native process" >&2; return 1; }
   base="$(native_restarts)"
   start=$SECONDS
+  VERIFY_START=$start
   until ver="$(status_probe "$PROBE_PORT")" && [ -n "$ver" ]; do
     ver=""
-    if why="$(native_failed "$base")"; then
-      echo "seerr died while booting after $((SECONDS - start))s: $why" >&2; return 1
-    fi
+    s="$(native_sample "$base")"
+    case "$s" in
+      ok) streak=0 ;;
+      bad\ *)
+        streak=$((streak + 1)); last="${s#bad }"
+        if [ "$streak" -ge "$NATIVE_BAD_STREAK" ]; then
+          echo "seerr died while booting after $((SECONDS - start))s: $last ($streak samples in a row)" >&2; return 1
+        fi ;;
+      *) ;;      # unknown: neither evidence of death nor of life; keep waiting
+    esac
     [ $((SECONDS - start)) -ge "$STATUS_TIMEOUT" ] && { echo "/api/v1/status never answered 200 within ${STATUS_TIMEOUT}s (process still alive)" >&2; return 1; }
     if [ $(( (SECONDS - start) / 60 )) -gt "$tick" ]; then
       tick=$(( (SECONDS - start) / 60 ))
@@ -844,9 +901,8 @@ verify_native() {
     [ $((SECONDS - start)) -ge "$STATUS_TIMEOUT" ] && { echo "listen set differs from listen-set.before: $d" >&2; return 1; }
     sleep "$POLL"
   done
-  auth_probe "$SETTINGS" "$PROBE_PORT" || { echo "login (/api/v1/auth/me) failed" >&2; return 1; }
-  vv="$(vhost_probe)" || { echo "the seerr vhost does not answer" >&2; return 1; }
-  [ "$vv" = "$VERSION" ] || { echo "the seerr vhost reports '$vv', want $VERSION" >&2; return 1; }
+  retry_check "login (/api/v1/auth/me)" login_ok || return 1
+  retry_check "the seerr vhost" vhost_ok || return 1
 }
 
 # Request smoke (plan A12): the movie + anime canaries drive a REAL request
