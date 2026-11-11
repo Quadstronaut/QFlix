@@ -79,6 +79,15 @@ class FakeApi:
 
     def edit_monitor(self, mid, **kw):
         self.edits.append((mid, kw))
+        if "notificationIDList" in kw:
+            # What uptime-kuma-api 1.2.1's _convert_monitor_input really sends:
+            # it ITERATES the value and maps every element to True. A dict
+            # {"1": False} therefore arrives at Kuma as {"1": True} - the
+            # 2026-11-11 deploy bug, where 73 "repaired" monitors kept Discord.
+            sent = {str(i): True for i in kw["notificationIDList"]}
+            for m in self._monitors:
+                if m["id"] == mid:
+                    m["notificationIDList"] = sent
 
 
 def _mon(mid, name, channels, active=True):
@@ -277,10 +286,20 @@ def test_reconcile_strips_discord_from_non_members_and_keeps_auto_heal(mod):
                    _mon(3, "Radarr", [2]), _mon(4, "Canary New", [])])
     fixed = mod._ensure_notifications_attached(api, PAGING, 1, 2)
     assert fixed == 3
-    got = {mid: {k for k, v in kw["notificationIDList"].items() if v}
-           for mid, kw in api.edits}
-    assert got == {1: {"1", "2"}, 2: {"2"}, 4: {"2"}}
-    assert api.edits[1][1]["notificationIDList"]["1"] is False
+    # Judge what Kuma ends up with AFTER the client's conversion, not the
+    # argument we passed - the argument looked right on 2026-11-11 too.
+    got = {m["id"]: mod._channel_ids(m) for m in api.get_monitors()}
+    assert got == {1: {1, 2}, 2: {2}, 3: {2}, 4: {2}}
+    # ...and the verifier agrees once the reconcile has run.
+    assert _v(mod, api) == []
+
+
+def test_reconcile_never_sends_a_false_entry(mod):
+    """A {id: False} entry is indistinguishable from True to the client."""
+    api = FakeApi([_mon(2, "Sonarr", [1, 2])])
+    mod._ensure_notifications_attached(api, PAGING, 1, 2)
+    sent = api.edits[0][1]["notificationIDList"]
+    assert list(sent) == [2]
 
 
 def test_reconcile_skips_external_monitors(mod):

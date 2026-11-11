@@ -368,13 +368,15 @@ def _ensure_notifications_attached(api, paging, discord_id, autoheal_id,
         want = _desired_channels(name, current, discord_id, autoheal_id, paging)
         if want == current:
             continue
-        merged = {str(i): True for i in sorted(want)}
-        # A dropped channel is sent as False as well, so the edit is explicit
-        # about the removal whichever way the server merges the map.
-        for i in sorted(current - want):
-            merged[str(i)] = False
+        # Send the WANTED ids only, as a list. uptime-kuma-api 1.2.1's
+        # _convert_monitor_input iterates whatever it is given and maps every
+        # element to True - so a dict like {"1": False} is sent as {"1": True}
+        # and the channel is never removed (2026-11-11: run 1 of the QFLX-123
+        # deploy "repaired" 73 monitors and kuma.db still had Discord on all
+        # 86). Kuma's editMonitor deletes every monitor_notification row and
+        # re-inserts the truthy ones, so leaving an id out IS the removal.
         try:
-            api.edit_monitor(m["id"], notificationIDList=merged)
+            api.edit_monitor(m["id"], notificationIDList=sorted(want))
             print(f"  [notify]{name:32s} channels {sorted(current) or 'NONE'} -> "
                   f"{sorted(want)}")
             fixed += 1
