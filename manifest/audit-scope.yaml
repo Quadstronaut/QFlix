@@ -433,7 +433,10 @@ residuals:
     # described above is real.
     # Reviewed 2026-10-27: still true, bounded by cadence. audit-live timer
     # Result=success 2026-10-27 02:16Z. Lapsed again at 31 days (audit exit 2).
-    last_reviewed: 2026-10-27
+    # Reviewed 2026-11-11: still true, bounded by cadence. audit-live service
+    # Result=success ExecMainStatus=0, last exit 2026-11-11 02:17Z; audit-live
+    # and audit timers both scheduled with next runs. Read-only, QFLX-101.
+    last_reviewed: 2026-11-11
     residual: Live box drift between audit runs (L-01..L-07). Bounded only by cadence.
   - id: R3
     owner: operator
@@ -480,7 +483,10 @@ residuals:
     # 18:40Z; assertion still unbuilt; residual stays open.
     # Reviewed 2026-10-27: unchanged. Last master run success 2026-10-26
     # 19:52Z; assertion still unbuilt; residual stays open.
-    last_reviewed: 2026-10-27
+    # Reviewed 2026-11-11: unchanged. Last completed master tests.yml run success
+    # 2026-11-11 04:11Z (run 42957637826); assertion still unbuilt; residual
+    # stays open (QFLX-101).
+    last_reviewed: 2026-11-11
     residual: >-
       CI itself. The last-successful-run-age assertion is NOT implemented (it
       needs network + a token; this regime is offline by construction).
