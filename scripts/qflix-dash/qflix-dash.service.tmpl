@@ -6,8 +6,9 @@ After=network-online.target
 Type=exec
 WorkingDirectory=%h/.apps/qflix-dash
 EnvironmentFile=%h/.config/qflix-dash/qflix-dash.env
-# @@NODE@@ = absolute nvm node path (e.g. ~/.nvm/versions/node/v20.20.2/bin/node),
-# pinned so the unit never depends on login-shell PATH.
+# @@NODE@@ = %h/.apps/qflix-dash/bin/node/bin/node: the dash's OWN pinned Node
+# (versions.env QFLIX_DASH_NODE_VERSION) via the bin/node symlink, so the unit
+# never depends on login-shell PATH or on Seerr's Node (QFLX-93).
 ExecStart=@@NODE@@ %h/.apps/qflix-dash/build/index.js
 Restart=on-failure
 RestartSec=3
