@@ -329,11 +329,21 @@ declaration; `settle_days` = 2.
 | 7 | `B` unavailable (no scope / unreachable / unparseable) and `E` empty | `UNPROVEN_BLIND` | **red** — names the exact fix |
 | 8 | `B.supported` and `B.count == 0` and `E` empty | `UNPROVEN_EMPTY` | **red** |
 
-**Today's live state is row 7, `UNPROVEN_BLIND`, and that is correct.** The
-money path has never demonstrated a success (0 accounts ever entitled) and
-the bulk cross-check answers `403 {"error": "this key lacks the 'bulk'
-scope"}`. It clears the moment the operator grants the scope (row 5/2/6
-follow) or the first real `YES` lands (row 2).
+**What `B` is.** `GET /v1/entitlements` returns one page,
+`{count, limit, offset, members: [{email, entitled, stale, ...}]}`, where
+`count` is the rows on *that page* (former and declined patrons included).
+`EntitlementClient.bulk()` walks every page and builds `B.entitled` from each
+row's own `entitled` flag; `B.count` is the number of distinct entitled
+addresses, never the server's page `count`. Any page in another shape grades
+`B` as unparseable (row 7), never as an empty projection (row 8).
+
+**The 'bulk' scope is granted** (live `200`, observed 2026-11-11), so row 7 no
+longer fires for want of a scope: it now means the cross-check is down or
+the body changed shape. Before QFLX-119 the client misread that `200` body as
+empty, so row 4 could never fire and row 5 greened on *any* non-empty page;
+a verdict recorded before the fix shipped is not evidence. If the key ever
+loses the scope again, `403 {"error": "this key lacks the 'bulk' scope"}`
+grades `no-scope` and row 7 names the fix.
 
 Rows 3 and 4 are deliberately strict: row 3 fires on **any** forgotten
 ever-entitled account, not only when every one is lost at once, because with
