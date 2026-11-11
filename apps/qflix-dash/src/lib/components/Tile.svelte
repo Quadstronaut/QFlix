@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import type { TileDef, TileState } from '$lib/tiles';
+	import type { TileDef, TileState } from '#lib/tiles.js';
 	import StatusPuck from './StatusPuck.svelte';
 
 	interface Props {

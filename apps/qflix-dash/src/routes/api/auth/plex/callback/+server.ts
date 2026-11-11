@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit';
-import { pollPin, whoami } from '$lib/server/plex';
-import { isMember } from '$lib/server/membership';
-import { AUTH, GREET, PIN, verifyPin, signAuth, signGreeting } from '$lib/server/session';
+import { pollPin, whoami } from '#lib/server/plex.js';
+import { isMember } from '#lib/server/membership.js';
+import { AUTH, GREET, PIN, verifyPin, signAuth, signGreeting } from '#lib/server/session.js';
 import type { RequestHandler } from './$types';
 
 const COOKIE = { path: '/', httpOnly: true, secure: true, sameSite: 'lax' } as const;
