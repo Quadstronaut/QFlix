@@ -25,7 +25,9 @@ kuma_external_monitors:
 
 apps:
 
-  # --- UCC apps (managed by Ultra.cc app-<slug> commands) ---
+  # --- Media-stack apps (born as Ultra.cc app-<slug> installs; every one
+  #     below except plex now runs as class: systemd, so each entry's class:
+  #     line, not this header, says what manages it) ---
 
   # QFLX-56 (2026-11-11): `ucc_uninstalled: <date>` marks a converted app whose
   # dormant UCC app was REMOVED with scripts/ops/ucc-uninstall.sh (backup in
@@ -33,8 +35,12 @@ apps:
   # supersedes each entry's "UCC container stays installed and DORMANT as the
   # rollback target (I-8)" line: there is no UCC rollback target any more; the
   # restore path is the backup tarball. `ucc_dormant: true` and `ucc_slug` STAY
-  # on purpose: every reader of them is a fail-closed refusal (appctl/lifecycle
-  # never send a verb to app-<slug>, app-upgrade-all skips it) and runtime
+  # on purpose: every routine reader of them is a fail-closed refusal (appctl/
+  # lifecycle route start/stop/restart/upgrade to the native unit, never to
+  # app-<slug>; app-upgrade-all skips it). The one exception is the explicit
+  # `appctl stop-dormant <app>` (QFLX-55, driven by lib/dormant_stop.py), which
+  # still sends `app-<slug> stop` to put a resurrected container back to sleep,
+  # and refuses (exit 2) when app-<slug> is no longer installed. Runtime
   # parity keeps scanning for a container on ~/.apps/<slug>, so a panel
   # reinstall or migration that resurrects one is still caught. Not yet
   # uninstalled: seerr (vhost owned by the UCC app) and qbittorrent (the panel
@@ -762,7 +768,7 @@ apps:
         source: versions.env
         key: TDARR_VERSION
         max: "2.17.01"
-        max_reason: "GLIBC 2.34 required, host has 2.31"
+        max_reason: "upgrade target must be 2.91.01+ (2.18-2.90 auth gate bypassable); own project, QFLX-97"
 
   tdarr-node:
     class: systemd
@@ -832,7 +838,7 @@ apps:
         source: versions.env
         key: TDARR_VERSION
         max: "2.17.01"
-        max_reason: "GLIBC 2.34 required, host has 2.31"
+        max_reason: "upgrade target must be 2.91.01+ (2.18-2.90 auth gate bypassable); own project, QFLX-97"
 
   # --- cron apps (timer-driven, no lifecycle start/stop) ---
 

@@ -59,7 +59,7 @@ fi
 if secret_exists python-plexapi.version; then
   migrate_pin PYTHON_PLEXAPI_VERSION "$(secret_read python-plexapi.version)"
 fi
-# tdarr version pinned per spec §4.3 (GLIBC 2.34 ceiling at 2.17.01)
+# tdarr version pinned per spec §4.3 (auth-gate ceiling at 2.17.01; see versions.env)
 migrate_pin TDARR_VERSION "2.17.01"
 
 # ── Step 4: deploy code + manifest to seedbox ──────────────────────────────
