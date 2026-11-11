@@ -44,6 +44,7 @@ REPO = Path(__file__).resolve().parents[2]
 INSTALLER = REPO / "scripts" / "configure" / "311-native-seerr-install.sh"
 GOLDEN_UNIT = REPO / "scripts" / "maint" / "systemd" / "qflix-seerr.service"
 PRELOAD = REPO / "scripts" / "data" / "seerr-listen.cjs"
+SYNC_PRELOAD = REPO / "scripts" / "data" / "seerr-sqlite-sync.cjs"
 WORKFLOW = REPO / ".github" / "workflows" / "seerr-artifact.yml"
 UNIT = "qflix-seerr.service"
 GATE_UNIT = "manitoba-maint-entitlement.service"
@@ -94,6 +95,16 @@ with open(os.path.join(procdir, "proof-env.json"), "w") as fh:
                                                       "UV_THREADPOOL_SIZE")}}, fh)
 if not ok:
     sys.exit(3)
+# QFLX-111: the sync preload prints one line when it opens the db.
+reqs = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--require"]
+if any(r.endswith("seerr-sqlite-sync.cjs") and os.path.isfile(r) for r in reqs):
+    mode = os.environ.get("FAKE_PRAGMA_JOURNAL", "ok")
+    if mode == "ok":
+        print("[qflix-sqlite-sync] QFLX-111 applied: PRAGMA synchronous=NORMAL on db.sqlite3 (read back 1)",
+              file=sys.stderr, flush=True)
+    elif mode == "error":
+        print("[qflix-sqlite-sync] QFLX-111 ERROR: PRAGMA synchronous=NORMAL NOT applied on db.sqlite3 (x)",
+              file=sys.stderr, flush=True)
 host, port = os.environ["SEERR_LISTEN"].split()[0].rsplit(":", 1)
 version = os.environ.get("FAKE_REPORT_VERSION") or json.load(open("package.json"))["version"]
 key = json.load(open(os.path.join(os.environ["CONFIG_DIRECTORY"], "settings.json")))["main"]["apiKey"]
@@ -172,6 +183,7 @@ class Box:
         self.proc = tmp / "proc"
         self.stub = tmp / "stub"
         self.calls = tmp / "calls.log"
+        self.journal = tmp / "journal.tsv"      # "<epoch>\t<line>" per unit-journal entry
         self.manifest = self.state / "apps.yaml"
         self.dropin = self.unitdir / f"{GATE_UNIT}.d" / "execute.conf"
         for d in (self.appdir / "db", self.appdir / "logs", self.unitdir, self.envdir, self.swap,
@@ -358,14 +370,35 @@ case "$1" in
   is-native) v="${{FAKE_ISNATIVE:-ucc}}"; echo "$v"; [ "$v" = native ] ;;
 esac
 ''')
+        J = _posix(self.journal)
         self._w("systemctl", f'''echo "systemctl $*" >> "{C}"
 [ "$1" = --user ] && shift
+# The native process as systemd would start it: argv from the LIVE unit's
+# ExecStart; the sync preload (when named) logs its line to the unit journal.
+spawn() {{
+  local es
+  es="$(sed -n 's/^ExecStart=//p' "{U}/$1" | tail -n 1)"
+  case "$es" in *seerr-sqlite-sync.cjs*) [ "${{FAKE_SYNC_BREAKS_START:-0}}" = 1 ] && return 0 ;; esac
+  mkdir -p "{P}/9002"
+  printf 'Name:\\tx\\nUid:\\t%s\\t%s\\n' "$(id -u)" "$(id -u)" > "{P}/9002/status"
+  echo "0::/user.slice/user-1.slice/app.slice/$1" > "{P}/9002/cgroup"
+  printf '%s' "$es" | sed 's#%h#/h#g' | tr ' ' '\\0' > "{P}/9002/cmdline"
+  # Real Seerr binds only once Next.js is ready (~28 s on the slot).
+  echo $(( $(date +%s) + ${{FAKE_NATIVE_BIND_DELAY_S:-0}} )) > "{P}/9002/bound_at"
+  case "$es" in *seerr-sqlite-sync.cjs*)
+    case "${{FAKE_PRAGMA_JOURNAL:-ok}}" in
+      ok) printf '%s\\t%s\\n' "$(date +%s)" "[qflix-sqlite-sync] QFLX-111 applied: PRAGMA synchronous=NORMAL on db.sqlite3 (read back 1)" >> "{J}" ;;
+      error) printf '%s\\t%s\\n' "$(date +%s)" "[qflix-sqlite-sync] QFLX-111 ERROR: PRAGMA synchronous=NORMAL NOT applied on db.sqlite3 (x)" >> "{J}" ;;
+    esac ;;
+  esac
+}}
 case "$1" in
   is-active)
     if [ "$2" = "{GATE_UNIT}" ]; then [ "${{FAKE_GATE_ACTIVE:-0}}" = 1 ] && {{ echo active; exit 0; }}; echo inactive; exit 3; fi
     [ -d "{P}/9002" ] && echo active && exit 0; echo inactive; exit 3 ;;
   show)
     case "$*" in
+      *"{UNIT} -p ExecStart"*) sed -n 's/^ExecStart=/{{ argv[]=/p' "{U}/{UNIT}" | tail -n 1 ;;
       *NextElapseUSecRealtime*) t=$(( $(date +%s) + ${{FAKE_GATE_NEXT_S:-3600}} ))
         # systemd 257 prints this property human-readable even with --timestamp=unix
         if [ "${{FAKE_GATE_NEXT_HUMAN:-0}}" = 1 ]; then date -u -d "@$t" '+%a %Y-%m-%d %H:%M:%S UTC'
@@ -383,13 +416,9 @@ case "$1" in
             {{ [ -L "{U}/$3" ] || [ ! -s "{U}/$3" ]; }} && {{ echo "unit $3 is masked or missing" >&2; exit 1; }}
             echo "ENV: $(tr '\\n' ' ' < "{_posix(self.envdir)}/seerr.env")" >> "{C}"
             [ "${{FAKE_NATIVE_FAILS:-0}}" = 1 ] && exit 0
-            mkdir -p "{P}/9002"
-            printf 'Name:\\tx\\nUid:\\t%s\\t%s\\n' "$(id -u)" "$(id -u)" > "{P}/9002/status"
-            echo "0::/user.slice/user-1.slice/app.slice/$3" > "{P}/9002/cgroup"
-            printf '/h/.apps/seerr/bin/node/bin/node\\0--require\\0x.cjs\\0/h/.apps/seerr/bin/current/dist/index.js\\0' > "{P}/9002/cmdline"
-            # Real Seerr binds only once Next.js is ready (~28 s on the slot).
-            echo $(( $(date +%s) + ${{FAKE_NATIVE_BIND_DELAY_S:-0}} )) > "{P}/9002/bound_at"
+            spawn "$3"
           fi ;;
+  restart) if [ "$2" = "{UNIT}" ]; then rm -rf "{P}/9002"; spawn "$2"; fi ;;
   stop) [ "$2" = "{UNIT}" ] && rm -rf "{P}/9002" ;;
   mask) [ -s "{U}/$2" ] && [ ! -L "{U}/$2" ] && {{ echo "Failed to mask unit: File {U}/$2 already exists." >&2; exit 1; }}
         ln -sf /dev/null "{U}/$2" ;;
@@ -413,6 +442,13 @@ exit 0
 for i in $(seq 1 "$n"); do echo x; done
 ''')
         self._w("fuser", 'exit "${FAKE_DB_BUSY_RC:-1}"\n')
+        # journalctl --user -u UNIT --since @EPOCH -o cat: the lines at/after EPOCH.
+        self._w("journalctl", f'''echo "journalctl $*" >> "{C}"
+since=0
+while [ $# -gt 0 ]; do case "$1" in --since) since="${{2#@}}"; shift ;; esac; shift; done
+[ -f "{_posix(self.journal)}" ] || exit 0
+awk -F '\\t' -v s="$since" '$1 >= s {{ print $2 }}' "{_posix(self.journal)}"
+''')
         self._w("curl", f'''url=""; out=""
 while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac; shift; done
 echo "curl $url" >> "{C}"
@@ -452,6 +488,7 @@ esac
                  QFLIX_SS=_posix(self.stub / "ss"), QFLIX_PS=_posix(self.stub / "ps"),
                  QFLIX_FUSER=_posix(self.stub / "fuser"), QFLIX_CURL=_posix(self.stub / "curl"),
                  QFLIX_HOSTPOLICY=_posix(self.stub / "hostpolicy"),
+                 QFLIX_JOURNALCTL=_posix(self.stub / "journalctl"), QFLIX_PRAGMA_TIMEOUT_S="2",
                  QFLIX_CANARIES_DIR=_posix(self.canaries), QFLIX_GATE_LOG_DIR=_posix(self.gatelog),
                  QFLIX_SEERR_SHA256=self.sha, QFLIX_NODE_SHA256=self.node_sha,
                  QFLIX_SEERR_PORT=str(self.port), FAKE_SS_FILE=_posix(self.ss_file),
@@ -495,7 +532,7 @@ def test_bash_syntax():
     assert r.returncode == 0, r.stderr
 
 
-@pytest.mark.parametrize("path", [INSTALLER, GOLDEN_UNIT, PRELOAD, WORKFLOW])
+@pytest.mark.parametrize("path", [INSTALLER, GOLDEN_UNIT, PRELOAD, SYNC_PRELOAD, WORKFLOW])
 def test_lf_only_and_ascii(path):
     data = path.read_bytes()
     assert b"\r" not in data
@@ -525,6 +562,11 @@ def test_workflow_builds_the_pinned_commit_in_bullseye_and_publishes_once():
     assert "pnpm install --frozen-lockfile" in text and "pnpm build" in text
     assert "sha256sum -c -" in text                                  # node runtime verified
     assert "--require /w/scripts/data/seerr-listen.cjs" in text      # smoke boots the preload
+    # QFLX-111: and the sync preload, proven against the REAL typeorm + sqlite3.
+    assert "--require /w/scripts/data/seerr-sqlite-sync.cjs dist/index.js" in text
+    assert 'grep -qF "QFLX-111 applied: PRAGMA synchronous=NORMAL on db.sqlite3" /tmp/seerr.log' in text
+    for trig in ("pull_request", "push"):
+        assert "scripts/data/seerr-sqlite-sync.cjs" in wf[True][trig]["paths"]
     assert 'tag="seerr-v${VER}"' in text and "never replaced" in text
     assert wf["permissions"] == {"contents": "read"}
     assert wf["jobs"]["publish"]["permissions"] == {"contents": "write"}
@@ -541,6 +583,8 @@ def test_240_stages_and_deploys_the_installer_and_preload():
             '~/scripts/configure/311-native-seerr-install.sh\n'
             "chmod +x ~/scripts/configure/311-native-seerr-install.sh") in text
     assert 'cp -f   "$STG"/scripts/data/seerr-listen.cjs ~/scripts/data/seerr-listen.cjs' in text
+    assert "    scripts/data/seerr-sqlite-sync.cjs \\\n" in text
+    assert 'cp -f   "$STG"/scripts/data/seerr-sqlite-sync.cjs ~/scripts/data/seerr-sqlite-sync.cjs' in text
 
 
 def test_installer_never_calls_the_panel_tool_the_gateway_or_the_rail():
@@ -569,8 +613,10 @@ def test_golden_unit_is_what_the_installer_renders(box):
     staged = box.appdir / "native" / UNIT
     assert staged.read_text() == GOLDEN_UNIT.read_text(encoding="utf-8")
     unit = GOLDEN_UNIT.read_text(encoding="utf-8")
-    assert ("ExecStart=%h/.apps/seerr/bin/node/bin/node --disable-wasm-trap-handler --require "
-            "%h/.apps/seerr/native/seerr-listen.cjs %h/.apps/seerr/bin/current/dist/index.js\n") in unit
+    assert ("ExecStart=%h/.apps/seerr/bin/node/bin/node --disable-wasm-trap-handler "
+            "--require %h/.apps/seerr/native/seerr-listen.cjs "
+            "--require %h/.apps/seerr/native/seerr-sqlite-sync.cjs "
+            "%h/.apps/seerr/bin/current/dist/index.js\n") in unit
     assert "WorkingDirectory=%h/.apps/seerr/bin/current\n" in unit
     assert "EnvironmentFile=%h/.config/qflix/seerr.env" in unit
     assert "TasksMax" not in unit and "NODE_OPTIONS" not in unit
@@ -579,7 +625,7 @@ def test_golden_unit_is_what_the_installer_renders(box):
 # --- inert by default -----------------------------------------------------------
 
 @pytest.mark.parametrize("args", [[], ["--install"], ["--prove"], ["--swap"], ["--finish"],
-                                  ["--rollback"], ["--post-upgrade", "3.5.1"]])
+                                  ["--rollback"], ["--refresh-preload"], ["--post-upgrade", "3.5.1"]])
 def test_without_execute_nothing_is_touched(box, args):
     before = sorted(p.as_posix() for p in box.tmp.rglob("*"))
     r = box.run(*args)
@@ -625,6 +671,7 @@ def test_install_lays_out_node_artifact_env_and_stages_unit_without_enabling(box
     assert (box.appdir / "bin" / "3.5.0" / "dist" / "index.js").exists()
     assert (cur / "dist" / "index.js").exists() and (cur / ".next" / "BUILD_ID").exists()
     assert (box.appdir / "native" / "seerr-listen.cjs").read_bytes() == PRELOAD.read_bytes()
+    assert (box.appdir / "native" / "seerr-sqlite-sync.cjs").read_bytes() == SYNC_PRELOAD.read_bytes()
     env = (box.envdir / "seerr.env").read_text().splitlines()
     for line in ("UV_THREADPOOL_SIZE=4", "MALLOC_ARENA_MAX=2", "NODE_ENV=production",
                  "TZ=Europe/Amsterdam", f"COMMIT_TAG={COMMIT}",
@@ -719,6 +766,7 @@ def test_prove_boots_a_sanitized_copy_checks_login_measures_tasks_and_cleans_up(
     # bin/current (Git Bash copies it) or the release it links to (getcwd resolves)
     assert pe["cwd"].endswith(("/seerr/bin/current", "/seerr/bin/3.5.0"))
     assert pe["argv"][0] == "--disable-wasm-trap-handler" and pe["argv"][1] == "--require"
+    assert pe["argv"][3] == "--require" and pe["argv"][4].endswith("/native/seerr-sqlite-sync.cjs")
     assert box.dropin.read_text() == DROPIN                             # gate untouched
     assert "/api/v1/status" not in box.calls_text()                    # never the live vhost
 
@@ -1168,3 +1216,106 @@ def test_post_upgrade_refuses_a_build_for_another_node_major(box):
     _extract_build(box, "4.0.0", engines="^24.0.0")
     r = box.run("--post-upgrade", "4.0.0", "--execute")
     assert r.returncode != 0 and "Node upgrade" in r.stderr
+
+
+# --- QFLX-111: the sqlite sync preload ----------------------------------------------------------
+
+def test_prove_refuses_when_the_sync_preload_does_not_apply(box):
+    box.installed()
+    r = box.run("--prove", "--execute", env={"FAKE_PRAGMA_JOURNAL": "error"})
+    assert r.returncode != 0 and "QFLX-111 applied" in r.stderr and "QFLX-111 ERROR" in r.stderr
+    assert not (box.swap / "seerr" / "proof.json").exists()
+
+
+SYNC_EXEC = (" --require %h/.apps/seerr/native/seerr-listen.cjs "
+             "--require %h/.apps/seerr/native/seerr-sqlite-sync.cjs ")
+
+
+def _pre_qflx111(box) -> str:
+    """The live box before QFLX-111: swapped + finished, unit and running process
+    with the listen preload only, no sync preload in native/."""
+    box.swapped()
+    box.set_manifest(cls="systemd", swap_state=None)
+    r = box.run("--finish", "--execute", env={"FAKE_ISNATIVE": "native"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    gold = GOLDEN_UNIT.read_text(encoding="utf-8")
+    assert SYNC_EXEC in gold
+    old = gold.replace(SYNC_EXEC, " --require %h/.apps/seerr/native/seerr-listen.cjs ")
+    (box.unitdir / UNIT).write_text(old, newline="\n")
+    (box.appdir / "native" / "seerr-sqlite-sync.cjs").unlink()
+    es = next(l for l in old.splitlines() if l.startswith("ExecStart=")).split("=", 1)[1]
+    (box.proc / "9002" / "cmdline").write_bytes(es.replace("%h", "/h").replace(" ", "\0").encode())
+    box.journal.unlink(missing_ok=True)
+    box.calls.unlink()
+    return old
+
+
+def test_refresh_preload_rewrites_the_live_unit_restarts_and_proves_the_pragma(box):
+    old = _pre_qflx111(box)
+    r = box.run("--refresh-preload", "--execute")
+    assert r.returncode == 0, r.stdout + r.stderr
+    gold = GOLDEN_UNIT.read_text(encoding="utf-8")
+    assert (box.unitdir / UNIT).read_text() == gold
+    assert (box.appdir / "native" / UNIT).read_text() == gold
+    assert (box.appdir / "native" / f"{UNIT}.prev").read_text() == old       # rollback copy
+    assert (box.appdir / "native" / "seerr-sqlite-sync.cjs").read_bytes() == SYNC_PRELOAD.read_bytes()
+    assert (box.appdir / "native" / "seerr-listen.cjs").read_bytes() == PRELOAD.read_bytes()
+    assert b"seerr-sqlite-sync.cjs" in (box.proc / "9002" / "cmdline").read_bytes()
+    calls = box.calls_text()
+    # mute -> reload -> systemd's loaded ExecStart checked -> restart -> journal read.
+    assert calls.index("daemon-reload") < calls.index(f"show {UNIT} -p ExecStart") \
+        < calls.index(f"restart {UNIT}") < calls.index(f"journalctl --user -u {UNIT} --since @")
+    assert "REFRESHED: [qflix-sqlite-sync] QFLX-111 applied" in r.stdout
+    assert "rollback: cp " in r.stdout
+    assert box.suppressed() == {}                                          # mute lifted
+    assert "appctl" not in calls                                           # the container is not involved
+    assert box.dropin.read_text() == DROPIN                                # gate untouched
+
+
+def test_refresh_preload_never_lifts_a_mute_it_did_not_set(box):
+    _pre_qflx111(box)
+    subprocess.run([sys.executable, str(REPO / "scripts" / "maint" / "lib" / "suppression.py"),
+                    "add", "canary-movie", "--reason", "someone else"],
+                   env=dict(os.environ, MANITOBA_STATE_DIR=_posix(box.state)), check=True,
+                   capture_output=True)
+    r = box.run("--refresh-preload", "--execute")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert set(box.suppressed()) == {"canary-movie"}
+
+
+@pytest.mark.parametrize("mode,msg", [
+    ("none", "pragma NOT proven"),
+    ("error", "reported: [qflix-sqlite-sync] QFLX-111 ERROR"),
+])
+def test_refresh_preload_fails_closed_when_the_pragma_is_not_proven(box, mode, msg):
+    _pre_qflx111(box)
+    r = box.run("--refresh-preload", "--execute", env={"FAKE_PRAGMA_JOURNAL": mode})
+    assert r.returncode != 0 and msg in r.stderr, r.stdout + r.stderr
+    # Seerr serves (parity passed): the new unit stays, nothing is left muted.
+    assert (box.unitdir / UNIT).read_text() == GOLDEN_UNIT.read_text(encoding="utf-8")
+    assert box.native_running() and box.suppressed() == {}
+
+
+def test_refresh_preload_restores_the_previous_unit_when_parity_fails(box):
+    old = _pre_qflx111(box)
+    r = box.run("--refresh-preload", "--execute", env={"FAKE_SYNC_BREAKS_START": "1"})
+    assert r.returncode != 0 and "previous unit restored and verified" in r.stderr, r.stdout + r.stderr
+    assert (box.unitdir / UNIT).read_text() == old
+    assert box.native_running()
+    assert b"seerr-sqlite-sync" not in (box.proc / "9002" / "cmdline").read_bytes()
+    assert box.suppressed() == {}
+
+
+def test_refresh_preload_refuses_a_box_that_is_not_swapped(box):
+    box.installed()
+    r = box.run("--refresh-preload", "--execute")
+    assert r.returncode != 0 and "missing or masked" in r.stderr
+    assert f"restart {UNIT}" not in box.calls_text() and box.container_running()
+
+
+def test_refresh_preload_refuses_while_the_unit_is_down(box):
+    _pre_qflx111(box)
+    shutil.rmtree(box.proc / "9002")
+    r = box.run("--refresh-preload", "--execute")
+    assert r.returncode != 0 and "not active" in r.stderr
+    assert f"restart {UNIT}" not in box.calls_text()
