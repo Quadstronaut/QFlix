@@ -268,56 +268,99 @@ def test_line_ids_distinguish_repeated_text_and_follow_tail(tmp_path):
 
 
 # ── QFLX-116: a retry after an ambiguous POST failure must not re-ship ─────────
+# ...and must never DROP a line it cannot prove was already stored.
 
-def _rows(*ids, src="/l/sonarr.txt"):
-    return [{"message": f"m{i}", "ts": "2026-11-11T00:03:48.4Z", "level": "info",
+FLAG = {"inode": 1, "start": 0, "end": 100, "sha256": "x",
+        "failed_at": "2026-11-11T00:05:24Z"}
+
+
+def _rows(*ids, src="/l/sonarr.txt", ts="2026-11-11T00:03:48.4Z"):
+    return [{"message": f"m{i}", "ts": ts, "level": "info",
              "source_file": src, "line_id": i} for i in ids]
 
 
-def test_retry_dedup_drops_only_stored_ids():
+def test_retry_dedup_drops_only_stored_ids_inside_the_failed_batch():
     ingest = _load_ingest()
     seen = []
 
-    def lookup(port, app, src, ids, stamps):
-        seen.append((app, src, list(ids), list(stamps)))
-        return {"1:10"}
+    def lookup(port, app, src, ids, stamps, failed_at=None, deadline=None):
+        seen.append((app, src, list(ids), failed_at))
+        return {"1:10", "1:85"}
 
-    keep, dropped = ingest._drop_already_stored(9, "sonarr", _rows("1:10", "1:85"),
-                                                lookup=lookup)
-    assert [r["line_id"] for r in keep] == ["1:85"]
-    assert dropped == 1
-    assert seen == [("sonarr", "/l/sonarr.txt", ["1:10", "1:85"],
-                     ["2026-11-11T00:03:48.4Z"] * 2)]
+    # 1:150 lies past the failed batch's end: never queried, never dropped.
+    keep, dropped = ingest._drop_already_stored(
+        9, "sonarr", _rows("1:10", "1:85", "1:150"), FLAG, lookup=lookup)
+    assert [r["line_id"] for r in keep] == ["1:150"]
+    assert dropped == 2
+    assert seen == [("sonarr", "/l/sonarr.txt", ["1:10", "1:85"], FLAG["failed_at"])]
+
+
+def test_retry_dedup_other_inode_is_never_dropped():
+    ingest = _load_ingest()
+    keep, dropped = ingest._drop_already_stored(
+        9, "sonarr", _rows("2:10"), FLAG, lookup=lambda *a, **k: {"2:10"})
+    assert [r["line_id"] for r in keep] == ["2:10"] and dropped == 0
 
 
 def test_retry_dedup_lookup_failure_sends_everything():
     ingest = _load_ingest()
     rows = _rows("1:10", "1:85")
-    keep, dropped = ingest._drop_already_stored(9, "sonarr", rows,
-                                                lookup=lambda *a: None)
+    keep, dropped = ingest._drop_already_stored(9, "sonarr", rows, FLAG,
+                                                lookup=lambda *a, **k: None)
     assert keep == rows and dropped is None
 
 
 def test_retry_dedup_rows_without_line_id_are_kept():
     ingest = _load_ingest()
     rows = [{"message": "x", "source_file": "journalctl:u"}]
-    keep, dropped = ingest._drop_already_stored(9, "maint", rows,
-                                                lookup=lambda *a: set())
+    keep, dropped = ingest._drop_already_stored(9, "maint", rows, FLAG,
+                                                lookup=lambda *a, **k: set())
     assert keep == rows and dropped == 0
 
 
+def test_same_bytes_again_requires_inode_start_and_hash():
+    import hashlib
+    ingest = _load_ingest()
+    data = b"a\nb\n"
+    flag = {"inode": 7, "start": 40, "end": 44,
+            "sha256": hashlib.sha256(data).hexdigest(), "failed_at": None}
+    span = {"inode": 7, "start": 40, "end": 50, "data": data + b"cdefg\n"}
+    assert ingest._same_bytes_again(flag, span)
+    assert not ingest._same_bytes_again(flag, {**span, "inode": 8})
+    assert not ingest._same_bytes_again(flag, {**span, "start": 0})
+    assert not ingest._same_bytes_again(flag, {**span, "data": b"X\nb\ncdefg\n"})
+    assert not ingest._same_bytes_again(flag, {**span, "end": 43, "data": b"a\nb"})
+    assert not ingest._same_bytes_again(True, span)          # old bool flag
+    assert not ingest._same_bytes_again(flag, {})            # nothing read
+
+
+def test_time_bounds_place_unstamped_rows_at_failure_time():
+    ingest = _load_ingest()
+    assert ingest._time_bounds([None], "2026-11-11T00:05:24Z") == (
+        "2026-11-11T00:03:24Z", "2026-11-11T00:07:24Z")
+    assert ingest._time_bounds(["2026-11-11T00:03:48.4Z", None],
+                               "2026-11-11T00:05:24Z") == (
+        "2026-11-11T00:01:48Z", "2026-11-11T00:07:24Z")
+
+
+class _Resp:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 def test_already_stored_queries_app_file_and_ids(monkeypatch):
-    import io
     import urllib.parse
     ingest = _load_ingest()
     captured = {}
-
-    class _Resp(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
 
     def fake_urlopen(req, timeout=None):
         form = urllib.parse.parse_qs(req.data.decode())
@@ -345,43 +388,146 @@ def test_already_stored_unreachable_is_none(monkeypatch):
     assert ingest._already_stored(9, "sonarr", "/l/s.txt", ["1:1"]) is None
 
 
-def test_failed_post_flags_cursor_and_retry_dedups(tmp_path, monkeypatch):
-    """End to end through main(): POST times out after vlogs stored the batch;
-    the next cycle sends nothing twice and clears the flag."""
+def test_already_stored_incomplete_read_is_none_not_a_crash(monkeypatch):
+    """IncompleteRead is an HTTPException, not an OSError: escaping here
+    aborted ingest for every app after this one."""
+    import http.client
     ingest = _load_ingest()
-    log = tmp_path / "sonarr.txt"
-    log.write_bytes(b"")
+
+    class _Short(_Resp):
+        def read(self):
+            raise http.client.IncompleteRead(b"{", 10)
+
+    monkeypatch.setattr(ingest.urllib.request, "urlopen",
+                        lambda req, timeout=None: _Short(b""))
+    assert ingest._already_stored(9, "sonarr", "/l/s.txt", ["1:1"]) is None
+
+
+def test_already_stored_non_object_row_is_none(monkeypatch):
+    ingest = _load_ingest()
+    monkeypatch.setattr(ingest.urllib.request, "urlopen",
+                        lambda req, timeout=None: _Resp(b"[1,2]\n"))
+    assert ingest._already_stored(9, "sonarr", "/l/s.txt", ["1:1"]) is None
+
+
+def test_already_stored_whole_lookup_deadline(monkeypatch):
+    """25 chunks x 30 s used to be able to block ~12.5 min. One budget for
+    the whole lookup; once spent, give up (send everything)."""
+    ingest = _load_ingest()
+    clock = {"t": 1000.0}
+    calls = {"n": 0}
+    monkeypatch.setattr(ingest.time, "monotonic", lambda: clock["t"])
+
+    def slow(req, timeout=None):
+        calls["n"] += 1
+        assert timeout <= 30.0
+        clock["t"] += 30.0                  # every chunk eats 30 s
+        return _Resp(b"")
+
+    monkeypatch.setattr(ingest.urllib.request, "urlopen", slow)
+    ids = [f"1:{i}" for i in range(25 * ingest._DEDUP_CHUNK)]
+    assert ingest._already_stored(9, "sonarr", "/l/s.txt", ids,
+                                  deadline=clock["t"] + 60.0) is None
+    assert calls["n"] == 2
+
+
+def _main_setup(tmp_path, monkeypatch, ingest, log):
+    import sys
     st = os.stat(log)
     state = tmp_path / "state"
     monkeypatch.setattr(ingest, "STATE_DIR", state)
     ingest._save_cursors(state / "cursors.json", {"sonarr": {
         "inode": st.st_ino, "offset": 0, "last_ts": None, "path": str(log)}})
-    log.write_bytes(b"2026-11-11 01:03:48.4|Info|A|one\n2026-11-11 01:03:48.4|Info|A|two\n")
     monkeypatch.setattr(ingest, "_read_port", lambda: 9)
     monkeypatch.setattr(ingest.logs_mod, "_FILE_LOGS", {"sonarr": str(log)})
     monkeypatch.setattr(ingest.logs_mod, "_GLOB_LOGS", {}, raising=False)
     monkeypatch.setattr(ingest.logs_mod, "_SYSTEMD_LOGS", {})
     monkeypatch.setattr(ingest.logs_mod, "route",
                         lambda app: {"kind": "file", "path": str(log)})
-    store: list[str] = []
+    monkeypatch.setattr(sys, "argv", ["ingest"])
+    return state
+
+
+def _fake_vlogs(monkeypatch, ingest, store):
+    """POST #1 'times out' after storing; vlogs lookup honours the real time
+    bounds the ingester computes, like the real query does."""
     calls = {"n": 0}
 
-    def fake_post(port, app, lines):
+    def post(port, app, lines):
         calls["n"] += 1
-        store.extend(ln["line_id"] for ln in lines)
-        if calls["n"] == 1:
-            return False, "timed out"      # stored, but the answer was late
-        return True, f"{len(lines)} lines"
+        store.extend((ln["line_id"], ln["message"], ln["ts"]) for ln in lines)
+        return (False, "timed out") if calls["n"] == 1 else (True, f"{len(lines)} lines")
 
-    monkeypatch.setattr(ingest, "_post_jsonline", fake_post)
-    monkeypatch.setattr(ingest, "_already_stored",
-                        lambda port, app, src, ids, stamps: {i for i in ids if i in store})
-    import sys
-    monkeypatch.setattr(sys, "argv", ["ingest"])
+    def lookup(port, app, src, ids, stamps, failed_at=None, deadline=None):
+        s, e = ingest._time_bounds(stamps, failed_at)
+        return {i for (i, _, ts) in store if i in ids and s <= ts[:19] + "Z" <= e}
+
+    monkeypatch.setattr(ingest, "_post_jsonline", post)
+    monkeypatch.setattr(ingest, "_already_stored", lookup)
+
+
+def test_failed_post_records_batch_and_retry_dedups(tmp_path, monkeypatch):
+    """End to end through main(): POST times out after vlogs stored the batch;
+    the next cycle sends nothing twice and clears the record."""
+    ingest = _load_ingest()
+    log = tmp_path / "sonarr.txt"
+    log.write_bytes(b"")
+    state = _main_setup(tmp_path, monkeypatch, ingest, log)
+    log.write_bytes(b"2026-11-11 01:03:48.4|Info|A|one\n2026-11-11 01:03:48.4|Info|A|two\n")
+    store: list = []
+    _fake_vlogs(monkeypatch, ingest, store)
     ingest.main()
     cur = ingest._load_cursors(state / "cursors.json")["sonarr"]
-    assert cur["unconfirmed"] is True and cur["offset"] == 0
+    rec = cur["unconfirmed"]
+    assert cur["offset"] == 0
+    assert (rec["start"], rec["end"]) == (0, log.stat().st_size)
+    assert rec["failed_at"].endswith("Z") and len(rec["sha256"]) == 64
+    assert "data" not in rec                       # raw bytes never persisted
+    # More lines arrive before the retry: they must ship, the old ones must not.
+    with open(log, "ab") as f:
+        f.write(b"2026-11-11 01:04:10.0|Info|A|three\n")
     ingest.main()
     cur = ingest._load_cursors(state / "cursors.json")["sonarr"]
     assert "unconfirmed" not in cur and cur["offset"] == log.stat().st_size
-    assert len(store) == len(set(store)) == 2
+    ids = [i for (i, _, _) in store]
+    assert len(ids) == len(set(ids)) == 3
+
+
+def test_truncate_and_rewrite_before_retry_loses_nothing(tmp_path, monkeypatch):
+    """Reviewer's repro (PR #145): copytruncate / in-place rewrite keeps the
+    inode and reuses offsets, so the new lines carry the failed batch's ids.
+    They must be SENT, not dropped as 'already stored'."""
+    ingest = _load_ingest()
+    log = tmp_path / "sonarr.txt"
+    log.write_bytes(b"")
+    state = _main_setup(tmp_path, monkeypatch, ingest, log)
+    log.write_bytes(b"2026-11-11 01:03:48.4|Info|A|old-one\n2026-11-11 01:03:48.4|Info|A|old-two\n")
+    store: list = []
+    _fake_vlogs(monkeypatch, ingest, store)
+    ingest.main()
+    with open(log, "r+b") as f:                     # same inode, offsets reused
+        f.truncate(0)
+        f.write(b"2026-11-11 01:04:50.1|Info|B|new-one\n2026-11-11 01:04:50.1|Info|B|new-two\n")
+    ingest.main()
+    msgs = [m for (_, m, _) in store]
+    assert any("new-one" in m for m in msgs) and any("new-two" in m for m in msgs)
+    assert "unconfirmed" not in ingest._load_cursors(state / "cursors.json")["sonarr"]
+
+
+def test_old_bool_flag_is_ignored_and_cleared(tmp_path, monkeypatch):
+    """The never-deployed first cut stored `unconfirmed: true`; such a cursor
+    must still load, ship everything once and lose the flag."""
+    ingest = _load_ingest()
+    log = tmp_path / "sonarr.txt"
+    log.write_bytes(b"")
+    state = _main_setup(tmp_path, monkeypatch, ingest, log)
+    cur = ingest._load_cursors(state / "cursors.json")
+    cur["sonarr"]["unconfirmed"] = True
+    ingest._save_cursors(state / "cursors.json", cur)
+    log.write_bytes(b"2026-11-11 01:03:48.4|Info|A|one\n")
+    sent = []
+    monkeypatch.setattr(ingest, "_post_jsonline",
+                        lambda port, app, lines: (sent.extend(lines), (True, f"{len(lines)} lines"))[1])
+    ingest.main()
+    assert len(sent) == 1
+    assert "unconfirmed" not in ingest._load_cursors(state / "cursors.json")["sonarr"]
