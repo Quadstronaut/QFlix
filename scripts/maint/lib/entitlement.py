@@ -103,6 +103,14 @@ BULK_NO_SCOPE = "no-scope"
 BULK_UNREACHABLE = "unreachable"
 BULK_UNPARSEABLE = "unparseable"
 
+# /v1/entitlements paging. The server clamps `limit` to [1, 1000] (default
+# 200) and orders rows by patreon_user_id; a page shorter than the echoed
+# limit is the last one. The page cap is a runaway guard, not a size budget:
+# 50 x 1000 rows is orders of magnitude past any real projection, so hitting
+# it means the server is not honouring `offset` and we would loop forever.
+BULK_PAGE_LIMIT = 1000
+BULK_MAX_PAGES = 50
+
 
 @dataclass
 class Answer:
@@ -186,6 +194,13 @@ class BulkAnswer:
     'no-scope' or 'unreachable' answer would silently treat "I could not ask"
     as "zero people are entitled", which is exactly the UNPROVEN_BLIND vs
     UNPROVEN_EMPTY distinction payer_oracle.py exists to keep apart.
+
+    In the 'ok' state `count == len(entitled)`: the number of DISTINCT
+    addresses whose member row reads `entitled: true`, across every page. It
+    is NOT the server's per-page `count` field (that is just the page length
+    and includes former/declined patrons) -- reading that number as "entitled
+    accounts" is the QFLX-119 bug that let oracle row 5 go green on a
+    projection containing nobody who pays.
 
     `entitled` holds the real (unmasked) addresses the service reports, kept
     in memory only for the duration of one run so payer_oracle.judge() can
@@ -318,8 +333,28 @@ class EntitlementClient:
     def bulk(self) -> BulkAnswer:
         """GET /v1/entitlements -- the whole-projection cross-check.
 
-        Requires the 'bulk' scope on the key. Today the QFlix key does not
-        have it, and the live-observed answer is::
+        Requires the 'bulk' scope on the key. The response contract (server
+        source: QuadstroNot patreon_entitlement/app.py, `bulk`) is one PAGE::
+
+            200 {"count": <rows on THIS page>, "limit": L, "offset": O,
+                 "members": [{"email": ..., "entitled": bool, "stale": bool,
+                              "status": ..., ...}, ...]}
+
+        Every page is walked (offset += limit until a page is shorter than
+        its echoed limit) and the entitled set is derived row by row from
+        each member's own `entitled` flag. A stale `entitled: true` still
+        counts -- same asymmetry as lookup(): a stale yes was a real yes. An
+        entitled row with a null email is skipped: it cannot be compared to a
+        billing.holder either way.
+
+        ANY page that is not exactly that shape -- no `members` list, a row
+        without a boolean `entitled`, a `count` that disagrees with the rows,
+        an offset the server did not honour, the pre-QFLX-119 top-level
+        `entitled` list -- makes the WHOLE answer 'unparseable'. Never a
+        partial or empty 'ok': empty-because-clean must never look like
+        empty-because-broken, and judge() reads an empty 'ok' as row 8.
+
+        A key without the scope gets::
 
             403 {"error": "this key lacks the 'bulk' scope"}
 
@@ -329,11 +364,41 @@ class EntitlementClient:
         instead of a message that reads like a network outage. Every other
         4xx/5xx, every network failure and every timeout is 'unreachable':
         none of those tells the caller anything actionable beyond "try again
-        later" or "escalate to Starhold". NEVER raises -- see the class
-        docstring for why a per-household loop cannot tolerate an exception
-        from this client.
+        later" or "escalate to Starhold". A failure on any page fails the
+        whole call the same way. NEVER raises -- see the class docstring for
+        why a per-household loop cannot tolerate an exception from this
+        client.
         """
-        url = self.base_url + "/v1/entitlements"
+        addrs = set()
+        offset = 0
+        for _ in range(BULK_MAX_PAGES):
+            page = self._bulk_page(offset)
+            if isinstance(page, BulkAnswer):
+                return page                         # failure: whole call fails
+            rows, limit, code = page
+            for row in rows:
+                email = row.get("email")
+                if row["entitled"] and isinstance(email, str) and "@" in email:
+                    addrs.add(email.strip().lower())
+            if len(rows) < limit:
+                clean = sorted(addrs)
+                return BulkAnswer(state=BULK_OK, count=len(clean),
+                                  entitled=clean, http_status=code)
+            offset += limit
+        return BulkAnswer(
+            state=BULK_UNPARSEABLE,
+            error="still paging after %d pages - the server is not honouring "
+                  "offset" % BULK_MAX_PAGES)
+
+    def _bulk_page(self, offset: int):
+        """Fetch and validate ONE /v1/entitlements page.
+
+        Returns (rows, echoed_limit, http_status) on a well-formed page, or a
+        non-ok BulkAnswer describing why not. Never raises.
+        """
+        url = (self.base_url + "/v1/entitlements?"
+               + urllib.parse.urlencode({"limit": BULK_PAGE_LIMIT,
+                                         "offset": offset}))
         req = urllib.request.Request(url, headers={
             "Authorization": "Bearer " + self.api_key,
             "Accept": "application/json",
@@ -380,28 +445,37 @@ class EntitlementClient:
                               error="body is %s, expected object"
                                     % type(data).__name__, http_status=code)
 
-        entitled = data.get("entitled")
-        count = data.get("count")
+        def bad(why: str) -> BulkAnswer:
+            return BulkAnswer(state=BULK_UNPARSEABLE, error=why, http_status=code)
 
-        if isinstance(entitled, list) and all(isinstance(x, str) for x in entitled):
-            clean = [e.strip().lower() for e in entitled if isinstance(e, str) and "@" in e]
-            return BulkAnswer(state=BULK_OK,
-                              count=(count if isinstance(count, int) and count >= 0
-                                    else len(clean)),
-                              entitled=clean, http_status=code)
-
-        if isinstance(count, int) and count >= 0:
-            # A count with no address list is still mappable -- the oracle's
-            # DORMANT/PROVEN_UPSTREAM rows only need the number. MISMATCH
-            # cannot fire without addresses to compare, which is the safe
-            # direction: fewer alerts, never a false one.
-            return BulkAnswer(state=BULK_OK, count=count, entitled=[], http_status=code)
-
-        return BulkAnswer(
-            state=BULK_UNPARSEABLE,
-            error="200 body has neither a usable 'entitled' list nor a "
-                 "non-negative 'count' integer",
-            http_status=code)
+        rows = data.get("members")
+        if not isinstance(rows, list):
+            # Includes the pre-QFLX-119 assumption of a top-level `entitled`
+            # list, and a bare `count`: neither carries per-member verdicts,
+            # so neither may be read as "these are all the entitled people".
+            return bad("200 body has no 'members' list")
+        limit, count, echoed = data.get("limit"), data.get("count"), data.get("offset")
+        # bool is an int subclass; True must not pass as limit=1.
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            return bad("'limit' is %r, expected a positive integer" % (limit,))
+        if echoed != offset:
+            return bad("asked for offset %d, page says %r" % (offset, echoed))
+        if count != len(rows):
+            return bad("'count' is %r but the page holds %d member rows"
+                       % (count, len(rows)))
+        if len(rows) > limit:
+            return bad("page holds %d rows, more than its limit %d"
+                       % (len(rows), limit))
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict) or not isinstance(row.get("entitled"), bool):
+                # Never guess a missing verdict as "not entitled": that is the
+                # silent-empty failure this whole function exists to refuse.
+                return bad("member row %d has no boolean 'entitled'" % (offset + i))
+            email = row.get("email")
+            if email is not None and not isinstance(email, str):
+                return bad("member row %d 'email' is %s, expected string or null"
+                           % (offset + i, type(email).__name__))
+        return rows, limit, code
 
     def healthz(self) -> bool:
         """Liveness probe. No auth required. Never raises."""
