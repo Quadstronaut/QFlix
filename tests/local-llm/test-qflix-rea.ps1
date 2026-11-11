@@ -2621,6 +2621,87 @@ Test-Case 'the task definition is weekly Monday 12:00 with an hourly retry tail'
     Assert-False ($d.ContainsKey('SessionStateChange')) 'no session-lock trigger left'
 }
 
+Test-Case 'Test-IsFinalWeeklyAttempt: only 23:00 Monday and later catch-ups are final' {
+    Assert-False (Test-IsFinalWeeklyAttempt -Now ([datetime]'2026-11-16T12:00:00')) 'noon is not final'
+    Assert-False (Test-IsFinalWeeklyAttempt -Now ([datetime]'2026-11-16T22:59:00')) '22:59 still has a retry'
+    Assert-True  (Test-IsFinalWeeklyAttempt -Now ([datetime]'2026-11-16T23:00:00')) '23:00 is the last start'
+    Assert-True  (Test-IsFinalWeeklyAttempt -Now ([datetime]'2026-11-17T08:00:00')) 'Tuesday catch-up is final'
+}
+
+Test-Case 'New-DiscordWeeklyPayload: ONE [WARN] message, clean or not, never red, no excerpts' {
+    $now = [datetime]'2026-11-16T12:20:00'
+    $c = New-DiscordWeeklyPayload -OperatorId '42' -OkModels 3 -ModelCount 3 -DurationSec 900 -FetchedAt '2026-11-16T19:05:00Z' -Now $now -PreviousAudit 'Mon 2026-11-09 12:21 local'
+    $e = $c.embeds[0]
+    Assert-Equal '[WARN] QFlix weekly audit - clean' $e.title 'clean title'
+    Assert-Equal 16753920 $e.color 'WARN orange, the deadman convention'
+    Assert-True ($e.color -ne 15158332) 'never the red [ALERT] colour'
+    Assert-Equal '<@42>' $c.content 'operator pinged'
+    Assert-Equal '42' ($c.allowed_mentions.users -join ',') 'only the operator is mentionable'
+    Assert-True ($e.description -match 'Clean:') 'clean says clean'
+    Assert-True ($e.description -match 'maintenance window') 'window line names the maintenance window'
+    Assert-True ($e.description -match "last $($Script:FreshDays) days") 'window follows FreshDays'
+    Assert-True ($e.description -match 'Previous audit:\*\* Mon 2026-11-09') 'previous audit shown'
+
+    $g = @(
+        [pscustomobject]@{ app='sonarr'; severity='error';    summary='Import blocked: disk quota'; excerpt='SECRET-EXCERPT user@example'; models_flagged=@('a','b') },
+        [pscustomobject]@{ app='plex';   severity='critical'; summary="Library scan`nfailing"; excerpt='x'; models_flagged=@('a','b','c') }
+    )
+    $f = New-DiscordWeeklyPayload -OperatorId '42' -Groups $g -OkModels 3 -ModelCount 3 -DurationSec 900 -Now $now -SoloCount 1
+    $fe = $f.embeds[0]
+    Assert-Equal '[WARN] QFlix weekly audit - 2 findings' $fe.title 'count in title'
+    Assert-Equal 16753920 $fe.color 'findings are still a warning'
+    Assert-False ($fe.description -match 'SECRET-EXCERPT') 'excerpts never posted'
+    $ls = @($fe.description -split "`n" | Where-Object { $_ -like '- *' })
+    Assert-Equal 2 $ls.Count 'one line per finding'
+    Assert-True ($ls[0] -match '\*\*plex\*\* \[critical\] Library scan failing') 'critical first, newline flattened'
+    Assert-True ($fe.description -match '1 single-model finding') 'solo count surfaced'
+
+    $d = New-DiscordWeeklyPayload -OperatorId '42' -OkModels 1 -ModelCount 3 -DurationSec 9 -Now $now -Note 'degraded, only 1 of 3 models answered'
+    Assert-True ($d.embeds[0].title -match 'degraded') 'a one-model week is titled degraded'
+    Assert-False ($d.embeds[0].description -match 'Clean:') 'and is never called clean'
+}
+
+Test-Case 'Get-PreviousAuditStamp returns the last completed audit before this run' {
+    $lines = @(
+        '2026-11-09T12:21:00-07:00 ok findings=0 models=3/3 duration=900s outcome=heartbeat discord_status=204',
+        '2026-11-09T13:00:00-07:00 weekly-noop already_audited since=x by=y',
+        '2026-11-16T12:01:00-07:00 fail reason=ollama_down outcome=deferred_retry'
+    )
+    Assert-True ((Get-PreviousAuditStamp -Lines $lines -Before ([datetime]'2026-11-16T13:00:00')) -match '^Mon 2026-11-09 12:21') 'found'
+    Assert-Equal '' (Get-PreviousAuditStamp -Lines @($lines[2]) -Before ([datetime]'2026-11-16T13:00:00')) 'failures are not audits'
+}
+
+Test-Case 'Send-DeadmanAlert defers (logs, never posts) on a non-final weekly attempt' {
+    $savedAppData = $env:APPDATA
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
+    $Script:SentPayload = $null
+    try {
+        function Send-Discord { param($WebhookUrl, $Payload) $Script:SentPayload = $Payload; $true }
+        $Script:DeferFailurePages = $true
+        Send-DeadmanAlert -Reason 'ssh_fail' -Webhook 'http://x' -OpId '1' -Title 't' -Description 'd' -Detail 'msg=boom'
+        $log = Get-Content -Raw -LiteralPath (Join-Path (Get-StateDir) 'audit.log')
+        Assert-True ($log -match 'fail reason=ssh_fail outcome=deferred_retry msg=boom') 'deferred line keeps the fail reason= shape the canary reads'
+        Assert-Equal $null $Script:SentPayload 'nothing posted'
+    } finally {
+        $Script:DeferFailurePages = $false
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+        $env:APPDATA = $savedAppData
+    }
+}
+
+Test-Case 'Invoke-Main posts the weekly summary, not the hourly-era page/heartbeat' {
+    $src = (Get-Command Invoke-Main).Definition
+    Assert-True ($src.Contains('New-DiscordWeeklyPayload')) 'weekly payload used'
+    Assert-False ($src.Contains('New-DiscordErrorPayload')) 'no per-finding [ALERT] page'
+    Assert-False ($src.Contains('New-DiscordHeartbeatPayload')) 'no daily [OK] heartbeat'
+    Assert-False ($src.Contains('last_heartbeat_date')) 'no once-a-day gate'
+    Assert-True ($src.Contains('discord_status=')) 'HTTP status on the audit line'
+}
+
+Test-Case 'the system prompt staleness rule follows FreshDays' {
+    Assert-True ((Get-SystemPrompt).Contains("more than $($Script:FreshDays) days older than")) 'prompt and code agree on the window'
+}
+
 Test-Case 'Invoke-Main checks the weekly guard before the busy gate, and publishes only after reaching the box' {
     $src = (Get-Command Invoke-Main).Definition
     $g = $src.IndexOf('Test-WeeklyAuditDone')
