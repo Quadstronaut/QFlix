@@ -27,10 +27,22 @@ http_up() { local c; for _ in 1 2 3; do
 H_JS=$(http_up "${JS}/api/v1/status" "$JS_KEY") || { printf "STAGE=seerr-up-fail msg=seerr-status-http-%s-after-3-tries\n" "$H_JS" >&2; exit 1; }
 H_S2=$(http_up "${S2}/system/status" "$S2_KEY") || { printf "STAGE=sonarr2-up-fail msg=sonarr2-status-http-%s-after-3-tries\n" "$H_S2" >&2; exit 1; }
 
-SEED=$(curl -sf -m 8 -H "X-Api-Key: $S2_KEY" "${S2}/series" \
-  | python3 -c "import sys, json
+# JSON reads go through jget so an empty/non-JSON answer is a named STAGE,
+# never a Python traceback (QFLX-115; see movie.sh for the incident).
+fail() { printf "STAGE=%s msg=%s\n" "$1" "$2" >&2; exit 1; }
+jget() { local body; for _ in 1 2 3; do
+  body=$(curl -sf -m 8 -H "X-Api-Key: $2" "$1") \
+    && printf "%s" "$body" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null \
+    && { printf "%s" "$body"; return 0; }
+  sleep 3; done; return 1; }
+
+SERIES=$(jget "${S2}/series" "$S2_KEY") || fail sonarr2-api-fail series-list-no-json-after-3-tries
+SEED=$(printf "%s" "$SERIES" | python3 -c "import sys, json
 sr = sorted(json.load(sys.stdin), key=lambda x: x[\"id\"])
-print(sr[0][\"tvdbId\"], sr[0][\"id\"], sr[0].get(\"tmdbId\") or 0) if sr else exit(2)")
+print(sr[0][\"tvdbId\"], sr[0][\"id\"], sr[0].get(\"tmdbId\") or 0) if sr else exit(2)" 2>/dev/null)
+# rc 2 = empty library (SKIP below); anything else non-zero = a shape we cannot read.
+SEED_RC=$?
+[ "$SEED_RC" = "0" ] || [ "$SEED_RC" = "2" ] || fail seed-pick-fail "series-list-unparseable-rc-${SEED_RC}"
 # Empty-but-reachable library is a legitimate content state (e.g. the reaper
 # aged out the last series, or anime is simply sparse), NOT a Seerr->Sonarr2
 # path failure. Sonarr2 already passed its up-check above, so 0 series = nothing
@@ -44,21 +56,21 @@ TVDB_ID=$(printf "%s" "$SEED" | cut -d" " -f1)
 S2_SID=$(printf "%s" "$SEED" | cut -d" " -f2)
 TMDB_ID=$(printf "%s" "$SEED" | cut -d" " -f3)
 
-SRV=$(curl -sf -m 5 -H "X-Api-Key: $JS_KEY" "${JS}/api/v1/settings/sonarr" \
-  | python3 -c "import sys, json
+SSET=$(jget "${JS}/api/v1/settings/sonarr" "$JS_KEY") || fail seerr-api-fail settings-sonarr-no-json-after-3-tries
+SRV=$(printf "%s" "$SSET" | python3 -c "import sys, json
 d=json.load(sys.stdin)
 anime=[s for s in d if \"anime\" in (s.get(\"name\") or \"\").lower()]
 nondefault=[s for s in d if not s.get(\"isDefault\")]
 chosen = anime or nondefault or d
-print(chosen[0][\"id\"] if chosen else \"\")")
+print(chosen[0][\"id\"] if chosen else \"\")" 2>/dev/null)
 [ -n "$SRV" ] || { printf "STAGE=seerr-push-fail msg=no-sonarr-anime-server-in-seerr\n" >&2; exit 1; }
 
 if [ "$TMDB_ID" = "0" ] || [ -z "$TMDB_ID" ]; then
-  TMDB_ID=$(curl -sf -m 8 -H "X-Api-Key: $JS_KEY" "${JS}/api/v1/search?query=tvdb%3A${TVDB_ID}" \
-    | python3 -c "import sys, json
+  SRCH=$(jget "${JS}/api/v1/search?query=tvdb%3A${TVDB_ID}" "$JS_KEY") || fail seerr-api-fail search-no-json-after-3-tries
+  TMDB_ID=$(printf "%s" "$SRCH" | python3 -c "import sys, json
 r=json.load(sys.stdin).get(\"results\",[])
 tv=[x for x in r if x.get(\"mediaType\")==\"tv\"]
-print(tv[0].get(\"id\") if tv else \"\")")
+print(tv[0].get(\"id\") if tv else \"\")" 2>/dev/null)
 fi
 [ -n "$TMDB_ID" ] && [ "$TMDB_ID" != "0" ] || { printf "STAGE=seed-pick-fail msg=could-not-resolve-tmdb-for-tvdb-%s\n" "$TVDB_ID" >&2; exit 1; }
 
@@ -71,7 +83,8 @@ HTTP=$(printf "%s" "$RESP" | grep -oE "__HTTP__=[0-9]+" | cut -d= -f2)
 BODYTXT=$(printf "%s" "$RESP" | sed -e "s/__HTTP__=[0-9]*//")
 case "$HTTP" in
   200|201)
-    REQ_ID=$(printf "%s" "$BODYTXT" | python3 -c "import sys, json; print(json.load(sys.stdin)[\"id\"])")
+    REQ_ID=$(printf "%s" "$BODYTXT" | python3 -c "import sys, json; print(json.load(sys.stdin)[\"id\"])" 2>/dev/null)
+    [ -n "$REQ_ID" ] || fail seerr-push-fail "http-${HTTP}-but-no-request-id-in-body"
     CREATED=1
     ;;
   202)
@@ -86,11 +99,11 @@ case "$HTTP" in
     exit 0
     ;;
   409)
-    REQ_ID=$(curl -sf -m 5 -H "X-Api-Key: $JS_KEY" "${JS}/api/v1/request?take=200" \
-      | python3 -c "import sys, json
+    REQS=$(jget "${JS}/api/v1/request?take=200" "$JS_KEY") || fail seerr-api-fail request-list-no-json-after-3-tries
+    REQ_ID=$(printf "%s" "$REQS" | python3 -c "import sys, json
 d=json.load(sys.stdin)
 hits=[r for r in d.get(\"results\",[]) if r.get(\"media\",{}).get(\"tmdbId\")==${TMDB_ID} and r.get(\"media\",{}).get(\"mediaType\")==\"tv\"]
-print(hits[0][\"id\"] if hits else \"\")")
+print(hits[0][\"id\"] if hits else \"\")" 2>/dev/null)
     [ -n "$REQ_ID" ] || { printf "STAGE=seerr-push-fail msg=409-but-no-existing-request-tmdb-%s\n" "$TMDB_ID" >&2; exit 1; }
     CREATED=0
     ;;
@@ -107,7 +120,7 @@ for _ in 1 2 3 4 5 6; do
     | python3 -c "import sys, json
 r=json.load(sys.stdin)
 v=r.get(\"media\",{}).get(\"externalServiceId\")
-print(v if v is not None else \"\")")
+print(v if v is not None else \"\")" 2>/dev/null)
   if [ -n "$EXTID" ]; then break; fi
   sleep 5
 done
