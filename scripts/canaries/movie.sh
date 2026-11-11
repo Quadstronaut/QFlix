@@ -56,13 +56,20 @@ H_RR=$(http_up "${RR}/system/status" "$RADARR_KEY") || { printf "STAGE=radarr-up
 # http_up, checks the body parses as JSON, and returns 1 so the CALLER names
 # the stage. The parsers below then only ever see valid JSON.
 fail() { printf "STAGE=%s msg=%s\n" "$1" "$2" >&2; exit 1; }
-jget() { local body; for _ in 1 2 3; do
-  body=$(curl -sf -m 8 -H "X-Api-Key: $2" "$1") \
-    && printf "%s" "$body" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null \
-    && { printf "%s" "$body"; return 0; }
-  sleep 3; done; return 1; }
+# On failure jget prints "curl-rc-<rc>-http-<code>" of the LAST try (no -f, so
+# a 401/403 reads as http-401, not as a timeout) for the caller to put in msg.
+jget() { local out rc code body; for _ in 1 2 3; do
+  out=$(curl -s -m 8 -H "X-Api-Key: $2" -w "__HTTP__%{http_code}" "$1"); rc=$?
+  code=${out##*__HTTP__}; body=${out%__HTTP__*}
+  case "$out" in *__HTTP__*) ;; *) code=000 ;; esac
+  case "$rc:$code" in
+    0:2??) printf "%s" "$body" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null \
+             && { printf "%s" "$body"; return 0; } ;;
+  esac
+  sleep 3; done
+  printf "curl-rc-%s-http-%s" "$rc" "${code:-000}"; return 1; }
 
-MOVIES=$(jget "${RR}/movie" "$RADARR_KEY") || fail radarr-api-fail movie-list-no-json-after-3-tries
+MOVIES=$(jget "${RR}/movie" "$RADARR_KEY") || fail radarr-api-fail "movie-list-no-json-after-3-tries-${MOVIES}"
 SEED=$(printf "%s" "$MOVIES" | python3 -c "import sys, json
 ms = sorted(json.load(sys.stdin), key=lambda x: x[\"id\"])
 print(ms[0][\"tmdbId\"], ms[0][\"id\"]) if ms else exit(2)" 2>/dev/null)
@@ -80,7 +87,7 @@ fi
 TMDB_ID=$(printf "%s" "$SEED" | cut -d" " -f1)
 RR_MID=$(printf "%s" "$SEED" | cut -d" " -f2)
 
-RSET=$(jget "${JS}/api/v1/settings/radarr" "$JS_KEY") || fail seerr-api-fail settings-radarr-no-json-after-3-tries
+RSET=$(jget "${JS}/api/v1/settings/radarr" "$JS_KEY") || fail seerr-api-fail "settings-radarr-no-json-after-3-tries-${RSET}"
 SRV=$(printf "%s" "$RSET" | python3 -c "import sys, json
 d=json.load(sys.stdin)
 df=[s for s in d if s.get(\"isDefault\")]
@@ -101,7 +108,7 @@ case "$HTTP" in
     CREATED=1
     ;;
   409)
-    REQS=$(jget "${JS}/api/v1/request?take=200" "$JS_KEY") || fail seerr-api-fail request-list-no-json-after-3-tries
+    REQS=$(jget "${JS}/api/v1/request?take=200" "$JS_KEY") || fail seerr-api-fail "request-list-no-json-after-3-tries-${REQS}"
     REQ_ID=$(printf "%s" "$REQS" | python3 -c "import sys, json
 d=json.load(sys.stdin)
 hits=[r for r in d.get(\"results\",[]) if r.get(\"media\",{}).get(\"tmdbId\")==${TMDB_ID}]

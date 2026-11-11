@@ -30,13 +30,20 @@ H_S2=$(http_up "${S2}/system/status" "$S2_KEY") || { printf "STAGE=sonarr2-up-fa
 # JSON reads go through jget so an empty/non-JSON answer is a named STAGE,
 # never a Python traceback (QFLX-115; see movie.sh for the incident).
 fail() { printf "STAGE=%s msg=%s\n" "$1" "$2" >&2; exit 1; }
-jget() { local body; for _ in 1 2 3; do
-  body=$(curl -sf -m 8 -H "X-Api-Key: $2" "$1") \
-    && printf "%s" "$body" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null \
-    && { printf "%s" "$body"; return 0; }
-  sleep 3; done; return 1; }
+# On failure jget prints "curl-rc-<rc>-http-<code>" of the LAST try (no -f, so
+# a 401/403 reads as http-401, not as a timeout) for the caller to put in msg.
+jget() { local out rc code body; for _ in 1 2 3; do
+  out=$(curl -s -m 8 -H "X-Api-Key: $2" -w "__HTTP__%{http_code}" "$1"); rc=$?
+  code=${out##*__HTTP__}; body=${out%__HTTP__*}
+  case "$out" in *__HTTP__*) ;; *) code=000 ;; esac
+  case "$rc:$code" in
+    0:2??) printf "%s" "$body" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null \
+             && { printf "%s" "$body"; return 0; } ;;
+  esac
+  sleep 3; done
+  printf "curl-rc-%s-http-%s" "$rc" "${code:-000}"; return 1; }
 
-SERIES=$(jget "${S2}/series" "$S2_KEY") || fail sonarr2-api-fail series-list-no-json-after-3-tries
+SERIES=$(jget "${S2}/series" "$S2_KEY") || fail sonarr2-api-fail "series-list-no-json-after-3-tries-${SERIES}"
 SEED=$(printf "%s" "$SERIES" | python3 -c "import sys, json
 sr = sorted(json.load(sys.stdin), key=lambda x: x[\"id\"])
 print(sr[0][\"tvdbId\"], sr[0][\"id\"], sr[0].get(\"tmdbId\") or 0) if sr else exit(2)" 2>/dev/null)
@@ -56,7 +63,7 @@ TVDB_ID=$(printf "%s" "$SEED" | cut -d" " -f1)
 S2_SID=$(printf "%s" "$SEED" | cut -d" " -f2)
 TMDB_ID=$(printf "%s" "$SEED" | cut -d" " -f3)
 
-SSET=$(jget "${JS}/api/v1/settings/sonarr" "$JS_KEY") || fail seerr-api-fail settings-sonarr-no-json-after-3-tries
+SSET=$(jget "${JS}/api/v1/settings/sonarr" "$JS_KEY") || fail seerr-api-fail "settings-sonarr-no-json-after-3-tries-${SSET}"
 SRV=$(printf "%s" "$SSET" | python3 -c "import sys, json
 d=json.load(sys.stdin)
 anime=[s for s in d if \"anime\" in (s.get(\"name\") or \"\").lower()]
@@ -66,7 +73,7 @@ print(chosen[0][\"id\"] if chosen else \"\")" 2>/dev/null)
 [ -n "$SRV" ] || { printf "STAGE=seerr-push-fail msg=no-sonarr-anime-server-in-seerr\n" >&2; exit 1; }
 
 if [ "$TMDB_ID" = "0" ] || [ -z "$TMDB_ID" ]; then
-  SRCH=$(jget "${JS}/api/v1/search?query=tvdb%3A${TVDB_ID}" "$JS_KEY") || fail seerr-api-fail search-no-json-after-3-tries
+  SRCH=$(jget "${JS}/api/v1/search?query=tvdb%3A${TVDB_ID}" "$JS_KEY") || fail seerr-api-fail "search-no-json-after-3-tries-${SRCH}"
   TMDB_ID=$(printf "%s" "$SRCH" | python3 -c "import sys, json
 r=json.load(sys.stdin).get(\"results\",[])
 tv=[x for x in r if x.get(\"mediaType\")==\"tv\"]
@@ -99,7 +106,7 @@ case "$HTTP" in
     exit 0
     ;;
   409)
-    REQS=$(jget "${JS}/api/v1/request?take=200" "$JS_KEY") || fail seerr-api-fail request-list-no-json-after-3-tries
+    REQS=$(jget "${JS}/api/v1/request?take=200" "$JS_KEY") || fail seerr-api-fail "request-list-no-json-after-3-tries-${REQS}"
     REQ_ID=$(printf "%s" "$REQS" | python3 -c "import sys, json
 d=json.load(sys.stdin)
 hits=[r for r in d.get(\"results\",[]) if r.get(\"media\",{}).get(\"tmdbId\")==${TMDB_ID} and r.get(\"media\",{}).get(\"mediaType\")==\"tv\"]
