@@ -233,6 +233,26 @@ def test_preload_is_inert_for_non_sqlite_modules(tmp_path):
     assert p.returncode == 0 and p.stdout.split() == ["function", "EventEmitter"] and p.stderr == ""
 
 
+@pytest.mark.parametrize("name", ["a", "sqlite3_partial"])
+def test_a_circular_require_draws_no_node_warning(tmp_path, name):
+    """QFLX-111 box boot printed 'Accessing non-existent property OPEN_READWRITE
+    of module exports inside circular dependency': the shape check did property
+    GETs on a still-loading module's exports (Node's warning proxy is its
+    prototype). The check must never read through that proxy, even when the
+    partial module's request names sqlite3."""
+    (tmp_path / f"{name}.js").write_text(
+        f"exports.x = 1;\nrequire('./b');\nconsole.log('circ ok');\n", newline="\n")
+    (tmp_path / "b.js").write_text(
+        f"const a = require('./{name}');\nmodule.exports = {{ y: a.x }};\n", newline="\n")
+    ctl = subprocess.run([NODE, str(tmp_path / f"{name}.js")], capture_output=True, text=True,
+                         timeout=30)
+    p = subprocess.run([NODE, "--require", str(PRELOAD), str(tmp_path / f"{name}.js")],
+                       capture_output=True, text=True, timeout=30)
+    assert ctl.returncode == 0 and ctl.stderr == ""
+    assert p.returncode == 0 and p.stdout.strip() == "circ ok"
+    assert p.stderr == "", p.stderr
+
+
 def test_lf_only_and_ascii():
     data = PRELOAD.read_bytes()
     assert b"\r" not in data

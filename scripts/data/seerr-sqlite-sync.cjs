@@ -21,9 +21,9 @@
 //     sqlite3 5.1.7's verbose() returns the module exports object itself.
 //   SqliteDriver.createDatabaseConnection: new this.sqlite.Database(db, cb)
 //     then, once cb fires, PRAGMA journal_mode = WAL / foreign_keys = ON.
-// So we wrap `Database` on the sqlite3 exports object the first time any
-// require() returns it, from whatever path it was resolved (shape match, not a
-// path match: a nested or hoisted copy is caught too). Each new connection
+// So we wrap `Database` on the sqlite3 exports object the first time a
+// require() whose request names sqlite3 returns it, from whatever path it was
+// resolved (a nested or hoisted copy is caught too); see looksLikeSqlite3. Each new connection
 // queues `PRAGMA synchronous = NORMAL` straight after construction; node-sqlite3
 // queues statements issued before the open completes and drains that queue in
 // order once it does (src/database.cc Schedule/Process), so ours runs FIRST.
@@ -59,11 +59,28 @@ function say(line) {
   try { process.stderr.write(TAG + ' ' + line + '\n'); } catch (_) { /* never fatal */ }
 }
 
-// Runs on every require() result, so: the rarest key first, and a module whose
-// property access throws (a Proxy export) is simply not sqlite3.
+// The hook sees EVERY require() result, so the test must be side-effect free on
+// foreign exports. A property GET is not: a module that is still loading
+// (circular require) hands out an exports object whose prototype is Node's
+// warning proxy, and reading a missing key on it prints "Accessing non-existent
+// property 'OPEN_READWRITE' of module exports inside circular dependency" (seen
+// twice on the box at boot, QFLX-111). So, in order:
+//   1. the request string must name sqlite3 (typeorm asks for "sqlite3"; a
+//      nested copy loaded by path ends in .../sqlite3/lib/sqlite3.js);
+//   2. the four keys must be OWN properties: hasOwnProperty never consults the
+//      prototype, so the proxy is never reached;
+//   3. only then are the values read. A Proxy export that throws is not sqlite3.
+// A partial sqlite3 (re-required while its own file runs) has no `verbose` yet,
+// fails 2, stays out of `seen` and is matched on the complete return.
+const has = Object.prototype.hasOwnProperty;
+const KEYS = ['OPEN_READWRITE', 'verbose', 'Database', 'Statement'];
+function namesSqlite3(request) {
+  return typeof request === 'string' && request.indexOf('sqlite3') !== -1;
+}
 function looksLikeSqlite3(m) {
   if (m === null || (typeof m !== 'object' && typeof m !== 'function')) return false;
   try {
+    for (const k of KEYS) if (!has.call(m, k)) return false;
     return typeof m.OPEN_READWRITE === 'number' && typeof m.verbose === 'function'
       && typeof m.Database === 'function' && typeof m.Statement === 'function';
   } catch (_) {
@@ -139,9 +156,9 @@ if (typeof Module._load !== 'function') {
   const origLoad = Module._load;
   Module._load = function qflixSqliteSyncLoad(request, parent, isMain) {
     const exp = origLoad.apply(this, arguments);
-    if (exp && !seen.has(exp) && looksLikeSqlite3(exp)) patch(exp);
+    if (namesSqlite3(request) && exp && !seen.has(exp) && looksLikeSqlite3(exp)) patch(exp);
     return exp;
   };
 }
 
-module.exports = { wrapDatabase, looksLikeSqlite3, PRAGMA };
+module.exports = { wrapDatabase, looksLikeSqlite3, namesSqlite3, PRAGMA };
