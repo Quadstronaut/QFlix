@@ -55,10 +55,17 @@
 # actually has an actionable answer.
 #
 # DEFAULT FLOOR IS DELIBERATELY BELOW TODAY'S NUMBER. Coverage at the time of
-# writing is 63%; the default floor is 55%. A floor set at today's measurement
+# writing was 63%; the default floor was 55%. A floor set at today's measurement
 # reds on the first legitimately marker-less series someone adds. The point is
 # to catch a COLLAPSE (a settings flip takes it toward 0 as the library turns
 # over) not to ratchet.
+#
+# FLOOR NOW 33%, PROVISIONAL (operator-set 2026-11-11, QFLX-105; revisit). Reaper
+# retention shrank the aged sample from ~272 to ~74 episodes, and three whole
+# series that Plex analysed and found no intro in (36 episodes) held coverage at
+# ~43% while every new episode of an intro-bearing show still got its marker
+# the same night. Operator: "Nature of the environment is ephemeral, we don't
+# know what this number should be yet, but where it's at is clearly wrong".
 #
 # NOT REMEDIATED, and unusually this one CANNOT be: there is no API that makes
 # an intro marker on demand (fact 1 above). The remedy for a settings drift is
@@ -68,7 +75,8 @@
 # timer should do unattended.
 #
 # Tunables (systemd `Environment=` or env):
-#   PLEX_INTRO_MIN_PCT       default 55   fail below this % aged coverage
+#   PLEX_INTRO_MIN_PCT       default 33   fail below this % aged coverage
+#                                         (provisional, 2026-11-11; see above)
 #   PLEX_INTRO_GRACE_HOURS   default 48   younger episodes are not counted
 #   PLEX_INTRO_MIN_SAMPLE    default 25   below this many aged episodes the
 #                                         percentage is not meaningful; report
@@ -141,7 +149,10 @@ import urllib.request
 
 BASE = (os.environ.get("PLEX_BASE") or "").rstrip("/")
 TOKEN = os.environ.get("PLEX_TOKEN") or ""
-MIN_PCT = float(os.environ.get("PLEX_INTRO_MIN_PCT") or 55)
+# PROVISIONAL floor: operator-set 2026-11-11 (QFLX-105), 55 -> 33. The library
+# is ephemeral (reaper retention) and the right number is not known yet; this
+# is a stop-gap, revisit it, do not treat it as calibrated.
+MIN_PCT = float(os.environ.get("PLEX_INTRO_MIN_PCT") or 33)
 GRACE_HOURS = float(os.environ.get("PLEX_INTRO_GRACE_HOURS") or 48)
 MIN_SAMPLE = int(os.environ.get("PLEX_INTRO_MIN_SAMPLE") or 25)
 PAGE_SIZE = int(os.environ.get("PLEX_INTRO_PAGE_SIZE") or 500)
