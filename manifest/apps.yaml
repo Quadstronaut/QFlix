@@ -23,6 +23,34 @@ kuma_external_monitors:
   # self-pushing janitors so drift audit + bootstrap cover it. See that dict
   # for why the monitor's literal (now cosmetically stale) name is kept.
 
+# QFLX-123 (2026-11-11): the MEMBER-FACING set - the ONLY signals that page
+# Discord immediately. Operator: "qflix to basically be silent and stable, with
+# weekly notifications and checks." Every other monitor keeps running, keeps its
+# Kuma state and its auto-heal (channel 2), and rolls into the Monday summary
+# via ~/.opt/maint/weekly-events.jsonl instead of paging.
+#
+# Keys are Kuma monitor names. The same names gate every Discord path:
+#   - Kuma channel 1 ("Mission Control - QFlix") is attached to EXACTLY these by
+#     bootstrap-kuma-monitors.py; channel 2 (auto-heal) stays on every monitor.
+#     qflix-audit-live.py L-09 flags drift in either direction.
+#   - lib.notify.notify(..., source=<name>) pages only for a name listed here
+#     (recovery escalations tag the app's monitor; the pusher's storm page tags
+#     "QFlix Fleet"; the entitlement tripwire tags "QFlix Entitlement Gate").
+# Rule for adding one: members would notice within the hour. Unsure = NOT
+# member-facing. One line of reason each; the loader rejects an empty one.
+paging:
+  "Plex": "server down = no member can stream anything"
+  "Canary Plex Playback": "real playback of the worst-case movie fails = member plays fail while Plex /identity stays green (the 26-day incident)"
+  "Seerr": "request portal down = members cannot request or see request status"
+  "Canary Movie": "end-to-end movie request pipeline broken = member requests never arrive"
+  "Canary Anime": "end-to-end anime request pipeline broken = member requests never arrive"
+  "QFlix Dashboard": "homepage down = members lose the front door to every service"
+  "Canary Mobile-UX": "homepage broken on phones = most members' front door is broken"
+  "Canary Quota": "goes DOWN only at >=90% (critical, autonomous reclaim fired) or >=98% (operator intervention); at 100% every app stops writing and members see 'apps won't load' (2026-05-21)"
+  "QFlix Entitlement Gate": "gate failed or stopped = paying members are not provisioned and the blast-radius tripwire may be refusing reductions"
+  "Manitoba Pusher": "pusher dead-man = every app monitor is blind at once; the total-outage signal"
+  "QFlix Fleet": "correlated storm aggregate = many apps down together; members notice"
+
 apps:
 
   # --- Media-stack apps (born as Ultra.cc app-<slug> installs; every one
@@ -1032,7 +1060,7 @@ canaries:
     # 2h early on 2026-10-10), and no duplicate (app,_time,_msg) group in 24h
     # (the exactly-once guarantee of the ingest cursors). Names offending
     # apps, never log text. Own timer + own Kuma push monitor (born mute:
-    # wire channels 1+2 after bootstrap).
+    # bootstrap wires channel 2; channel 1 only if listed under paging:).
     kuma_monitor: "Canary VLogs Time Integrity"
     script: "scripts/canaries/vlogs-time-integrity.sh"
     schedule: "hourly"
@@ -2005,8 +2033,8 @@ canaries:
     # server tag from the status endpoint and the client tag from the literal
     # compared against `.commitTag` in .next/static, and reds on any
     # difference. Unreadable either side = exit 2, never green. Read-only.
-    # Own timer + own Kuma push monitor (born mute: wire channels 1+2 after
-    # bootstrap).
+    # Own timer + own Kuma push monitor (born mute: bootstrap wires channel 2;
+    # channel 1 only if listed under paging:).
     kuma_monitor: "Canary Seerr Commit Tag"
     script: "scripts/canaries/seerr-commit-tag.sh"
     schedule: "every-6h"
@@ -2019,7 +2047,8 @@ canaries:
     # the budget. Green still reports the trend (stalls24h / max) so the
     # nightly stall is visible without paging. Absent ledger is green only if
     # the state dir is readable (earned suppression). Read-only, own timer +
-    # own Kuma push monitor (born mute: wire channels 1+2 after bootstrap).
+    # own Kuma push monitor (born mute: bootstrap wires channel 2; channel 1
+    # only if listed under paging:).
     kuma_monitor: "Canary Kuma Push Stall"
     script: "scripts/canaries/kuma-push-stall.sh"
     schedule: "hourly"

@@ -380,7 +380,7 @@ def run(app_name: str, *, manifest: Optional[Manifest] = None) -> dict:
     acquired = lock.acquire(timeout=_LOCK_ACQUIRE_TIMEOUT_S)
     if not acquired:
         msg = f"Recovery for '{app_name}' already in progress — dropping duplicate"
-        notify.notify(msg, "warning")
+        notify.notify(msg, "warning", source=_page_source(app_name))
         return _result(app_name, "duplicate_recovery_dropped", 0, "unknown", "unknown")
 
     try:
@@ -613,6 +613,18 @@ def _result(app_name: str, event: str, attempts: int,
     }
 
 
+def _page_source(app_name: str) -> str:
+    """QFLX-123: a recovery message pages under its app's Kuma monitor, so it
+    reaches Discord iff that monitor is member-facing (manifest `paging:`).
+    Falls back to the app name, which matches no monitor and so stays quiet -
+    an unknown app is not a member-facing one."""
+    try:
+        from lib import paging  # noqa: PLC0415
+        return paging.monitor_for_app(app_name) or app_name
+    except Exception:  # noqa: BLE001
+        return app_name
+
+
 def _emit(event: str, app_name: str, attempts: int,
           final_health: str, kuma_status: str,
           message: str, level: str, *, page_once: bool = False) -> None:
@@ -644,7 +656,7 @@ def _emit(event: str, app_name: str, attempts: int,
     if not notify_operator:
         return
     try:
-        notify.notify(message, level)
+        notify.notify(message, level, source=_page_source(app_name))
     except Exception as _exc:
         sys.stderr.write("recovery.py: OPERATOR NOTIFY of recovery outcome failed - nobody was told: "
                          + repr(_exc) + "\n")

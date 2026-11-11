@@ -698,7 +698,10 @@ class TestFleetAggregate:
 
         captured_notify = notify_calls if notify_calls is not None else []
 
-        def fake_notify(message, level="info"):
+        def fake_notify(message, level="info", source=None):
+            # QFLX-123: the storm page is the total-outage signal and must be
+            # tagged with the fleet monitor, or it silently becomes weekly-only.
+            assert source == "QFlix Fleet"
             captured_notify.append({"message": message, "level": level})
             return True
 
