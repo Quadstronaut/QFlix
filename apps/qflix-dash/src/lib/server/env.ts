@@ -1,4 +1,4 @@
-// Server-only config. `$lib/server/*` is never bundled to the client, so reading
+// Server-only config. `#lib/server/*` is never bundled to the client, so reading
 // process.env here is safe (and trivially testable in node-env vitest). adapter-node
 // passes the systemd EnvironmentFile through to process.env at runtime.
 export interface Cfg {

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { TILES } from '$lib/tiles';
-	import type { TileState } from '$lib/tiles';
+	import { TILES } from '#lib/tiles.js';
+	import type { TileState } from '#lib/tiles.js';
 	import Tile from './Tile.svelte';
 
 	interface Props {

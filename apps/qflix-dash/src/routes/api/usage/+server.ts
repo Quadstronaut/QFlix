@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { getUsage } from '$lib/server/usage';
+import { getUsage } from '#lib/server/usage.js';
 import type { RequestHandler } from './$types';
 
 // Live stack-usage feed for the dashboard panel. Never blocks the page: on any

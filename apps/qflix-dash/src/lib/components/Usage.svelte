@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import type { Usage } from '$lib/usage';
+	import type { Usage } from '#lib/usage.js';
 
 	let usage = $state<Usage | null>(null);
 

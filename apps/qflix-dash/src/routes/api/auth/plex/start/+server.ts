@@ -1,6 +1,6 @@
 import { redirect } from '@sveltejs/kit';
-import { createPin, authUrl } from '$lib/server/plex';
-import { PIN, signPin } from '$lib/server/session';
+import { createPin, authUrl } from '#lib/server/plex.js';
+import { PIN, signPin } from '#lib/server/session.js';
 import type { RequestHandler } from './$types';
 
 // Kick off Sign-in-with-Plex. Build the return URL from forwarded headers so it
@@ -18,5 +18,9 @@ export const GET: RequestHandler = async ({ url, request, cookies }) => {
 		sameSite: 'lax',
 		maxAge: 600
 	});
-	redirect(302, authUrl(code, `${origin}/api/auth/plex/callback`));
+	// SvelteKit 3 refuses external redirects unless opted in; allow exactly Plex's
+	// auth origin (authUrl always builds https://app.plex.tv/auth#?...).
+	redirect(302, authUrl(code, `${origin}/api/auth/plex/callback`), {
+		external: ['https://app.plex.tv']
+	});
 };

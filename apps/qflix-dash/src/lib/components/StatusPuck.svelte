@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { TileState } from '$lib/tiles';
+	import type { TileState } from '#lib/tiles.js';
 	interface Props {
 		state?: TileState;
 	}
