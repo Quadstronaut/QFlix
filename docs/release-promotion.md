@@ -1,5 +1,7 @@
 # Release-promotion pipeline
 
+> **DORMANT:** smoke check `release-tag-fresh` retired 2026-11-11 by operator decision (QFLX-102); restore it when a customer node consumes `release-*` tags.
+
 ## Why this exists
 
 Manitoba — the operator's seedbox — runs **master** continuously. Real
@@ -82,7 +84,8 @@ whatever the configure scripts set on disk.
 
 ## Smoke gate
 
-`scripts/smoke-test.sh` includes `release-tag-fresh`:
+Retired (see the DORMANT note at the top). When restored,
+`scripts/smoke-test.sh` check `release-tag-fresh` should:
 
 - **pass** if the most recent `release-*` tag is within 30 days
 - **fail** if older — reminds you it's time to cut another. The
