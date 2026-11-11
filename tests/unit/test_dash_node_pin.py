@@ -96,27 +96,83 @@ def _step1_block() -> str:
     return hits[0]
 
 
-def _fake_tarball(ver: str) -> bytes:
-    """node-v<ver>-linux-x64/bin/node: a shell script that prints v<ver>."""
+def _fake_tarball(ver: str, prints: str | None = None) -> bytes:
+    """node-v<ver>-linux-x64/bin/node: a shell script that prints v<ver>
+    (or `prints`, to fabricate a junk binary inside a correctly-hashed tarball)."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        body = f"#!/bin/sh\necho v{ver}\n".encode()
+        body = f"#!/bin/sh\necho {prints or 'v' + ver}\n".encode()
         ti = tarfile.TarInfo(f"node-v{ver}-linux-x64/bin/node")
         ti.size, ti.mode = len(body), 0o755
         tf.addfile(ti, io.BytesIO(body))
     return buf.getvalue()
 
 
-def _run(tmp_path: Path, ver: str, sha: str, tarball: bytes):
+def _home(tmp_path: Path) -> Path:
     home = tmp_path / "home"
-    sec = home / "secrets"
-    sec.mkdir(parents=True)
-    for name in ("port", "session_secret", "plex_client_id", "discord_webhook"):
-        (sec / f"qflix-dash.{name}").write_text("x\n", encoding="utf-8")
+    if not home.exists():
+        sec = home / "secrets"
+        sec.mkdir(parents=True)
+        for name in ("port", "session_secret", "plex_client_id", "discord_webhook"):
+            (sec / f"qflix-dash.{name}").write_text("x\n", encoding="utf-8")
+    return home
+
+
+def _bash_env(home: Path) -> dict:
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    # Git Bash's `ln -s` silently COPIES unless told to make a real symlink; the
+    # flip semantics under test only exist with real symlinks (Linux CI has them).
+    env["MSYS"] = "winsymlinks:nativestrict"
+    return env
+
+
+def _bash(home: Path, cmd: str) -> str:
+    r = subprocess.run([BASH, "-c", cmd], env=_bash_env(home), timeout=30,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return (r.stdout + r.stderr).decode().strip()
+
+
+OLD = "22.0.0"
+
+
+def _seed_live_old_node(tmp_path: Path) -> Path:
+    """A working install of an OLDER Node that bin/node currently points at."""
+    home = _home(tmp_path)
+    _bash(home, f'B="$HOME/.apps/qflix-dash/bin"; mkdir -p "$B/node-v{OLD}/bin" && '
+                f'printf "#!/bin/sh\\necho v{OLD}\\n" > "$B/node-v{OLD}/bin/node" && '
+                f'chmod 755 "$B/node-v{OLD}/bin/node" && ln -sfn node-v{OLD} "$B/node"')
+    assert _live(home) == f"v{OLD}"
+    return home
+
+
+def _live(home: Path) -> str:
+    """What the unit would exec right now: bin/node/bin/node --version."""
+    return _bash(home, '"$HOME/.apps/qflix-dash/bin/node/bin/node" --version')
+
+
+def _assert_old_target_untouched(home: Path):
+    b = home / ".apps" / "qflix-dash" / "bin"
+    assert _live(home) == f"v{OLD}", "bin/node was moved off the working Node"
+    assert _bash(home, f'"$HOME/.apps/qflix-dash/bin/node-v{OLD}/bin/node" --version') == f"v{OLD}"
+    assert not list(b.glob("node-v*.part.*")), "a .part leftover survived the failure"
+    assert not list(b.glob(".node.*")), "a .node.<pid> temp link survived the failure"
+
+
+def _run(tmp_path: Path, ver: str, sha: str, tarball: bytes, fail_mv_dst: str = ""):
+    home = _home(tmp_path)
     fixture = tmp_path / "node.tgz"
     fixture.write_bytes(tarball)
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir()
+    # mv shim: fails (doing nothing) when the DESTINATION matches $FAIL_MV_DST,
+    # standing in for a quota-full or EXDEV move; otherwise the real mv.
+    real_mv = Path(shutil.which("mv")).as_posix()
+    (fakebin / "mv").write_text(
+        '#!/usr/bin/env bash\ncase "${@: -1}" in $FAIL_MV_DST) '
+        'echo "fake mv: refusing ${@: -1}" >&2; exit 1;; esac\n'
+        f'exec "{real_mv}" "$@"\n', encoding="utf-8", newline="\n")
+    os.chmod(fakebin / "mv", 0o755)
     # Fake curl: copy the fixture to whatever follows -o. Records the URL.
     (fakebin / "curl").write_text(
         "#!/usr/bin/env bash\nout=\nwhile [ $# -gt 0 ]; do case $1 in -o) out=$2; shift;; "
@@ -126,9 +182,9 @@ def _run(tmp_path: Path, ver: str, sha: str, tarball: bytes):
     os.chmod(fakebin / "curl", 0o755)
     script = tmp_path / "step1.sh"
     script.write_text(_step1_block() + "\n", encoding="utf-8", newline="\n")
-    env = dict(os.environ)
-    env["HOME"] = str(home)
+    env = _bash_env(home)
     env["PATH"] = str(fakebin) + os.pathsep + env.get("PATH", "")
+    env["FAIL_MV_DST"] = fail_mv_dst
     r = subprocess.run([BASH, str(script), ver, sha], env=env, timeout=60,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return r, home
@@ -157,3 +213,61 @@ def test_step1_refuses_a_tarball_whose_sha256_does_not_match(tmp_path):
     assert r.returncode != 0, "a sha256 mismatch was installed:\n" + out
     assert "sha256 mismatch" in out, out
     assert not (home / ".apps" / "qflix-dash" / "bin" / f"node-v{ver}").exists()
+
+
+# ---------------------------------------------------------------------------
+# PR #153 review: a FAILED install must never move bin/node. The unit execs
+# bin/node, so a dangling or junk target turns the next restart into a
+# homepage outage. Each case starts from a working older Node that bin/node
+# points at, and must end with bin/node still running it.
+# ---------------------------------------------------------------------------
+
+NEW = "22.99.1"
+
+
+@needs_shell
+@pytest.mark.parametrize("fail_mv_dst", [
+    "*.part.*",            # first mv (scratch -> node-v<ver>.part.<pid>) fails
+    f"*/node-v{NEW}",      # second mv (.part -> node-v<ver>) fails: .part must be cleaned
+], ids=["first-mv", "second-mv"])
+def test_failed_move_leaves_bin_node_on_the_old_target(tmp_path, fail_mv_dst):
+    home = _seed_live_old_node(tmp_path)
+    tgz = _fake_tarball(NEW)
+    r, _ = _run(tmp_path, NEW, hashlib.sha256(tgz).hexdigest(), tgz, fail_mv_dst=fail_mv_dst)
+    out = (r.stdout + r.stderr).decode()
+    assert r.returncode != 0, "a failed mv reported success:\n" + out
+    assert "fake mv: refusing" in out, out          # the failure really was injected
+    _assert_old_target_untouched(home)
+    assert not (home / ".apps" / "qflix-dash" / "bin" / f"node-v{NEW}").exists()
+
+
+@needs_shell
+def test_stray_empty_version_dir_is_refetched_not_linked(tmp_path):
+    """A leftover empty node-v<ver>/ used to skip nothing and swallow the move:
+    plain `mv part node-v<ver>` moves INTO an existing dir and exits 0, then the
+    flip pointed bin/node at a dir with no bin/node in it."""
+    home = _seed_live_old_node(tmp_path)
+    (home / ".apps" / "qflix-dash" / "bin" / f"node-v{NEW}").mkdir()
+    tgz = _fake_tarball(NEW)
+    r, _ = _run(tmp_path, NEW, hashlib.sha256(tgz).hexdigest(), tgz)
+    out = (r.stdout + r.stderr).decode()
+    assert r.returncode == 0, out
+    assert "re-fetching" in out, out
+    assert _live(home) == f"v{NEW}", "bin/node does not run the re-fetched Node"
+    # The previous target itself is never touched (it is the rollback).
+    assert _bash(home, f'"$HOME/.apps/qflix-dash/bin/node-v{OLD}/bin/node" --version') == f"v{OLD}"
+
+
+@needs_shell
+def test_junk_binary_is_refused_before_the_flip(tmp_path):
+    """Correct sha256, but the binary inside does not report the pinned version
+    (wrong build, truncated, wrong arch). The flip must not happen."""
+    home = _seed_live_old_node(tmp_path)
+    tgz = _fake_tarball(NEW, prints="v0.0.0-junk")
+    r, _ = _run(tmp_path, NEW, hashlib.sha256(tgz).hexdigest(), tgz)
+    out = (r.stdout + r.stderr).decode()
+    assert r.returncode != 0, "a junk binary was installed:\n" + out
+    assert "bin/node NOT flipped" in out, out
+    _assert_old_target_untouched(home)
+    assert not (home / ".apps" / "qflix-dash" / "bin" / f"node-v{NEW}").exists(), (
+        "the junk node-v<ver> was kept, so the next run would skip the fetch")

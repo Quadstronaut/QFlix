@@ -43,22 +43,47 @@ chmod 600 ~/secrets/qflix-dash.*
 mkdir -p ~/.apps/qflix-dash/logs ~/.config/qflix-dash ~/.config/systemd/user
 V="$1"; WANT="$2"; B="$HOME/.apps/qflix-dash/bin"; ND="$B/node-v$V"
 mkdir -p "$B"
-if [ ! -x "$ND/bin/node" ]; then
+# INVARIANT: bin/node (what the unit execs) only ever moves to a node-v<ver> that
+# was just PROVEN to report v<ver>. Every failure path below exits with bin/node
+# still on its old target, so a failed install never turns the next restart
+# into a homepage outage. Every mv/ln carries its own `|| exit 1`: `set -e` is
+# suspended inside an `a && b` list, which is how a failed first mv used to fall
+# through to the flip.
+T=""
+trap 'rm -rf "$ND.part.$$" "$B/.node.$$"; [ -z "$T" ] || rm -rf "$T"' EXIT
+rm -rf "$ND".part.*            # leftovers of a run killed before its trap fired
+if [ -e "$ND" ] && [ "$("$ND/bin/node" --version 2>/dev/null)" != "v$V" ]; then
+  # A stray dir (empty, half-moved, junk binary). Re-fetch it - unless it is the
+  # LIVE target, which this script never deletes out from under the unit.
+  [ "$(readlink "$B/node" 2>/dev/null)" != "node-v$V" ] \
+    || { echo "FATAL: live target $ND is not a working Node v$V; fix by hand" >&2; exit 1; }
+  echo "WARN: $ND is not a working Node v$V; removing and re-fetching" >&2
+  rm -rf "$ND" || exit 1
+fi
+if [ ! -e "$ND" ]; then
   # Fetch + sha256 verify + extract in a scratch dir, then rename into place:
   # a half-extracted node-v<ver> never exists under bin/.
   T="$(mktemp -d)"; [ -d "$T" ] || { echo "FATAL: mktemp -d failed" >&2; exit 1; }
-  trap 'rm -rf "$T"' EXIT
-  curl -fsSL --retry 2 -o "$T/node.tgz" "https://nodejs.org/dist/v$V/node-v$V-linux-x64.tar.gz"
+  curl -fsSL --retry 2 -o "$T/node.tgz" "https://nodejs.org/dist/v$V/node-v$V-linux-x64.tar.gz" || exit 1
   echo "$WANT  $T/node.tgz" | sha256sum -c --quiet - || { echo "FATAL: Node $V tarball sha256 mismatch" >&2; exit 1; }
-  tar -xzf "$T/node.tgz" -C "$T"
+  tar -xzf "$T/node.tgz" -C "$T" || exit 1
   [ -x "$T/node-v$V-linux-x64/bin/node" ] || { echo "FATAL: Node tarball has no bin/node" >&2; exit 1; }
-  mv "$T/node-v$V-linux-x64" "$ND.part.$$" && mv "$ND.part.$$" "$ND"
+  mv "$T/node-v$V-linux-x64" "$ND.part.$$" || exit 1
+  # -T: rename ONTO $ND, never INTO it (a plain mv into an existing dir exits 0).
+  mv -T "$ND.part.$$" "$ND" || exit 1
+  FETCHED=1
+fi
+# Verify the binary BEFORE the flip, not after it.
+HAVE="$("$ND/bin/node" --version 2>/dev/null)" || HAVE="(does not run)"
+if [ "$HAVE" != "v$V" ]; then
+  echo "FATAL: $ND/bin/node reports '$HAVE', want v$V; bin/node NOT flipped" >&2
+  [ -z "${FETCHED:-}" ] || rm -rf "$ND"   # junk we fetched: next run re-fetches
+  exit 1
 fi
 # Atomic flip of the symlink the unit execs. The running process keeps its
 # already-loaded binary until step 4's restart.
-ln -sfn "node-v$V" "$B/.node.$$" && mv -Tf "$B/.node.$$" "$B/node"
-HAVE="$("$B/node/bin/node" --version)"
-[ "$HAVE" = "v$V" ] || { echo "FATAL: bin/node reports '$HAVE', want v$V" >&2; exit 1; }
+ln -sfn "node-v$V" "$B/.node.$$" || exit 1
+mv -Tf "$B/.node.$$" "$B/node" || exit 1
 echo "node=$HAVE"
 REMOTE
 
