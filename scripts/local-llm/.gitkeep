@@ -1,2 +1,2 @@
-# Reserved for workstation-side local-LLM helpers. The .ps1 entries here are gitignored
-# because they hardcode operator-specific paths and the real seedbox FQDN.
+# Workstation-side local-LLM helpers. All tracked (qflix-rea.ps1 since 2026-09-27):
+# the seedbox host and other secrets are read at runtime from gitignored secrets/.

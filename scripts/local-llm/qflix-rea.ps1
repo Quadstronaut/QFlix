@@ -1860,58 +1860,9 @@ function Select-DuePageGroups {
 }
 
 # ---------- Discord payload builders ----------
-function New-DiscordErrorPayload {
-    param([array]$Groups, [string]$OperatorId, [int]$ModelCount, [int]$DurationSec)
-    $fields = @()
-    foreach ($g in $Groups) {
-        $modelList = ($g.models_flagged -join ', ')
-        $fraction  = "$($g.models_flagged.Count)/$ModelCount"
-        $excerpt   = [string]$g.excerpt
-        if ($excerpt.Length -gt 300) { $excerpt = $excerpt.Substring(0,297) + '...' }
-        $value = "**$($g.app)** | ``$($g.file)`` | $($g.severity)`n$($g.summary)`n_flagged by: $modelList ($fraction)_`n``````$excerpt```````n"
-        if ($value.Length -gt 1024) { $value = $value.Substring(0,1021) + '...' }
-        $nameRaw = "$($g.app) - $($g.signature)"
-        if ($nameRaw.Length -gt 256) { $nameRaw = $nameRaw.Substring(0,253) + '...' }
-        $fields += @{ name = $nameRaw; value = $value; inline = $false }
-    }
-    return @{
-        content          = "<@$OperatorId>"
-        allowed_mentions = @{ parse = @(); users = @($OperatorId) }
-        embeds = @(@{
-            title     = "[ALERT] QFlix REA - $($Groups.Count) issue$(if($Groups.Count -ne 1){'s'})"
-            color     = 15158332
-            timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-            fields    = $fields
-            footer    = @{ text = "models: $ModelCount | sources: 14 | duration: ${DurationSec}s" }
-        })
-    }
-}
-
-function New-DiscordHeartbeatPayload {
-    param([int]$ModelCount, [int]$SoloCount = 0, [int]$MutedCount = 0)
-    # SoloCount surfaces the consensus-floor remainder (2026-08-26): findings
-    # only one model flagged never ping, but their existence shows here so a
-    # persistent real fault is visible in the daily review without a page.
-    $solo = if ($SoloCount -gt 0) { " | $SoloCount single-model finding(s) held (see audit log)" } else { "" }
-    # MutedCount is the SAME honesty obligation for the cross-run page ledger
-    # (2026-09-02). A run whose only findings were already-paged repeats reaches
-    # this builder, and titling that "clean" would be a lie of exactly the kind
-    # the quorum_degraded fix existed to stop: still-broken is not clean, it is
-    # already-reported. Naming the count keeps the daily embed truthful without
-    # re-pinging.
-    $muted = if ($MutedCount -gt 0) { " | $MutedCount repeat finding(s) muted (already paged within ${Script:PageCooldownHours}h)" } else { "" }
-    $title = if ($MutedCount -gt 0) { '[OK] QFlix REA - no new findings' } else { '[OK] QFlix REA clean' }
-    return @{
-        content = ''
-        embeds  = @(@{
-            title       = $title
-            color       = 3066993
-            description = "$ModelCount models | 14 sources | 0 new findings$solo$muted"
-            timestamp   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-        })
-    }
-}
-
+# The hourly-era per-finding [ALERT] and daily [OK] heartbeat builders were
+# deleted with QFLX-123: New-DiscordWeeklyPayload is the one report message,
+# and this deadman builder is the one failure message.
 function New-DiscordDeadmanPayload {
     # Generic "audit could not run" alert. Title/Description default to the
     # original Ollama-down wording so every existing caller (and the test that
@@ -3211,7 +3162,12 @@ function Get-ReaTaskDefinition {
 }
 
 function Install-Task {
-    $d = Get-ReaTaskDefinition -ScriptPath $PSCommandPath
+    # -ScriptPath defaults to this file. It exists so the live task can be
+    # (re)registered from a worktree copy of the installer while still pointing
+    # at the main checkout the workstation actually runs - one definition, so a
+    # later `-Install` from the main checkout is a no-op.
+    param([string]$ScriptPath = $PSCommandPath)
+    $d = Get-ReaTaskDefinition -ScriptPath $ScriptPath
 
     $action = New-ScheduledTaskAction -Execute $d.Execute -Argument $d.Argument
 
@@ -3227,7 +3183,7 @@ function Install-Task {
                     -RunOnlyIfNetworkAvailable `
                     -ExecutionTimeLimit (New-TimeSpan -Minutes $d.ExecutionTimeLimitMinutes)
 
-    Remove-ReaTask -Folder $Script:LegacyTaskFolderPath   # sweep the drifted copy
+    $null = Remove-ReaTask -Folder $Script:LegacyTaskFolderPath   # sweep the drifted copy (bool not echoed)
     Register-ScheduledTask -TaskPath $d.TaskPath -TaskName $d.TaskName -Action $action `
         -Trigger @($weekly) -Principal $principal -Settings $settings -Force | Out-Null
 

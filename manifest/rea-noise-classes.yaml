@@ -2,8 +2,8 @@
 #
 # WHY THIS FILE EXISTS
 # --------------------
-# scripts/local-llm/qflix-rea.ps1 is gitignored (.gitignore:55 — operator-local
-# workstation tooling, public repo). It carries TWO copies of the same policy:
+# scripts/local-llm/qflix-rea.ps1 was gitignored until 2026-09-27 (tracked since;
+# operator-local workstation tooling). It carries TWO copies of the same policy:
 #   1. $Script:NoiseFindingRules — the ENFORCEMENT table (deterministic regex).
 #   2. Get-SystemPrompt's "NON-ACTIONABLE NOISE you must NEVER report" sentence
 #      — the ADVISORY ask to the models.

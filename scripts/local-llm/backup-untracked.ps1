@@ -9,8 +9,9 @@
   WHY THIS EXISTS
   ==========================================================================
   scripts/local-llm/qflix-rea.ps1 is the ALERTING LAYER for the whole stack
-  and it is gitignored (.gitignore:55) because it is operator-local tooling
-  and the repo is public. git is therefore not its backup, by construction.
+  and it was gitignored when this was written (operator-local tooling, public
+  repo), so git was not its backup. It has been TRACKED since 2026-09-27, so
+  git is its history now; the remaining S2 members are why this still runs.
 
   A backup DID already exist. It is the `\Archangel\Backups\Backup-Documents`
   scheduled task:

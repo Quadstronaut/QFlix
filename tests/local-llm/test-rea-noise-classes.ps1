@@ -275,8 +275,8 @@ Test-Case 'the rendered literal is the shape C-07 parses' {
 }
 
 Test-Case 'the mirror sync refuses to guess' {
-    # The subject is a 114KB gitignored operator-local script: a write to the
-    # wrong offset is unrecoverable from origin. Both no-op paths must return a
+    # The subject is the 114KB script the workstation is running: a write to
+    # the wrong offset corrupts the live alerting layer. Both no-op paths must return a
     # NAMED reason rather than throwing or, worse, writing.
     # The parenthesized concat is load-bearing: C-10 reads `Join-Path $var
     # 'literal.ps1'` as a dot-sourced SUBJECT that must resolve to a tracked

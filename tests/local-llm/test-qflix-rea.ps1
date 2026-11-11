@@ -419,49 +419,9 @@ Test-Case 'Get-Consensus excerpt merge does NOT collapse short or distinct excer
 }
 
 # --- Task 9: Discord payload builders ---
-Test-Case 'New-DiscordErrorPayload mentions operator + builds embed fields' {
-    $groups = @(
-        [pscustomobject]@{ signature='buildarr:pydantic'; time='2026-05-11T04:30:11Z'; app='buildarr'; file='journal:buildarr.service'; severity='error'; summary='Pydantic err'; excerpt='trace...'; models_flagged=@('qwen3-coder:30b','qwen3:8b') }
-    )
-    $p = New-DiscordErrorPayload -Groups $groups -OperatorId '123' -ModelCount 3 -DurationSec 47
-    Assert-Equal '<@123>' $p.content 'operator mention'
-    Assert-Equal @('123') $p.allowed_mentions.users 'allowed_mentions users'
-    Assert-Equal 1 @($p.embeds).Count 'one embed'
-    Assert-Equal 15158332 $p.embeds[0].color 'red color'
-    Assert-True ($p.embeds[0].title -match 'QFlix REA') 'title shape'
-    Assert-Equal 1 @($p.embeds[0].fields).Count 'one field per group'
-    Assert-True ($p.embeds[0].fields[0].value -match 'qwen3-coder:30b') 'model name in field value'
-    Assert-True ($p.embeds[0].fields[0].value -match '2/3') 'consensus fraction'
-}
-
-Test-Case 'New-DiscordErrorPayload clamps long excerpt to 300 chars' {
-    $longExcerpt = 'x' * 500
-    $groups = @(
-        [pscustomobject]@{ signature='s'; time='t'; app='a'; file='f'; severity='error'; summary='s'; excerpt=$longExcerpt; models_flagged=@('m') }
-    )
-    $p = New-DiscordErrorPayload -Groups $groups -OperatorId '1' -ModelCount 1 -DurationSec 1
-    Assert-True ($p.embeds[0].fields[0].value.Length -le 1024) 'field value clamped to <=1024'
-}
-
-Test-Case 'New-DiscordHeartbeatPayload has no content mention' {
-    $p = New-DiscordHeartbeatPayload -ModelCount 3
-    Assert-Equal '' $p.content 'no mention'
-    Assert-Equal 3066993 $p.embeds[0].color 'green'
-    Assert-True ($p.embeds[0].title -match 'clean') 'title says clean'
-    Assert-False ($p.embeds[0].description -match 'held') 'no held line when SoloCount=0'
-}
-
-Test-Case 'heartbeat surfaces the consensus-floor remainder without paging (2026-08-26)' {
-    # Operator directive: single-model findings never ping. They are counted
-    # on the heartbeat instead — visible in daily review, zero pages. Every
-    # hallucinated page in the 2026-08 storm was flagged by exactly one model,
-    # so this floor alone would have silenced all of them.
-    $p = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 2
-    Assert-Equal '' $p.content 'still no mention — a held finding must not ping'
-    Assert-True ($p.embeds[0].description -match '2 single-model finding') 'held count on the heartbeat'
-    Assert-True ($p.embeds[0].description -match 'audit log') 'points at the audit log'
-}
-
+# The hourly-era per-finding [ALERT] builder and daily [OK] heartbeat builder
+# were deleted with QFLX-123; New-DiscordWeeklyPayload (tested further down)
+# is the only report message now.
 Test-Case 'New-DiscordDeadmanPayload pings operator and uses orange' {
     $p = New-DiscordDeadmanPayload -OperatorId '123'
     Assert-Equal '<@123>' $p.content 'operator mention'
@@ -2138,14 +2098,6 @@ Test-Case 'Invoke-Main passes -Stamp:(-not $DryRun) through to the ledger' {
     Assert-True ($src.Contains('Select-DuePageGroups -Groups $errorGroups -Stamp:(-not $DryRun)')) 'DryRun threaded into the ledger call'
 }
 
-Test-Case 'the heartbeat does not call a run with muted repeats clean' {
-    $p = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 0 -MutedCount 2
-    Assert-True ($p.embeds[0].title -notlike '*clean*') 'still-broken is not clean'
-    Assert-True ($p.embeds[0].description -like '*2 repeat finding(s) muted*') 'muted count is stated'
-    Assert-Equal '' $p.content 'a muted repeat must still not ping'
-    $q = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 0 -MutedCount 0
-    Assert-True ($q.embeds[0].title -like '*clean*') 'a genuinely clean run still says clean'
-}
 
 
 function Get-GitBashExe {
@@ -2692,8 +2644,8 @@ Test-Case 'Send-DeadmanAlert defers (logs, never posts) on a non-final weekly at
 Test-Case 'Invoke-Main posts the weekly summary, not the hourly-era page/heartbeat' {
     $src = (Get-Command Invoke-Main).Definition
     Assert-True ($src.Contains('New-DiscordWeeklyPayload')) 'weekly payload used'
-    Assert-False ($src.Contains('New-DiscordErrorPayload')) 'no per-finding [ALERT] page'
-    Assert-False ($src.Contains('New-DiscordHeartbeatPayload')) 'no daily [OK] heartbeat'
+    Assert-True ($null -eq (Get-Command New-DiscordErrorPayload -ErrorAction SilentlyContinue)) 'per-finding [ALERT] builder deleted'
+    Assert-True ($null -eq (Get-Command New-DiscordHeartbeatPayload -ErrorAction SilentlyContinue)) 'daily [OK] heartbeat builder deleted'
     Assert-False ($src.Contains('last_heartbeat_date')) 'no once-a-day gate'
     Assert-True ($src.Contains('discord_status=')) 'HTTP status on the audit line'
 }

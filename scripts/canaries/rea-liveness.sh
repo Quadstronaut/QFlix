@@ -7,8 +7,9 @@
 # scripts/local-llm/qflix-rea.ps1 (the Random Error Audit) is the only piece of
 # QFlix that does NOT run on the seedbox. It runs on the operator's Windows
 # workstation, SSHes IN to collect logs, feeds them to local Ollama models, and
-# posts to Discord. It is gitignored (.gitignore:55), so it is not even covered
-# by the deploy-drift canary. Nothing has ever watched it.
+# posts to Discord. It was gitignored until 2026-09-27 (tracked since) and it
+# is never deployed to the box, so the deploy-drift canary cannot cover it.
+# Nothing else watches whether it RUNS.
 #
 # A watchdog that dies with the thing it watches is worthless. So the ONLY
 # question that matters here is: whose liveness does the ALARM depend on?
@@ -213,8 +214,9 @@
 # maintenance concern (rule 3) bought for an observability need already met.
 #
 # HONEST LIMITS
-#   1. THE WRITER IS A GITIGNORED WORKSTATION FILE, so it is untestable from
-#      this repo and invisible to deploy-drift.sh. It is `Get-LastTerminalAuditLine`
+#   1. THE WRITER RUNS ON THE WORKSTATION (tracked since 2026-09-27, tested by
+#      tests/local-llm/test-qflix-rea.ps1) and is never deployed to the box,
+#      so deploy-drift.sh cannot see which version is actually running. It is `Get-LastTerminalAuditLine`
 #      plus a base64 template hole in `Get-RemoteHeredoc`, both in
 #      scripts/local-llm/qflix-rea.ps1. WIRED AND VERIFIED LIVE 2026-08-03: the
 #      first real heartbeat was written by the box's own clock during REA's

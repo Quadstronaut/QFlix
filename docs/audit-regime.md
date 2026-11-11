@@ -59,7 +59,7 @@ class was newly enrolled. Both are attributable and both are logged.
 | `manifest/defect-classes.yaml` | The taxonomy. Per class: id, provenance, detector, boundary, status, waivers. |
 | `manifest/decommissioned.yaml` | Retired components and where their names may still legitimately appear. |
 | `manifest/jobs.yaml` | The timer ↔ dead-man ledger. Every timer declares a monitor or a written reason. |
-| `manifest/rea-noise-classes.yaml` | The REA noise policy, extracted from the gitignored ps1 so it lives in git even though the script does not. |
+| `manifest/rea-noise-classes.yaml` | The REA noise policy, extracted from the ps1 while that script was gitignored (tracked since 2026-09-27); it stays the single policy source. |
 | `scripts/maint/qflix-audit.py` | The runner. `--json` emits `{meta, coverage, findings, waived, audit_log, summary, report_digest}`. |
 | `scripts/maint/lib/audit/` | Detectors, engine, ledger validation, digest. Stdlib + pyyaml. Offline. |
 | `tests/unit/test_audit_regime.py` | **The meta-check — this is what audits the monitor.** |
