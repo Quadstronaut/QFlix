@@ -16,9 +16,9 @@
 # generated app-upgrade-all skip list (ucc_dormant: true).
 #
 # RUNS ON THE BOX. 240-maintenance-install.sh deploys it to ~/scripts/configure/
-# with ~/scripts/lib/native.sh, ~/scripts/maint/native_sanitize.py and
-# ~/scripts/data/seerr-listen.cjs. Started from the workstation it re-executes
-# the deployed copy over ssh.
+# with ~/scripts/lib/native.sh, ~/scripts/maint/native_sanitize.py and the two
+# preloads ~/scripts/data/seerr-listen.cjs + seerr-sqlite-sync.cjs. Started from
+# the workstation it re-executes the deployed copy over ssh.
 #
 # INERT BY DEFAULT (I-3). Every mode prints its plan (DRY-RUN) and touches
 # nothing unless --execute is also given. Modes, in swap order:
@@ -27,7 +27,7 @@
 #               ~/.apps/seerr/bin/node-v<node> (+ `bin/node` link) and the Seerr
 #               artifact; refuse unless package.json + committag.json match the
 #               pin and the version equals `appctl version seerr` (I-10); lay out
-#               bin/<ver> + `current`; copy the listen preload to native/; write
+#               bin/<ver> + `current`; copy both preloads to native/; write
 #               the env file (the container's NODE_ENV/TZ/COMMIT_TAG + PORT +
 #               CONFIG_DIRECTORY + thread caps) and STAGE the unit in native/.
 #               NOT copied into the unit dir, NOT enabled (I-6).
@@ -68,6 +68,18 @@
 #               Runs INSIDE the Monday upgrade sweep (skips the window gate).
 #               Checks bin/VER is a Seerr build of VER for this Node major, flips
 #               `current`, rewrites COMMIT_TAG. lifecycle restarts the unit.
+#   --refresh-preload  QFLX-111, on an ALREADY-SWAPPED box (no swap redone):
+#               copy both preloads from ~/scripts/data to native/, re-render the
+#               unit (staged copy + live copy; the live one it replaces is kept
+#               as native/<unit>.prev), daemon-reload, require systemd's loaded
+#               ExecStart to name the sync preload, mute the app + its canaries
+#               (1 h TTL; only names not already muted), wait out an imminent
+#               gate run (as --swap), restart, verify parity (status, listen
+#               set, login, vhost), then prove the THING: the running process's
+#               cmdline carries the preload AND the unit's journal since the
+#               restart has `QFLX-111 applied` and no `QFLX-111 ERROR`. Parity
+#               failure restores .prev only if THIS run wrote it; an idempotent
+#               re-run never restores an older unit.
 #
 # Exit: 0 ok | 1 refused/failed | 10 rollback paused for the manifest revert |
 # 64 usage.
@@ -79,7 +91,7 @@
 # QFLIX_GATE_LOG_DIR QFLIX_SEERR_SHA256 QFLIX_NODE_SHA256 QFLIX_SEERR_PORT
 # QFLIX_SEERR_VHOST_URL QFLIX_POLL_S QFLIX_SETTLE_S QFLIX_STOP_TIMEOUT_S
 # QFLIX_PROOF_TIMEOUT_S QFLIX_STATUS_TIMEOUT_S QFLIX_GATE_GAP_S
-# QFLIX_GATE_RUN_TIMEOUT_S QFLIX_KEEP_PROOF.
+# QFLIX_GATE_RUN_TIMEOUT_S QFLIX_KEEP_PROOF QFLIX_JOURNALCTL QFLIX_PRAGMA_TIMEOUT_S.
 set -uo pipefail
 
 SLUG=seerr
@@ -96,9 +108,11 @@ UNIT="qflix-${SLUG}.service"
 FAMILY=node
 # Node lives OUTSIDE bin/current (native_render_unit takes %h/... verbatim) and
 # render_unit puts --disable-wasm-trap-handler right after it (CLI, never
-# NODE_OPTIONS). The preload reproduces the recorded listen set.
+# NODE_OPTIONS). Two preloads: seerr-listen.cjs reproduces the recorded listen
+# set; seerr-sqlite-sync.cjs (QFLX-111) runs PRAGMA synchronous=NORMAL on every
+# sqlite connection (upstream's WAL + FULL fsyncs each session-touch commit).
 EXE="%h/.apps/${SLUG}/bin/node/bin/node"
-EXEC_ARGS="--require %h/.apps/${SLUG}/native/seerr-listen.cjs %h/.apps/${SLUG}/bin/current/dist/index.js"
+EXEC_ARGS="--require %h/.apps/${SLUG}/native/seerr-listen.cjs --require %h/.apps/${SLUG}/native/seerr-sqlite-sync.cjs %h/.apps/${SLUG}/bin/current/dist/index.js"
 # Next.js resolves its .next build from the CWD (upstream `next({ dev })`).
 WORKDIR="%h/.apps/${SLUG}/bin/current"
 # The container's own env (/proc/<pid>/environ, box 2026-10-10): NODE_ENV,
@@ -118,7 +132,7 @@ ARGS=("$@")
 info() { echo "[311-seerr] $*"; }
 die()  { echo "[311-seerr] ERROR: $*" >&2; exit 1; }
 usage() {
-  echo "usage: $0 [--install|--prove|--swap|--finish|--rollback|--post-upgrade VER] [--execute]" >&2
+  echo "usage: $0 [--install|--prove|--swap|--finish|--rollback|--refresh-preload|--post-upgrade VER] [--execute]" >&2
   exit 64
 }
 
@@ -127,7 +141,7 @@ EXECUTE=0
 UPGRADE_VER=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --install|--prove|--swap|--finish|--rollback) MODE="${1#--}" ;;
+    --install|--prove|--swap|--finish|--rollback|--refresh-preload) MODE="${1#--}" ;;
     --post-upgrade) MODE=post-upgrade; shift; UPGRADE_VER="${1:-}"; [ -n "$UPGRADE_VER" ] || usage ;;
     --execute) EXECUTE=1 ;;
     -h|--help) usage ;;
@@ -149,6 +163,7 @@ MANIFEST="${QFLIX_MANIFEST:-$HOME/.opt/maint/apps.yaml}"
 MAINT_LIB="$HERE/maint/lib"
 SANITIZE="$HERE/maint/native_sanitize.py"
 PRELOAD_SRC="$HERE/data/seerr-listen.cjs"
+SYNC_PRELOAD_SRC="$HERE/data/seerr-sqlite-sync.cjs"
 CANARIES="${QFLIX_CANARIES_DIR:-$HERE/canaries}"
 PY="${QFLIX_PYTHON:-python3}"
 APPCTL="${QFLIX_APPCTL:-$HOME/bin/appctl}"
@@ -173,6 +188,12 @@ SETTINGS="$APPDIR/settings.json"
 DB="$APPDIR/db/db.sqlite3"
 NODE_BIN="$APPDIR/bin/node/bin/node"
 PRELOAD="$APPDIR/native/seerr-listen.cjs"
+SYNC_PRELOAD="$APPDIR/native/seerr-sqlite-sync.cjs"
+JOURNALCTL="${QFLIX_JOURNALCTL:-journalctl}"
+PRAGMA_TIMEOUT="${QFLIX_PRAGMA_TIMEOUT_S:-30}"
+# The preload's own stderr lines (scripts/data/seerr-sqlite-sync.cjs).
+PRAGMA_OK="QFLX-111 applied: PRAGMA synchronous=NORMAL on db.sqlite3"
+PRAGMA_ERR="QFLX-111 ERROR"
 # Entitlement gate (I-13): pause = park THIS file, never touch members.yaml.
 GATE_DROPIN="$UNIT_DIR/$GATE_UNIT.d/execute.conf"
 GATE_PARKED="$SWAPDIR/gate/execute.conf"
@@ -199,6 +220,7 @@ plan() {
     finish)   info "would verify the native unit, reinstall $GATE_DROPIN and verify the gate's armed state, then lift suppression for ${SUPPRESS[*]}" ;;
     rollback) info "would suppress ${SUPPRESS[*]}, park + mask $UNIT, stop it, wait for the manifest revert, start the container via appctl, reinstall the gate drop-in, unsuppress" ;;
     post-upgrade) info "would check $APPDIR/bin/$UPGRADE_VER is a Seerr $UPGRADE_VER build, flip bin/current, rewrite COMMIT_TAG in $ENV_FILE" ;;
+    refresh-preload) info "would copy $PRELOAD_SRC + $SYNC_PRELOAD_SRC into $APPDIR/native/, re-render $UNIT (live copy kept as $APPDIR/native/$UNIT.prev), daemon-reload, mute ${SUPPRESS[*]} (1 h), wait out an imminent gate run, restart, verify parity, require '$PRAGMA_OK' in the unit journal + the preload in the running cmdline, unmute" ;;
   esac
   exit 0
 }
@@ -643,7 +665,7 @@ do_install() {
   [[ "$WANT_SHA" =~ ^[0-9a-f]{64}$ ]] || die "the Seerr artifact sha256 is not pinned; publish it (seerr-artifact workflow) and pin ARTIFACT_SHA256 first"
   mkdir -p "$APPS" || die "cannot create $APPS"
   [ -f "$SETTINGS" ] && [ -f "$DB" ] || die "$SETTINGS / $DB missing (the data is used in place)"
-  [ -f "$PRELOAD_SRC" ] || die "$PRELOAD_SRC missing (run 240 first)"
+  [ -f "$PRELOAD_SRC" ] && [ -f "$SYNC_PRELOAD_SRC" ] || die "$PRELOAD_SRC / $SYNC_PRELOAD_SRC missing (run 240 first)"
   stage="$(mktemp -d "$APPS/.stage-$SLUG.XXXXXX")" || die "mktemp failed"
   CLEANUP_PATHS+=("$stage")
   install_node "$stage"
@@ -658,6 +680,7 @@ do_install() {
   tag="$(align_tag "$stage/x" "$tag")" || die "cannot align committag.json with the client bundle"
   native_install_versioned "$SLUG" "$VERSION" "$stage/x" || die "install refused (see above)"
   native_write_secure "$PRELOAD" 0644 < "$PRELOAD_SRC" || die "cannot stage the listen preload"
+  native_write_secure "$SYNC_PRELOAD" 0644 < "$SYNC_PRELOAD_SRC" || die "cannot stage the sqlite sync preload"
   write_env "" "$tag" || die "env file write failed"
   native_render_unit "$SLUG" "$FAMILY" "$EXE" "$EXEC_ARGS" "$WORKDIR" \
     | native_write_secure "$APPDIR/native/$UNIT" 0644 || die "unit staging failed"
@@ -682,7 +705,7 @@ align_tag() {
 
 installed() {
   [ -x "$NODE_BIN" ] && [ -f "$APPDIR/bin/current/dist/index.js" ] && [ -f "$ENV_FILE" ] \
-    && [ -f "$PRELOAD" ] && [ -f "$APPDIR/native/$UNIT" ]
+    && [ -f "$PRELOAD" ] && [ -f "$SYNC_PRELOAD" ] && [ -f "$APPDIR/native/$UNIT" ]
 }
 
 do_prove() {
@@ -715,7 +738,8 @@ PY
     CONFIG_DIRECTORY="$PROVE"; PORT="$pport"; SEERR_LISTEN="127.0.0.1:$pport"
     export CONFIG_DIRECTORY PORT SEERR_LISTEN
     cd "$APPDIR/bin/current" || exit 1
-    exec "$NODE_BIN" --disable-wasm-trap-handler --require "$PRELOAD" "$APPDIR/bin/current/dist/index.js" \
+    exec "$NODE_BIN" --disable-wasm-trap-handler --require "$PRELOAD" --require "$SYNC_PRELOAD" \
+      "$APPDIR/bin/current/dist/index.js" \
       >"$PROVE/stdout.log" 2>&1
   ) &
   PROOF_PID=$!
@@ -732,6 +756,10 @@ PY
     sleep "$POLL"
   done
   [ "$ver" = "$VERSION" ] || die "proof: status reports '$ver' != pin '$VERSION'"
+  # QFLX-111: the copy's db is opened before Seerr listens, so by now the sync
+  # preload has printed its line (or its ERROR line).
+  grep -qF "$PRAGMA_OK" "$PROVE/stdout.log" \
+    || die "proof: no '$PRAGMA_OK' from the sync preload: $(grep -F "$PRAGMA_ERR" "$PROVE/stdout.log" | head -1)"
   auth_probe "$PROVE/settings.json" "$pport" || die "proof: login (/api/v1/auth/me with the API key) failed"
   after="$(user_tasks)"
   [[ "$after" =~ ^[0-9]+$ ]] || die "cannot count tasks"
@@ -907,6 +935,122 @@ do_rollback() {
   info "ROLLED BACK to UCC; gate re-armed as recorded; $UNIT masked (unmasked by the next --swap). elapsed=$((SECONDS - T0))s"
 }
 
+# --- QFLX-111: refresh the preloads on the live (already swapped) unit -------------
+# The journal lines the unit wrote since epoch $1 (the preload logs to stderr).
+unit_journal_since() {
+  "$JOURNALCTL" --user -u "$UNIT" --since "@$1" -o cat --no-pager 2>/dev/null
+}
+pragma_live() { unit_journal_since "$1" | grep -qF "$PRAGMA_OK"; }
+pragma_settled() { unit_journal_since "$1" | grep -qF -e "$PRAGMA_OK" -e "$PRAGMA_ERR"; }
+
+# The RUNNING process, not the unit file: its argv must carry the sync preload.
+native_runs_sync_preload() {
+  local pid
+  for pid in $(scan_pids native); do
+    tr '\0' ' ' < "$PROC/$pid/cmdline" 2>/dev/null | grep -qF "native/seerr-sqlite-sync.cjs" && return 0
+  done
+  return 1
+}
+
+# Mute only what is not muted already (never lift someone else's mute), with a
+# 1 h TTL so a refresh that dies midway cannot leave Seerr unwatched.
+REFRESH_MUTED=()
+refresh_mute() {
+  local n
+  for n in "${SUPPRESS[@]}"; do
+    suppression has "$n" >/dev/null 2>&1 || REFRESH_MUTED+=("$n")
+  done
+  [ "${#REFRESH_MUTED[@]}" -eq 0 ] && return 0
+  suppression add "${REFRESH_MUTED[@]}" --reason "QFLX-111 preload refresh" --ttl-hours 1 >/dev/null
+}
+refresh_unmute() {
+  [ "${#REFRESH_MUTED[@]}" -eq 0 ] && return 0
+  suppression remove "${REFRESH_MUTED[@]}" >/dev/null \
+    || info "WARNING: could not lift the mute on ${REFRESH_MUTED[*]}; it expires within 1 h"
+}
+
+# Set to 1 only when THIS run copied the live unit to .prev and replaced it.
+REFRESH_WROTE_PREV=0
+
+# refresh_restore MSG: put the previous live unit back, restart, verify, die.
+# Only a .prev THIS run wrote is restored: on an idempotent re-run (live unit
+# already current) any .prev on disk is an OLDER unit (e.g. without the sync
+# preload), and restoring it would silently undo the change. Then nothing is
+# restored, the mute is lifted (so the pusher probes, heals and pages Seerr
+# normally again) and the failure is loud.
+# No wait_gate_gap here, deliberately: this is a rollback of a Seerr that just
+# failed parity (maybe DOWN). Waiting up to QFLIX_GATE_GAP_S for the gate timer
+# would stretch a real outage to dodge, at most, one gate page about it.
+refresh_restore() {
+  local prev="$APPDIR/native/$UNIT.prev"
+  if [ "$REFRESH_WROTE_PREV" != 1 ]; then
+    refresh_unmute
+    die "$1; this run did not change the unit (it was already current), so nothing was restored; Seerr may be DOWN: check 'systemctl --user status $UNIT', or run --rollback --execute"
+  fi
+  [ -f "$prev" ] || { refresh_unmute; die "$1; no $prev to restore"; }
+  native_write_secure "$UNIT_DIR/$UNIT" 0644 < "$prev" && sysd daemon-reload && sysd restart "$UNIT" \
+    || die "$1; restoring $prev FAILED; still muted (1 h TTL); run --rollback --execute"
+  verify_native || die "$1; $prev restored but parity FAILS; still muted (1 h TTL); run --rollback --execute"
+  refresh_unmute
+  die "$1; previous unit restored and verified"
+}
+
+do_refresh_preload() {
+  local live="$UNIT_DIR/$UNIT" staged="$APPDIR/native/$UNIT" prev="$APPDIR/native/$UNIT.prev" t0 errs
+  [ -x "$NODE_BIN" ] && [ -f "$APPDIR/bin/current/dist/index.js" ] && [ -f "$ENV_FILE" ] \
+    || die "not installed; run --install --execute first"
+  { [ -f "$live" ] && ! is_masked; } || die "$live is missing or masked; --refresh-preload is for a swapped box"
+  sysd is-active "$UNIT" >/dev/null 2>&1 || die "$UNIT is not active; refusing to refresh a unit that is not running"
+  [ -f "$PRELOAD_SRC" ] && [ -f "$SYNC_PRELOAD_SRC" ] || die "$PRELOAD_SRC / $SYNC_PRELOAD_SRC missing (run 240 first)"
+  # Both preloads, byte-checked (the listen one too: native/ must equal the deploy).
+  { native_write_secure "$PRELOAD" 0644 < "$PRELOAD_SRC" && cmp -s "$PRELOAD" "$PRELOAD_SRC"; } \
+    || die "cannot stage the listen preload"
+  { native_write_secure "$SYNC_PRELOAD" 0644 < "$SYNC_PRELOAD_SRC" && cmp -s "$SYNC_PRELOAD" "$SYNC_PRELOAD_SRC"; } \
+    || die "cannot stage the sqlite sync preload"
+  refresh_mute || die "cannot mute ${SUPPRESS[*]}; refusing to restart unmuted (nothing restarted)"
+  native_render_unit "$SLUG" "$FAMILY" "$EXE" "$EXEC_ARGS" "$WORKDIR" \
+    | native_write_secure "$staged" 0644 || { refresh_unmute; die "unit staging failed"; }
+  if cmp -s "$staged" "$live"; then
+    info "live unit already renders the current ExecStart; restarting to load the preload copies"
+  else
+    { native_write_secure "$prev" 0644 < "$live" && cmp -s "$prev" "$live"; } \
+      || { refresh_unmute; die "cannot keep the live unit as $prev (nothing changed)"; }
+    { native_write_secure "$live" 0644 < "$staged" && cmp -s "$live" "$staged"; } \
+      || { native_write_secure "$live" 0644 < "$prev"; refresh_unmute
+           die "cannot install the unit; previous file put back (not reloaded, nothing restarted)"; }
+    REFRESH_WROTE_PREV=1
+    info "live unit replaced; previous kept as $prev"
+  fi
+  sysd daemon-reload || refresh_restore "daemon-reload failed"
+  # What systemd will actually exec, not what we wrote.
+  sysd show "$UNIT" -p ExecStart --value 2>/dev/null | grep -qF "native/seerr-sqlite-sync.cjs" \
+    || refresh_restore "systemd's loaded ExecStart does not name the sync preload"
+  # Same reason as --swap: a gate run inside the restart window pages "Seerr
+  # unavailable" (its Kuma push ignores push-suppress), so restart only when
+  # the next gate timer run is at least QFLIX_GATE_GAP_S away.
+  wait_gate_gap
+  t0="$(date -u +%s)"
+  sysd restart "$UNIT" || refresh_restore "restart $UNIT failed"
+  verify_native || refresh_restore "native seerr fails parity after the refresh"
+  # Parity passed, so Seerr serves: from here a failure is reported, not rolled
+  # back (the preload fails open; Seerr runs at upstream FULL at worst).
+  native_runs_sync_preload || { refresh_unmute; die "the running seerr does not carry the sync preload in its cmdline"; }
+  # Wait for the preload's verdict line (either one), then judge: an ERROR line
+  # is named verbatim; silence is "not proven". Neither is ever a pass.
+  wait_until "$PRAGMA_TIMEOUT" pragma_settled "$t0" || true
+  errs="$(unit_journal_since "$t0" | grep -F "$PRAGMA_ERR" | head -3)"
+  [ -z "$errs" ] || { refresh_unmute; die "the sync preload reported: $errs"; }
+  pragma_live "$t0" \
+    || { refresh_unmute; die "no '$PRAGMA_OK' in the $UNIT journal since the restart: pragma NOT proven (Seerr is up)"; }
+  refresh_unmute
+  info "REFRESHED: $(unit_journal_since "$t0" | grep -F "$PRAGMA_OK" | tail -n 1)"
+  if [ "$REFRESH_WROTE_PREV" = 1 ]; then
+    info "parity ok (status, listen set, login, vhost); rollback: cp $prev $live && systemctl --user daemon-reload && systemctl --user restart $UNIT"
+  else
+    info "parity ok (status, listen set, login, vhost); unit unchanged by this run, so no rollback copy was written"
+  fi
+}
+
 do_post_upgrade() {
   local v="$UPGRADE_VER" d tag listen want_major have_major
   v="${v#v}"
@@ -930,6 +1074,7 @@ do_post_upgrade() {
 
 case "$MODE" in
   install)      do_install ;;
+  refresh-preload) do_refresh_preload ;;
   prove)        do_prove ;;
   swap)         do_swap ;;
   finish)       do_finish ;;

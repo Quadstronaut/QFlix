@@ -390,7 +390,9 @@ apps:
     # pinned portable Node 22 as qflix-seerr.service by scripts/configure/311-
     # native-seerr-install.sh (versions.env SEERR_* + sha256 in the installer).
     # Data in place: CONFIG_DIRECTORY=~/.apps/seerr. All three recorded
-    # listeners are reproduced by the --require preload (SEERR_LISTEN).
+    # listeners are reproduced by the --require preload (SEERR_LISTEN). A
+    # second preload (QFLX-111, seerr-sqlite-sync.cjs) sets PRAGMA
+    # synchronous=NORMAL: upstream's WAL+FULL fsynced every session touch.
     # The UCC seerr app is DORMANT FOREVER, never uninstalled: it owns the
     # seerr-<slot> vhost (I-8). The swap pauses the entitlement gate by parking
     # its execute.conf drop-in (I-13), reinstalled by --finish / --rollback.
