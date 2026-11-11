@@ -95,6 +95,8 @@ with open(os.path.join(procdir, "proof-env.json"), "w") as fh:
                                                       "UV_THREADPOOL_SIZE")}}, fh)
 if not ok:
     sys.exit(3)
+if os.environ.get("FAKE_PROOF_EXIT"):
+    sys.exit(4)                      # a copy that dies while booting
 # QFLX-111: the sync preload prints one line when it opens the db.
 reqs = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--require"]
 if any(r.endswith("seerr-sqlite-sync.cjs") and os.path.isfile(r) for r in reqs):
@@ -281,6 +283,8 @@ class Box:
 
     def bound(self) -> bool:
         """False while a native seerr started with FAKE_NATIVE_BIND_DELAY_S has not bound yet."""
+        if (self.proc / "native_dead").exists() and not (self.proc / "9002").exists():
+            return False
         p = self.proc / "9002" / "bound_at"
         try:
             return time.time() >= int(p.read_text().strip())
@@ -377,6 +381,7 @@ esac
 # ExecStart; the sync preload (when named) logs its line to the unit journal.
 spawn() {{
   local es
+  rm -f "{P}/native_dead"
   es="$(sed -n 's/^ExecStart=//p' "{U}/$1" | tail -n 1)"
   case "$es" in *seerr-sqlite-sync.cjs*) [ "${{FAKE_SYNC_BREAKS_START:-0}}" = 1 ] && return 0 ;; esac
   mkdir -p "{P}/9002"
@@ -385,6 +390,18 @@ spawn() {{
   printf '%s' "$es" | sed 's#%h#/h#g' | tr ' ' '\\0' > "{P}/9002/cmdline"
   # Real Seerr binds only once Next.js is ready (~28 s on the slot).
   echo $(( $(date +%s) + ${{FAKE_NATIVE_BIND_DELAY_S:-0}} )) > "{P}/9002/bound_at"
+  case "$es" in *seerr-sqlite-sync.cjs*)
+    if [ -n "${{FAKE_SYNC_DIES_AFTER_S:-}}" ]; then
+      echo $(( $(date +%s) + 99999 )) > "{P}/9002/bound_at"
+      echo $(( $(date +%s) + FAKE_SYNC_DIES_AFTER_S )) > "{P}/9002/dies_at"
+    fi
+    if [ "${{FAKE_SYNC_FAILED:-0}}" = 1 ]; then
+      echo $(( $(date +%s) + 99999 )) > "{P}/9002/bound_at"; : > "{P}/9002/state_failed"
+    fi
+    if [ "${{FAKE_SYNC_CRASHLOOP:-0}}" = 1 ]; then
+      echo $(( $(date +%s) + 99999 )) > "{P}/9002/bound_at"; : > "{P}/9002/crashloop"
+    fi ;;
+  esac
   case "$es" in *seerr-sqlite-sync.cjs*)
     case "${{FAKE_PRAGMA_JOURNAL:-ok}}" in
       ok) printf '%s\\t%s\\n' "$(date +%s)" "[qflix-sqlite-sync] QFLX-111 applied: PRAGMA synchronous=NORMAL on db.sqlite3 (read back 1)" >> "{J}" ;;
@@ -395,9 +412,25 @@ spawn() {{
 case "$1" in
   is-active)
     if [ "$2" = "{GATE_UNIT}" ]; then [ "${{FAKE_GATE_ACTIVE:-0}}" = 1 ] && {{ echo active; exit 0; }}; echo inactive; exit 3; fi
+    # A booting process that dies (FAKE_SYNC_DIES_AFTER_S) is gone once its time is up;
+    # a crash loop (FAKE_SYNC_CRASHLOOP) stays "active" while NRestarts climbs.
+    if [ -f "{P}/9002/dies_at" ] && [ "$(date +%s)" -ge "$(cat "{P}/9002/dies_at")" ]; then
+      rm -rf "{P}/9002"; : > "{P}/native_dead"      # a dead Seerr serves nothing
+    fi
+    if [ -f "{P}/9002/crashloop" ]; then echo $(( $(cat "{P}/nrestarts" 2>/dev/null || echo 0) + 1 )) > "{P}/nrestarts"; fi
+    # A busy user manager mid-boot: the first FAKE_ISACTIVE_GLITCH calls while
+    # Seerr is still booting fail with NOTHING on stdout (D-Bus timeout).
+    if [ -n "${{FAKE_ISACTIVE_GLITCH:-}}" ] && [ -f "{P}/9002/bound_at" ] \\
+       && [ "$(date +%s)" -lt "$(cat "{P}/9002/bound_at")" ]; then
+      g=$(( $(cat "{P}/glitches" 2>/dev/null || echo 0) + 1 )); echo "$g" > "{P}/glitches"
+      if [ "$g" -le "$FAKE_ISACTIVE_GLITCH" ]; then echo "Failed to connect to bus: Connection timed out" >&2; exit 1; fi
+    fi
+    # systemd's definitive verdict on a unit whose process died.
+    [ -f "{P}/9002/state_failed" ] && {{ echo failed; exit 3; }}
     [ -d "{P}/9002" ] && echo active && exit 0; echo inactive; exit 3 ;;
   show)
     case "$*" in
+      *"{UNIT} -p NRestarts"*) cat "{P}/nrestarts" 2>/dev/null || echo 0 ;;
       *"{UNIT} -p ExecStart"*) sed -n 's/^ExecStart=/{{ argv[]=/p' "{U}/{UNIT}" | tail -n 1 ;;
       *NextElapseUSecRealtime*) t=$(( $(date +%s) + ${{FAKE_GATE_NEXT_S:-3600}} ))
         # systemd 257 prints this property human-readable even with --timestamp=unix
@@ -456,6 +489,12 @@ case "$url" in
   *nodejs.org*) cp "{_posix(self.node_payload)}" "$out" ;;
   */releases/download/*) cp "{_posix(self.payload)}" "$out" ;;
   */api/v1/status) [ "${{FAKE_VHOST_RC:-0}}" = 0 ] || exit 22
+                   # The panel proxy 502s the first FAKE_VHOST_FLAKY calls.
+                   if [ -n "${{FAKE_VHOST_FLAKY:-}}" ]; then
+                     v=$(( $(cat "{_posix(self.tmp)}/vhost_calls" 2>/dev/null || echo 0) + 1 ))
+                     echo "$v" > "{_posix(self.tmp)}/vhost_calls"
+                     [ "$v" -le "$FAKE_VHOST_FLAKY" ] && exit 22
+                   fi
                    echo '{{"version":"'"${{FAKE_VHOST_VERSION:-3.5.0}}"'"}}' ;;
   *) exit 22 ;;
 esac
@@ -489,6 +528,7 @@ esac
                  QFLIX_FUSER=_posix(self.stub / "fuser"), QFLIX_CURL=_posix(self.stub / "curl"),
                  QFLIX_HOSTPOLICY=_posix(self.stub / "hostpolicy"),
                  QFLIX_JOURNALCTL=_posix(self.stub / "journalctl"), QFLIX_PRAGMA_TIMEOUT_S="2",
+                 QFLIX_POST_RETRY_S="0.2",
                  QFLIX_CANARIES_DIR=_posix(self.canaries), QFLIX_GATE_LOG_DIR=_posix(self.gatelog),
                  QFLIX_SEERR_SHA256=self.sha, QFLIX_NODE_SHA256=self.node_sha,
                  QFLIX_SEERR_PORT=str(self.port), FAKE_SS_FILE=_posix(self.ss_file),
@@ -1332,6 +1372,95 @@ def test_refresh_preload_rerun_never_restores_a_stale_prev(box):
     assert (box.appdir / "native" / f"{UNIT}.prev").read_text() == old
     assert "rollback: cp " not in r.stdout
     assert box.suppressed() == {}                       # pusher heals + pages normally again
+
+
+def test_health_budgets_survive_a_cold_boot():
+    """Box 2026-11-11: a cold Seerr boot takes ~3 min 40 s; 180 s killed one mid-boot."""
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert 'STATUS_TIMEOUT="${QFLIX_STATUS_TIMEOUT_S:-600}"' in text
+    assert 'PROOF_TIMEOUT="${QFLIX_PROOF_TIMEOUT_S:-600}"' in text
+
+
+@pytest.mark.parametrize("budget,ok", [("20", True), ("2", False)])
+def test_refresh_preload_rides_out_a_slow_boot(box, budget, ok):
+    """Boot 4 s, scaled like the box's 220 s cold boot: a budget above it rides
+    it out with ONE restart; a budget below it (the old 180 s vs 220 s) is what
+    restored + restarted a healthy boot."""
+    _pre_qflx111(box)
+    r = box.run("--refresh-preload", "--execute",
+                env={"FAKE_NATIVE_BIND_DELAY_S": "4", "QFLIX_STATUS_TIMEOUT_S": budget})
+    restarts = box.calls_text().count(f"restart {UNIT}")
+    if ok:
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert (box.unitdir / UNIT).read_text() == GOLDEN_UNIT.read_text(encoding="utf-8")
+        assert restarts == 1                                # never killed mid-boot by a restore
+    else:
+        assert r.returncode != 0 and "process still alive" in r.stderr, r.stdout + r.stderr
+        assert restarts == 2
+
+
+def test_a_transient_is_active_error_mid_boot_is_not_a_death(box):
+    """A busy user manager (D-Bus timeout) answers is-active with nothing and a
+    non-zero exit: that is "unknown", and must never restore a healthy boot."""
+    _pre_qflx111(box)
+    r = box.run("--refresh-preload", "--execute",
+                env={"FAKE_NATIVE_BIND_DELAY_S": "3", "FAKE_ISACTIVE_GLITCH": "6",
+                     "QFLIX_STATUS_TIMEOUT_S": "20"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert int((box.proc / "glitches").read_text()) >= 3     # the glitch really hit the wait
+    assert box.calls_text().count(f"restart {UNIT}") == 1
+    assert (box.unitdir / UNIT).read_text() == GOLDEN_UNIT.read_text(encoding="utf-8")
+
+
+def test_a_momentary_vhost_502_after_the_bind_is_retried(box):
+    _pre_qflx111(box)
+    r = box.run("--refresh-preload", "--execute", env={"FAKE_VHOST_FLAKY": "2"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "the seerr vhost not ok yet (try 1/6)" in r.stdout
+    assert box.calls_text().count(f"restart {UNIT}") == 1
+
+
+@pytest.mark.parametrize("env,why", [({"FAKE_SYNC_DIES_AFTER_S": "2"}, "is inactive"),
+                                     ({"FAKE_SYNC_FAILED": "1"}, "is failed (its process exited) (3 samples in a row)"),
+                                     ({"FAKE_SYNC_CRASHLOOP": "1"}, "crash loop")])
+def test_refresh_preload_fails_fast_on_a_dead_boot_and_names_the_right_step(box, env, why):
+    old = _pre_qflx111(box)
+    t = time.monotonic()
+    r = box.run("--refresh-preload", "--execute", env=dict(env, QFLIX_STATUS_TIMEOUT_S="120"))
+    took = time.monotonic() - t
+    assert r.returncode != 0 and "died while booting" in r.stderr and why in r.stderr, r.stdout + r.stderr
+    assert took < 90, took                                  # early exit, not the 120 s budget
+    assert "previous unit restored and verified" in r.stderr
+    assert "Seerr is UP now" in r.stderr and "Mute lifted" in r.stderr
+    assert "re-run --refresh-preload --execute" in r.stderr
+    assert "run --rollback" not in r.stderr                 # never the return-to-UCC path
+    assert (box.unitdir / UNIT).read_text() == old and box.suppressed() == {}
+    # The box's state after such a failure (live == .prev == the old unit): the
+    # next run must install the new unit, not treat itself as idempotent.
+    assert (box.appdir / "native" / f"{UNIT}.prev").read_text() == old
+    r = box.run("--refresh-preload", "--execute")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (box.unitdir / UNIT).read_text() == GOLDEN_UNIT.read_text(encoding="utf-8")
+    assert "rollback: cp " in r.stdout
+
+
+def test_a_refresh_failure_with_seerr_down_still_lifts_the_mute_and_says_so(box):
+    _pre_qflx111(box)
+    r = box.run("--refresh-preload", "--execute", env={"FAKE_PRAGMA_JOURNAL": "none"})
+    assert r.returncode != 0 and "Seerr is UP now" in r.stderr
+    box.stop_status_server()
+    r = box.run("--refresh-preload", "--execute", env={"FAKE_PRAGMA_JOURNAL": "none"})
+    assert r.returncode != 0 and "nothing was restored" in r.stderr, r.stdout + r.stderr
+    assert "Seerr is NOT answering" in r.stderr and "run --rollback" not in r.stderr
+    assert box.suppressed() == {}                           # a down Seerr must page and heal
+
+
+def test_prove_fails_fast_when_the_copy_exits(box):
+    box.installed()
+    t = time.monotonic()
+    r = box.run("--prove", "--execute", env={"QFLIX_PROOF_TIMEOUT_S": "120", "FAKE_PROOF_EXIT": "1"})
+    assert r.returncode != 0 and "copy exited" in r.stderr, r.stdout + r.stderr
+    assert time.monotonic() - t < 90
 
 
 def test_refresh_preload_refuses_a_box_that_is_not_swapped(box):
