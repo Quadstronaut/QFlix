@@ -17,7 +17,9 @@
 # Stage labels (printed to stderr on failure → Kuma `msg=`):
 #   seerr-up-fail        — Seerr API unreachable
 #   radarr-up-fail       — Radarr API unreachable
-#   seed-pick-fail       — a seed exists but couldn't resolve its tmdb id
+#   seerr-api-fail       — a Seerr JSON read gave no JSON after 3 tries
+#   radarr-api-fail      — a Radarr JSON read gave no JSON after 3 tries
+#   seed-pick-fail      — a seed exists but couldn't resolve its tmdb id
 #                          (an EMPTY but reachable library SKIPs green instead)
 #   seerr-push-fail      — POST /api/v1/request returned non-2xx/409
 #   arr-not-populated    — externalServiceId stayed null after timeout
@@ -47,10 +49,33 @@ http_up() { local c; for _ in 1 2 3; do
 H_JS=$(http_up "${JS}/api/v1/status" "$JS_KEY") || { printf "STAGE=seerr-up-fail msg=seerr-status-http-%s-after-3-tries\n" "$H_JS" >&2; exit 1; }
 H_RR=$(http_up "${RR}/system/status" "$RADARR_KEY") || { printf "STAGE=radarr-up-fail msg=radarr-status-http-%s-after-3-tries\n" "$H_RR" >&2; exit 1; }
 
-SEED=$(curl -sf -m 8 -H "X-Api-Key: $RADARR_KEY" "${RR}/movie" \
-  | python3 -c "import sys, json
+# Every JSON read goes through jget (QFLX-115). The old `curl -sf | python3
+# json.load` pipelines turned one empty answer (a curl timeout on Seerr
+# settings/radarr, 2026-11-11 05:31 UTC) into a Python traceback: Kuma got no
+# STAGE= line and the failure looked like a canary bug. jget retries 3x like
+# http_up, checks the body parses as JSON, and returns 1 so the CALLER names
+# the stage. The parsers below then only ever see valid JSON.
+fail() { printf "STAGE=%s msg=%s\n" "$1" "$2" >&2; exit 1; }
+# On failure jget prints "curl-rc-<rc>-http-<code>" of the LAST try (no -f, so
+# a 401/403 reads as http-401, not as a timeout) for the caller to put in msg.
+jget() { local out rc code body; for _ in 1 2 3; do
+  out=$(curl -s -m 8 -H "X-Api-Key: $2" -w "__HTTP__%{http_code}" "$1"); rc=$?
+  code=${out##*__HTTP__}; body=${out%__HTTP__*}
+  case "$out" in *__HTTP__*) ;; *) code=000 ;; esac
+  case "$rc:$code" in
+    0:2??) printf "%s" "$body" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null \
+             && { printf "%s" "$body"; return 0; } ;;
+  esac
+  sleep 3; done
+  printf "curl-rc-%s-http-%s" "$rc" "${code:-000}"; return 1; }
+
+MOVIES=$(jget "${RR}/movie" "$RADARR_KEY") || fail radarr-api-fail "movie-list-no-json-after-3-tries-${MOVIES}"
+SEED=$(printf "%s" "$MOVIES" | python3 -c "import sys, json
 ms = sorted(json.load(sys.stdin), key=lambda x: x[\"id\"])
-print(ms[0][\"tmdbId\"], ms[0][\"id\"]) if ms else exit(2)")
+print(ms[0][\"tmdbId\"], ms[0][\"id\"]) if ms else exit(2)" 2>/dev/null)
+# rc 2 = empty library (SKIP below); anything else non-zero = a shape we cannot read.
+SEED_RC=$?
+[ "$SEED_RC" = "0" ] || [ "$SEED_RC" = "2" ] || fail seed-pick-fail "movie-list-unparseable-rc-${SEED_RC}"
 # Empty-but-reachable library is a legitimate content state, NOT a Seerr->Radarr
 # path failure. Radarr already passed its up-check above, so 0 movies = nothing
 # to seed = inconclusive: pass with an explicit SKIP message rather than
@@ -62,11 +87,11 @@ fi
 TMDB_ID=$(printf "%s" "$SEED" | cut -d" " -f1)
 RR_MID=$(printf "%s" "$SEED" | cut -d" " -f2)
 
-SRV=$(curl -sf -m 5 -H "X-Api-Key: $JS_KEY" "${JS}/api/v1/settings/radarr" \
-  | python3 -c "import sys, json
+RSET=$(jget "${JS}/api/v1/settings/radarr" "$JS_KEY") || fail seerr-api-fail "settings-radarr-no-json-after-3-tries-${RSET}"
+SRV=$(printf "%s" "$RSET" | python3 -c "import sys, json
 d=json.load(sys.stdin)
 df=[s for s in d if s.get(\"isDefault\")]
-print(df[0][\"id\"] if df else (d[0][\"id\"] if d else \"\"))")
+print(df[0][\"id\"] if df else (d[0][\"id\"] if d else \"\"))" 2>/dev/null)
 [ -n "$SRV" ] || { printf "STAGE=seerr-push-fail msg=no-default-radarr-server-in-seerr\n" >&2; exit 1; }
 
 curl -s -o /dev/null -m 8 -H "X-Api-Key: $JS_KEY" "${JS}/api/v1/movie/${TMDB_ID}"
@@ -78,15 +103,16 @@ HTTP=$(printf "%s" "$RESP" | grep -oE "__HTTP__=[0-9]+" | cut -d= -f2)
 BODYTXT=$(printf "%s" "$RESP" | sed -e "s/__HTTP__=[0-9]*//")
 case "$HTTP" in
   200|201)
-    REQ_ID=$(printf "%s" "$BODYTXT" | python3 -c "import sys, json; print(json.load(sys.stdin)[\"id\"])")
+    REQ_ID=$(printf "%s" "$BODYTXT" | python3 -c "import sys, json; print(json.load(sys.stdin)[\"id\"])" 2>/dev/null)
+    [ -n "$REQ_ID" ] || fail seerr-push-fail "http-${HTTP}-but-no-request-id-in-body"
     CREATED=1
     ;;
   409)
-    REQ_ID=$(curl -sf -m 5 -H "X-Api-Key: $JS_KEY" "${JS}/api/v1/request?take=200" \
-      | python3 -c "import sys, json
+    REQS=$(jget "${JS}/api/v1/request?take=200" "$JS_KEY") || fail seerr-api-fail "request-list-no-json-after-3-tries-${REQS}"
+    REQ_ID=$(printf "%s" "$REQS" | python3 -c "import sys, json
 d=json.load(sys.stdin)
 hits=[r for r in d.get(\"results\",[]) if r.get(\"media\",{}).get(\"tmdbId\")==${TMDB_ID}]
-print(hits[0][\"id\"] if hits else \"\")")
+print(hits[0][\"id\"] if hits else \"\")" 2>/dev/null)
     [ -n "$REQ_ID" ] || { printf "STAGE=seerr-push-fail msg=409-but-no-existing-request-tmdb-%s\n" "$TMDB_ID" >&2; exit 1; }
     CREATED=0
     ;;
@@ -103,7 +129,7 @@ for _ in 1 2 3 4 5 6; do
     | python3 -c "import sys, json
 r=json.load(sys.stdin)
 v=r.get(\"media\",{}).get(\"externalServiceId\")
-print(v if v is not None else \"\")")
+print(v if v is not None else \"\")" 2>/dev/null)
   if [ -n "$EXTID" ]; then break; fi
   sleep 5
 done
