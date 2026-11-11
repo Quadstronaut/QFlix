@@ -8,6 +8,52 @@ then SAB/qBit/Tautulli/Postgres, **Seerr last** (blocked, see below).
 Tool: `~/scripts/ops/ucc-uninstall.sh <app>` (dry-run) then `--execute`.
 Never during the Monday 11:00-15:00 UTC window (the script refuses).
 
+## Status (2026-11-11 run)
+
+**Uninstalled** (each one: tool rc=0, every post-check passed, native MainPID
+unchanged, failed user units unchanged). Manifest marker:
+`ucc_uninstalled: "2026-11-11"`. Backups are
+`~/.opt/maint/ucc-uninstall/<slug>-20261111T07xxxxZ.tgz` plus `.proxy.conf`:
+
+unpackerr, sonarr2, radarr2, sonarr, radarr, prowlarr, bazarr, sabnzbd,
+tautulli, postgres.
+
+- Unpackerr's import proof was **waived by the operator**. Every archive the
+  native process extracted (8, from 10-21 to 11-07) was a bait 7z release that
+  Sonarr then "Manually marked as failed". Unpackerr's own `Imported` status
+  only means "left the arr queue". It does not prove the arr imported anything.
+- sonarr2 (0 series) and radarr2 (4 movies, 0 files) have never had any
+  history, under UCC or native. Their parity proof is API + RSS sync + sole DB
+  holder + route 200.
+- postgres: the UCC cluster in `~/.apps/postgres/data` is kept (`--keep-config`)
+  and is also in the tarball. Before the uninstall, the only client was
+  Listmonk, connected to the native cluster in `pg-native`.
+
+**Not uninstalled:**
+
+- **seerr**: blocked, see below.
+- **qbittorrent**: SKIPPED.
+  - The panel app and the native `qflix-qbittorrent.service` share the
+    **live** profile: `~/.config/qBittorrent` and `~/.local/share/qBittorrent`,
+    where BT_backup holds every torrent's resume data.
+  - The panel's uninstall code (`/etc/seedbox/appmanager/`) cannot be read by
+    the slot user. So nothing shows what `--keep-config` preserves for qBit.
+  - The script backs up only `qBittorrent.conf`.
+  - Before qBit goes, the script needs a verified backup of
+    `~/.local/share/qBittorrent`. Better still, Ultra.cc support confirms what
+    the uninstall removes.
+
+**Two ways the box behaved unlike the script's assumptions:**
+
+- The `app-<slug>` gate ("not installed (already uninstalled?)") never fires.
+  `/usr/bin/app-*` are global wrappers, 81 of them, retired apps included.
+  - After an uninstall, the evidence is `app-<slug> version` returning
+    `"Unable to retrieve application version, re-check if it's installed"`.
+    A still-installed dormant app answers its version even when stopped.
+  - `app-postgres` has no `version` verb.
+- `app-<slug> uninstall --keep-config` prints nothing and exits 0 after about
+  5 s.
+
 ## What the script guarantees
 
 - Resolves the app via `~/bin/appctl lookup` (same resolver as every lifecycle call).
