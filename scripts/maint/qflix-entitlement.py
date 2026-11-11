@@ -408,10 +408,16 @@ def _push_kuma(status: str, msg: str) -> None:
         warn("Kuma push failed (non-fatal): %s" % exc)
 
 
-def _notify(msg: str, level: str = "info") -> None:
+# QFLX-123: the gate's Kuma monitor is member-facing (manifest `paging:`), so a
+# notify tagged with it pages; untagged ones roll into the weekly summary.
+GATE_MONITOR = "QFlix Entitlement Gate"
+
+
+def _notify(msg: str, level: str = "info", *, source: Optional[str] = None,
+            summary: Optional[str] = None) -> None:
     try:
         from lib.notify import notify
-        notify(msg, level)
+        notify(msg, level, source=source, summary=summary)
     except Exception as exc:
         warn("notify failed (non-fatal): %s" % exc)
 
@@ -1768,7 +1774,8 @@ def main(argv=None) -> int:
                    "with --max-reduce-pct 0 after looking."
                    % (len(reducing), len(governed), pct, args.max_reduce_pct))
             warn(msg)
-            _notify("QFlix entitlement: " + msg, "warn")
+            # Gate error: the tripwire is refusing reductions. Pages.
+            _notify("QFlix entitlement: " + msg, "warning", source=GATE_MONITOR)
             mutating = [p for p in mutating if not is_reduction(p)]
 
     # ---- apply -----------------------------------------------------------
@@ -1829,18 +1836,30 @@ def main(argv=None) -> int:
         # escalation, not a repeat.
         for p in plans:
             if p.alert and state.should_alert(p.email, p.alert, now):
-                _notify("QFlix entitlement: %s" % p.alert, "warn")
+                # QFLX-123 arbiter ruling: the per-account alert is the human
+                # check before a member loses access - member-facing, pages
+                # with its detail. The summary only matters if the paging list
+                # ever drops the gate (then it keeps the account out of the
+                # roll-up file).
+                _notify("QFlix entitlement: %s" % p.alert, "warning",
+                        source=GATE_MONITOR,
+                        summary="entitlement: per-account alert (detail in notify.log)")
                 state.mark_alert(p.email, p.alert, now)
         if execute:
             # Mutations are rare and each one is a distinct event, so these are
             # not throttled. If they ever become chatty, that is itself the
             # signal something is looping.
             for line in out.applied:
-                _notify("QFlix entitlement: %s" % line, "info")
+                _notify("QFlix entitlement: %s" % line, "info",
+                        summary="entitlement: access change applied")
         if should_send_digest(plans, now) and state.should_digest(now):
             body = digest_lines(plans, now)
             if body:
-                _notify("QFlix entitlement countdown\n" + "\n".join(body), "info")
+                # Same ruling: the countdown is the operator's last look before
+                # a reduction lands. Pages.
+                _notify("QFlix entitlement countdown\n" + "\n".join(body), "info",
+                        source=GATE_MONITOR,
+                        summary="entitlement: countdown digest")
                 state.mark_digest(now)
         if state.dirty:
             try:

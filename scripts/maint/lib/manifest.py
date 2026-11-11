@@ -152,10 +152,19 @@ class Manifest:
         apps: dict[str, App],
         canaries: dict[str, Canary] | None = None,
         external_monitors: list[str] | None = None,
+        paging: dict[str, str] | None = None,
     ) -> None:
         self._apps = apps
         self._canaries: dict[str, Canary] = canaries or {}
         self._external_monitors: set[str] = set(external_monitors or [])
+        self._paging: dict[str, str] = dict(paging or {})
+
+    def paging_monitors(self) -> dict[str, str]:
+        """QFLX-123: {Kuma monitor name: reason} for the MEMBER-FACING set -
+        the only monitors (and lib.notify sources) that page Discord
+        immediately. Everything else rolls into the weekly summary. See
+        lib/paging.py for every consumer of this one list."""
+        return dict(self._paging)
 
     def external_monitors(self) -> set[str]:
         """Kuma monitor names that exist outside this manifest's scope —
@@ -461,4 +470,15 @@ def load(path: str | Path) -> Manifest:
         raise ManifestError("'kuma_external_monitors' must be a YAML list of strings")
     external_monitors = [str(m) for m in raw_external]
 
-    return Manifest(apps, canaries, external_monitors=external_monitors)
+    # QFLX-123: the member-facing set. Shape is validated here (a typo'd block
+    # must fail the load, not silently page nobody); that every name is a real
+    # monitor is pinned by tests/unit/test_paging.py against lib.kuma, which
+    # this module must not import.
+    from lib import paging as _paging  # noqa: PLC0415 - same package, lazy
+    try:
+        paging = _paging.parse(data.get("paging"))
+    except ValueError as exc:
+        raise ManifestError(str(exc))
+
+    return Manifest(apps, canaries, external_monitors=external_monitors,
+                    paging=paging)

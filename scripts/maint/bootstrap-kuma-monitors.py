@@ -255,7 +255,8 @@ def _ensure_push_retries(api, skip_names=()) -> int:
     return changed
 
 
-_AUTOHEAL_WEBHOOK_NAME = "Manitoba auto-heal webhook"
+from lib.paging import AUTOHEAL_CHANNEL_NAME as _AUTOHEAL_WEBHOOK_NAME  # noqa: E402
+from lib.paging import DISCORD_CHANNEL_NAME  # noqa: E402
 
 
 def _autoheal_webhook_url() -> str:
@@ -292,66 +293,100 @@ def _ensure_autoheal_webhook(api) -> None:
     print(f"  [add]{_AUTOHEAL_WEBHOOK_NAME} → {url} (id={res.get('id')})")
 
 
-def _ensure_notifications_attached(api) -> int:
-    """Attach the standard notification set to every active monitor missing it.
+def _channel_roles(notifications) -> tuple:
+    """(discord_id, autoheal_id) by channel NAME, either None if absent.
+
+    By name, not by id or isDefault: ids differ per Kuma instance (a migrated
+    box gets fresh ones) and isDefault only governs the UI's new-monitor form.
+    Names are what lib.paging and scripts/migrate/kuma_channels.py key on."""
+    discord = autoheal = None
+    for n in notifications or []:
+        if n.get("name") == DISCORD_CHANNEL_NAME and discord is None:
+            discord = int(n["id"])
+        elif n.get("name") == _AUTOHEAL_WEBHOOK_NAME and autoheal is None:
+            autoheal = int(n["id"])
+    return discord, autoheal
+
+
+def _desired_channels(name, current, discord_id, autoheal_id, paging) -> set:
+    """The channel set monitor `name` must carry (QFLX-123).
+
+    Auto-heal on EVERY monitor (it is how lib.recovery hears about a DOWN, and
+    it is the weekly roll-up's eyes on every suppressed edge). Discord on
+    EXACTLY the manifest's member-facing set. Any other channel (e.g. an
+    external project's "qAlert Critical") is left alone - not ours."""
+    want = set(current)
+    if autoheal_id is not None:
+        want.add(autoheal_id)
+    if discord_id is not None:
+        if name in paging:
+            want.add(discord_id)
+        else:
+            want.discard(discord_id)
+    return want
+
+
+def _wiring_problem(name, ids, discord_id, autoheal_id, paging):
+    """None if `ids` is the correct set for `name`, else a short reason."""
+    if autoheal_id is None or autoheal_id not in ids:
+        return "no auto-heal channel"
+    if discord_id is None:
+        return None if name not in paging else "Discord channel missing from Kuma"
+    if name in paging and discord_id not in ids:
+        return "member-facing but does NOT page Discord"
+    if name not in paging and discord_id in ids:
+        return "pages Discord but is not member-facing"
+    return None
+
+
+def _ensure_notifications_attached(api, paging, discord_id, autoheal_id,
+                                   skip_names=()) -> int:
+    """Reconcile every active monitor to its desired channel set. Returns the
+    number of monitors edited.
 
     WHY this exists (2026-07-28): `_ensure_autoheal_webhook` attaches itself with
-    `applyExisting=True`, but ONLY on the run that first creates it. Every later
-    run hits the `[skip]` branch, so every monitor created AFTER that day was born
-    with zero notifications — no Discord alert AND no auto-heal webhook, which is
-    the exact thing that webhook's own docstring warns about ("Kuma down events
-    never reach manitoba-maint-webhook, so lib.recovery never fires").
+    `applyExisting=True`, but ONLY on the run that first creates it, so every
+    monitor created after that day was born with zero notifications - 32 of 60
+    by 2026-07-28, able to go red in total silence. Reconciles on EVERY run.
 
-    By 2026-07-28 that was 32 of 60 active monitors — including 15 of 18 canaries,
-    the `QFlix Fleet` storm aggregate, the `Manitoba Pusher` self-heartbeat, and
-    all four self-pushing janitors. They could go red in total silence. Found while
-    verifying that the new tdarr-healthcheck canary could actually reach the
-    operator; it could not.
+    QFLX-123 (2026-11-11) made it two-directional: "attach the defaults" became
+    "auto-heal everywhere, Discord exactly on the member-facing set". 86 monitors
+    all paging produced ~3-4 Discord sends a day from a stable product; the
+    operator wants silence except for what members would notice. A non-member-
+    facing monitor still goes red in Kuma and still triggers auto-heal - it just
+    no longer pages; its edges land in the weekly roll-up via the webhook.
 
-    Reconciles on EVERY run instead of only at creation, so a monitor added later
-    can never again be born mute. Idempotent: monitors already carrying the full
-    set are skipped."""
-    try:
-        notifications = api.get_notifications()
-    except Exception as exc:
-        print(f"  [warn] could not list notifications: {exc}")
-        return 0
-    # The standard set is every default channel (Discord + auto-heal webhook).
-    # Derived, not hardcoded, so adding a default channel in the UI propagates.
-    default_ids = sorted(n["id"] for n in notifications if n.get("isDefault"))
-    if not default_ids:
-        default_ids = sorted(
-            n["id"] for n in notifications
-            if n.get("name") in ("Mission Control - QFlix", _AUTOHEAL_WEBHOOK_NAME)
-        )
-    if not default_ids:
-        print("  [warn] no default notification channels found — nothing to attach")
-        return 0
-
+    `skip_names` = operator-owned external monitors this script does not manage."""
     fixed = 0
     for m in api.get_monitors():
         if not m.get("active", True):
             continue
-        current = set(m.get("notificationIDList") or {})
-        current = {int(k) for k, v in (m.get("notificationIDList") or {}).items() if v} \
-            if isinstance(m.get("notificationIDList"), dict) else set(current)
-        missing = [i for i in default_ids if i not in current]
-        if not missing:
+        name = m.get("name")
+        if name in skip_names:
             continue
-        merged = {str(i): True for i in sorted(set(default_ids) | current)}
+        current = _channel_ids(m)
+        want = _desired_channels(name, current, discord_id, autoheal_id, paging)
+        if want == current:
+            continue
+        merged = {str(i): True for i in sorted(want)}
+        # A dropped channel is sent as False as well, so the edit is explicit
+        # about the removal whichever way the server merges the map.
+        for i in sorted(current - want):
+            merged[str(i)] = False
         try:
             api.edit_monitor(m["id"], notificationIDList=merged)
-            print(f"  [notify]{m['name']:32s} + channels {missing} (was {sorted(current) or 'NONE'})")
+            print(f"  [notify]{name:32s} channels {sorted(current) or 'NONE'} -> "
+                  f"{sorted(want)}")
             fixed += 1
         except Exception as exc:
-            print(f"  [notify-fail]{m['name']:32s} {exc}")
+            print(f"  [notify-fail]{name:32s} {exc}")
     return fixed
 
 
 def _live_push_token(api, monitor):
     """Ask the SERVER for `monitor`'s pushToken. None if it cannot be had.
 
-    Same cache problem as _confirm_mute_live, different casualty: on the run
+    Same cache problem as _confirm_wiring_live, different casualty: on the run
     that CREATES a monitor, `get_monitors()` returns it without a pushToken, so
     the token map was written with that key absent and the run ended FATAL. The
     documented remedy was "re-run this script" — every new canary therefore
@@ -390,90 +425,89 @@ def _channel_ids(monitor) -> set:
     return set(raw)
 
 
-def _confirm_mute_live(api, mid):
-    """Ask the SERVER whether monitor `mid` really has no channels.
+def _confirm_wiring_live(api, mid, name, discord_id, autoheal_id, paging):
+    """Ask the SERVER whether monitor `mid` is mis-wired.
 
-    Returns True (mute), False (has channels), or None (could not ask).
+    Returns the problem string, None (correctly wired), or False (could not ask).
 
-    WHY THIS EXISTS: `api.get_monitors()` is `_get_event_data(MONITOR_LIST)` —
+    WHY THIS EXISTS: `api.get_monitors()` is `_get_event_data(MONITOR_LIST)` -
     a client-side cache refreshed by socket events. `api.get_monitor(id)` is
-    `_call('getMonitor', id)` — an actual round trip. On the run that CREATES a
-    monitor, the cache does not reflect the notificationIDList that this same
-    run just wrote, so the cache-only verifier below reported the monitor mute
-    immediately after printing its own `[notify] ... + channels [1, 2]` success
-    line. The retry then re-read the identical cache and could never clear it,
-    so the run ended FATAL every single time a monitor was created — observed
-    2026-08-03 on monitors 115/116/117, where kuma.db showed 2 channels each.
-
-    A guard that cries wolf on exactly the run it exists to protect trains the
-    operator to ignore it, which is how a genuinely mute monitor gets waved
-    through. So the cache may only ACCUSE; the server convicts."""
+    `_call('getMonitor', id)` - an actual round trip. On the run that EDITS or
+    CREATES a monitor, the cache does not reflect the notificationIDList this
+    same run just wrote, so a cache-only verifier reported monitors mute right
+    after printing its own success line (2026-08-03, monitors 115/116/117 - the
+    false FATAL). The cache may only ACCUSE; the server convicts."""
     try:
-        return not _channel_ids(api.get_monitor(mid))
+        live = api.get_monitor(mid)
     except Exception as exc:
         print(f"  [warn] could not confirm id={mid} against the server: {exc}")
-        return None
+        return False
+    return _wiring_problem(name, _channel_ids(live), discord_id, autoheal_id, paging)
 
 
-def _mute_monitor_names(api, created_names=None) -> list:
-    """Names of active monitors carrying ZERO notification channels.
+def _channel_violations(api, paging, discord_id, autoheal_id,
+                        created_names=None, skip_names=()) -> list:
+    """Names of active monitors whose channels are WRONG, sorted.
 
-    The post-reconcile assertion. Kept separate from
-    _ensure_notifications_attached so the check is independent of the code that
-    is supposed to have done the work — a verifier that reuses the actor's view
-    of the world cannot catch the actor missing a monitor entirely, which is the
-    failure it exists to catch.
+    The post-reconcile assertion - the QFLX-123 form of the 2026-07 "born mute"
+    detector. Wrong means any of:
+      - no auto-heal channel (the original born-mute class: red in silence AND
+        no recovery);
+      - member-facing (manifest `paging:`) but not carrying Discord;
+      - carrying Discord but NOT member-facing (the noise QFLX-123 removed
+        creeping back - e.g. a monitor created in the UI, where Discord is a
+        default channel);
+      - a member-facing name that does not exist in Kuma at all (a typo in the
+        paging block would otherwise page nobody, silently).
 
-    Enumeration comes from the cached list PLUS `created_names` — the monitors
-    this very run created. That union is load-bearing, not belt-and-braces: the
-    cache is refreshed over a socket, so a monitor created seconds ago may be
-    ABSENT from it entirely, and an absent monitor is not checked, not accused,
-    and not printed — it just silently does not exist as far as this verifier is
-    concerned, which is how the function returns [] and the caller prints
-    "verified: every active monitor has notification channels" over a monitor
-    that has none.
+    Kept separate from _ensure_notifications_attached so the check is
+    independent of the code that is supposed to have done the work.
 
-    That is not hypothetical and it is not fixed by the re-read/retry above it:
-    "Canary Dash Asset Integrity" was born mute on 2026-07-30 with this function
-    already in place, and on 2026-08-07 "Canary Tdarr Pause Integrity" did it
-    again — run 1 created it, attached NOTHING, and printed the verified line;
-    run 2 reported `+ channels [1, 2] (was NONE)`. Third occurrence of one class.
-    A verifier whose enumeration can miss the exact monitors most likely to be
-    broken (the new ones) is not a verifier.
-
-    A created-this-run monitor that the cache cannot show is UNCONFIRMABLE and
-    is therefore ACCUSED, per this function's own standing rule: fail loud on
-    what it cannot vouch for. Failing closed here costs one extra bootstrap run
-    on a fresh monitor; failing open costs a monitor that pages nobody."""
-    mute = []
+    Enumeration is the cached list PLUS `created_names` - the monitors this run
+    created. A monitor created seconds ago may be ABSENT from the socket-
+    refreshed cache entirely; absent means unchecked, and unchecked is how
+    "Canary Dash Asset Integrity" (2026-07-30) and "Canary Tdarr Pause
+    Integrity" (2026-08-07) shipped mute behind a "verified" line. A created-
+    this-run monitor the cache cannot show is UNCONFIRMABLE and therefore
+    ACCUSED: failing closed costs one extra bootstrap run on a fresh monitor;
+    failing open costs a monitor that pages nobody."""
+    bad = []
     created_names = set(created_names or ())
+    paging = set(paging or ())
     try:
         monitors = api.get_monitors()
     except Exception as exc:
         print(f"  [warn] could not re-read monitors to verify: {exc}")
-        # Cannot vouch for anything — but we KNOW what we created, so those are
-        # still accused rather than waved through on a failed read.
+        # Cannot vouch for anything - but we KNOW what we created.
         return sorted(created_names)
     seen = {m.get("name") for m in monitors}
     for name in sorted(created_names - seen):
         print(f"  [unconfirmable]{name:30s} created this run but absent from the "
-              f"monitor list — cannot verify its channels")
-        mute.append(name)
+              f"monitor list - cannot verify its channels")
+        bad.append(name)
+    for name in sorted(paging - seen - created_names):
+        print(f"  [missing]{name:32s} listed under paging: but no such monitor")
+        bad.append(name)
     for m in monitors:
         if not m.get("active", True):
             continue
-        if _channel_ids(m):
-            continue
         name = m.get("name", f"id={m.get('id')}")
-        mid = m.get("id")
-        live = _confirm_mute_live(api, mid) if mid is not None else None
-        if live is False:
-            # Cache lag, not a mute monitor. Say so — silence here would look
-            # like the check never ran.
-            print(f"  [stale-cache]{name:32s} cache said mute; server says wired")
+        if name in skip_names:
             continue
-        mute.append(name)
-    return sorted(mute)
+        problem = _wiring_problem(name, _channel_ids(m), discord_id, autoheal_id, paging)
+        if problem is None:
+            continue
+        mid = m.get("id")
+        live = (_confirm_wiring_live(api, mid, name, discord_id, autoheal_id, paging)
+                if mid is not None else False)
+        if live is None:
+            # Cache lag, not a mis-wired monitor. Say so - silence here would
+            # look like the check never ran.
+            print(f"  [stale-cache]{name:32s} cache said '{problem}'; server says wired")
+            continue
+        print(f"  [miswired]{name:32s} {live or problem}")
+        bad.append(name)
+    return sorted(set(bad))
 
 
 def _delete_all_http_monitors(api):
@@ -820,45 +854,66 @@ def main() -> int:
     print(f"push monitors retuned: {retried}")
 
     # Runs LAST, after every monitor exists, so anything created above is also
-    # reconciled. A monitor with no notifications can go red in total silence —
-    # see _ensure_notifications_attached for the 32/60 incident this closes.
+    # reconciled. QFLX-123: auto-heal on every monitor, Discord (channel 1) on
+    # exactly the manifest's member-facing `paging:` set.
     print("\n--- final: reconcile notification channels on every monitor ---")
-    attached = _ensure_notifications_attached(api)
-    print(f"notification sets repaired: {attached}")
-
-    # VERIFY, don't assume. The reconcile above is correct in intent but reads
-    # api.get_monitors(), which is a client-side cache the server refreshes over
-    # the socket. A monitor CREATED moments earlier in this same run may not have
-    # landed in that cache yet, so it is silently skipped — no [notify] line and
-    # no [notify-fail] line, because the loop never sees it at all.
-    #
-    # That is exactly how "Canary Dash Asset Integrity" was born mute on
-    # 2026-07-30 despite this function existing to prevent it: the creating run
-    # missed it, and only the NEXT run repaired it. Reconcile-on-every-run fixes
-    # a monitor eventually, but "eventually" means the guard ships deaf and stays
-    # deaf until someone happens to re-run the bootstrap.
-    #
-    # So: re-read, retry once against a freshly fetched list, and if anything is
-    # still mute, FAIL the run. A non-zero exit makes 240-maintenance-install.sh
-    # print its "monitors may be incomplete" warning instead of reporting success
-    # over a silent monitor.
-    # created_names is every monitor this run CREATED, token or not. Passing it
-    # in is what stops a cache miss from reading as "nothing to check" — see
-    # _mute_monitor_names for the three times that silently shipped a mute guard.
-    mute = _mute_monitor_names(api, created_names)
-    if mute:
-        print(f"  [retry] {len(mute)} monitor(s) still mute after reconcile: {', '.join(mute)}")
-        attached += _ensure_notifications_attached(api)
-        mute = _mute_monitor_names(api, created_names)
-    if mute:
-        print(f"\nFATAL: {len(mute)} active monitor(s) have NO notification channels:")
-        for name in mute:
-            print(f"  - {name}")
-        print("These can go red in total silence — no Discord, no auto-heal webhook.")
-        print("Re-run this script; if it persists, attach the channels in the Kuma UI.")
+    paging = set(manifest.paging_monitors())
+    if not paging:
+        # An absent/empty block would make the reconcile strip Discord from
+        # EVERY monitor and the verifier agree with it: total silence printed
+        # as "verified". A manifest that predates QFLX-123 (feature/migration)
+        # is exactly that shape. Refuse; touch no channel.
+        print("\nFATAL: manifest has no paging: block - refusing to strip "
+              "Discord from every monitor")
         api.disconnect()
         return 1
-    print("verified: every active monitor has notification channels")
+    external = set(manifest.external_monitors())
+    try:
+        discord_id, autoheal_id = _channel_roles(api.get_notifications())
+    except Exception as exc:
+        print(f"  [warn] could not list notifications: {exc}")
+        discord_id = autoheal_id = None
+    if discord_id is None or autoheal_id is None:
+        print(f"\nFATAL: notification channel(s) missing from Kuma: "
+              f"{DISCORD_CHANNEL_NAME!r}={discord_id}, "
+              f"{_AUTOHEAL_WEBHOOK_NAME!r}={autoheal_id}.")
+        print("Without them member-facing monitors cannot page / auto-heal is deaf.")
+        api.disconnect()
+        return 1
+    print(f"  channels: Discord id={discord_id} on {len(paging)} member-facing "
+          f"monitor(s); auto-heal id={autoheal_id} on all")
+    attached = _ensure_notifications_attached(api, paging, discord_id, autoheal_id,
+                                              skip_names=external)
+    print(f"notification sets repaired: {attached}")
+
+    # VERIFY, don't assume. The reconcile above reads api.get_monitors(), a
+    # client-side cache the server refreshes over the socket; a monitor CREATED
+    # moments earlier may not be in it yet, so it is silently skipped. That is
+    # how "Canary Dash Asset Integrity" was born mute on 2026-07-30 despite the
+    # reconcile existing. So: re-read, retry once, and if anything is still
+    # wrong, FAIL the run - a non-zero exit makes 240-maintenance-install.sh
+    # print its "monitors may be incomplete" warning instead of reporting
+    # success. created_names is every monitor this run CREATED, token or not.
+    mute = _channel_violations(api, paging, discord_id, autoheal_id,
+                               created_names, skip_names=external)
+    if mute:
+        print(f"  [retry] {len(mute)} monitor(s) still mis-wired after reconcile: "
+              f"{', '.join(mute)}")
+        attached += _ensure_notifications_attached(api, paging, discord_id,
+                                                   autoheal_id, skip_names=external)
+        mute = _channel_violations(api, paging, discord_id, autoheal_id,
+                                   created_names, skip_names=external)
+    if mute:
+        print(f"\nFATAL: {len(mute)} active monitor(s) have the WRONG notification channels:")
+        for name in mute:
+            print(f"  - {name}")
+        print("Either red in silence (no auto-heal / member-facing without Discord) or")
+        print("paging Discord for something members would not notice.")
+        print("Re-run this script; if it persists, fix the channels in the Kuma UI.")
+        api.disconnect()
+        return 1
+    print(f"verified: auto-heal on every active monitor; Discord on exactly the "
+          f"{len(paging)} member-facing monitor(s)")
 
     api.disconnect()
     if token_failure:

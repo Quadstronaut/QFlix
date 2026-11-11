@@ -7,7 +7,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import lib.notify as notify_mod  # noqa: F401
-from lib.notify import notify
+from lib.notify import notify as _real_notify
+
+# QFLX-123: notify() pages only for a member-facing `source`. These tests pin
+# the SEND path, so every call here is tagged with a monitor the fixture
+# manifest declares member-facing. The quiet path is pinned in test_paging.py.
+PAGE = "Test Member-Facing Monitor"
+
+
+def notify(*args, **kwargs):
+    kwargs.setdefault("source", PAGE)
+    return _real_notify(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _member_facing_fixture_manifest(tmp_path, monkeypatch):
+    m = tmp_path / "paging-apps.yaml"
+    m.write_text('paging:\n  "%s": "fixture"\n' % PAGE, encoding="utf-8")
+    monkeypatch.setenv("MANITOBA_MANIFEST_PATH", str(m))
 
 
 def _write_secret(secrets_dir: Path, name: str, value: str) -> None:

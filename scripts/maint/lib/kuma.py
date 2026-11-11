@@ -191,7 +191,7 @@ STANDALONE_SELF_PUSH_MONITORS = {
     # missing. It also carries the only report of items with bad art and NO
     # agent alternative, which nothing automated can ever clear.
     "QFlix Poster Janitor": "qflix-poster-janitor",
-    # The LIVE half of the audit regime (L-01..L-07). The offline detectors
+    # The LIVE half of the audit regime (L-01..L-09). The offline detectors
     # above audit SOURCE; this audits what is actually RUNNING -- staged units
     # vs what systemd loaded, the live Kuma monitor set, persisted push tokens,
     # secret modes, quota. Registered here or `kuma audit` calls it orphan drift.
@@ -398,6 +398,35 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _record_unpaged_edge(manifest, monitor_name: str, status, body: dict) -> None:
+    """QFLX-123 weekly roll-up: a DOWN/UP edge on a monitor that does NOT carry
+    the Discord channel is a notification nobody saw. Record it.
+
+    The auto-heal webhook (channel 2) is attached to every monitor and Kuma
+    fires it on exactly the same edges it would fire Discord on, so this is
+    the one place that sees every suppressed Kuma notification. Membership is
+    read from the manifest the daemon loaded (the same `paging:` block the
+    bootstrap wires channel 1 from; L-09 asserts the two agree). PENDING
+    (status 2) is skipped - Kuma does not notify on it. Never raises: the
+    webhook's real job is recovery."""
+    try:
+        if status not in (0, 1):
+            return
+        from lib import paging  # noqa: PLC0415
+        if manifest is not None and hasattr(manifest, "paging_monitors"):
+            members = manifest.paging_monitors()
+        else:
+            members = paging.paging_monitors() or {}
+        if monitor_name in members:
+            return  # Kuma paged Discord for this one itself
+        hb = body.get("heartbeat") if isinstance(body.get("heartbeat"), dict) else {}
+        paging.record_weekly("kuma", monitor_name, "down" if status == 0 else "up",
+                             hb.get("msg") or body.get("msg") or "")
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[{_utc_now_iso()}] weekly record failed for "
+                         f"'{monitor_name}': {exc!r}\n")
+
+
 class KumaWebhookHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler for Kuma webhook payloads.
 
@@ -453,6 +482,8 @@ class KumaWebhookHandler(http.server.BaseHTTPRequestHandler):
         manifest = self.__class__.manifest
         state_dir = self.__class__.state_dir
         state_path = state_dir / "state.json"
+
+        _record_unpaged_edge(manifest, monitor_name, status, body)
 
         app_name = manifest.resolve_kuma_monitor(monitor_name) if manifest else None
         canary_name = (
