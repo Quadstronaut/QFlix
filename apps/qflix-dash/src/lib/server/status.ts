@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { TileState } from '$lib/tiles';
+import type { TileState } from '#lib/tiles.js';
 import { cfg } from './env';
 
 const pexec = promisify(execFile);

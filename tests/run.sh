@@ -11,11 +11,13 @@ fi
 PY="$VENV/bin/python"
 [ ! -x "$PY" ] && PY="$VENV/Scripts/python.exe"
 
+# tzdata: Windows has no system zoneinfo, so zoneinfo("Europe/Amsterdam") fails without it
+# (test_log_zones.py, QFLX-114). Linux CI uses /usr/share/zoneinfo and does not need it.
 # jinja2 is needed for the qflix_newsletter render tests (test_qflix_newsletter_render.py);
 # without it the tests fail with ModuleNotFoundError rather than skip. The newsletter package
 # itself runs in its own venv (~/.apps/qflix-newsletter/.venv on the seedbox), but the test
 # suite is run from this top-level venv to stay one-command.
-"$PY" -m pip install -q pytest pyyaml requests jinja2
+"$PY" -m pip install -q pytest pyyaml requests jinja2 tzdata
 
 "$PY" -m pytest "$HERE/unit/" "$@"
 

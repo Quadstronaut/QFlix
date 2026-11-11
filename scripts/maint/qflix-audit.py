@@ -42,6 +42,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from lib.audit.engine import (EXIT_CLEAN, EXIT_FINDINGS, EXIT_REGIME,  # noqa: E402
                               exit_code_for, run)
+from lib.audit.ledger import load as load_ledgers  # noqa: E402
+from lib.audit.ledger import residual_reviews_due_soon  # noqa: E402
 from lib.audit.model import RegimeError  # noqa: E402
 from lib.audit.repo import Repo, find_repo_root  # noqa: E402
 
@@ -104,7 +106,12 @@ def _push_kuma(status: str, msg: str) -> None:
               file=sys.stderr)
 
 
-def _human(report: dict) -> str:
+def _due_soon_text(due) -> str:
+    """QFLX-95: 'R2(3d),R5(3d)' -- one compact token for log + Kuma msg."""
+    return ",".join(rid + "(" + str(days) + "d)" for rid, days in due)
+
+
+def _human(report: dict, due_soon=()) -> str:
     out = []
     s = report["summary"]
     out.append("qflix-audit  digest=" + report["report_digest"])
@@ -134,6 +141,10 @@ def _human(report: dict) -> str:
         for f in report["findings"]:
             if f["severity"] == "enforced":
                 out.append("  ENFORCED " + f["class"] + " " + f["instance_id"] + " — " + f["detail"])
+    if due_soon:
+        out.append("")
+        out.append("  RESIDUAL REVIEWS DUE SOON (lapse = exit 2; renew last_reviewed in "
+                   "manifest/audit-scope.yaml): " + _due_soon_text(due_soon))
     return "\n".join(out)
 
 
@@ -160,6 +171,11 @@ def main(argv=None) -> int:
         return EXIT_REGIME
 
     code = exit_code_for(report)
+    # QFLX-95: advisory only -- never feeds the digest, the exit code, or the
+    # Kuma up/down decision. run() already loaded the ledgers cleanly, so this
+    # reload cannot raise a new RegimeError.
+    due_soon = residual_reviews_due_soon(
+        load_ledgers(repo).scope, today or _dt.date.today())
     _write_audit_log(report["audit_log"], report["report_digest"])
 
     if args.digest_only:
@@ -167,7 +183,7 @@ def main(argv=None) -> int:
     elif args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
-        print(_human(report))
+        print(_human(report, due_soon))
 
     if args.push_kuma:
         s = report["summary"]
@@ -182,6 +198,8 @@ def main(argv=None) -> int:
                + " digest=" + report["report_digest"][:16]
                + " enforced=" + str(s["findings_enforced"])
                + " advisory=" + str(s["findings_advisory"]) + " waived=" + str(s["waived"]))
+        if due_soon:
+            msg += " due_soon=" + _due_soon_text(due_soon)
         _push_kuma("up" if code == EXIT_CLEAN else "down", msg)
     return code
 

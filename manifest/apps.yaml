@@ -25,7 +25,26 @@ kuma_external_monitors:
 
 apps:
 
-  # --- UCC apps (managed by Ultra.cc app-<slug> commands) ---
+  # --- Media-stack apps (born as Ultra.cc app-<slug> installs; every one
+  #     below except plex now runs as class: systemd, so each entry's class:
+  #     line, not this header, says what manages it) ---
+
+  # QFLX-56 (2026-11-11): `ucc_uninstalled: <date>` marks a converted app whose
+  # dormant UCC app was REMOVED with scripts/ops/ucc-uninstall.sh (backup in
+  # ~/.opt/maint/ucc-uninstall/, `app-<slug> uninstall --keep-config`). It
+  # supersedes each entry's "UCC container stays installed and DORMANT as the
+  # rollback target (I-8)" line: there is no UCC rollback target any more; the
+  # restore path is the backup tarball. `ucc_dormant: true` and `ucc_slug` STAY
+  # on purpose: every routine reader of them is a fail-closed refusal (appctl/
+  # lifecycle route start/stop/restart/upgrade to the native unit, never to
+  # app-<slug>; app-upgrade-all skips it). The one exception is the explicit
+  # `appctl stop-dormant <app>` (QFLX-55, driven by lib/dormant_stop.py), which
+  # still sends `app-<slug> stop` to put a resurrected container back to sleep,
+  # and refuses (exit 2) when app-<slug> is no longer installed. Runtime
+  # parity keeps scanning for a container on ~/.apps/<slug>, so a panel
+  # reinstall or migration that resurrects one is still caught. Not yet
+  # uninstalled: seerr (vhost owned by the UCC app) and qbittorrent (the panel
+  # app shares the LIVE profile; see docs/ucc-uninstall-runbook.md).
 
   sonarr:
     # QFLX-32 (UCC divorce A8): converted to the native Sonarr v4 linux-x64 build
@@ -48,6 +67,7 @@ apps:
     unit: qflix-sonarr.service
     ucc_slug: sonarr
     ucc_dormant: true
+    ucc_uninstalled: "2026-11-11"   # QFLX-56: dormant UCC app removed, config kept
     kuma_monitor: "Sonarr"
     health:
       kind: http_api
@@ -95,6 +115,7 @@ apps:
     unit: qflix-sonarr2.service
     ucc_slug: sonarr2
     ucc_dormant: true
+    ucc_uninstalled: "2026-11-11"   # QFLX-56: dormant UCC app removed, config kept
     kuma_monitor: "Sonarr Anime"
     health:
       kind: http_api
@@ -142,6 +163,7 @@ apps:
     unit: qflix-radarr.service
     ucc_slug: radarr
     ucc_dormant: true
+    ucc_uninstalled: "2026-11-11"   # QFLX-56: dormant UCC app removed, config kept
     kuma_monitor: "Radarr"
     health:
       kind: http_api
@@ -190,6 +212,7 @@ apps:
     unit: qflix-radarr2.service
     ucc_slug: radarr2
     ucc_dormant: true
+    ucc_uninstalled: "2026-11-11"   # QFLX-56: dormant UCC app removed, config kept
     kuma_monitor: "Radarr 2"
     health:
       kind: http_api
@@ -236,6 +259,7 @@ apps:
     unit: qflix-prowlarr.service
     ucc_slug: prowlarr
     ucc_dormant: true
+    ucc_uninstalled: "2026-11-11"   # QFLX-56: dormant UCC app removed, config kept
     kuma_monitor: "Prowlarr"
     health:
       kind: http_api
@@ -278,6 +302,7 @@ apps:
     unit: qflix-bazarr.service
     ucc_slug: bazarr
     ucc_dormant: true
+    ucc_uninstalled: "2026-11-11"   # QFLX-56: dormant UCC app removed, config kept
     kuma_monitor: "Bazarr"
     health:
       kind: http_api
@@ -448,6 +473,7 @@ apps:
     unit: qflix-tautulli.service
     ucc_slug: tautulli
     ucc_dormant: true
+    ucc_uninstalled: "2026-11-11"   # QFLX-56: dormant UCC app removed, config kept
     kuma_monitor: "Tautulli"
     health:
       kind: http_root
@@ -514,6 +540,8 @@ apps:
     # SvelteKit board that replaced Homarr at the public root 2026-06-27.
     # adapter-node on loopback; NODE_OPTIONS=--disable-wasm-trap-handler required
     # (see node-ultracc-wasm-fix). /healthz is a plain 200 liveness route.
+    # Runtime: its own pinned Node 22 (~/.apps/qflix-dash/bin/node, versions.env
+    # QFLIX_DASH_NODE_VERSION; QFLX-93), installed by 90-qflix-dash-install.sh.
     health:
       kind: http_root
       port_secret: qflix-dash.port
@@ -565,6 +593,7 @@ apps:
     unit: qflix-sabnzbd.service
     ucc_slug: sabnzbd
     ucc_dormant: true
+    ucc_uninstalled: "2026-11-11"   # QFLX-56: dormant UCC app removed, config kept
     kuma_monitor: "SABnzbd"
     health:
       kind: http_root
@@ -620,6 +649,7 @@ apps:
     unit: qflix-unpackerr.service
     ucc_slug: unpackerr
     ucc_dormant: true
+    ucc_uninstalled: "2026-11-11"   # QFLX-56: dormant UCC app removed, config kept
     kuma_monitor: "Unpackerr"
     health:
       kind: process_pattern
@@ -661,6 +691,7 @@ apps:
     unit: qflix-postgres.service
     ucc_slug: postgres
     ucc_dormant: true
+    ucc_uninstalled: "2026-11-11"   # QFLX-56: dormant UCC app removed, config kept
     native_dir: pg-native
     kuma_monitor: "Postgres"
     health:

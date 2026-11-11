@@ -91,7 +91,7 @@
 # QFLIX_GATE_LOG_DIR QFLIX_SEERR_SHA256 QFLIX_NODE_SHA256 QFLIX_SEERR_PORT
 # QFLIX_SEERR_VHOST_URL QFLIX_POLL_S QFLIX_SETTLE_S QFLIX_STOP_TIMEOUT_S
 # QFLIX_PROOF_TIMEOUT_S QFLIX_STATUS_TIMEOUT_S QFLIX_GATE_GAP_S
-# QFLIX_GATE_RUN_TIMEOUT_S QFLIX_KEEP_PROOF QFLIX_JOURNALCTL QFLIX_PRAGMA_TIMEOUT_S.
+# QFLIX_GATE_RUN_TIMEOUT_S QFLIX_GATE_SETTLE_S QFLIX_KEEP_PROOF QFLIX_JOURNALCTL QFLIX_PRAGMA_TIMEOUT_S.
 set -uo pipefail
 
 SLUG=seerr
@@ -182,6 +182,7 @@ PROOF_TIMEOUT="${QFLIX_PROOF_TIMEOUT_S:-600}"
 STATUS_TIMEOUT="${QFLIX_STATUS_TIMEOUT_S:-600}"
 GATE_GAP="${QFLIX_GATE_GAP_S:-600}"
 GATE_RUN_TIMEOUT="${QFLIX_GATE_RUN_TIMEOUT_S:-600}"
+GATE_SETTLE="${QFLIX_GATE_SETTLE_S:-10}"
 WANT_SHA="${QFLIX_SEERR_SHA256:-$ARTIFACT_SHA256}"
 WANT_NODE_SHA="${QFLIX_NODE_SHA256:-$NODE_SHA256}"
 # The container's published port (manifest health.port_secret seerr.port).
@@ -523,7 +524,24 @@ listen_env() {
 }
 
 # --- entitlement gate (I-13) ----------------------------------------------------------
-gate_idle() { ! sysd is-active "$GATE_UNIT" >/dev/null 2>&1; }
+# QFLX-112: NOT `is-active`. The gate is Type=oneshot, so a run in progress is
+# "activating", and is-active exits non-zero for that: a gate mid-run read as
+# idle. Only inactive|failed is idle; anything else (activating, deactivating,
+# an empty answer from a busy user manager) is busy.
+gate_idle() {
+  local s
+  s="$(sysd show "$GATE_UNIT" -p ActiveState --value 2>/dev/null)"
+  case "${s%$'\r'}" in inactive|failed) return 0 ;; *) return 1 ;; esac
+}
+
+# The imminent slot has passed (the timer re-armed GATE_GAP+ away) and no run is
+# active. Checked twice, GATE_SETTLE apart: right after the timer fires, its
+# start job can still be queued while the unit reads inactive.
+gate_slot_passed() {
+  local n
+  n="$(gate_next_in)" && [ "$n" -ge "$GATE_GAP" ] && gate_idle
+}
+gate_clear() { gate_slot_passed || return 1; sleep "$GATE_SETTLE"; gate_slot_passed; }
 
 # Seconds until the gate timer fires next (exit 1 = unknown).
 gate_next_in() {
@@ -560,7 +578,7 @@ gate_state_line() {
 gate_confirm_report_only() {
   local marker="$SWAPDIR/gate/.run-marker" last
   mkdir -p "$SWAPDIR/gate"
-  wait_until "$GATE_RUN_TIMEOUT" gate_idle || { echo "a gate run is still active" >&2; return 1; }
+  wait_until "$GATE_RUN_TIMEOUT" gate_idle || { echo "a gate run is still active (or its ActiveState is unreadable: busy user manager)" >&2; return 1; }
   : > "$marker"
   sleep 1
   sysd start "$GATE_UNIT" >/dev/null 2>&1 || info "gate run exited non-zero; its log line decides"
@@ -634,14 +652,19 @@ gate_verify_restored() {
 
 # Wait until the next gate timer run is at least GATE_GAP seconds away, so no
 # gate run (which would page "Seerr unavailable") lands in the downtime.
+# QFLX-112: the wait ends when that run has FINISHED, not at its scheduled time
+# (the timer fires up to RandomizedDelaySec/AccuracySec late, and the run takes
+# a while). Exit 1 = it never cleared: the caller must NOT restart.
 wait_gate_gap() {
   local s
   s="$(gate_next_in)" || { info "next gate run unknown; proceeding (it is report-only)"; return 0; }
   if [ "$s" -lt "$GATE_GAP" ]; then
     info "next gate run in ${s}s (< ${GATE_GAP}s); waiting it out"
     [ "$s" -gt 0 ] && sleep "$s"
-    sleep "$POLL"
-    wait_until "$GATE_RUN_TIMEOUT" gate_idle || info "gate run still active; proceeding"
+    wait_until "$GATE_RUN_TIMEOUT" gate_clear || {
+      echo "[311-seerr] gate run not finished (or its slot not passed) within ${GATE_RUN_TIMEOUT}s; not restarting Seerr into it" >&2
+      return 1; }
+    info "gate run slot passed and the gate is idle"
   fi
 }
 
@@ -965,7 +988,9 @@ do_swap() {
   suppression add "${SUPPRESS[@]}" --reason "QFLX-36 swap to native" >/dev/null \
     || { gate_restore; die "cannot suppress ${SUPPRESS[*]}; gate reinstalled, refusing to swap unsuppressed"; }
 
-  wait_gate_gap
+  wait_gate_gap || { gate_restore || echo "[311-seerr] WARNING: gate drop-in NOT reinstalled; run --rollback --execute" >&2
+                     suppression remove "${SUPPRESS[@]}" >/dev/null || true
+                     die "swap aborted before the container stop (nothing stopped); gate reinstalled, suppression lifted; re-run --swap --execute"; }
 
   # Step 6: stop the container; the STATE decides (no process, port free, db +
   # wal idle), not the exit code (asynchronous Docker behaviour).
@@ -1120,6 +1145,13 @@ do_refresh_preload() {
     || die "cannot stage the listen preload"
   { native_write_secure "$SYNC_PRELOAD" 0644 < "$SYNC_PRELOAD_SRC" && cmp -s "$SYNC_PRELOAD" "$SYNC_PRELOAD_SRC"; } \
     || die "cannot stage the sqlite sync preload"
+  # Same reason as --swap: a gate run inside the restart window pages "Seerr
+  # unavailable" (its Kuma push ignores push-suppress), so restart only when
+  # the next gate timer run is at least QFLIX_GATE_GAP_S away.
+  # QFLX-112: wait BEFORE the unit is touched. A timeout then leaves the live
+  # unit as it was (no un-tested unit loaded, no .prev rollback lost); the
+  # mute + write + daemon-reload below take seconds, which GATE_GAP absorbs.
+  wait_gate_gap || die "gate wait timed out; nothing changed (unit not written, nothing muted or restarted)"
   refresh_mute || die "cannot mute ${SUPPRESS[*]}; refusing to restart unmuted (nothing restarted)"
   native_render_unit "$SLUG" "$FAMILY" "$EXE" "$EXEC_ARGS" "$WORKDIR" \
     | native_write_secure "$staged" 0644 || { refresh_unmute; die "unit staging failed"; }
@@ -1138,10 +1170,6 @@ do_refresh_preload() {
   # What systemd will actually exec, not what we wrote.
   sysd show "$UNIT" -p ExecStart --value 2>/dev/null | grep -qF "native/seerr-sqlite-sync.cjs" \
     || refresh_restore "systemd's loaded ExecStart does not name the sync preload"
-  # Same reason as --swap: a gate run inside the restart window pages "Seerr
-  # unavailable" (its Kuma push ignores push-suppress), so restart only when
-  # the next gate timer run is at least QFLIX_GATE_GAP_S away.
-  wait_gate_gap
   t0="$(date -u +%s)"
   sysd restart "$UNIT" || refresh_restore "restart $UNIT failed"
   verify_native || refresh_restore "native seerr fails parity after the refresh"

@@ -9,7 +9,7 @@
 _One operator. One manifest. One maintenance window. Everything else is wires._
 
 <p>
-  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-55%2F55_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
+  <a href="scripts/smoke-test.sh"><img alt="Smoke" src="https://img.shields.io/badge/smoke-54%2F54_pass-ff8c42?style=for-the-badge&labelColor=0a1628"></a>
   <a href="manifest/apps.yaml"><img alt="Manifest" src="https://img.shields.io/badge/manifest-30_apps-7dd3fc?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#operator-visibility"><img alt="Kuma" src="https://img.shields.io/badge/Kuma-86%2F86_up-d4af37?style=for-the-badge&labelColor=0a1628"></a>
   <a href="#required-apps"><img alt="Plex primary" src="https://img.shields.io/badge/Plex-primary-e5a00d?style=for-the-badge&labelColor=0a1628&logo=plex&logoColor=e5a00d"></a>
@@ -482,8 +482,9 @@ contributor can run it from a fresh clone:
 
 ```bash
 git clone https://github.com/Quadstronaut/QFlix.git && cd QFlix
-bash tests/run.sh        # creates tests/.venv, installs pytest/pyyaml/requests/jinja2,
+bash tests/run.sh        # creates tests/.venv, installs pytest/pyyaml/requests/jinja2/tzdata,
                          # runs tests/unit/ — pure-Python, no SSH needed.
+                         # The only entry point: bare `pytest` at repo root fails collection.
 ```
 
 Live integration (smoke tests, canaries, anything under `scripts/install/`

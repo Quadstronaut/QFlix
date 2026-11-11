@@ -24,6 +24,11 @@
 #               and seerr sat 2h behind on 2026-10-10). Needs the file on this
 #               box, so journald-routed sources are skipped (their stamps
 #               carry an explicit zone).
+#               DST fold (QFLX-76): a zone-less LOCAL stamp written in the
+#               second pass of the fall-back hour is stored 1h early (the
+#               ingester resolves the ambiguous wall time with fold=0). A row
+#               whose stored time falls in that repeated hour (box tz) AND lags
+#               50-70 min is skipped and counted as dst_fold_skipped=N.
 #
 # Red on any of them, and the message NAMES the offenders: app, count, and for
 # FUTURE how far ahead. It never prints _msg: log text can carry member data
@@ -43,6 +48,10 @@
 #   QFLIX_CANARY_VLTI_DUP_MAX    duplicate groups tolerated          (default 0)
 #   QFLIX_CANARY_VLTI_SKEW_MIN   stored-vs-mtime lag tolerated, min  (default 30)
 #   QFLIX_CANARY_VLTI_LOG        append-only reason log
+#   QFLIX_LOG_TZ                 box tz override (same order as the ingester:
+#                                then /etc/timezone, /etc/localtime; default
+#                                Europe/Amsterdam)
+#   QFLIX_CANARY_VLTI_NOW        tests only: ISO-UTC "now" (DST fold cases)
 #   MANITOBA_SECRETS             secrets dir (default ~/secrets)
 #
 # Lives at ~/scripts/canaries/vlogs-time-integrity.sh (240-maintenance-install.sh).
@@ -146,6 +155,42 @@ def parse_time(s):
     return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
 
 
+def box_tz():
+    """Box tz, same lookup order as the ingester (scripts/mcp/logs.py box_tz).
+    None if zoneinfo cannot resolve any: then no fold row is ever skipped."""
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        return None
+    cands = [os.environ.get("QFLIX_LOG_TZ")]
+    try:
+        with open("/etc/timezone", encoding="utf-8") as fh:
+            cands.append(fh.read().strip())
+    except OSError:
+        pass
+    tgt = os.path.realpath("/etc/localtime")
+    if "zoneinfo/" in tgt:
+        cands.append(tgt.split("zoneinfo/", 1)[1])
+    cands.append("Europe/Amsterdam")
+    for name in cands:
+        if not name:
+            continue
+        try:
+            return ZoneInfo(name)
+        except Exception:                                    # noqa: BLE001
+            continue
+    return None
+
+
+def in_dst_fold(stored, tz):
+    """True when the stored instant's box-local wall time is one the fall-back
+    hour repeats (fold=0 and fold=1 give different offsets)."""
+    if tz is None:
+        return False
+    wall = stored.astimezone(tz).replace(tzinfo=None)
+    return wall.replace(tzinfo=tz, fold=0).utcoffset() != wall.replace(tzinfo=tz, fold=1).utcoffset()
+
+
 try:
     with urllib.request.urlopen(f"{VL}/health", timeout=10) as r:
         if r.status != 200:
@@ -153,7 +198,8 @@ try:
 except (urllib.error.URLError, TimeoutError, OSError) as exc:
     die("vlti-down", f"health-failed-{type(exc).__name__}")
 
-now = datetime.now(timezone.utc)
+now = (parse_time(os.environ["QFLIX_CANARY_VLTI_NOW"]) if os.environ.get("QFLIX_CANARY_VLTI_NOW")
+       else datetime.now(timezone.utc))
 findings = []
 
 # FUTURE: everything stamped later than now + tolerance, up to a week ahead.
@@ -214,6 +260,8 @@ latest = query("* | stats by (app, source_file) max(_time) as latest",
 if latest is None:
     die("vlti-query-fail", "skew-query-no-200-after-retries")
 skewed = {}
+fold_skipped = 0
+tz = box_tz()
 for row in latest:
     path = row.get("source_file") or ""
     if not path or path.startswith("journalctl:") or not os.path.isabs(path):
@@ -227,6 +275,9 @@ for row in latest:
     if not (600 <= age <= 3600):
         continue
     lag = (mtime - stored).total_seconds() / 60
+    if lag > SKEW_MIN and 50 <= lag <= 70 and in_dst_fold(stored, tz):
+        fold_skipped += 1          # QFLX-76: repeated DST hour, stored 1h early
+        continue
     if lag > SKEW_MIN:
         skewed[row.get("app", "?")] = max(skewed.get(row.get("app", "?"), 0), int(lag))
 if skewed:
@@ -240,6 +291,6 @@ if findings:
     print("vlogs-time-integrity RED " + "; ".join(f"{s}: {m}" for s, m in findings))
     sys.exit(1)
 
-print(f"vlogs-time-integrity ok future=0 dup_groups={total_groups} skewed=0")
+print(f"vlogs-time-integrity ok future=0 dup_groups={total_groups} skewed=0 dst_fold_skipped={fold_skipped}")
 sys.exit(0)
 PY

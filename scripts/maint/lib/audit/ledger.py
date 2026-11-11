@@ -336,6 +336,31 @@ def check_residual_discipline(
     return problems
 
 
+def residual_reviews_due_soon(
+    scope: dict, today: _dt.date, warn_days: int = 5
+) -> List[tuple]:
+    """QFLX-95: [(rid, days_left)] for residuals whose review lapses within
+    `warn_days`. ADVISORY ONLY — deliberately NOT a meta-check, so it never
+    touches the digest or the exit code. It exists because a lapse used to go
+    straight to exit 2 (blocking every PR) with zero warning.
+
+    days_left == 0 means today is the last green day; tomorrow check_residual_
+    discipline exits 2. Already-lapsed or malformed entries are skipped: those
+    are check_residual_discipline's job, not a warning's.
+    """
+    due: List[tuple] = []
+    for entry in scope.get("residuals") or []:
+        rid = entry.get("id")
+        cadence = entry.get("review_cadence_days")
+        reviewed = _as_date(entry.get("last_reviewed"))
+        if not rid or reviewed is None or not isinstance(cadence, int) or cadence <= 0:
+            continue
+        days_left = cadence - (today - reviewed).days
+        if 0 <= days_left <= warn_days:
+            due.append((rid, days_left))
+    return due
+
+
 def _doc_has_row(doc: str, row_id: str) -> bool:
     """A markdown table row whose first cell is exactly `row_id`."""
     return re.search(r"^\|\s*`?" + re.escape(row_id) + r"`?\s*\|", doc, re.M) is not None

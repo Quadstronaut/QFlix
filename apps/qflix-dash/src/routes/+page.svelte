@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import Hero from '$lib/components/Hero.svelte';
-	import Board from '$lib/components/Board.svelte';
-	import Usage from '$lib/components/Usage.svelte';
-	import SupportModal from '$lib/components/SupportModal.svelte';
-	import type { TileState } from '$lib/tiles';
+	import Hero from '#lib/components/Hero.svelte';
+	import Board from '#lib/components/Board.svelte';
+	import Usage from '#lib/components/Usage.svelte';
+	import SupportModal from '#lib/components/SupportModal.svelte';
+	import type { TileState } from '#lib/tiles.js';
 
 	let states = $state<Record<string, TileState>>({});
 	let greeting = $state('');

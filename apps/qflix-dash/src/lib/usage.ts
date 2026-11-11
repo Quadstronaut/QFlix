@@ -1,5 +1,5 @@
 // Shared usage types — client-safe (no node imports), so both the server module
-// ($lib/server/usage.ts) and the Usage.svelte component can import them. Shape
+// (#lib/server/usage.ts) and the Usage.svelte component can import them. Shape
 // matches qflix-top-pub.sh --json (schema_version 1).
 
 /** One stack component (app/role bucket). */

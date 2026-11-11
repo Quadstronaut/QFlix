@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { AUTH, GREET, verifyAuth, verifyGreeting } from '$lib/server/session';
+import { AUTH, GREET, verifyAuth, verifyGreeting } from '#lib/server/session.js';
 import type { RequestHandler } from './$types';
 
 // Silent identity read for the greeting + Support modal. Never errors to the

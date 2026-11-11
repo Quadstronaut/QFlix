@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { Usage } from '$lib/usage';
+import type { Usage } from '#lib/usage.js';
 import { cfg } from './env';
 
 const pexec = promisify(execFile);
