@@ -14,25 +14,52 @@
 #   Fix: NODE_OPTIONS=--disable-wasm-trap-handler (+ --max-old-space-size=512),
 #   baked into the env file below. Applies to ANY Node app on this box that uses
 #   global fetch(). See docs/superpowers/specs/2026-06-27-qflix-dashboard-design.md §3.
+#   (Node 22 still accepts the flag inside NODE_OPTIONS - checked on 22.23.4.)
+#
+# NODE RUNTIME (QFLX-93): the dash runs its OWN pinned portable Node (versions.env
+# QFLIX_DASH_NODE_VERSION/_SHA256, test-enforced) in ~/.apps/qflix-dash/bin/
+# node-v<ver>, reached through the bin/node symlink the unit execs. Not nvm (it
+# floated "latest 20"), and not Seerr's Node dir (a Seerr upgrade must never move
+# the dash). SvelteKit 3 needs Node >= 22.17. The old nvm Node 20 is left on the
+# box untouched: rollback = point bin/node at it and restart (see the PR body).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 APP="$HERE/apps/qflix-dash"
 HOST="$(tr -d '[:space:]' < "$HERE/secrets/seedbox.ssh-host" 2>/dev/null \
         || tr -d '[:space:]' < "$HERE/secrets/seedbox.host")"
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=20 "quadstronaut@$HOST")
+DASH_NODE_VERSION="22.23.4"   # == versions.env QFLIX_DASH_NODE_VERSION (test-pinned)
+DASH_NODE_SHA256="b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406"   # linux-x64.tar.gz
 
-echo "[1/5] secrets (auto-gen) + Node 20 via nvm"
-"${SSH[@]}" 'bash -l -s' <<'REMOTE'
+echo "[1/5] secrets (auto-gen) + pinned Node $DASH_NODE_VERSION"
+# The pins travel as positional args ($1 $2) into the quoted heredoc.
+"${SSH[@]}" "bash -l -s -- $DASH_NODE_VERSION $DASH_NODE_SHA256" <<'REMOTE'
 set -e
 [ -f ~/secrets/qflix-dash.port ]           || echo 42020 > ~/secrets/qflix-dash.port
 [ -f ~/secrets/qflix-dash.session_secret ] || openssl rand -hex 32 > ~/secrets/qflix-dash.session_secret
 [ -f ~/secrets/qflix-dash.plex_client_id ] || python3 -c "import uuid;print(uuid.uuid4())" > ~/secrets/qflix-dash.plex_client_id
 [ -f ~/secrets/qflix-dash.discord_webhook ] || { echo "FATAL: place ~/secrets/qflix-dash.discord_webhook first" >&2; exit 1; }
 chmod 600 ~/secrets/qflix-dash.*
-export NVM_DIR=$HOME/.nvm
-[ -s "$NVM_DIR/nvm.sh" ] || curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash >/dev/null 2>&1
-. "$NVM_DIR/nvm.sh"; nvm install 20 >/dev/null 2>&1; nvm alias default 20 >/dev/null 2>&1
 mkdir -p ~/.apps/qflix-dash/logs ~/.config/qflix-dash ~/.config/systemd/user
+V="$1"; WANT="$2"; B="$HOME/.apps/qflix-dash/bin"; ND="$B/node-v$V"
+mkdir -p "$B"
+if [ ! -x "$ND/bin/node" ]; then
+  # Fetch + sha256 verify + extract in a scratch dir, then rename into place:
+  # a half-extracted node-v<ver> never exists under bin/.
+  T="$(mktemp -d)"; [ -d "$T" ] || { echo "FATAL: mktemp -d failed" >&2; exit 1; }
+  trap 'rm -rf "$T"' EXIT
+  curl -fsSL --retry 2 -o "$T/node.tgz" "https://nodejs.org/dist/v$V/node-v$V-linux-x64.tar.gz"
+  echo "$WANT  $T/node.tgz" | sha256sum -c --quiet - || { echo "FATAL: Node $V tarball sha256 mismatch" >&2; exit 1; }
+  tar -xzf "$T/node.tgz" -C "$T"
+  [ -x "$T/node-v$V-linux-x64/bin/node" ] || { echo "FATAL: Node tarball has no bin/node" >&2; exit 1; }
+  mv "$T/node-v$V-linux-x64" "$ND.part.$$" && mv "$ND.part.$$" "$ND"
+fi
+# Atomic flip of the symlink the unit execs. The running process keeps its
+# already-loaded binary until step 4's restart.
+ln -sfn "node-v$V" "$B/.node.$$" && mv -Tf "$B/.node.$$" "$B/node"
+HAVE="$("$B/node/bin/node" --version)"
+[ "$HAVE" = "v$V" ] || { echo "FATAL: bin/node reports '$HAVE', want v$V" >&2; exit 1; }
+echo "node=$HAVE"
 REMOTE
 
 echo "[2/5] build (workstation) + ship"
@@ -45,9 +72,11 @@ echo "[3/5] prod deps + env file + unit"
 "${SSH[@]}" 'bash -l -s' <<'REMOTE'
 set -e
 cd ~/.apps/qflix-dash
-export NVM_DIR=$HOME/.nvm; . "$NVM_DIR/nvm.sh"; nvm use 20 >/dev/null
+export PATH="$HOME/.apps/qflix-dash/bin/node/bin:$PATH"   # the pinned Node's npm
 npm ci --omit=dev >/dev/null 2>&1 || true   # app has no prod deps; harmless
-FQDN=$(cat ~/secrets/seedbox.host); NODE=$(ls ~/.nvm/versions/node/v20*/bin/node | head -1)
+# %h, not an absolute path: the unit execs the bin/node SYMLINK, so a Node
+# change (or a rollback) is a symlink flip + restart, never a unit rewrite.
+FQDN=$(cat ~/secrets/seedbox.host); NODE='%h/.apps/qflix-dash/bin/node/bin/node'
 cat > ~/.config/qflix-dash/qflix-dash.env <<ENV
 PORT=$(cat ~/secrets/qflix-dash.port)
 HOST=127.0.0.1

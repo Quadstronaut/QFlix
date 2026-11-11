@@ -514,6 +514,8 @@ apps:
     # SvelteKit board that replaced Homarr at the public root 2026-06-27.
     # adapter-node on loopback; NODE_OPTIONS=--disable-wasm-trap-handler required
     # (see node-ultracc-wasm-fix). /healthz is a plain 200 liveness route.
+    # Runtime: its own pinned Node 22 (~/.apps/qflix-dash/bin/node, versions.env
+    # QFLIX_DASH_NODE_VERSION; QFLX-93), installed by 90-qflix-dash-install.sh.
     health:
       kind: http_root
       port_secret: qflix-dash.port
