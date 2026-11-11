@@ -4,7 +4,7 @@ import { PIN, signPin } from '$lib/server/session';
 import type { RequestHandler } from './$types';
 
 // Kick off Sign-in-with-Plex. Build the return URL from forwarded headers so it
-// works on whichever host the user started on (qflix.quadstronix.dev or the slot).
+// works on whichever host the user started on (the public dash vhost, e.g. qflix.example.com, or the slot at seedbox.example.com).
 export const GET: RequestHandler = async ({ url, request, cookies }) => {
 	const proto = request.headers.get('x-forwarded-proto') ?? url.protocol.replace(':', '');
 	const host = request.headers.get('x-forwarded-host') ?? url.host;

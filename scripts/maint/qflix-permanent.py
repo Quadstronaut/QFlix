@@ -21,8 +21,8 @@ WHY A TAG AND NOT `monitorNewItems`
 `monitorNewItems` is already `all` on all 37 series -- it is the default and
 discriminates nothing. A tag is explicit operator intent, survives series
 refreshes, is visible in the UI, and nothing else sets it. The existing tags on
-this box are Seerr requester usernames (quadstronaut, user-i,
-user-c, user-e); a series may hold several tags, so `permanent`
+this box are Seerr requester usernames (the operator's plus one per
+requesting member); a series may hold several tags, so `permanent`
 coexists with them.
 
 AUTO-RULE

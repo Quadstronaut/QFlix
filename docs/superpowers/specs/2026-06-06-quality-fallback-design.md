@@ -13,7 +13,7 @@
 ## Problem
 
 The daily MissingSearch sweep (`scripts/mcp/missing.py`, 07:00 UTC) re-searches the same
-missing items forever at full quality standards. A real request (user-m's) had no
+missing items forever at full quality standards. A real member request had no
 acceptable hits at the standard profile but matched fine at a slightly lower quality.
 Today nothing ever loosens, and unfindable items burn 4 indexer queries per item per day
 indefinitely.

@@ -20,7 +20,8 @@ class StatusDocTest {
             "app_status_live.json missing from test resources"
         }.bufferedReader().readText()
 
-    // -- live fixture: real values, not fabricated --
+    // -- live fixture: real SHAPE captured off the box; every identifying value
+    // (usernames, activity numbers, hosts, IPs, hashes) is synthetic (QFLX-121) --
 
     @Test
     fun `parses the live fixture without throwing`() {
@@ -84,12 +85,12 @@ class StatusDocTest {
 
         val top5 = requireNotNull(doc.top5)
         assertEquals(5, top5.requests30d.size)
-        assertEquals("user-f", top5.requests30d[0].user)
-        assertEquals(14, top5.requests30d[0].count)
+        assertEquals("user-a", top5.requests30d[0].user)
+        assertEquals(10, top5.requests30d[0].count)
         assertEquals(5, top5.watch30d.size)
-        assertEquals("user-l", top5.watch30d[0].user)
-        assertEquals(79.1, top5.watch30d[0].hours!!, 0.001)
-        assertEquals(106, top5.watch30d[0].plays)
+        assertEquals("user-a", top5.watch30d[0].user)
+        assertEquals(40.5, top5.watch30d[0].hours!!, 0.001)
+        assertEquals(50, top5.watch30d[0].plays)
     }
 
     @Test
@@ -104,11 +105,11 @@ class StatusDocTest {
         assertEquals(1, downloads.sab?.queued)
         assertFalse(downloads.sab?.paused!!)
         assertEquals(4, downloads.stuck.size)
-        assertEquals("cbed175c", downloads.stuck[0].hash8)
+        assertEquals("aaaa0001", downloads.stuck[0].hash8)
         assertEquals(3.0, downloads.stuck[0].hours!!, 0.001)
         assertTrue(downloads.stuck[0].acted!!)
         assertEquals(5, downloads.recentUnsticks.size)
-        assertEquals("f0a3658d", downloads.recentUnsticks[0].hash8)
+        assertEquals("aaaa0004", downloads.recentUnsticks[0].hash8)
         assertEquals("qbit-orphan-removed", downloads.recentUnsticks[0].result)
     }
 

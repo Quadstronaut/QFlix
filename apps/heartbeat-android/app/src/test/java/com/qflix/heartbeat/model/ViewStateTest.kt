@@ -39,11 +39,11 @@ class ViewStateTest {
         assertEquals("1/1", streams.data.fraction)
 
         val top5 = state.top5 as SectionState.Ok
-        assertEquals("79.1 h", top5.data.watch[0].hoursLabel)
+        assertEquals("40.5 h", top5.data.watch[0].hoursLabel)
 
         val downloads = state.downloads as SectionState.Ok
         assertEquals(4, downloads.data.stuck.size)
-        assertEquals("cbed175c", downloads.data.stuck[0].hash8)
+        assertEquals("aaaa0001", downloads.data.stuck[0].hash8)
         assertEquals("3h", downloads.data.stuck[0].hoursLabel)
         assertTrue(downloads.data.stuck[0].acted)
         assertEquals(5, downloads.data.recentUnsticks.size)
