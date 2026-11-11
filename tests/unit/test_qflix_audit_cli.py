@@ -261,6 +261,21 @@ def test_missing_kuma_token_is_reported_not_swallowed(cli, tmp_path, monkeypatch
     assert "heartbeat NOT pushed" in err
 
 
+def test_due_soon_is_printed_and_pushed_but_stays_up(cli, tmp_path, monkeypatch, capsys):
+    """QFLX-95: due-soon rides the human output + Kuma msg; never flips status."""
+    monkeypatch.setenv("QFLIX_AUDIT_LOG_DIR", str(tmp_path / "auditlog"))
+    monkeypatch.setattr(cli, "residual_reviews_due_soon",
+                        lambda scope, today: [("R2", 3), ("R5", 3)])
+    pushed = []
+    monkeypatch.setattr(cli, "_push_kuma", lambda st, msg: pushed.append((st, msg)))
+    code = cli.main(["--root", REPO_ROOT, "--push-kuma"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "RESIDUAL REVIEWS DUE SOON" in out and "R2(3d),R5(3d)" in out
+    assert pushed and pushed[0][0] == "up"
+    assert pushed[0][1].endswith(" due_soon=R2(3d),R5(3d)")
+
+
 def test_cadence_date_never_reaches_the_digest():
     """--today feeds the residual-cadence gate only. If it touched the digest,
     the digest would churn on the calendar."""
