@@ -234,6 +234,102 @@ def _post_jsonline(port: int, app: str, lines: list[dict]) -> tuple[bool, str]:
         return False, str(exc)
 
 
+# ── Retry dedup (QFLX-116) ───────────────────────────────────────────────────
+# A POST that times out is AMBIGUOUS: vlogs may have stored the batch and only
+# the answer was late. The cursor is (correctly) not advanced, so the next cycle
+# re-reads the same bytes, and if the first POST did land, every line is stored
+# twice. Seen 2026-11-11 00:05 UTC: `sonarr: post-failed timed out`, the 00:10
+# run re-sent the same 2 lines, vlogs-time-integrity went red (2 dup groups).
+# So a failed POST marks the cursor `unconfirmed`, and the retry asks vlogs
+# which of the batch's line_ids it already holds and sends only the rest.
+_DEDUP_CHUNK = 200   # line_ids per query: keeps each LogsQL body small
+
+
+def _logsql_quote(s: str) -> str:
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _time_bounds(stamps: list[str | None]) -> tuple[str, str]:
+    """[start, end] for the dedup query, padded 2 min each side. The query
+    MUST be time-bounded: unbounded, vlogs scans the whole index and hits its
+    30 s limit (measured on the box 2026-11-11). A row stored without a stamp
+    gets vlogs' ingest clock, so a missing stamp pulls `end` up to now."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    parsed = []
+    for s in stamps:
+        try:
+            dt = datetime.fromisoformat((s or "").replace("Z", "+00:00"))
+            parsed.append(dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc))
+        except ValueError:
+            parsed.append(now)
+    parsed = parsed or [now]
+    pad = timedelta(minutes=2)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (min(parsed) - pad).strftime(fmt), (max(parsed) + pad).strftime(fmt)
+
+
+def _already_stored(port: int, app: str, source_file: str, ids: list[str],
+                    stamps: list[str | None] | None = None) -> set[str] | None:
+    """line_ids from `ids` that vlogs already holds for this app + file, looked
+    up inside the time span of the batch (`stamps`, parallel to `ids`).
+    None when any query fails: the caller cannot tell, and ships everything
+    (at-least-once; the integrity canary still sees a duplicate if one lands)."""
+    start, end = _time_bounds(stamps or [])
+    found: set[str] = set()
+    for i in range(0, len(ids), _DEDUP_CHUNK):
+        chunk = ids[i:i + _DEDUP_CHUNK]
+        q = ("{app=%s} source_file:=%s line_id:in(%s) | uniq by (line_id)"
+             % (_logsql_quote(app), _logsql_quote(source_file),
+                ",".join(_logsql_quote(x) for x in chunk)))
+        body = urllib.parse.urlencode({"query": q, "start": start,
+                                       "end": end}).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/select/logsql/query", data=body, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                text = r.read().decode("utf-8", "replace")
+        except (urllib.error.URLError, TimeoutError, OSError):
+            return None
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                lid = json.loads(line).get("line_id")
+            except ValueError:
+                return None
+            if lid:
+                found.add(lid)
+    return found
+
+
+def _drop_already_stored(port: int, app: str, lines: list[dict],
+                         lookup=None) -> tuple[list[dict], int | None]:
+    """(lines to send, how many were dropped; None = lookup failed, nothing
+    dropped). Only rows that carry a line_id can be matched."""
+    lookup = lookup or _already_stored
+    by_file: dict[str, tuple[list[str], list]] = {}
+    for ln in lines:
+        if ln.get("line_id"):
+            ids, stamps = by_file.setdefault(ln.get("source_file") or "", ([], []))
+            ids.append(ln["line_id"])
+            stamps.append(ln.get("ts"))
+    if not by_file:
+        return lines, 0
+    stored: set[tuple[str, str]] = set()
+    for src, (ids, stamps) in by_file.items():
+        got = lookup(port, app, src, ids, stamps)
+        if got is None:
+            return lines, None
+        stored.update((src, x) for x in got)
+    keep = [ln for ln in lines
+            if not ln.get("line_id")
+            or ((ln.get("source_file") or ""), ln["line_id"]) not in stored]
+    return keep, len(lines) - len(keep)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--window", default="6m",
@@ -302,10 +398,24 @@ def main() -> int:
             print(f"{app}: collect-failed {exc}")
             failures += 1
             continue
+        # The previous POST of these same bytes failed, possibly AFTER vlogs
+        # stored them (QFLX-116): send only what vlogs does not already hold.
+        unconfirmed = new_cur is not None and new_cur.pop("unconfirmed", False)
+        if unconfirmed and lines:
+            lines, dropped = _drop_already_stored(port, app, lines)
+            if dropped is None:
+                print(f"{app}: retry-dedup lookup failed, resending whole batch")
+            elif dropped:
+                print(f"{app}: retry-dedup skipped {dropped} already-stored lines")
         ok, detail = _post_jsonline(port, app, lines)
         if not ok:
             print(f"{app}: post-failed {detail}")
             failures += 1
+            # File cursor stays where it was (the bytes are re-read next
+            # cycle) but is flagged, so the retry dedups against vlogs.
+            if new_cur is not None and cursors.get(app):
+                cursors[app] = {**cursors[app], "unconfirmed": True}
+                _save_cursors(cursors_path, cursors)
             # Un-advance: journalctl already rewrote its cursor file, so put
             # the old one back and these lines are retried next cycle.
             if jcur_file is not None:

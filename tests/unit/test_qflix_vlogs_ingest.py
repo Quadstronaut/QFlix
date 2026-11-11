@@ -265,3 +265,123 @@ def test_line_ids_distinguish_repeated_text_and_follow_tail(tmp_path):
     raw2, _ = mod._read_new_lines(str(f), cur, tail=2, ids=ids2)
     assert raw2 == ["b", "c"] and len(ids2) == 2
     assert ids2[1].split(":")[1] == str(f.read_bytes().rindex(b"c"))
+
+
+# ── QFLX-116: a retry after an ambiguous POST failure must not re-ship ─────────
+
+def _rows(*ids, src="/l/sonarr.txt"):
+    return [{"message": f"m{i}", "ts": "2026-11-11T00:03:48.4Z", "level": "info",
+             "source_file": src, "line_id": i} for i in ids]
+
+
+def test_retry_dedup_drops_only_stored_ids():
+    ingest = _load_ingest()
+    seen = []
+
+    def lookup(port, app, src, ids, stamps):
+        seen.append((app, src, list(ids), list(stamps)))
+        return {"1:10"}
+
+    keep, dropped = ingest._drop_already_stored(9, "sonarr", _rows("1:10", "1:85"),
+                                                lookup=lookup)
+    assert [r["line_id"] for r in keep] == ["1:85"]
+    assert dropped == 1
+    assert seen == [("sonarr", "/l/sonarr.txt", ["1:10", "1:85"],
+                     ["2026-11-11T00:03:48.4Z"] * 2)]
+
+
+def test_retry_dedup_lookup_failure_sends_everything():
+    ingest = _load_ingest()
+    rows = _rows("1:10", "1:85")
+    keep, dropped = ingest._drop_already_stored(9, "sonarr", rows,
+                                                lookup=lambda *a: None)
+    assert keep == rows and dropped is None
+
+
+def test_retry_dedup_rows_without_line_id_are_kept():
+    ingest = _load_ingest()
+    rows = [{"message": "x", "source_file": "journalctl:u"}]
+    keep, dropped = ingest._drop_already_stored(9, "maint", rows,
+                                                lookup=lambda *a: set())
+    assert keep == rows and dropped == 0
+
+
+def test_already_stored_queries_app_file_and_ids(monkeypatch):
+    import io
+    import urllib.parse
+    ingest = _load_ingest()
+    captured = {}
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        form = urllib.parse.parse_qs(req.data.decode())
+        captured.update(query=form["query"][0], start=form["start"][0], end=form["end"][0])
+        return _Resp(b'{"line_id":"1:10"}\n')
+
+    monkeypatch.setattr(ingest.urllib.request, "urlopen", fake_urlopen)
+    got = ingest._already_stored(9, "sonarr", "/l/sonarr.txt", ["1:10", "1:85"],
+                                 ["2026-11-11T00:03:48.4Z", "2026-11-11T00:05:01Z"])
+    assert got == {"1:10"}
+    # Time-bounded: an unbounded query scans the whole index and times out.
+    assert (captured["start"], captured["end"]) == ("2026-11-11T00:01:48Z",
+                                                    "2026-11-11T00:07:01Z")
+    q = captured["query"]
+    assert q.startswith('{app="sonarr"} source_file:="/l/sonarr.txt" line_id:in("1:10","1:85")')
+
+
+def test_already_stored_unreachable_is_none(monkeypatch):
+    ingest = _load_ingest()
+
+    def boom(req, timeout=None):
+        raise ingest.urllib.error.URLError("down")
+
+    monkeypatch.setattr(ingest.urllib.request, "urlopen", boom)
+    assert ingest._already_stored(9, "sonarr", "/l/s.txt", ["1:1"]) is None
+
+
+def test_failed_post_flags_cursor_and_retry_dedups(tmp_path, monkeypatch):
+    """End to end through main(): POST times out after vlogs stored the batch;
+    the next cycle sends nothing twice and clears the flag."""
+    ingest = _load_ingest()
+    log = tmp_path / "sonarr.txt"
+    log.write_bytes(b"")
+    st = os.stat(log)
+    state = tmp_path / "state"
+    monkeypatch.setattr(ingest, "STATE_DIR", state)
+    ingest._save_cursors(state / "cursors.json", {"sonarr": {
+        "inode": st.st_ino, "offset": 0, "last_ts": None, "path": str(log)}})
+    log.write_bytes(b"2026-11-11 01:03:48.4|Info|A|one\n2026-11-11 01:03:48.4|Info|A|two\n")
+    monkeypatch.setattr(ingest, "_read_port", lambda: 9)
+    monkeypatch.setattr(ingest.logs_mod, "_FILE_LOGS", {"sonarr": str(log)})
+    monkeypatch.setattr(ingest.logs_mod, "_GLOB_LOGS", {}, raising=False)
+    monkeypatch.setattr(ingest.logs_mod, "_SYSTEMD_LOGS", {})
+    monkeypatch.setattr(ingest.logs_mod, "route",
+                        lambda app: {"kind": "file", "path": str(log)})
+    store: list[str] = []
+    calls = {"n": 0}
+
+    def fake_post(port, app, lines):
+        calls["n"] += 1
+        store.extend(ln["line_id"] for ln in lines)
+        if calls["n"] == 1:
+            return False, "timed out"      # stored, but the answer was late
+        return True, f"{len(lines)} lines"
+
+    monkeypatch.setattr(ingest, "_post_jsonline", fake_post)
+    monkeypatch.setattr(ingest, "_already_stored",
+                        lambda port, app, src, ids, stamps: {i for i in ids if i in store})
+    import sys
+    monkeypatch.setattr(sys, "argv", ["ingest"])
+    ingest.main()
+    cur = ingest._load_cursors(state / "cursors.json")["sonarr"]
+    assert cur["unconfirmed"] is True and cur["offset"] == 0
+    ingest.main()
+    cur = ingest._load_cursors(state / "cursors.json")["sonarr"]
+    assert "unconfirmed" not in cur and cur["offset"] == log.stat().st_size
+    assert len(store) == len(set(store)) == 2
