@@ -1867,7 +1867,9 @@ canaries:
     # weeks. The canary checks the CAUSE (settings) before the SYMPTOM
     # (coverage) for exactly that reason.
     #
-    # Floor is a percentage (default 55%, today's value 62.2%) rather than
+    # Floor is a percentage (default 33%, PROVISIONAL: operator-set 2026-11-11
+    # down from 55%, QFLX-105 -- the library is ephemeral, the right number is
+    # not known yet, 55 was clearly wrong; revisit) rather than
     # plex-unmatched's count-with-grace, because an episode without an intro
     # marker is frequently not a defect -- reality, talk and documentary shows
     # have no recurring title sequence and Plex cannot mark what does not
