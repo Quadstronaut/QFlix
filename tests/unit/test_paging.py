@@ -301,7 +301,8 @@ def test_entitlement_notifications_page_under_the_real_manifest(monkeypatch):
     assert "household A" in post.call_args.args[1]
 
 
-# --- Kuma webhook: the eyes on every suppressed Kuma edge --------------------
+# --- Kuma webhook edge recorder (never fed in practice: Kuma cannot reach the --
+# --- daemon; the weekly REA summary reads kuma.db for the same edges) ----------
 
 def test_webhook_records_non_member_edges_only(fixture_manifest):
     from lib import kuma

@@ -354,7 +354,9 @@ def _ensure_notifications_attached(api, paging, discord_id, autoheal_id,
     all paging produced ~3-4 Discord sends a day from a stable product; the
     operator wants silence except for what members would notice. A non-member-
     facing monitor still goes red in Kuma and still triggers auto-heal - it just
-    no longer pages; its edges land in the weekly roll-up via the webhook.
+    no longer pages. (Auto-heal runs from the pusher: the Kuma container cannot
+    reach the maint daemon, so the webhook has never received a POST. The weekly
+    REA summary reads the suppressed DOWN edges straight from kuma.db.)
 
     `skip_names` = operator-owned external monitors this script does not manage."""
     fixed = 0

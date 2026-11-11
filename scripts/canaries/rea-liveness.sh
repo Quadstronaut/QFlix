@@ -7,8 +7,9 @@
 # scripts/local-llm/qflix-rea.ps1 (the Random Error Audit) is the only piece of
 # QFlix that does NOT run on the seedbox. It runs on the operator's Windows
 # workstation, SSHes IN to collect logs, feeds them to local Ollama models, and
-# posts to Discord. It is gitignored (.gitignore:55), so it is not even covered
-# by the deploy-drift canary. Nothing has ever watched it.
+# posts to Discord. It was gitignored until 2026-09-27 (tracked since) and it
+# is never deployed to the box, so the deploy-drift canary cannot cover it.
+# Nothing else watches whether it RUNS.
 #
 # A watchdog that dies with the thing it watches is worthless. So the ONLY
 # question that matters here is: whose liveness does the ALARM depend on?
@@ -147,21 +148,27 @@
 #                 nothing — that is the tdarr-healthcheck class (ran 100% dead
 #                 for 68 days while its monitor stayed green).
 #
-# THRESHOLD, JUSTIFIED FROM MEASURED DATA — NOT A WISH
-# ----------------------------------------------------
-# REA is triggered ONLOGON (schtasks /SC ONLOGON, StartWhenAvailable=true) on a
-# personal workstation. There is no cadence to encode: a machine left running
-# for a week fires it once, and a sleep/resume fires it not at all. So the age
-# threshold has to clear the operator's real behaviour, which was measured
-# rather than guessed. 71 inter-run gaps over 84 days:
-#     max      275.3h  (11.5 d)   2026-06-25 -> 2026-07-07
-#     2nd      145.3h  ( 6.1 d)
-#     3rd      142.8h  ( 6.0 d)
-#     p95      101.9h  ( 4.2 d)
-# False fires that each candidate would have produced over that history:
-#      72h -> 6      168h -> 1      336h -> 0
-# DEFAULT 336h (14 d) clears the observed maximum by 60.7h. It is a slow signal
-# and is labelled as such: P3 is the fast one, and P3 needs no cadence at all.
+# THRESHOLD, JUSTIFIED FROM THE CADENCE — NOT A WISH
+# --------------------------------------------------
+# SINCE 2026-11-11 (QFLX-110) REA IS WEEKLY: Task Scheduler fires it Monday
+# 12:00 workstation-local (America/Phoenix, no DST = ~19:00 UTC, after the
+# box's Monday 11:00-15:00 UTC maintenance window), retries hourly until
+# midnight until one run lands a verdict, and StartWhenAvailable runs a missed
+# Monday at the next boot. So REA reaches this box once a week, nominal gap
+# 168h. The cap tolerates exactly ONE missed weekly run plus a day of drift:
+#     2 x 168h + 24h = 360h (15 d)
+# 336h (the old default) is exactly two weekly gaps, so one missed Monday put
+# the next run's reach on the cap to the minute -- a flap, not a signal.
+# The pre-weekly measured history still clears it (ONLOGON era, 71 gaps over
+# 84 days: max 275.3h, p95 101.9h; false fires 72h -> 6, 168h -> 1, 336h -> 0).
+# It is a slow signal and is labelled as such: P3 is the fast one, and P3
+# needs no cadence at all.
+#
+# REA now ALSO rewrites this file at the END of every run that reached the box
+# (Publish-ReaHeartbeat), so the content is that run's own verdict, not the
+# previous week's. The fetch-time write still happens first and still carries
+# the previous run's line, which is how ssh_fail / tunnel_timeout / ollama_down
+# (runs that never reach the box) still get reported.
 #
 # ============================================================================
 # STAGE LABELS (stderr -> Kuma msg=)
@@ -190,10 +197,10 @@
 #
 # ENV OVERRIDES (tests + operator)
 #   QFLIX_CANARY_REA_HEARTBEAT      contract file. default ~/.opt/maint/rea/heartbeat
-#   QFLIX_CANARY_REA_MAX_SILENCE_H  P1/P2 threshold in hours. default 336
+#   QFLIX_CANARY_REA_MAX_SILENCE_H  P1/P2 threshold in hours. default 360
 #   QFLIX_CANARY_REA_NOW            epoch seconds override for "now"
 #   QFLIX_CANARY_REA_REASON_TABLE   path to rea-noise-classes.yaml (label only)
-#   QFLIX_CANARY_REA_MAX_VACUOUS_H  P5 threshold in hours. default 168 (7 d)
+#   QFLIX_CANARY_REA_MAX_VACUOUS_H  P5 threshold in hours. default 192 (8 d)
 #   QFLIX_CANARY_REA_VACUITY        P5 streak file. default beside the heartbeat
 #
 # EXECUTION MODEL — runs LOCALLY on the box, no sshm hop. The subject is a file
@@ -207,8 +214,9 @@
 # maintenance concern (rule 3) bought for an observability need already met.
 #
 # HONEST LIMITS
-#   1. THE WRITER IS A GITIGNORED WORKSTATION FILE, so it is untestable from
-#      this repo and invisible to deploy-drift.sh. It is `Get-LastTerminalAuditLine`
+#   1. THE WRITER RUNS ON THE WORKSTATION (tracked since 2026-09-27, tested by
+#      tests/local-llm/test-qflix-rea.ps1) and is never deployed to the box,
+#      so deploy-drift.sh cannot see which version is actually running. It is `Get-LastTerminalAuditLine`
 #      plus a base64 template hole in `Get-RemoteHeredoc`, both in
 #      scripts/local-llm/qflix-rea.ps1. WIRED AND VERIFIED LIVE 2026-08-03: the
 #      first real heartbeat was written by the box's own clock during REA's
@@ -222,19 +230,21 @@
 #   3. This proves REA RAN AND FINISHED. It does not prove REA's findings were
 #      correct, nor that the models reasoned well. `outcome=heartbeat` means
 #      "audited, found nothing" — whether that nothing was right is out of scope.
-#   4. P1 is slow by necessity (14 d). A REA that dies on a Monday is caught by
-#      P3 on its next run and by P1 no later than two weeks out. There is no
-#      faster honest bound while the trigger is ONLOGON on a personal machine.
+#   4. P1 is slow by necessity (15 d). A REA that dies on a Monday is caught by
+#      P3 on its next run and by P1 no later than ~two weeks out. There is no
+#      faster honest bound while REA runs once a week on a personal machine.
 set -uo pipefail
 
 HB="${QFLIX_CANARY_REA_HEARTBEAT:-$HOME/.opt/maint/rea/heartbeat}"
-MAX_SILENCE_H="${QFLIX_CANARY_REA_MAX_SILENCE_H:-336}"
+MAX_SILENCE_H="${QFLIX_CANARY_REA_MAX_SILENCE_H:-360}"
 NOW="${QFLIX_CANARY_REA_NOW:-$(date -u +%s)}"
-# P5. 168h (7 d) rather than the 336h age cap: a held concurrency lock and a
-# forgotten -DryRun are hours-to-days conditions, not fortnight ones, and REA
-# fires several times in a week (p95 inter-run gap 101.9h). Sits BESIDE the
-# heartbeat so the whole contract is one directory.
-MAX_VACUOUS_H="${QFLIX_CANARY_REA_MAX_VACUOUS_H:-168}"
+# P5. 192h (8 d), below the 360h age cap. With a WEEKLY REA one vacuous
+# heartbeat (a Monday whose retries all ended quorum_degraded, or a -DryRun
+# left in place) legitimately sits for the whole 168h until the next Monday,
+# so a 168h cap would red on the very run that might clear it. 192h = one
+# weekly gap + a day of drift: ONE vacuous week is a WARN, TWO in a row red.
+# Sits BESIDE the heartbeat so the whole contract is one directory.
+MAX_VACUOUS_H="${QFLIX_CANARY_REA_MAX_VACUOUS_H:-192}"
 VACUITY="${QFLIX_CANARY_REA_VACUITY:-$(dirname "$HB")/vacuity}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -343,6 +353,21 @@ fi
 # on vocabulary it has never seen is not a watchdog.
 WARN=""
 case "$REST" in
+  fail\ reason=*\ outcome=deferred_retry|fail\ reason=*\ outcome=deferred_retry\ *)
+    # MUST sit above `fail reason=*` (QFLX-123). A WEEKLY REA logs a failure
+    # on a Monday attempt that still has an hourly retry behind it as
+    # outcome=deferred_retry and posts nothing; the next hour tries again. It
+    # is not the week's verdict, so it must not red this canary - "Canary REA
+    # Liveness" is in the manifest paging set, and a red here would page the
+    # operator for a run REA itself is about to retry. It is still not an
+    # audit, so it joins the vacuous family: WARN + the P5 streak clock. If
+    # every retry fails, the 23:00 final attempt records a plain
+    # `fail reason=` line, which reds below exactly as before.
+    R=${REST#fail reason=}; R=${R%% *}
+    skip "deferred-retry-pending:$R"
+    vac_check "deferred_retry:$R"
+    WARN="-WARN" ;;
+
   fail\ reason=*)
     R=${REST#fail reason=}; R=${R%% *}
     # LABEL ONLY — never changes the verdict. The reason table is mirrored from

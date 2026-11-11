@@ -419,49 +419,9 @@ Test-Case 'Get-Consensus excerpt merge does NOT collapse short or distinct excer
 }
 
 # --- Task 9: Discord payload builders ---
-Test-Case 'New-DiscordErrorPayload mentions operator + builds embed fields' {
-    $groups = @(
-        [pscustomobject]@{ signature='buildarr:pydantic'; time='2026-05-11T04:30:11Z'; app='buildarr'; file='journal:buildarr.service'; severity='error'; summary='Pydantic err'; excerpt='trace...'; models_flagged=@('qwen3-coder:30b','qwen3:8b') }
-    )
-    $p = New-DiscordErrorPayload -Groups $groups -OperatorId '123' -ModelCount 3 -DurationSec 47
-    Assert-Equal '<@123>' $p.content 'operator mention'
-    Assert-Equal @('123') $p.allowed_mentions.users 'allowed_mentions users'
-    Assert-Equal 1 @($p.embeds).Count 'one embed'
-    Assert-Equal 15158332 $p.embeds[0].color 'red color'
-    Assert-True ($p.embeds[0].title -match 'QFlix REA') 'title shape'
-    Assert-Equal 1 @($p.embeds[0].fields).Count 'one field per group'
-    Assert-True ($p.embeds[0].fields[0].value -match 'qwen3-coder:30b') 'model name in field value'
-    Assert-True ($p.embeds[0].fields[0].value -match '2/3') 'consensus fraction'
-}
-
-Test-Case 'New-DiscordErrorPayload clamps long excerpt to 300 chars' {
-    $longExcerpt = 'x' * 500
-    $groups = @(
-        [pscustomobject]@{ signature='s'; time='t'; app='a'; file='f'; severity='error'; summary='s'; excerpt=$longExcerpt; models_flagged=@('m') }
-    )
-    $p = New-DiscordErrorPayload -Groups $groups -OperatorId '1' -ModelCount 1 -DurationSec 1
-    Assert-True ($p.embeds[0].fields[0].value.Length -le 1024) 'field value clamped to <=1024'
-}
-
-Test-Case 'New-DiscordHeartbeatPayload has no content mention' {
-    $p = New-DiscordHeartbeatPayload -ModelCount 3
-    Assert-Equal '' $p.content 'no mention'
-    Assert-Equal 3066993 $p.embeds[0].color 'green'
-    Assert-True ($p.embeds[0].title -match 'clean') 'title says clean'
-    Assert-False ($p.embeds[0].description -match 'held') 'no held line when SoloCount=0'
-}
-
-Test-Case 'heartbeat surfaces the consensus-floor remainder without paging (2026-08-26)' {
-    # Operator directive: single-model findings never ping. They are counted
-    # on the heartbeat instead — visible in daily review, zero pages. Every
-    # hallucinated page in the 2026-08 storm was flagged by exactly one model,
-    # so this floor alone would have silenced all of them.
-    $p = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 2
-    Assert-Equal '' $p.content 'still no mention — a held finding must not ping'
-    Assert-True ($p.embeds[0].description -match '2 single-model finding') 'held count on the heartbeat'
-    Assert-True ($p.embeds[0].description -match 'audit log') 'points at the audit log'
-}
-
+# The hourly-era per-finding [ALERT] builder and daily [OK] heartbeat builder
+# were deleted with QFLX-123; New-DiscordWeeklyPayload (tested further down)
+# is the only report message now.
 Test-Case 'New-DiscordDeadmanPayload pings operator and uses orange' {
     $p = New-DiscordDeadmanPayload -OperatorId '123'
     Assert-Equal '<@123>' $p.content 'operator mention'
@@ -2138,14 +2098,6 @@ Test-Case 'Invoke-Main passes -Stamp:(-not $DryRun) through to the ledger' {
     Assert-True ($src.Contains('Select-DuePageGroups -Groups $errorGroups -Stamp:(-not $DryRun)')) 'DryRun threaded into the ledger call'
 }
 
-Test-Case 'the heartbeat does not call a run with muted repeats clean' {
-    $p = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 0 -MutedCount 2
-    Assert-True ($p.embeds[0].title -notlike '*clean*') 'still-broken is not clean'
-    Assert-True ($p.embeds[0].description -like '*2 repeat finding(s) muted*') 'muted count is stated'
-    Assert-Equal '' $p.content 'a muted repeat must still not ping'
-    $q = New-DiscordHeartbeatPayload -ModelCount 3 -SoloCount 0 -MutedCount 0
-    Assert-True ($q.embeds[0].title -like '*clean*') 'a genuinely clean run still says clean'
-}
 
 
 function Get-GitBashExe {
@@ -2560,6 +2512,232 @@ Test-Case 'Invoke-Model logs model-done / model-noop why=, liveness skips them' 
         if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
         $env:APPDATA = $savedAppData
     }
+}
+
+# QFLX-110: REA went WEEKLY (Monday 12:00 local, hourly retries to midnight).
+# The guard is what turns that retry tail into ONE audit a week.
+Test-Case 'Get-WeeklyAnchor is the most recent Monday 12:00 at or before now' {
+    # 2026-11-16 is a Monday.
+    Assert-Equal ([datetime]'2026-11-16T12:00:00') (Get-WeeklyAnchor -Now ([datetime]'2026-11-16T12:00:00')) 'exactly at the anchor'
+    Assert-Equal ([datetime]'2026-11-16T12:00:00') (Get-WeeklyAnchor -Now ([datetime]'2026-11-16T23:30:00')) 'late Monday'
+    Assert-Equal ([datetime]'2026-11-09T12:00:00') (Get-WeeklyAnchor -Now ([datetime]'2026-11-16T11:59:00')) 'Monday morning belongs to last week'
+    Assert-Equal ([datetime]'2026-11-09T12:00:00') (Get-WeeklyAnchor -Now ([datetime]'2026-11-15T20:00:00')) 'Sunday'
+    Assert-Equal ([datetime]'2026-11-16T12:00:00') (Get-WeeklyAnchor -Now ([datetime]'2026-11-18T08:00:00')) 'Wednesday catch-up'
+}
+
+Test-Case 'Test-WeeklyAuditDone settles only on a completed audit since the anchor' {
+    $now = [datetime]'2026-11-16T15:00:00'
+    $off = ([datetimeoffset]$now).ToString('zzz')
+    $at  = { param($t) "2026-11-16T${t}${off}" }
+    foreach ($o in 'heartbeat','silent','error_post','discord_post_failed') {
+        $l = "$(& $at '13:05:00') ok findings=0 models=3/3 duration=500s outcome=$o"
+        Assert-Equal $l (Test-WeeklyAuditDone -Lines @($l) -Now $now) "outcome=$o settles the week"
+    }
+    foreach ($b in 'ok findings=0 models=1/3 duration=500s outcome=quorum_degraded',
+                   'ok findings=0 models=3/3 duration=500s outcome=dryrun_heartbeat',
+                   'fail reason=all_models_noop models=3',
+                   'SKIPPED user_active reason=input,idle_min=2<10',
+                   'weekly-noop already_audited since=2026-11-16T12:00 by=x') {
+        Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$(& $at '13:05:00') $b") -Now $now) "not settled by: $b"
+    }
+    $last = "2026-11-09T13:05:00$off ok findings=0 models=3/3 duration=500s outcome=heartbeat"
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @($last) -Now $now) 'last week does not settle this week'
+    $early = "$(& $at '11:30:00') ok findings=0 models=3/3 duration=500s outcome=heartbeat"
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @($early) -Now $now) 'a manual run before noon does not settle the post-maintenance audit'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @('garbage', '', "$([char]0xFEFF)") -Now $now) 'junk never settles'
+}
+
+Test-Case 'weekly-* bookkeeping never displaces the verdict the canary reads' {
+    $savedAppData = $env:APPDATA
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
+    try {
+        Write-AuditLog 'fail reason=all_models_noop models=3'
+        Write-AuditLog 'ok findings=0 models=3/3 duration=500s outcome=heartbeat'
+        Write-AuditLog 'weekly-heartbeat publish=ok'
+        Write-AuditLog 'weekly-noop already_audited since=2026-11-16T12:00 by=x'
+        Write-AuditLog 'weekly-heartbeat publish=failed err=exit 255: x'
+        Assert-True ((Get-LastTerminalAuditLine) -match 'outcome=heartbeat$') 'terminal line skips weekly-*'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+        $env:APPDATA = $savedAppData
+    }
+}
+
+Test-Case 'the task definition is weekly Monday 12:00 with an hourly retry tail' {
+    $d = Get-ReaTaskDefinition -ScriptPath 'C:\x\qflix-rea.ps1'
+    Assert-Equal 'Monday' $d.WeeklyDay        'Monday'
+    Assert-Equal '12:00'  $d.WeeklyAt         'noon local, after the 04:00-08:00 local maintenance window'
+    Assert-Equal 60       $d.RepeatMinutes    'retries hourly'
+    Assert-Equal 12       $d.RetryWindowHours 'until midnight'
+    Assert-False ($d.ContainsKey('DailyAt'))  'no daily trigger left'
+    Assert-False ($d.ContainsKey('SessionStateChange')) 'no session-lock trigger left'
+}
+
+Test-Case 'Test-IsFinalWeeklyAttempt: only 23:00 Monday and later catch-ups are final' {
+    Assert-False (Test-IsFinalWeeklyAttempt -Now ([datetime]'2026-11-16T12:00:00')) 'noon is not final'
+    Assert-False (Test-IsFinalWeeklyAttempt -Now ([datetime]'2026-11-16T22:59:00')) '22:59 still has a retry'
+    Assert-True  (Test-IsFinalWeeklyAttempt -Now ([datetime]'2026-11-16T23:00:00')) '23:00 is the last start'
+    Assert-True  (Test-IsFinalWeeklyAttempt -Now ([datetime]'2026-11-17T08:00:00')) 'Tuesday catch-up is final'
+}
+
+Test-Case 'New-DiscordWeeklyPayload: ONE [WARN] message, clean or not, never red, no excerpts' {
+    $now = [datetime]'2026-11-16T12:20:00'
+    $c = New-DiscordWeeklyPayload -OperatorId '42' -OkModels 3 -ModelCount 3 -DurationSec 900 -FetchedAt '2026-11-16T19:05:00Z' -Now $now -PreviousAudit 'Mon 2026-11-09 12:21 local'
+    $e = $c.embeds[0]
+    Assert-Equal '[WARN] QFlix weekly audit - clean' $e.title 'clean title'
+    Assert-Equal 16753920 $e.color 'WARN orange, the deadman convention'
+    Assert-True ($e.color -ne 15158332) 'never the red [ALERT] colour'
+    Assert-Equal '<@42>' $c.content 'operator pinged'
+    Assert-Equal '42' ($c.allowed_mentions.users -join ',') 'only the operator is mentionable'
+    Assert-True ($e.description -match 'Clean:') 'clean says clean'
+    Assert-True ($e.description -match 'maintenance window') 'window line names the maintenance window'
+    Assert-True ($e.description -match "last $($Script:FreshDays) days") 'window follows FreshDays'
+    Assert-True ($e.description -match 'Previous audit:\*\* Mon 2026-11-09') 'previous audit shown'
+
+    $g = @(
+        [pscustomobject]@{ app='sonarr'; severity='error';    summary='Import blocked: disk quota'; excerpt='SECRET-EXCERPT user@example'; models_flagged=@('a','b') },
+        [pscustomobject]@{ app='plex';   severity='critical'; summary="Library scan`nfailing"; excerpt='x'; models_flagged=@('a','b','c') }
+    )
+    $f = New-DiscordWeeklyPayload -OperatorId '42' -Groups $g -OkModels 3 -ModelCount 3 -DurationSec 900 -Now $now -SoloCount 1
+    $fe = $f.embeds[0]
+    Assert-Equal '[WARN] QFlix weekly audit - 2 findings' $fe.title 'count in title'
+    Assert-Equal 16753920 $fe.color 'findings are still a warning'
+    Assert-False ($fe.description -match 'SECRET-EXCERPT') 'excerpts never posted'
+    $ls = @($fe.description -split "`n" | Where-Object { $_ -like '- *' })
+    Assert-Equal 2 $ls.Count 'one line per finding'
+    Assert-True ($ls[0] -match '\*\*plex\*\* \[critical\] Library scan failing') 'critical first, newline flattened'
+    Assert-True ($fe.description -match '1 single-model finding') 'solo count surfaced'
+
+    $d = New-DiscordWeeklyPayload -OperatorId '42' -OkModels 1 -ModelCount 3 -DurationSec 9 -Now $now -Note 'degraded, only 1 of 3 models answered'
+    Assert-True ($d.embeds[0].title -match 'degraded') 'a one-model week is titled degraded'
+    Assert-False ($d.embeds[0].description -match 'Clean:') 'and is never called clean'
+}
+
+Test-Case 'Get-PreviousAuditStamp returns the last completed audit before this run' {
+    $lines = @(
+        '2026-11-09T12:21:00-07:00 ok findings=0 models=3/3 duration=900s outcome=heartbeat discord_status=204',
+        '2026-11-09T13:00:00-07:00 weekly-noop already_audited since=x by=y',
+        '2026-11-16T12:01:00-07:00 fail reason=ollama_down outcome=deferred_retry'
+    )
+    Assert-True ((Get-PreviousAuditStamp -Lines $lines -Before ([datetime]'2026-11-16T13:00:00')) -match '^Mon 2026-11-09 12:21') 'found'
+    Assert-Equal '' (Get-PreviousAuditStamp -Lines @($lines[2]) -Before ([datetime]'2026-11-16T13:00:00')) 'failures are not audits'
+}
+
+Test-Case 'previous-audit stamp keeps the offset it was logged in (CI runs in UTC)' {
+    $l = '2026-11-09T12:21:00-07:00 ok findings=0 models=3/3 duration=900s outcome=heartbeat'
+    Assert-Equal 'Mon 2026-11-09 12:21 -07:00' (Get-PreviousAuditStamp -Lines @($l) -Before ([datetime]'2026-11-16T13:00:00')) 'zone-independent rendering'
+}
+
+Test-Case 'completed-audit regex: whole tokens only, last outcome wins (review fix)' {
+    $now = [datetime]'2026-11-16T15:00:00'
+    $off = ([datetimeoffset]$now).ToString('zzz')
+    $st  = "2026-11-16T13:05:00$off"
+    Assert-True  ([bool](Test-WeeklyAuditDone -Lines @("$st ok findings=0 models=3/3 duration=500s outcome=heartbeat discord_status=204") -Now $now)) 'trailing tokens after the outcome are fine'
+    Assert-True  ([bool](Test-WeeklyAuditDone -Lines @("$st ok findings=2 outcome=error_post") -Now $now)) 'minimal shape'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$st ok findings=0 models=1/3 note=outcome=heartbeat outcome=quorum_degraded") -Now $now) 'outcome= inside another token never settles'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$st ok findings=0 outcome=heartbeat-x") -Now $now) 'heartbeat-x is not heartbeat'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$st ok findings=0 outcome=silent.old") -Now $now) 'silent.old is not silent'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$st ok findings=0 outcome=heartbeat outcome=quorum_degraded") -Now $now) 'a later outcome wins, as in the canary'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$st ok findings=x outcome=heartbeat") -Now $now) 'findings must be a number'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("garbage ok findings=0 outcome=heartbeat") -Now $now) 'stamp must be an ISO date'
+}
+
+Test-Case 'weekly roll-up: fail-open reader and the "Not paged this week" line' {
+    function New-Blob($we) {
+        $o = [ordered]@{ fetched_at = '2026-11-16T19:05:00Z'; host = 'h'; sources = @{} }
+        if ($null -ne $we) { $o.weekly_events = $we }
+        return ($o | ConvertTo-Json -Compress)
+    }
+    function B64($s) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s)) }
+
+    foreach ($case in @(
+        @{ n = 'field absent (old box / old heredoc)'; j = (New-Blob $null) },
+        @{ n = 'empty field (python3 missing)';       j = (New-Blob '') },
+        @{ n = 'not base64';                          j = (New-Blob '!!!') },
+        @{ n = 'not JSON';                            j = (New-Blob (B64 'nope')) },
+        @{ n = 'ok:false (file absent on box)';       j = (New-Blob (B64 '{"ok": false, "why": "absent"}')) },
+        @{ n = 'whole blob unparseable';              j = 'not json' })) {
+        $r = Get-WeeklyEventsRollup -Json $case.j
+        Assert-False $r.available "fail open: $($case.n)"
+    }
+    Assert-True ((Format-NotPagedLine -Rollup (Get-WeeklyEventsRollup -Json 'x')) -match 'unknown') 'unavailable says unknown, never 0'
+
+    $j = New-Blob (B64 '{"ok": true, "n": 5, "names": [{"name": "Canary Tdarr Scanner", "count": 3}, {"name": "qflix-reaper.py", "count": 2}]}')
+    $r = Get-WeeklyEventsRollup -Json $j
+    Assert-True $r.available 'parsed'
+    Assert-Equal 5 $r.n 'count'
+    Assert-Equal '**Not paged this week:** 5 - Canary Tdarr Scanner (3), qflix-reaper.py (2)' (Format-NotPagedLine -Rollup $r) 'operator-specified line shape'
+    $z = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 0, "names": []}'))
+    Assert-Equal '**Not paged this week:** 0' (Format-NotPagedLine -Rollup $z) 'quiet week says 0'
+    $pt = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 2, "names": [{"name": "Canary Quota", "count": 2}], "partial": "kuma.db unreadable"}'))
+    Assert-Equal '**Not paged this week:** 2 - Canary Quota (2) (partial: kuma.db unreadable)' (Format-NotPagedLine -Rollup $pt) 'an unreadable source is named, never silently low'
+    $p0 = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 0, "names": [], "partial": "kuma.db unreadable"}'))
+    Assert-Equal '**Not paged this week:** 0 (partial: kuma.db unreadable)' (Format-NotPagedLine -Rollup $p0) 'a partial zero is not a quiet week'
+    $many = [pscustomobject]@{ available = $true; n = 20; names = @(1..15 | ForEach-Object { [pscustomobject]@{ name = "m$_"; count = 1 } }) }
+    Assert-True ((Format-NotPagedLine -Rollup $many) -match '\+3 more$') 'long lists are clipped and counted'
+
+    $p = New-DiscordWeeklyPayload -OperatorId '1' -OkModels 3 -ModelCount 3 -DurationSec 1 -Rollup $r -Now ([datetime]'2026-11-16T12:20:00')
+    Assert-True ($p.embeds[0].description -match 'Not paged this week:\*\* 5 - Canary Tdarr Scanner') 'weekly message carries the roll-up line'
+    $q = New-DiscordWeeklyPayload -OperatorId '1' -OkModels 3 -ModelCount 3 -DurationSec 1 -Now ([datetime]'2026-11-16T12:20:00')
+    Assert-True ($q.embeds[0].description -match 'Not paged this week:\*\* unknown') 'no roll-up still posts, saying unknown'
+}
+
+Test-Case 'heredoc ships weekly_events OUTSIDE sources, names only, last 7 days, recoveries excluded' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('printf '',"weekly_events":"%s"'' "$WE"')) 'top-level weekly_events key'
+    Assert-True ($h.Contains('$HOME/.opt/maint/weekly-events.jsonl')) 'reads the #160 roll-up file'
+    Assert-True ($h.Contains('timedelta(days=7)')) 'last 7 days'
+    Assert-True ($h.Contains('r.get("state") != "up"')) 'recovery edges are not counted'
+    Assert-False ($h -match 'r\.get\("msg"') 'msg text never leaves the box'
+    # H: kuma.db read in the SAME python process / ssh call, read-only.
+    Assert-Equal 1 ([regex]::Matches($h, 'python3 - ')).Count 'one python process for both sources'
+    Assert-True ($h.Contains('"$HOME/.apps/uptimekuma/kuma.db"')) 'kuma.db passed in'
+    Assert-True ($h.Contains('mode=ro')) 'kuma.db opened read-only'
+    Assert-True ($h.Contains('h.important = 1 AND h.status = 0')) 'important DOWN beats only'
+    Assert-True ($h.Contains('DISCORD = "Mission Control - QFlix"')) 'monitors WITH the Discord channel are excluded'
+    Assert-True ($h.Contains('max(kfile[name], kdb[name])')) 'same edge never counted twice'
+    $i = $h.IndexOf('for k in arr_logs'); $j = $h.IndexOf('"weekly_events"')
+    Assert-True ($i -gt 0 -and $j -gt $i) 'emitted after the sources loop, so models never see it'
+}
+
+Test-Case 'Send-DeadmanAlert defers (logs, never posts) on a non-final weekly attempt' {
+    $savedAppData = $env:APPDATA
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
+    $Script:SentPayload = $null
+    try {
+        function Send-Discord { param($WebhookUrl, $Payload) $Script:SentPayload = $Payload; $true }
+        $Script:DeferFailurePages = $true
+        Send-DeadmanAlert -Reason 'ssh_fail' -Webhook 'http://x' -OpId '1' -Title 't' -Description 'd' -Detail 'msg=boom'
+        $log = Get-Content -Raw -LiteralPath (Join-Path (Get-StateDir) 'audit.log')
+        Assert-True ($log -match 'fail reason=ssh_fail outcome=deferred_retry msg=boom') 'deferred line keeps the fail reason= shape the canary reads'
+        Assert-Equal $null $Script:SentPayload 'nothing posted'
+    } finally {
+        $Script:DeferFailurePages = $false
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+        $env:APPDATA = $savedAppData
+    }
+}
+
+Test-Case 'Invoke-Main posts the weekly summary, not the hourly-era page/heartbeat' {
+    $src = (Get-Command Invoke-Main).Definition
+    Assert-True ($src.Contains('New-DiscordWeeklyPayload')) 'weekly payload used'
+    Assert-True ($null -eq (Get-Command New-DiscordErrorPayload -ErrorAction SilentlyContinue)) 'per-finding [ALERT] builder deleted'
+    Assert-True ($null -eq (Get-Command New-DiscordHeartbeatPayload -ErrorAction SilentlyContinue)) 'daily [OK] heartbeat builder deleted'
+    Assert-False ($src.Contains('last_heartbeat_date')) 'no once-a-day gate'
+    Assert-True ($src.Contains('discord_status=')) 'HTTP status on the audit line'
+}
+
+Test-Case 'the system prompt staleness rule follows FreshDays' {
+    Assert-True ((Get-SystemPrompt).Contains("more than $($Script:FreshDays) days older than")) 'prompt and code agree on the window'
+}
+
+Test-Case 'Invoke-Main checks the weekly guard before the busy gate, and publishes only after reaching the box' {
+    $src = (Get-Command Invoke-Main).Definition
+    $g = $src.IndexOf('Test-WeeklyAuditDone')
+    $b = $src.IndexOf('Get-UserBusyReason')
+    Assert-True ($g -ge 0 -and $b -gt $g) 'guard runs before the busy probe'
+    Assert-True ($src -match '\$Script:ReachedBoxThisRun -and -not \$DryRun') 'publish gated on reaching the box, never for -DryRun'
+    Assert-True ($src.IndexOf('$Script:ReachedBoxThisRun = $true') -gt $src.IndexOf('Invoke-RemoteFetch -OutPath')) 'flag set only after a successful fetch'
 }
 
 # Summary

@@ -150,6 +150,13 @@ OUTCOME_TABLE = [
     # on a fresh streak; a persistent run of these reds at the P5 cap.
     ("ok findings=0 models=1/3 duration=500s outcome=quorum_degraded", 0, None, "quorum_degraded"),
     ("SKIPPED locked", 0, None, "lock-skip"),
+    # QFLX-123: a weekly-REA failure with an hourly retry still pending.
+    # Vacuous WARN, never red - "Canary REA Liveness" pages.
+    ("fail reason=ollama_down outcome=deferred_retry", 0, None, "deferred-retry"),
+    ("fail reason=ssh_fail outcome=deferred_retry msg=connection refused", 0, None,
+     "deferred-retry-with-detail"),
+    # Near-miss: only the exact token defers; anything else is a real failure.
+    ("fail reason=ssh_fail outcome=deferred_retry_x", 1, "rea-not-auditing", "deferred-near-miss"),
     ("suppressed n=2 rules=plex-post-reap-scan,tdarr-express-undefined-includes",
      0, None, "suppression-line"),
 ]
@@ -303,6 +310,21 @@ def test_the_fallback_stops_at_the_next_top_level_key(tmp_path):
     assert "reason=not_a_deadman_reason(unknown-to-table)" in res.stderr, res.stderr
 
 
+def test_deferred_retry_is_a_counted_warn_checked_before_the_fail_case(tmp_path):
+    """QFLX-123 ordering lock: the deferred_retry branch must sit ABOVE the
+    generic `fail reason=*` branch, or every pending Monday retry reds a
+    canary that is in the manifest paging set."""
+    res = _run(_hb(tmp_path, "2026-08-03T02:00:00+00:00 fail reason=all_models_noop "
+                             "outcome=deferred_retry models=3\n"),
+               extra_env={"QFLIX_CANARY_REA_VACUITY": str(tmp_path / "vac")})
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.startswith("PASS-WARN:"), res.stdout
+    assert "deferred-retry-pending:all_models_noop" in res.stdout, res.stdout
+    body = SCRIPT.read_text(encoding="utf-8").split("set -uo pipefail", 1)[1]
+    assert body.index("outcome=deferred_retry") < body.index("  fail\\ reason=*)"), \
+        "deferred_retry case must precede the generic fail case"
+
+
 def test_warn_states_are_reported_as_warn_not_as_clean(tmp_path):
     """Degraded-but-audited must be distinguishable from clean on the wire,
     even though both exit 0 — otherwise a REA that audits and can never notify
@@ -435,13 +457,32 @@ def test_reason_table_flags_vocabulary_drift(tmp_path):
 # executable rather than a claim in a comment.
 REAL_GAPS_H = [275.3, 145.26, 142.8, 101.9, 75.89, 74.25, 68.0, 66.15, 58.55, 52.1]
 REAL_MAX_GAP_H = 275.3
-DEFAULT_MAX_SILENCE_H = 336
+DEFAULT_MAX_SILENCE_H = 360
 
 
 def test_default_threshold_clears_every_observed_legitimate_gap():
     assert DEFAULT_MAX_SILENCE_H > REAL_MAX_GAP_H
     false_fires = {h: sum(1 for g in REAL_GAPS_H if g > h) for h in (72, 168, 336)}
     assert false_fires == {72: 6, 168: 1, 336: 0}, false_fires
+
+
+WEEK_H = 168   # REA cadence since 2026-11-11 (QFLX-110): Monday 12:00 local
+
+
+def test_silence_cap_tolerates_exactly_one_missed_weekly_run():
+    """Two weekly gaps (one missed Monday) must be green with a day of drift to
+    spare; the old 336h sat exactly ON two gaps, so a missed week flapped."""
+    assert DEFAULT_MAX_SILENCE_H >= 2 * WEEK_H + 24
+    assert DEFAULT_MAX_SILENCE_H < 3 * WEEK_H
+
+
+def test_one_missed_weekly_run_is_green_two_are_red(tmp_path):
+    line = "2026-08-03T02:00:00+00:00 ok findings=0 models=3/3 duration=44s outcome=heartbeat\n"
+    one = _run(_hb(tmp_path, line, "one"), mtime_age_h=2 * WEEK_H + 3)
+    assert one.returncode == 0, one.stderr
+    two = _run(_hb(tmp_path, line, "two"), mtime_age_h=3 * WEEK_H)
+    assert two.returncode == 1, two.stdout
+    assert _stage(two) == "rea-unreached"
 
 
 def test_script_default_matches_the_justified_number():
@@ -452,8 +493,8 @@ def test_script_default_matches_the_justified_number():
     m = re.search(r"QFLIX_CANARY_REA_MAX_SILENCE_H:-(\d+)", src)
     assert m, "default threshold not found in the script"
     assert int(m.group(1)) == DEFAULT_MAX_SILENCE_H
-    assert "default 336" in src
-    assert "DEFAULT 336h" in src
+    assert "default 360" in src
+    assert "= 360h" in src
 
 
 def test_reach_predicate_reds_past_the_cap_and_passes_at_the_observed_max(tmp_path):
@@ -582,6 +623,7 @@ def test_reason_table_still_carries_the_five_reasons():
 
 NON_VERDICT = [
     ("SKIPPED another run holds the lock", "SKIPPED"),
+    ("fail reason=all_models_noop outcome=deferred_retry models=3", "deferred_retry"),
     ("ok findings=0 models=3/3 duration=44s outcome=dryrun_heartbeat", "dryrun"),
     ("suppressed n=12", "suppressed"),
 ]
@@ -618,7 +660,7 @@ def test_a_non_verdict_streak_eventually_reds(tmp_path, tail, label):
     assert first.returncode == 0, first.stderr          # day 0 still passes
     assert vac.exists(), "the blind timer never armed"
 
-    later = _vac_run(tmp_path, tail, now=NOW + 8 * 24 * HOUR, vac_file=vac)
+    later = _vac_run(tmp_path, tail, now=NOW + 9 * 24 * HOUR, vac_file=vac)
     assert later.returncode == 1, (later.returncode, later.stdout, later.stderr)
     assert _stage(later) == "rea-no-verdict-streak", later.stderr
     # The alert must name the shape it has been stuck in, or the operator
@@ -636,7 +678,7 @@ def test_the_streak_is_visible_long_before_it_alerts(tmp_path, tail, label):
     _vac_run(tmp_path, tail, now=NOW, vac_file=vac)
     mid = _vac_run(tmp_path, tail, now=NOW + 3 * 24 * HOUR, vac_file=vac)
     assert mid.returncode == 0, mid.stderr
-    assert "blind=72h/168h" in mid.stdout, mid.stdout
+    assert "blind=72h/192h" in mid.stdout, mid.stdout
     assert "PASS-WARN" in mid.stdout, mid.stdout
 
 
@@ -657,6 +699,19 @@ def test_a_real_verdict_clears_the_streak(tmp_path, outcome):
     after = _vac_run(tmp_path, "SKIPPED lock", now=NOW + 8 * 24 * HOUR,
                      vac_file=vac)
     assert after.returncode == 0, (after.stdout, after.stderr)
+
+
+@pytest.mark.parametrize("tail,label", NON_VERDICT,
+                         ids=[l for _, l in NON_VERDICT])
+def test_one_vacuous_week_is_a_warn_not_a_page(tmp_path, tail, label):
+    """WEEKLY REA (QFLX-110): a vacuous heartbeat legitimately stands for a
+    whole week until the next Monday run replaces it. Seen on Monday, still
+    standing next Monday plus a few hours of drift: WARN, not red."""
+    vac = tmp_path / "vacuity"
+    _vac_run(tmp_path, tail, now=NOW, vac_file=vac)
+    nxt = _vac_run(tmp_path, tail, now=NOW + (WEEK_H + 6) * HOUR, vac_file=vac)
+    assert nxt.returncode == 0, (nxt.stdout, nxt.stderr)
+    assert "PASS-WARN" in nxt.stdout, nxt.stdout
 
 
 def test_the_streak_cap_is_shorter_than_the_silence_cap():

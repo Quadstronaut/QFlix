@@ -36,7 +36,8 @@ $Script:SshTimeoutSec   = 60
 # 240 -> 420 (2026-08-18): with num_ctx=24576 and a storm-fat blob, the two
 # larger models need longer prefill; at 240s they timed out and runs graded
 # models=1/3 (563s run, 2 timeouts + 1 pass, measured live). Worst case is
-# 3 x 420s + fetch = ~22 min, comfortably inside the hourly cadence.
+# 3 x 420s + fetch = ~22 min, comfortably inside the hourly retry spacing
+# (the task is weekly since 2026-11-11; see Get-ReaTaskDefinition).
 $Script:ModelTimeoutSec = 420
 # Yield-to-operator gate (2026-09-13). The model phase pins every core (Ollama
 # launches llama-server at AboveNormal) and 5-7 GB of the 8 GB GPU for up to
@@ -56,7 +57,13 @@ $Script:SectionByteCap  = 3000   # per-section cap. Lowered from 16384 when the
                                  # DECODED blob must fit the models' 16K ctx AND
                                  # leave room to generate findings. 14x3000 decoded
                                  # ~= 9-10K tokens -> ~6K tokens of output headroom.
-$Script:FreshDays      = 3      # SINGLE source of truth for "current vs stale".
+$Script:FreshDays      = 8      # SINGLE source of truth for "current vs stale".
+                                 # 3 -> 8 with the WEEKLY cadence (QFLX-123): the
+                                 # Monday run is the only audit of the week, so its
+                                 # window is "since the previous weekly run" (7 d)
+                                 # plus 1 d of slack for a late/catch-up run - which
+                                 # always includes the Monday 11:00-15:00 UTC
+                                 # maintenance window it lands just after.
                                  # Templated into the remote bash heredoc (FRESH_DAYS)
                                  # AND used by Test-IsStaleFinding below - the models
                                  # are ALSO told this via the system prompt, but that
@@ -85,6 +92,32 @@ $Script:AuditLogMaxBytes = 10MB
 $Script:TaskFolderPath      = '\QFlix-LLM\'
 $Script:LegacyTaskFolderPath = '\Archangel\QFlix-LLM\'
 $Script:TaskName            = 'QFlix Random Error Audit'
+# WEEKLY CADENCE (operator 2026-11-11, QFLX-110): one audit per week, first
+# attempt Monday 12:00 LOCAL - after the box's Monday 11:00-15:00 UTC
+# maintenance window (04:00-08:00 here, America/Phoenix, no DST) - to look for
+# what the maintenance broke. The task retries hourly until midnight; the
+# anchor below is what Test-WeeklyAuditDone measures "this week" from, so the
+# trigger and the guard cannot disagree about when a week starts.
+$Script:WeeklyAnchorDay  = 'Monday'
+$Script:WeeklyAnchorTime = '12:00'
+$Script:WeeklyRetryWindowHours = 12   # hourly retries 12:00..23:00, then the week is final
+# Per-run flags, set by Invoke-Main. Initialised here so strict mode holds when
+# a test dot-sources the script and calls a helper directly.
+$Script:ReachedBoxThisRun = $false
+$Script:DeferFailurePages = $false    # true on a scheduled, non-final attempt
+$Script:LastDiscordStatus = 0         # HTTP status of the last Send-Discord
+# ONE definition of "a completed audit" for the once-a-week guard and the
+# previous-audit stamp. Whole-token match, same reading as the box-side
+# rea-liveness canary (which takes the LAST outcome= on the line):
+#   - stamp must be an ISO date, findings a number;
+#   - outcome= must START a space-separated token, so `note=outcome=heartbeat`
+#     inside another value cannot settle a week;
+#   - the outcome value must END at a space or end of line, so
+#     `outcome=heartbeat-x` / `outcome=silent.old` do not count (the old `\b`
+#     treated - and . as word ends);
+#   - no later outcome= on the line, so the guard and the canary can never
+#     read two different verdicts off the same line.
+$Script:CompletedAuditRx = '^(\d{4}-\d{2}-\d{2}T\S+) ok findings=\d+(?: \S+)*? outcome=(heartbeat|silent|error_post|discord_post_failed)(?=\s|$)(?!.*outcome=)'
 
 # ---------- Noise policy: LOADED FROM GIT, NOT AUTHORED HERE ----------
 # The system prompt ASKS the models to skip known-benign classes, but a prompt is
@@ -538,7 +571,7 @@ tailnew() {
     case "$prev" in *[!0-9]*) continue ;; esac   #    unparseable mark: same
     # 1b. THE MARK MUST HAVE ITS OWN AGE. A byte delta is not a time bound: it
     # says the bytes are NEW SINCE THE MARK, and says nothing about how old the
-    # mark is. REA is logon/session triggered with StartWhenAvailable, and this
+    # mark is. REA was logon/session triggered with StartWhenAvailable, and this
     # workstation is routinely off for 50-102h, so on the boot run the mark is
     # a gap old and the delta reaches back across the whole gap - undated, so
     # no line filter can touch it. That boot run is precisely when the operator
@@ -546,9 +579,19 @@ tailnew() {
     # yesterday clears it while the delta still spans days.
     # A mark older than the freshness window is treated as first sight: emit
     # nothing, and the unconditional re-mark above has already re-armed it.
+    # WEEKLY CADENCE (QFLX-110/123): the mark is ~7 days old on a normal run,
+    # inside the 8-day FRESH_DAYS window, so the delta is exactly "appended
+    # since the previous weekly run" (capped, newest bytes win below). A mark
+    # older than that (a missed week) is still first sight, and is now NAMED
+    # rather than silent, so an empty section reads as policy, not as a dead
+    # collector.
     now=$(date +%s)
     case "$ptime" in ''|*[!0-9]*) continue ;; esac
-    [ "$((now - ptime))" -le "$((FRESH_DAYS * 86400))" ] || continue
+    if [ "$((now - ptime))" -gt "$((FRESH_DAYS * 86400))" ]; then
+      printf '# collector-suppressed: %s watermark is %sh old (> FRESH_DAYS); undated bytes since then cannot be dated, re-armed\n' \
+        "$f" "$(( (now - ptime) / 3600 ))"
+      continue
+    fi
     [ "$size" -lt "$prev" ] && prev=0            #    rotated: all of it is new
     [ "$size" -gt "$prev" ] || continue          # 2. nothing appended
     [ -n "$(find "$f" -mtime -"$FRESH_DAYS" -print -quit 2>/dev/null)" ] || continue  # 3.
@@ -849,7 +892,7 @@ collect_cap arr_logs 5000 bash -c '
 #    do not carry the failed-to-start shape pass untouched, and a unit that IS
 #    still failed keeps every one of its lines.
 collect journal_errors bash -c '
-  RAW=$(journalctl --user -p err --since "24 hours ago" --no-pager 2>&1)
+  RAW=$(journalctl --user -p err --since "$FRESH_DAYS days ago" -r --no-pager 2>&1)
   KEPT=""; ND=0
   while IFS= read -r line; do
     u=$(printf "%s\n" "$line" | grep -oE "Failed to start [A-Za-z0-9@._-]+\.(service|timer|socket|mount|path)" | sed -E "s/^Failed to start //")
@@ -885,11 +928,18 @@ collect cron_mail bash -c '
   mboxfresh < "$f" | tail -n 500
 '
 
-# 4. Maint pipeline (state + 6h warnings)
+# 4. Maint pipeline (state + pusher warnings since the previous weekly run).
+#    WEEKLY CADENCE (QFLX-110/123): the run lands Monday ~19:00 UTC; the old 6h
+#    window reached back only to 13:00 UTC and missed half the 11:00-15:00 UTC
+#    maintenance window. The journal windows (here and journal_errors above)
+#    are FRESH_DAYS, the same "since last run" window as every dated source,
+#    read NEWEST FIRST (-r) because collect() keeps the head of the stream:
+#    when a week overflows the section cap, the maintenance aftermath survives
+#    and last Tuesday is what gets cut.
 collect maint_state bash -c '
   [ -f ~/.opt/maint/state.json ] && cat ~/.opt/maint/state.json
-  echo "----- pusher warnings 6h -----"
-  journalctl --user -u manitoba-maint-pusher --since "6h ago" -p warning --no-pager 2>&1 || true
+  echo "----- pusher warnings, last $FRESH_DAYS days, newest first -----"
+  journalctl --user -u manitoba-maint-pusher --since "$FRESH_DAYS days ago" -r -p warning --no-pager 2>&1 || true
 '
 
 # 5. nginx errors (last 200 lines; skipped when the error.log is frozen/stale).
@@ -1201,7 +1251,7 @@ collect reaper_log bash -c 'tailfresh 120 ~/.opt/maint/reaper/reaper-$(date -u +
 # CRITICAL -> FATAL before ingest, and a `stats by (level)` over 24h returns only
 # DEBUG/INFO/WARN/ERROR/unknown - neither token can ever match. Note that ~50% of
 # rows carry level="unknown", so the bare term list still does the work for them.
-collect_cap vlogs 3500 bash -c 'VP=$(cat ~/secrets/vlogs.port 2>/dev/null); [ -n "$VP" ] && curl -s -m 8 "http://127.0.0.1:$VP/select/logsql/query" --data-urlencode "query=_time:24h (level:ERROR OR error OR fatal OR exception OR panic OR traceback) -_msg:\"CreditsDetectionManager\" -_msg:\"Unknown metadata type\" | sort by (_time) desc | fields _time,app,level,_msg | limit 25" 2>/dev/null || true'
+collect_cap vlogs 3500 bash -c 'VP=$(cat ~/secrets/vlogs.port 2>/dev/null); [ -n "$VP" ] && curl -s -m 8 "http://127.0.0.1:$VP/select/logsql/query" --data-urlencode "query=_time:${FRESH_DAYS}d (level:ERROR OR error OR fatal OR exception OR panic OR traceback) -_msg:\"CreditsDetectionManager\" -_msg:\"Unknown metadata type\" | sort by (_time) desc | fields _time,app,level,_msg | limit 25" 2>/dev/null || true'
 
 # --- REA liveness heartbeat -------------------------------------------------
 # The WRITER half of scripts/canaries/rea-liveness.sh. Read that header before
@@ -1215,7 +1265,10 @@ collect_cap vlogs 3500 bash -c 'VP=$(cat ~/secrets/vlogs.port 2>/dev/null); [ -n
 #             this instant THIS run has no verdict yet - the one-run lag is by
 #             construction and is what lets the heartbeat report ssh_fail and
 #             tunnel_timeout at all, which an end-of-run write never could
-#             (by definition its SSH is dead).
+#             (by definition its SSH is dead). Since the task went WEEKLY
+#             (QFLX-110) a run that reached the box ALSO overwrites this with
+#             its own line on the way out (Publish-ReaHeartbeat), because a
+#             one-run lag is now a one-WEEK lag.
 #
 # WHY THE ARGUMENT ORDER MATTERS: this sits at the END of collection, not the
 # top. Reaching here means REA reached the box AND the collection ran to
@@ -1264,7 +1317,7 @@ fi
 #   watermark  undated append-only stream: only bytes appended since the
 #              previous run ship, floored by the file mtime gate (tailnew)
 #   query      the collector asks for a bounded window at query time -
-#              journalctl --since, LogsQL _time:24h, a live DB/state read, or a
+#              journalctl --since, LogsQL _time:<FRESH_DAYS>d, a live DB/state read, or a
 #              path built from todays date
 #
 # `mtime` alone is NOT legal, on purpose. File mtime bounds the FILE, not its
@@ -1299,7 +1352,95 @@ for k in arr_logs journal_errors cron_mail maint_state nginx_errors plex_errors 
   printf '%s"%s":"%s"' "$sep" "$k" "$v"
   sep=','
 done
-printf '}}'
+printf '}'
+# weekly_events: OUTSIDE "sources" on purpose. The QFLX-123 roll-up of what
+# did NOT page this week, counted for the weekly Discord summary - never handed
+# to the models, which grade logs, not our own alert bookkeeping. ONE python
+# process, in this ONE ssh call, reads two read-only sources:
+#   1. ~/.opt/maint/weekly-events.jsonl (lib/paging.py record_weekly): every
+#      non-member-facing notify(). Kuma "up" (recovery) records are skipped.
+#   2. kuma.db, opened mode=ro: IMPORTANT DOWN beats in the last 7 days on
+#      monitors WITHOUT the "Mission Control - QFlix" Discord channel. This is
+#      the only place those edges exist: Kuma runs in a container that cannot
+#      reach the maint daemon, so the auto-heal webhook has never received a
+#      POST and never writes a "kuma" record into source 1.
+# Merged per monitor name: Kuma DOWNs = max(file "kuma" records, kuma.db
+# DOWNs) so the same edge is never counted twice if the webhook ever starts
+# working; notify() events add on top. Names only (monitor, else the emitting
+# program), never msg: member-data-free. A source that fails is named in
+# `partial`; ok:false only when NEITHER could be read. An empty field (no
+# python3, any crash) reads as "unknown" on the workstation - fail open, the
+# summary still posts. Last 7 days, box clock, UTC.
+WE=$(python3 - "$HOME/.opt/maint/weekly-events.jsonl" "$HOME/.apps/uptimekuma/kuma.db" <<'PYEOF' 2>/dev/null | base64 -w0
+import collections, json, os, sqlite3, sys
+from datetime import datetime, timedelta, timezone
+ev_path, db_path = sys.argv[1], sys.argv[2]
+DISCORD = "Mission Control - QFlix"
+cut = datetime.now(timezone.utc) - timedelta(days=7)
+cut_iso = cut.strftime("%Y-%m-%dT%H:%M:%SZ")
+cut_db = cut.strftime("%Y-%m-%d %H:%M:%S")
+kfile = collections.Counter()
+other = collections.Counter()
+kdb = collections.Counter()
+partial = []
+file_ok = False
+if os.path.exists(ev_path):
+    try:
+        with open(ev_path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(r, dict) or str(r.get("ts", "")) < cut_iso:
+                    continue
+                name = str(r.get("monitor") or r.get("origin") or "unknown")[:60]
+                if r.get("kind") == "kuma":
+                    if r.get("state") != "up":
+                        kfile[name] += 1
+                else:
+                    other[name] += 1
+        file_ok = True
+    except OSError:
+        partial.append("roll-up file unreadable")
+else:
+    file_ok = True
+kuma_ok = False
+try:
+    # mode=ro: never creates or writes the live Kuma database. as_uri()
+    # percent-encodes the path, so any character in it stays a filename.
+    import pathlib
+    con = sqlite3.connect(pathlib.Path(db_path).absolute().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        rows = con.execute(
+            "SELECT m.name, COUNT(*) FROM heartbeat h JOIN monitor m ON m.id = h.monitor_id"
+            " WHERE h.important = 1 AND h.status = 0 AND h.time >= ?"
+            " AND m.id NOT IN (SELECT mn.monitor_id FROM monitor_notification mn"
+            " JOIN notification n ON n.id = mn.notification_id WHERE n.name = ?)"
+            " GROUP BY m.name", (cut_db, DISCORD)).fetchall()
+    finally:
+        con.close()
+    for name, cnt in rows:
+        kdb[str(name)[:60]] += int(cnt)
+    kuma_ok = True
+except Exception:
+    partial.append("kuma.db unreadable")
+if not (file_ok or kuma_ok):
+    print(json.dumps({"ok": False, "why": ", ".join(partial)}))
+    sys.exit(0)
+total = collections.Counter()
+for name in set(kfile) | set(kdb):
+    total[name] += max(kfile[name], kdb[name])
+for name, cnt in other.items():
+    total[name] += cnt
+names = sorted(total.items(), key=lambda kv: (-kv[1], kv[0]))
+print(json.dumps({"ok": True, "n": sum(total.values()),
+                  "names": [{"name": k, "count": v} for k, v in names],
+                  "partial": ", ".join(partial)}))
+PYEOF
+)
+printf ',"weekly_events":"%s"' "$WE"
+printf '}'
 printf '\n'
 '@
     $bash = $bash -replace '__SECTION_CAP__', [string]$Script:SectionByteCap
@@ -1819,58 +1960,9 @@ function Select-DuePageGroups {
 }
 
 # ---------- Discord payload builders ----------
-function New-DiscordErrorPayload {
-    param([array]$Groups, [string]$OperatorId, [int]$ModelCount, [int]$DurationSec)
-    $fields = @()
-    foreach ($g in $Groups) {
-        $modelList = ($g.models_flagged -join ', ')
-        $fraction  = "$($g.models_flagged.Count)/$ModelCount"
-        $excerpt   = [string]$g.excerpt
-        if ($excerpt.Length -gt 300) { $excerpt = $excerpt.Substring(0,297) + '...' }
-        $value = "**$($g.app)** | ``$($g.file)`` | $($g.severity)`n$($g.summary)`n_flagged by: $modelList ($fraction)_`n``````$excerpt```````n"
-        if ($value.Length -gt 1024) { $value = $value.Substring(0,1021) + '...' }
-        $nameRaw = "$($g.app) - $($g.signature)"
-        if ($nameRaw.Length -gt 256) { $nameRaw = $nameRaw.Substring(0,253) + '...' }
-        $fields += @{ name = $nameRaw; value = $value; inline = $false }
-    }
-    return @{
-        content          = "<@$OperatorId>"
-        allowed_mentions = @{ parse = @(); users = @($OperatorId) }
-        embeds = @(@{
-            title     = "[ALERT] QFlix REA - $($Groups.Count) issue$(if($Groups.Count -ne 1){'s'})"
-            color     = 15158332
-            timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-            fields    = $fields
-            footer    = @{ text = "models: $ModelCount | sources: 14 | duration: ${DurationSec}s" }
-        })
-    }
-}
-
-function New-DiscordHeartbeatPayload {
-    param([int]$ModelCount, [int]$SoloCount = 0, [int]$MutedCount = 0)
-    # SoloCount surfaces the consensus-floor remainder (2026-08-26): findings
-    # only one model flagged never ping, but their existence shows here so a
-    # persistent real fault is visible in the daily review without a page.
-    $solo = if ($SoloCount -gt 0) { " | $SoloCount single-model finding(s) held (see audit log)" } else { "" }
-    # MutedCount is the SAME honesty obligation for the cross-run page ledger
-    # (2026-09-02). A run whose only findings were already-paged repeats reaches
-    # this builder, and titling that "clean" would be a lie of exactly the kind
-    # the quorum_degraded fix existed to stop: still-broken is not clean, it is
-    # already-reported. Naming the count keeps the daily embed truthful without
-    # re-pinging.
-    $muted = if ($MutedCount -gt 0) { " | $MutedCount repeat finding(s) muted (already paged within ${Script:PageCooldownHours}h)" } else { "" }
-    $title = if ($MutedCount -gt 0) { '[OK] QFlix REA - no new findings' } else { '[OK] QFlix REA clean' }
-    return @{
-        content = ''
-        embeds  = @(@{
-            title       = $title
-            color       = 3066993
-            description = "$ModelCount models | 14 sources | 0 new findings$solo$muted"
-            timestamp   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-        })
-    }
-}
-
+# The hourly-era per-finding [ALERT] and daily [OK] heartbeat builders were
+# deleted with QFLX-123: New-DiscordWeeklyPayload is the one report message,
+# and this deadman builder is the one failure message.
 function New-DiscordDeadmanPayload {
     # Generic "audit could not run" alert. Title/Description default to the
     # original Ollama-down wording so every existing caller (and the test that
@@ -1881,7 +1973,7 @@ function New-DiscordDeadmanPayload {
     param(
         [string]$OperatorId,
         [string]$Title       = '[WARN] QFlix REA - Ollama appears down',
-        [string]$Description = "Workstation Ollama at $($Script:OllamaBase)/api/tags is not responding. Audit skipped.`n`nNext check: next Windows logon. Manual fix: ``ollama serve`` (or restart the Ollama service)."
+        [string]$Description = "Workstation Ollama at $($Script:OllamaBase)/api/tags is not responding. Audit skipped.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: ``ollama serve`` (or restart the Ollama service)."
     )
     return @{
         content          = "<@$OperatorId>"
@@ -1893,6 +1985,152 @@ function New-DiscordDeadmanPayload {
             timestamp   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         })
     }
+}
+
+function New-DiscordWeeklyPayload {
+    <#
+      THE weekly message (operator 2026-11-11, QFLX-123): "ping me in the
+      Discord channel where the qflix alerts go. I will treat that like an
+      alert but it will be a warning. Not a critical."
+
+      Every completed weekly audit posts exactly ONE of these, clean or not;
+      it replaces both the per-finding [ALERT] page and the daily [OK]
+      heartbeat. WARNING styling = the existing [WARN] convention in this file
+      (orange 16753920 + operator mention, as New-DiscordDeadmanPayload), never
+      the red [ALERT] 15158332.
+
+      One line per finding, built only from model-authored app/severity/summary
+      fields of findings that already survived the noise rules, staleness,
+      ownership gate and the >=2-model consensus floor. No excerpts, no paths:
+      the summary is the whole point of a weekly digest, and a log excerpt is
+      the one field that can carry a username or an IP. Pure.
+    #>
+    param(
+        [string]$OperatorId,
+        [array]$Groups = @(),
+        [int]$OkModels,
+        [int]$ModelCount,
+        [int]$DurationSec,
+        [string]$FetchedAt = '',
+        [int]$SoloCount = 0,
+        [string]$Note = '',
+        [string]$PreviousAudit = '',
+        $Rollup = $null,
+        [datetime]$Now = (Get-Date)
+    )
+    $n = @($Groups).Count
+    $state = if ($Note) { $Note } elseif ($n -gt 0) { "$n finding$(if ($n -ne 1) { 's' })" } else { 'clean' }
+    $ref = $Now.ToUniversalTime()
+    if ($FetchedAt) {
+        $p = [datetimeoffset]::MinValue
+        if ([datetimeoffset]::TryParse($FetchedAt, [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$p)) { $ref = $p.UtcDateTime }
+    }
+    $from = $ref.AddDays(-$Script:FreshDays)
+    $lines = @(
+        "**Run:** $($Now.ToString('ddd yyyy-MM-dd HH:mm')) local ($($Now.ToUniversalTime().ToString('HH:mm')) UTC), ${DurationSec}s, $OkModels/$ModelCount models answered"
+        "**Window:** $($from.ToString('ddd yyyy-MM-dd')) -> $($ref.ToString('ddd yyyy-MM-dd HH:mm')) UTC (last $($Script:FreshDays) days: since the previous weekly run, including Monday's 11:00-15:00 UTC maintenance window)"
+    )
+    if ($PreviousAudit) { $lines += "**Previous audit:** $PreviousAudit" }
+    $lines += (Format-NotPagedLine -Rollup $Rollup)
+    $lines += ''
+    if ($n -eq 0) {
+        $verdict = 'Clean: no finding survived the noise rules and the 2-model consensus floor.'
+        if ($Note) { $verdict = '_No findings could be graded this week._' }
+        $lines += $verdict
+    } else {
+        $lines += "**Findings ($n):**"
+        $top = @($Groups | Sort-Object -Property @{ Expression = { if ($_.severity -eq 'critical') { 0 } else { 1 } } }, @{ Expression = { -@($_.models_flagged).Count } } | Select-Object -First 10)
+        foreach ($g in $top) {
+            $s = ([string]$g.summary -replace '\s+', ' ').Trim()
+            if ($s.Length -gt 160) { $s = $s.Substring(0, 157) + '...' }
+            $lines += "- **$($g.app)** [$($g.severity)] $s ($(@($g.models_flagged).Count)/$ModelCount models)"
+        }
+        if ($n -gt 10) { $lines += "- ...and $($n - 10) more (audit log)" }
+    }
+    if ($SoloCount -gt 0) { $lines += "_$SoloCount single-model finding(s) held below the consensus floor (audit log)._" }
+    $desc = ($lines -join "`n")
+    if ($desc.Length -gt 4000) { $desc = $desc.Substring(0, 3997) + '...' }
+    return @{
+        content          = "<@$OperatorId>"
+        allowed_mentions = @{ parse = @(); users = @($OperatorId) }
+        embeds = @(@{
+            title       = "[WARN] QFlix weekly audit - $state"
+            color       = 16753920
+            description = $desc
+            timestamp   = $Now.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            footer      = @{ text = 'weekly REA | Mondays 12:00 local | warning, not critical' }
+        })
+    }
+}
+
+function Get-WeeklyEventsRollup {
+    # Reads the `weekly_events` field the heredoc adds next to `sources` (the
+    # box's QFLX-123 roll-up of everything that did not page this week).
+    # FAILS OPEN: missing field, empty field, bad base64/JSON, ok:false - all
+    # return available=$false and the summary says "unknown" instead of
+    # failing the weekly message. Pure over $Json.
+    param([string]$Json)
+    $none = [pscustomobject]@{ available = $false; n = 0; names = @() }
+    try {
+        $obj = $Json | ConvertFrom-Json
+        if (-not ($obj.PSObject.Properties.Name -contains 'weekly_events')) { return $none }
+        $b64 = [string]$obj.weekly_events
+        if (-not $b64) { return $none }
+        $w = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json
+        if (-not ($w.PSObject.Properties.Name -contains 'ok') -or -not $w.ok) { return $none }
+        $names = @(foreach ($e in @($w.names)) {
+            if ($null -eq $e) { continue }
+            [pscustomobject]@{ name = [string]$e.name; count = [int]$e.count }
+        })
+        $partial = ''
+        if ($w.PSObject.Properties.Name -contains 'partial') { $partial = [string]$w.partial }
+        return [pscustomobject]@{ available = $true; n = [int]$w.n; names = $names; partial = $partial }
+    } catch { return $none }
+}
+
+function Format-NotPagedLine {
+    # "Not paged this week: N - <names>" for the weekly summary. Pure.
+    param($Rollup, [int]$MaxNames = 12)
+    if ($null -eq $Rollup -or -not $Rollup.available) {
+        return '**Not paged this week:** unknown (weekly roll-up not readable from the box)'
+    }
+    # A source the box could not read is NAMED, so a low count is never
+    # mistaken for a quiet week (e.g. "kuma.db unreadable").
+    $part = ''
+    if (($Rollup.PSObject.Properties.Name -contains 'partial') -and $Rollup.partial) { $part = " (partial: $($Rollup.partial))" }
+    if ($Rollup.n -le 0) { return "**Not paged this week:** 0$part" }
+    $all = @($Rollup.names)
+    $shown = @($all | Select-Object -First $MaxNames | ForEach-Object { "$($_.name) ($($_.count))" })
+    $more = if ($all.Count -gt $MaxNames) { ", +$($all.Count - $MaxNames) more" } else { '' }
+    return "**Not paged this week:** $($Rollup.n) - $($shown -join ', ')$more$part"
+}
+
+function Get-PreviousAuditStamp {
+    # Stamp of the most recent COMPLETED audit in audit.log strictly before
+    # $Before, or ''. Same "completed" vocabulary as Test-WeeklyAuditDone.
+    param([string[]]$Lines, [datetime]$Before = (Get-Date))
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    for ($i = @($Lines).Count - 1; $i -ge 0; $i--) {
+        $l = ([string]$Lines[$i]).TrimStart([char]0xFEFF).Trim()
+        if ($l -notmatch $Script:CompletedAuditRx) { continue }
+        $dto = [datetimeoffset]::MinValue
+        if (-not [datetimeoffset]::TryParse($Matches[1], $inv, [System.Globalization.DateTimeStyles]::None, [ref]$dto)) { continue }
+        # Rendered with the offset it was LOGGED in (the workstation's), not
+        # converted to the reader's zone: a UTC CI runner printed 19:21 for a
+        # 12:21 -07:00 audit (CI run 43018145845).
+        if ($dto.LocalDateTime -lt $Before) { return $dto.ToString('ddd yyyy-MM-dd HH:mm zzz', [System.Globalization.CultureInfo]::InvariantCulture) }
+    }
+    return ''
+}
+
+function Test-IsFinalWeeklyAttempt {
+    # True when no further scheduled retry will come this week: at/after the
+    # last start of the Monday retry tail (anchor + RetryWindowHours - 1h,
+    # i.e. 23:00), or any later catch-up start (StartWhenAvailable). Pure.
+    param([datetime]$Now = (Get-Date), [int]$RetryWindowHours = $Script:WeeklyRetryWindowHours)
+    $anchor = Get-WeeklyAnchor -Now $Now
+    return ($Now -ge $anchor.AddHours($RetryWindowHours - 1))
 }
 
 # ---------- Ollama generate + Discord POST ----------
@@ -1955,12 +2193,22 @@ function Invoke-Model {
 
 function Send-Discord {
     param([string]$WebhookUrl, [hashtable]$Payload)
-    $json = $Payload | ConvertTo-Json -Depth 12 -Compress
+    # The HTTP status lands in $Script:LastDiscordStatus so the caller can put
+    # it on the audit line (204 = Discord accepted it). Never the URL.
+    # Body sent as UTF-8 bytes: PS 5.1 would otherwise encode the string in
+    # the ANSI codepage and mangle the -> and em-dash in the weekly embed.
+    $Script:LastDiscordStatus = 0
+    $json  = $Payload | ConvertTo-Json -Depth 12 -Compress
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($json)
     try {
-        Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $json `
-            -ContentType 'application/json' -TimeoutSec 15 -ErrorAction Stop | Out-Null
-        return $true
-    } catch { return $false }
+        $r = Invoke-WebRequest -Uri $WebhookUrl -Method Post -Body $bytes -UseBasicParsing `
+            -ContentType 'application/json; charset=utf-8' -TimeoutSec 15 -ErrorAction Stop
+        $Script:LastDiscordStatus = [int]$r.StatusCode
+        return ($Script:LastDiscordStatus -ge 200 -and $Script:LastDiscordStatus -lt 300)
+    } catch {
+        try { $Script:LastDiscordStatus = [int]$_.Exception.Response.StatusCode } catch {}
+        return $false
+    }
 }
 
 # ---------- Tunnel + Ollama gates ----------
@@ -2184,10 +2432,108 @@ function Get-LastTerminalAuditLine {
         $l = $lines[$i].TrimStart([char]0xFEFF).Trim()
         if (-not $l) { continue }
         $body = ($l -split ' ', 2)[-1]
-        if ($body -like 'suppressed n=*' -or $body -like 'model-*') { continue }
+        # `weekly-*` (QFLX-110): the once-a-week guard's no-op line and the
+        # end-of-run heartbeat publish line. Both are bookkeeping written AFTER
+        # a run's verdict, never a verdict themselves.
+        if ($body -like 'suppressed n=*' -or $body -like 'model-*' -or $body -like 'weekly-*') { continue }
         return $l
     }
     return ''
+}
+
+function Get-WeeklyAnchor {
+    # The most recent $WeeklyAnchorDay $WeeklyAnchorTime (LOCAL) at or before
+    # $Now - i.e. when "this week's" audit became due. Pure.
+    param([datetime]$Now = (Get-Date))
+    $day = [System.DayOfWeek]$Script:WeeklyAnchorDay
+    $at  = [timespan]::Parse($Script:WeeklyAnchorTime)
+    $back = (7 + [int]$Now.DayOfWeek - [int]$day) % 7
+    $a = $Now.Date.AddDays(-$back).Add($at)
+    if ($a -gt $Now) { $a = $a.AddDays(-7) }
+    return $a
+}
+
+function Test-WeeklyAuditDone {
+    # Returns the audit line that already settled this week, or '' if none.
+    # "Settled" = a COMPLETED audit stamped at/after the weekly anchor: an
+    # `ok findings=` line whose outcome graded something (heartbeat, silent,
+    # error_post, or discord_post_failed - the audit ran, only the post did
+    # not). NOT settled, so the next hourly retry runs: any `fail reason=`, any
+    # SKIPPED, quorum_degraded (one model graded nothing) and dryrun_* (a dev
+    # run is not a production audit) - the same vacuous family the box-side
+    # rea-liveness canary refuses to count as a verdict. Pure over $Lines.
+    param([string[]]$Lines, [datetime]$Now = (Get-Date))
+    $anchor = Get-WeeklyAnchor -Now $Now
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    foreach ($raw in @($Lines)) {
+        if (-not $raw) { continue }
+        $l = $raw.TrimStart([char]0xFEFF).Trim()
+        if ($l -notmatch $Script:CompletedAuditRx) { continue }
+        $dto = [datetimeoffset]::MinValue
+        if (-not [datetimeoffset]::TryParse($Matches[1], $inv, [System.Globalization.DateTimeStyles]::None, [ref]$dto)) { continue }
+        if ($dto.LocalDateTime -ge $anchor -and $dto.LocalDateTime -le $Now) { return $l }
+    }
+    return ''
+}
+
+function Publish-ReaHeartbeat {
+    # END-OF-RUN half of the rea-liveness writer (QFLX-110). The fetch-time
+    # write below in Get-RemoteHeredoc carries the PREVIOUS run's line - a
+    # one-run lag that cost an hour on an hourly task and costs a WEEK on a
+    # weekly one: a noon failure followed by a clean 13:00 retry would leave
+    # the canary red until next Monday, and a clean week would be reported a
+    # week late. So a run that reached the box this time also publishes its
+    # OWN terminal line on the way out. The fetch-time write stays: it is the
+    # only path that can carry ssh_fail / tunnel_timeout / ollama_down, which
+    # never reach the box by definition.
+    #
+    # Same contract and same atomic tmp+rename as the heredoc block; mtime is
+    # still the box's own clock. Best effort: a failed publish leaves the
+    # fetch-time line in place (honest, just lagged) and is logged as a
+    # `weekly-heartbeat` line, which Get-LastTerminalAuditLine skips.
+    param([int]$TimeoutSec = 30)
+    $line = Get-LastTerminalAuditLine
+    if (-not $line) { return }
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($line))
+    $bash = @'
+set -u
+D=$HOME/.opt/maint/rea
+mkdir -p "$D" &&
+printf '%s' '__B64__' | base64 -d > "$D/.heartbeat.$$" &&
+printf '\n' >> "$D/.heartbeat.$$" &&
+mv -f "$D/.heartbeat.$$" "$D/heartbeat" || { rm -f "$D/.heartbeat.$$"; exit 1; }
+'@
+    $bash = $bash.Replace('__B64__', $b64) -replace "`r", ''
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Script:SshExe
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.Arguments = (@('-o','BatchMode=yes','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=2',
+                            '-o','StrictHostKeyChecking=accept-new', (Resolve-SshHost), 'bash','-s') -join ' ')
+        $p = [System.Diagnostics.Process]::Start($psi)
+        try {
+            $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($bash)
+            $p.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+            $p.StandardInput.BaseStream.Flush()
+            $p.StandardInput.Close()
+            $errTask = $p.StandardError.ReadToEndAsync()
+            $null = $p.StandardOutput.ReadToEndAsync()
+            if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+                try { $p.Kill() } catch {}
+                throw "timeout ${TimeoutSec}s"
+            }
+            if ($p.ExitCode -ne 0) { throw "exit $($p.ExitCode): $($errTask.Result)" }
+        } finally { try { $p.Dispose() } catch {} }
+        Write-AuditLog 'weekly-heartbeat publish=ok'
+    } catch {
+        $msg = ($_.Exception.Message -replace '[\r\n]+', ' ')
+        if ($msg.Length -gt 200) { $msg = $msg.Substring(0, 200) }
+        Write-AuditLog "weekly-heartbeat publish=failed err=$msg"
+    }
 }
 
 function Send-DeadmanAlert {
@@ -2212,6 +2558,15 @@ function Send-DeadmanAlert {
         [string]$Detail = ''   # optional free-text appended to the audit line (e.g. msg=... for ssh_fail)
     )
     $suffix = if ($Detail) { " $Detail" } else { '' }
+    # WEEKLY (QFLX-123): one Discord message a week. A failure on a scheduled
+    # attempt that still has an hourly retry behind it is logged, not posted -
+    # the retry may well succeed and post the weekly summary. Only the FINAL
+    # attempt (or a manual run) turns a failure into the week's one [WARN].
+    # The `fail reason=` line still reaches the box-side canary either way.
+    if ($Script:DeferFailurePages) {
+        Write-AuditLog "fail reason=$Reason outcome=deferred_retry$suffix"
+        return
+    }
     $state      = Read-State
     $key        = "dead_ping_$Reason"
     $shouldPing = $true
@@ -2248,7 +2603,7 @@ function Send-DeadmanAlert {
 # ---------- Prompt + secret helpers ----------
 function Get-SystemPrompt {
 @'
-You are auditing a self-hosted media-server stack ("Manitoba" / "QFlix") running on an Ultra.cc shared seedbox. You receive a JSON blob containing log excerpts from fourteen sources. Find real errors a sysadmin should act on. Ignore noise (info-level chatter, expected periodic warnings, unrelated debug lines). IGNORE STALE HISTORY: the blob's `fetched_at` is NOW; any log line whose own timestamp is more than 3 days older than `fetched_at` is a resolved/historical incident (e.g. a decommissioned app's last error), NOT a current fault - do not report it. Lines beginning "# collector-suppressed:" or "===== <section> census:" are collector bookkeeping, not log content - never report them; they exist so you can see the section was filtered. Every log line is prefixed with its own [path] or [logfile], or preceded by a "===== path =====" header: COPY THAT VERBATIM into the `file` field. If a section supplies none, emit source:<section-name>. NEVER infer or invent a filesystem path. NON-ACTIONABLE NOISE you must NEVER report (external, cosmetic, or expected): Plex NAT-PMP / UPnP / port-mapping "not supported by gateway" messages; any "unexpected networking error", Cloudflare 5xx (52x), or nginx error-page HTML returned to an *arr from an EXTERNAL indexer/proxy (transient upstream, not our stack); indexer responses that merely echo a `"severity": "error"` JSON field; bare stack-trace CONTINUATION fragments ("End of inner exception stack trace", lines starting "at ") with no accompanying root error message; tdarr unhandled express-route errors ("worker2 ... is not a function", "Cannot read properties of undefined (reading 'includes')" from Tdarr_Server/srcug/api/servers.js), an upstream Tdarr bug that neither restarts nor degrades the server; and Plex client-abort stream writes ("Caught exception trying to stream file ...: write: protocol is shutdown (SSL routines)"), which mean a viewer closed or seeked mid-stream - the identical error fires on poster JPEGs, so it is never a media fault; the Tdarr Mediainfo probe's WASM out-of-memory failure ("WebAssembly.instantiate(): Out of memory: wasm memory", "Error running MediaInfo") is a KNOWN, PERMANENT fault on this memory-capped slot (ruled unfixable 2026-07-28: Tdarr's bundled Node rejects the only viable fix and crash-loops if forced) tracked by a dedicated canary, not by this audit - do NOT report it; and Plex "Failed to create parent iterator" lines are the expected trailing edge of qflix-reaper's 45-day retention deleting a whole series directory out from under a library scan; Plex "ClientProfileExtra: missing or invalid type parameter" lines, which PMS logs at ERROR level once or more per transcode-decision request and which never accompany a failed transcode - the stream still plays, so do NOT report them; Plex "Unable to find metadata agent provider for identifier" naming the PSEUDO-identifiers 'library' or 'iva', which are Plex resolving its own PlayQueue and Discover scopes and NOT a missing agent - the SAME message naming a real provider (com.plexapp.agents.* or tv.plex.agents.*) IS a genuine config break and you MUST still report that one; Sonarr/Radarr ParsingService "No matching series"/"No matching movie" Debug lines and the paired DownloadDecisionMaker "[Permanent] Unknown Series/Unknown Movie" rejections, which are BY DESIGN - the *arr pulls an indexer's full recent RSS feed and filters locally, so every release title outside this library logs one, and they are never severity=error (an IMPORT failure mentioning "no matching series folder on disk" or "no matching series files" is a different, real fault and IS reportable); any finding whose ONLY evidence is *arr Debug-level lines - an excerpt carrying a "|Debug|" NLog level token and no error-level token anywhere in it - because *arr Debug is per-release trace chatter and a real fault always carries an error-level token somewhere in the same excerpt; Plex CreditsDetectionManager marker-scan chatter, specifically "incomplete marker attributes", "BufferingLineReader: failed to read line" and "credits detection for item N has failed too many times", which are the intro/credits marker scanner retrying its own work and never affect playback - a CreditsDetectionManager "Job failed" or "Mis-matching media items" line is NOT covered by this and you SHOULD still report it; Plex "Unknown metadata type: folder" replies under a [Req#...] tag, which are a client asking the HTTP API about a folder-type item Plex has no metadata class for, i.e. a normal browse response rather than a fault; Bazarr "Error trying to get releases from Github" GitHub API rate-limit failures, which are the unauthenticated 60-requests-per-hour GitHub limit being consumed by the other tenants sharing this seedbox's IP - every Bazarr here runs with --no-update so the release list is display-only, the poll succeeds again as soon as the shared quota rolls over, and Bazarr's updater passes no auth header at all so there is nothing to configure (a 403 against any OTHER GitHub endpoint is NOT covered by this and you MUST still report it); Tdarr node "Binary test N: handbrakePath not working" lines, because HandBrakeCLI is absent and uninstallable on this slot (ruled 2026-07-28) and every Tdarr flow and health check runs ffmpeg only, so the daily binary self-test failure is permanent and cosmetic (a "Binary test N: ffmpegPath not working" line is a REAL fault and you MUST still report that one); Seerr/Jellyseerr Plex-scan "UNIQUE constraint failed: media.tvdbId" lines, because a Plex anthology item can carry multiple tmdb guids that resolve to one tvdbId - the media row already exists and the title stays available, an upstream Jellyseerr quirk with no local fix (any OTHER Seerr SQLITE_CONSTRAINT naming a different column or table is NOT covered and you MUST still report it); buildarr "Unsupported remote notification connection" warnings naming implementation PlexServer, which buildarr logs on every daily run because its radarr plugin cannot manage that connection type and skips it - radarr's own Plex notification keeps working untouched (the same message naming any OTHER implementation is a real sync gap and you MUST still report it); Plex "Network Service: Error in advertiser handle read: 125 (Operation canceled)" and the paired "Abandoning advertise socket" lines, which are PMS tearing down its announce socket as it SHUTS DOWN - exactly one appears in each rotated log, always as the last error and always immediately before "Killing process: Plex EAE Service" - so it marks a restart rather than a running fault (an advertiser error with a DIFFERENT cause, such as address-already-in-use or a refused connection, carries no cancellation token and you MUST still report it); Bazarr "SignalR client for Sonarr/Radarr connection as been lost. Trying to reconnect" lines, which are Bazarr losing its event subscription when the *arr it watches restarts - every observed loss is followed by a matching "is connected" within 20-35 seconds and they cluster inside the Monday maintenance window, so the reconnect is automatic. This suppression deliberately accepts blindness to a permanent loss: Bazarr falls back to its scheduled sync either way, and a genuinely wedged Bazarr shows OTHER errors which you MUST still report; external indexer unavailability relayed by Prowlarr - both its "Indexer's server is unavailable. Try again later" warning naming a third-party indexer and the 429 it then hands Sonarr/Radarr carrying "Indexer is disabled till <time> due to recent failures" - because the origin is someone else's server and the backoff clears itself within the hour (a bare 429.TooManyRequests with no such description is NOT covered and you MUST still report it); Prowlarr Cardigann "Request for <indexer> failed with status 5xx. Retrying in Ns" retry warnings, including the named-status equivalents (InternalServerError, BadGateway, ServiceUnavailable, GatewayTimeout), which are the per-attempt retry of a transient third-party 5xx and are followed by a successful query - Tokyo Toshokan logged 24-38 of these a day while still serving ~92 successful queries a day, so the retry line says nothing about indexer health on its own (the TERMINAL "Indexer's server is unavailable" line is a different string, already covered above, and only a SUSTAINED rise in THAT one is actionable); Plex "Webhook: Error delivering payload" failures against the orphaned Discord webhook, a hook created in Nov 2023 that is referenced nowhere in QFlix, has returned 400 on every notification and has NEVER returned 2xx in any rotated PMS log, because Plex posts a multipart payload field where Discord requires payload_json - it cannot be fixed from the box and is pending deletion at plex.tv (a delivery failure against any OTHER webhook target is NOT covered and you MUST still report it); *arr ServerSideNotificationService "Failed to retrieve notifications" cloud-news poll timeouts; *arr Discord notifier "Unable to post payload" delivery failures; Bazarr "unable to sync subtitles" single-file subsync failures; Prowlarr FlareSolverr "Proxy validation failed" one-off validation errors; Seerr "Failed to retrieve watchlist items" plex.tv 5xx responses; qflix-reaper "SUCCESS - N deleted, N GB reclaimed" summary lines, including N=0; *arr "Error occurred while executing task ApplicationCheckUpdate/ApplicationUpdateCheck/CheckHealth" scheduled-task failures; Plex CreditsDetectionManager "Job failed: Video does not exist" lines; Plex transcode "Error opening input(s): Server returned 404 Not Found" for a part the reaper already deleted; Sonarr/Radarr Torznab "rss sync didn't cover the period between X and Y" warnings; Tautulli "Tautulli WebSocket :: [Errno 111] Connection refused" PMS websocket drops; Plex "GET http://<gateway>/discover.json ... SSL peer certificate ... was not OK" tuner-discovery probes; manitoba-maint "lib.notify: alert sent:" lines, which are the alerting system CONFIRMING it already told the operator; Plex "Failed to get a decision for: <path>" errors and the paired "MDE: video has neither a video stream nor an audio stream" / "MDE: no compatible media decisions are available" lines; Plex "downloadContainer: expected MediaContainer element, found html" errors; Plex CreditsDetectionManager "Job failed: Failed to generate any thumbnails" lines; Plex "Error iterating EAE watchfolder directory: No such file or directory" transcoder lines; Plex CreditsDetectionManager "Job failed: Scanner job failed" lines; SABnzbd INFO "Sending notification: SABnzbd - Queue finished" lines; Plex "Exception caught determining whether we could skip '<Show>/Season N' ~ Null value not allowed for this type" scanner lines; *arr "Resource temporarily unavailable (services.sonarr.tv:443)" / SocketException (11) / EAI_AGAIN DNS failures against the vendor metadata hosts services.sonarr.tv, skyhook.sonarr.tv, *.radarr.video or *.servarr.com; Plex transcoder ffmpeg aresample "Failed to compensate for timestamp delta" lines; Sonarr/Radarr "Import failed, path does not exist or is not accessible" lines whose path ends in .iso/.7z/.img/.exe/.scr/.msi/.bat/.cmd/.lnk/.vbs/.ps1; Plex "Error parsing HTTP request:" lines whose payload is binary/unprintable bytes; Plex scanner "Couldn't get size of file ... No such file or directory" lines for a file already deleted; Plex "Exception caught determining whether we could skip '<Show>/Season N' ~ boost::filesystem::file_size: No such file or directory" scanner lines; Sonarr/Radarr "Import failed, path does not exist or is not accessible" lines for any download path. CONVERSELY, disk-quota and write failures ("Unknown system error -122", EDQUOT, ENOSPC, "Disk quota exceeded") ARE real and you MUST still report them if present. Only report an error that shows a service is genuinely DOWN or crash-looping, a scheduled job that cannot run at all, actual data loss, an auth/credential failure, or a config break a human must act on.
+You are auditing a self-hosted media-server stack ("Manitoba" / "QFlix") running on an Ultra.cc shared seedbox. You receive a JSON blob containing log excerpts from fourteen sources. Find real errors a sysadmin should act on. Ignore noise (info-level chatter, expected periodic warnings, unrelated debug lines). IGNORE STALE HISTORY: the blob's `fetched_at` is NOW; any log line whose own timestamp is more than 8 days older than `fetched_at` is a resolved/historical incident (e.g. a decommissioned app's last error), NOT a current fault - do not report it. Lines beginning "# collector-suppressed:" or "===== <section> census:" are collector bookkeeping, not log content - never report them; they exist so you can see the section was filtered. Every log line is prefixed with its own [path] or [logfile], or preceded by a "===== path =====" header: COPY THAT VERBATIM into the `file` field. If a section supplies none, emit source:<section-name>. NEVER infer or invent a filesystem path. NON-ACTIONABLE NOISE you must NEVER report (external, cosmetic, or expected): Plex NAT-PMP / UPnP / port-mapping "not supported by gateway" messages; any "unexpected networking error", Cloudflare 5xx (52x), or nginx error-page HTML returned to an *arr from an EXTERNAL indexer/proxy (transient upstream, not our stack); indexer responses that merely echo a `"severity": "error"` JSON field; bare stack-trace CONTINUATION fragments ("End of inner exception stack trace", lines starting "at ") with no accompanying root error message; tdarr unhandled express-route errors ("worker2 ... is not a function", "Cannot read properties of undefined (reading 'includes')" from Tdarr_Server/srcug/api/servers.js), an upstream Tdarr bug that neither restarts nor degrades the server; and Plex client-abort stream writes ("Caught exception trying to stream file ...: write: protocol is shutdown (SSL routines)"), which mean a viewer closed or seeked mid-stream - the identical error fires on poster JPEGs, so it is never a media fault; the Tdarr Mediainfo probe's WASM out-of-memory failure ("WebAssembly.instantiate(): Out of memory: wasm memory", "Error running MediaInfo") is a KNOWN, PERMANENT fault on this memory-capped slot (ruled unfixable 2026-07-28: Tdarr's bundled Node rejects the only viable fix and crash-loops if forced) tracked by a dedicated canary, not by this audit - do NOT report it; and Plex "Failed to create parent iterator" lines are the expected trailing edge of qflix-reaper's 45-day retention deleting a whole series directory out from under a library scan; Plex "ClientProfileExtra: missing or invalid type parameter" lines, which PMS logs at ERROR level once or more per transcode-decision request and which never accompany a failed transcode - the stream still plays, so do NOT report them; Plex "Unable to find metadata agent provider for identifier" naming the PSEUDO-identifiers 'library' or 'iva', which are Plex resolving its own PlayQueue and Discover scopes and NOT a missing agent - the SAME message naming a real provider (com.plexapp.agents.* or tv.plex.agents.*) IS a genuine config break and you MUST still report that one; Sonarr/Radarr ParsingService "No matching series"/"No matching movie" Debug lines and the paired DownloadDecisionMaker "[Permanent] Unknown Series/Unknown Movie" rejections, which are BY DESIGN - the *arr pulls an indexer's full recent RSS feed and filters locally, so every release title outside this library logs one, and they are never severity=error (an IMPORT failure mentioning "no matching series folder on disk" or "no matching series files" is a different, real fault and IS reportable); any finding whose ONLY evidence is *arr Debug-level lines - an excerpt carrying a "|Debug|" NLog level token and no error-level token anywhere in it - because *arr Debug is per-release trace chatter and a real fault always carries an error-level token somewhere in the same excerpt; Plex CreditsDetectionManager marker-scan chatter, specifically "incomplete marker attributes", "BufferingLineReader: failed to read line" and "credits detection for item N has failed too many times", which are the intro/credits marker scanner retrying its own work and never affect playback - a CreditsDetectionManager "Job failed" or "Mis-matching media items" line is NOT covered by this and you SHOULD still report it; Plex "Unknown metadata type: folder" replies under a [Req#...] tag, which are a client asking the HTTP API about a folder-type item Plex has no metadata class for, i.e. a normal browse response rather than a fault; Bazarr "Error trying to get releases from Github" GitHub API rate-limit failures, which are the unauthenticated 60-requests-per-hour GitHub limit being consumed by the other tenants sharing this seedbox's IP - every Bazarr here runs with --no-update so the release list is display-only, the poll succeeds again as soon as the shared quota rolls over, and Bazarr's updater passes no auth header at all so there is nothing to configure (a 403 against any OTHER GitHub endpoint is NOT covered by this and you MUST still report it); Tdarr node "Binary test N: handbrakePath not working" lines, because HandBrakeCLI is absent and uninstallable on this slot (ruled 2026-07-28) and every Tdarr flow and health check runs ffmpeg only, so the daily binary self-test failure is permanent and cosmetic (a "Binary test N: ffmpegPath not working" line is a REAL fault and you MUST still report that one); Seerr/Jellyseerr Plex-scan "UNIQUE constraint failed: media.tvdbId" lines, because a Plex anthology item can carry multiple tmdb guids that resolve to one tvdbId - the media row already exists and the title stays available, an upstream Jellyseerr quirk with no local fix (any OTHER Seerr SQLITE_CONSTRAINT naming a different column or table is NOT covered and you MUST still report it); buildarr "Unsupported remote notification connection" warnings naming implementation PlexServer, which buildarr logs on every daily run because its radarr plugin cannot manage that connection type and skips it - radarr's own Plex notification keeps working untouched (the same message naming any OTHER implementation is a real sync gap and you MUST still report it); Plex "Network Service: Error in advertiser handle read: 125 (Operation canceled)" and the paired "Abandoning advertise socket" lines, which are PMS tearing down its announce socket as it SHUTS DOWN - exactly one appears in each rotated log, always as the last error and always immediately before "Killing process: Plex EAE Service" - so it marks a restart rather than a running fault (an advertiser error with a DIFFERENT cause, such as address-already-in-use or a refused connection, carries no cancellation token and you MUST still report it); Bazarr "SignalR client for Sonarr/Radarr connection as been lost. Trying to reconnect" lines, which are Bazarr losing its event subscription when the *arr it watches restarts - every observed loss is followed by a matching "is connected" within 20-35 seconds and they cluster inside the Monday maintenance window, so the reconnect is automatic. This suppression deliberately accepts blindness to a permanent loss: Bazarr falls back to its scheduled sync either way, and a genuinely wedged Bazarr shows OTHER errors which you MUST still report; external indexer unavailability relayed by Prowlarr - both its "Indexer's server is unavailable. Try again later" warning naming a third-party indexer and the 429 it then hands Sonarr/Radarr carrying "Indexer is disabled till <time> due to recent failures" - because the origin is someone else's server and the backoff clears itself within the hour (a bare 429.TooManyRequests with no such description is NOT covered and you MUST still report it); Prowlarr Cardigann "Request for <indexer> failed with status 5xx. Retrying in Ns" retry warnings, including the named-status equivalents (InternalServerError, BadGateway, ServiceUnavailable, GatewayTimeout), which are the per-attempt retry of a transient third-party 5xx and are followed by a successful query - Tokyo Toshokan logged 24-38 of these a day while still serving ~92 successful queries a day, so the retry line says nothing about indexer health on its own (the TERMINAL "Indexer's server is unavailable" line is a different string, already covered above, and only a SUSTAINED rise in THAT one is actionable); Plex "Webhook: Error delivering payload" failures against the orphaned Discord webhook, a hook created in Nov 2023 that is referenced nowhere in QFlix, has returned 400 on every notification and has NEVER returned 2xx in any rotated PMS log, because Plex posts a multipart payload field where Discord requires payload_json - it cannot be fixed from the box and is pending deletion at plex.tv (a delivery failure against any OTHER webhook target is NOT covered and you MUST still report it); *arr ServerSideNotificationService "Failed to retrieve notifications" cloud-news poll timeouts; *arr Discord notifier "Unable to post payload" delivery failures; Bazarr "unable to sync subtitles" single-file subsync failures; Prowlarr FlareSolverr "Proxy validation failed" one-off validation errors; Seerr "Failed to retrieve watchlist items" plex.tv 5xx responses; qflix-reaper "SUCCESS - N deleted, N GB reclaimed" summary lines, including N=0; *arr "Error occurred while executing task ApplicationCheckUpdate/ApplicationUpdateCheck/CheckHealth" scheduled-task failures; Plex CreditsDetectionManager "Job failed: Video does not exist" lines; Plex transcode "Error opening input(s): Server returned 404 Not Found" for a part the reaper already deleted; Sonarr/Radarr Torznab "rss sync didn't cover the period between X and Y" warnings; Tautulli "Tautulli WebSocket :: [Errno 111] Connection refused" PMS websocket drops; Plex "GET http://<gateway>/discover.json ... SSL peer certificate ... was not OK" tuner-discovery probes; manitoba-maint "lib.notify: alert sent:" lines, which are the alerting system CONFIRMING it already told the operator; Plex "Failed to get a decision for: <path>" errors and the paired "MDE: video has neither a video stream nor an audio stream" / "MDE: no compatible media decisions are available" lines; Plex "downloadContainer: expected MediaContainer element, found html" errors; Plex CreditsDetectionManager "Job failed: Failed to generate any thumbnails" lines; Plex "Error iterating EAE watchfolder directory: No such file or directory" transcoder lines; Plex CreditsDetectionManager "Job failed: Scanner job failed" lines; SABnzbd INFO "Sending notification: SABnzbd - Queue finished" lines; Plex "Exception caught determining whether we could skip '<Show>/Season N' ~ Null value not allowed for this type" scanner lines; *arr "Resource temporarily unavailable (services.sonarr.tv:443)" / SocketException (11) / EAI_AGAIN DNS failures against the vendor metadata hosts services.sonarr.tv, skyhook.sonarr.tv, *.radarr.video or *.servarr.com; Plex transcoder ffmpeg aresample "Failed to compensate for timestamp delta" lines; Sonarr/Radarr "Import failed, path does not exist or is not accessible" lines whose path ends in .iso/.7z/.img/.exe/.scr/.msi/.bat/.cmd/.lnk/.vbs/.ps1; Plex "Error parsing HTTP request:" lines whose payload is binary/unprintable bytes; Plex scanner "Couldn't get size of file ... No such file or directory" lines for a file already deleted; Plex "Exception caught determining whether we could skip '<Show>/Season N' ~ boost::filesystem::file_size: No such file or directory" scanner lines; Sonarr/Radarr "Import failed, path does not exist or is not accessible" lines for any download path. CONVERSELY, disk-quota and write failures ("Unknown system error -122", EDQUOT, ENOSPC, "Disk quota exceeded") ARE real and you MUST still report them if present. Only report an error that shows a service is genuinely DOWN or crash-looping, a scheduled job that cannot run at all, actual data loss, an auth/credential failure, or a config break a human must act on.
 
 Report AT MOST 10 findings: if more exist, keep the 10 most severe and drop the rest - a truncated answer helps nobody. Return ONLY a JSON array of findings. No prose, no markdown fences. Empty array [] means clean.
 
@@ -2510,12 +2865,43 @@ function Test-IsStaleFinding {
 function Invoke-Main {
     $startUtc = Get-Date
 
-    # Phase 0a: yield to the operator (see $Script:BusyInputMinutes). Runs
-    # before anything heavy. The SKIPPED line is a known shape to the box-side
-    # rea-liveness canary: vacuous, cleared by the next real verdict, and only
-    # pages if no real verdict lands for MAX_VACUOUS_H (7 d) - overnight runs
-    # clear it long before that.
+    $Script:ReachedBoxThisRun = $false
+    $Script:DeferFailurePages = $false
+
+    # Phase 0: once a week (QFLX-110). The task fires Monday 12:00 and retries
+    # hourly until midnight; only scheduled runs are gated, so -Once / -DryRun
+    # / -FixturePath always run. A settled week makes every later retry a
+    # logged no-op. `weekly-noop` is skipped by Get-LastTerminalAuditLine, so
+    # it can never displace the real verdict the box-side canary reads.
     $yieldToUser = -not ($Once -or $DryRun -or $FixturePath)
+    if ($yieldToUser) {
+        $auditLog = Join-Path (Get-StateDir) 'audit.log'
+        $done = ''
+        if (Test-Path -LiteralPath $auditLog) {
+            try { $done = Test-WeeklyAuditDone -Lines @(Get-Content -LiteralPath $auditLog -Encoding UTF8 -ErrorAction Stop) }
+            catch { $done = '' }   # unreadable log: fail OPEN - audit rather than skip a week
+        }
+        if ($done) {
+            Write-AuditLog "weekly-noop already_audited since=$((Get-WeeklyAnchor).ToString('yyyy-MM-ddTHH:mm')) by=$(($done -split ' ', 2)[0])"
+            return 0
+        }
+    }
+    # The week's FINAL attempt (23:00 Monday, or any later catch-up start):
+    # nothing retries after it, so it neither yields nor defers. Every earlier
+    # scheduled attempt defers failure pages to the next retry (QFLX-123: one
+    # Discord message a week). Manual runs are always final.
+    $finalAttempt = (-not $yieldToUser) -or (Test-IsFinalWeeklyAttempt)
+    $Script:DeferFailurePages = -not $finalAttempt
+    if ($yieldToUser -and $finalAttempt) {
+        Write-AuditLog 'weekly-final-attempt busy-gate=bypassed (last chance this week)'
+        $yieldToUser = $false
+    }
+
+    # Phase 0a: yield to the operator (see $Script:BusyInputMinutes). Runs
+    # before anything heavy. A busy noon is retried by the next hourly start
+    # (Test-WeeklyAuditDone above says the week is not settled yet); the 23:00
+    # final attempt does not yield. The SKIPPED line is a known shape to the
+    # box-side rea-liveness canary: vacuous, cleared by the next real verdict.
     if ($yieldToUser) {
         $busy = Get-UserBusyReason
         if ($busy) { Write-AuditLog "SKIPPED user_active $busy"; return 0 }
@@ -2550,13 +2936,17 @@ function Invoke-Main {
             if (-not (Wait-ForTunnel)) {
                 Send-DeadmanAlert -Reason 'tunnel_timeout' -Webhook $webhook -OpId $opId `
                     -Title '[WARN] QFlix REA - SSH tunnel never came up' `
-                    -Description "The reverse SSH tunnel to the seedbox did not open port $($Script:TunnelProbePort) within $($Script:TunnelWaitSec)s. Audit skipped.`n`nNext check: next Windows logon. Manual fix: verify the tunnel service is running and SSH connectivity to the seedbox."
+                    -Description "The reverse SSH tunnel to the seedbox did not open port $($Script:TunnelProbePort) within $($Script:TunnelWaitSec)s. Audit skipped.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: verify the tunnel service is running and SSH connectivity to the seedbox."
                 return 0
             }
         }
 
         # Phase 0c: Ollama health (self-start + dead-man) — launch serve if absent, then retry
         if (-not (Start-Ollama)) {
+            if ($Script:DeferFailurePages) {
+                Write-AuditLog 'fail reason=ollama_down outcome=deferred_retry'
+                return 0
+            }
             $state = Read-State
             $shouldPing = $true
             if ($state.last_ollama_dead_ping) {
@@ -2593,7 +2983,7 @@ function Invoke-Main {
         if ($models.Count -eq 0) {
             Send-DeadmanAlert -Reason 'no_models' -Webhook $webhook -OpId $opId `
                 -Title '[WARN] QFlix REA - no code-capable Ollama models found' `
-                -Description "``ollama list`` returned no model matching the include/exclude filters (coder / qwen3, minus -base/-vl/embed). Audit skipped.`n`nNext check: next Windows logon. Manual fix: ``ollama pull`` a coder model, or check the Ollama install."
+                -Description "``ollama list`` returned no model matching the include/exclude filters (coder / qwen3, minus -base/-vl/embed). Audit skipped.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: ``ollama pull`` a coder model, or check the Ollama install."
             return 0
         }
 
@@ -2610,13 +3000,14 @@ function Invoke-Main {
                 $blobJson = Get-Content -Raw -LiteralPath $blobPath
             } else {
                 $blobJson = Invoke-RemoteFetch -OutPath $blobPath
+                $Script:ReachedBoxThisRun = $true
             }
         } catch {
             $msg = ($_.Exception.Message -replace '[\r\n]+',' ')
             if ($msg.Length -gt 200) { $msg = $msg.Substring(0,200) }
             Send-DeadmanAlert -Reason 'ssh_fail' -Webhook $webhook -OpId $opId -Detail "msg=$msg" `
                 -Title '[WARN] QFlix REA - SSH fetch from the seedbox failed' `
-                -Description "The remote log fetch over SSH failed: ``$msg``. Audit skipped.`n`nNext check: next Windows logon. Manual fix: check SSH connectivity / seedbox load."
+                -Description "The remote log fetch over SSH failed: ``$msg``. Audit skipped.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: check SSH connectivity / seedbox load."
             return 0
         }
 
@@ -2631,7 +3022,7 @@ function Invoke-Main {
         } catch {
             Send-DeadmanAlert -Reason 'blob_parse' -Webhook $webhook -OpId $opId `
                 -Title '[WARN] QFlix REA - could not parse the seedbox log blob' `
-                -Description "The JSON blob fetched from the seedbox failed to parse. Audit skipped.`n`nNext check: next Windows logon. Manual fix: run with -FixturePath or -DryRun to inspect the raw fetch."
+                -Description "The JSON blob fetched from the seedbox failed to parse. Audit skipped.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: run with -FixturePath or -DryRun to inspect the raw fetch."
             return 0
         }
 
@@ -2724,7 +3115,7 @@ function Invoke-Main {
         if ($okModels -eq 0) {
             Send-DeadmanAlert -Reason 'all_models_noop' -Webhook $webhook -OpId $opId -Detail "models=$($models.Count)" `
                 -Title '[WARN] QFlix REA - every model no-op''d' `
-                -Description "All $($models.Count) model(s) either timed out, errored, or returned unparseable output. Audit skipped this run.`n`nNext check: next Windows logon. Manual fix: check Ollama load / model health."
+                -Description "All $($models.Count) model(s) either timed out, errored, or returned unparseable output. Audit skipped this run.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: check Ollama load / model health."
             return 0
         }
         if ($suppressed.Count -gt 0) {
@@ -2751,7 +3142,7 @@ function Invoke-Main {
         # the 2026-07-28 find, and the cost asymmetry has flipped: hundreds of
         # false pings render the channel muted, which is worse than a solo
         # find waiting in the audit log. Solo groups are logged (never silent)
-        # and counted on the daily heartbeat, so a persistent real fault shows
+        # and counted on the weekly summary, so a persistent real fault shows
         # up in review even if no second model ever agrees.
         $soloGroups  = @($errorGroups | Where-Object { @($_.models_flagged).Count -lt 2 })
         $errorGroups = @($errorGroups | Where-Object { @($_.models_flagged).Count -ge 2 })
@@ -2761,18 +3152,14 @@ function Invoke-Main {
         }
         $duration    = [int]((Get-Date) - $startUtc).TotalSeconds
 
-        # CROSS-RUN PAGE FLOOR. Everything above this line decides what is TRUE;
-        # this decides what is NEWS. A finding that already paged within
-        # $Script:PageCooldownHours is still real and still logged - it just
-        # does not ping the operator a second time. Muted groups are written to
-        # the audit log by key, never silently dropped, so "why did REA go
-        # quiet about X" is answerable from the same file that answers "what
-        # pinged me at 16:09". Ledger writes happen here, AFTER the consensus
-        # floor, so a solo finding that never had the votes to page cannot
-        # burn its key and mute the run where a second model finally agrees.
+        # CROSS-RUN PAGE LEDGER. Kept for its audit trail: a finding already
+        # reported within $Script:PageCooldownHours (e.g. a manual -Once run
+        # earlier the same day) is logged as a repeat. It no longer decides what
+        # the operator sees - the weekly summary lists EVERY finding that
+        # survived the rules above, repeat or not, because it is the only
+        # message of the week (QFLX-123).
         $pageSplit   = Select-DuePageGroups -Groups $errorGroups -Stamp:(-not $DryRun)
         $mutedGroups = @($pageSplit.Muted)
-        $errorGroups = @($pageSplit.Due)
         if ($mutedGroups.Count -gt 0) {
             $mutedKeys = (($mutedGroups | ForEach-Object {
                 $k = [string]$_.page_key
@@ -2780,65 +3167,64 @@ function Invoke-Main {
                 "$($_.signature)~$k" }) -join ',')
             Write-AuditLog "repeat-muted n=$($mutedGroups.Count) cooldown=${Script:PageCooldownHours}h keys=$mutedKeys"
         }
-
         if ($errorGroups.Count -gt 0) {
-            # Durable record of WHAT paged, not just that something did. Until
-            # 2026-08-26 the audit log held only findings=N for an error_post,
-            # so "what pinged me at 16:09?" was unanswerable once the Discord
-            # embed scrolled away — the operator asks exactly that question.
+            # Durable record of WHAT was reported, so "what did the weekly
+            # message say?" is answerable once the embed scrolls away.
             $pagedSigs = (($errorGroups | ForEach-Object {
                 "$($_.signature)[$(@($_.models_flagged).Count)m]" }) -join ',')
             Write-AuditLog "paged n=$($errorGroups.Count) sigs=$pagedSigs"
-            $payload = New-DiscordErrorPayload -Groups $errorGroups -OperatorId $opId -ModelCount $models.Count -DurationSec $duration
-            if ($DryRun) {
-                ($payload | ConvertTo-Json -Depth 12) | Write-Host
-                Write-AuditLog "ok findings=$($errorGroups.Count) models=$okModels/$($models.Count) duration=${duration}s outcome=dryrun_error"
-            } else {
-                $ok = Send-Discord -WebhookUrl $webhook -Payload $payload
-                $outcome = if ($ok) { 'error_post' } else { 'discord_post_failed' }
-                Write-AuditLog "ok findings=$($errorGroups.Count) models=$okModels/$($models.Count) duration=${duration}s outcome=$outcome"
-            }
-            return 0
         }
 
-        # Quorum floor (council finding, arbiter-verified 2026-08-26): okModels
-        # was compared to 0 exactly once (the all_models_noop deadman) and never
-        # to 2 — so a ONE-model run, where the >=2 consensus floor structurally
-        # holds every finding, exited as outcome=silent and read as a clean
-        # audit. It is not a clean audit; it is a blind one. Record it as its
-        # own outcome token so the box-side rea-liveness canary (which fails
-        # CLOSED on unknown vocabulary — its branch ships in the same commit)
-        # files it with the vacuous family: transient degradation is a WARN,
-        # a PERSISTENT one accrues the no-verdict streak and pages via the
-        # existing P5 blind-streak clock. No heartbeat is posted — a green
-        # "clean" embed from a one-model run would be the lie this fixes.
-        if ($okModels -lt 2) {
+        # Quorum floor (council finding, arbiter-verified 2026-08-26): a ONE-model
+        # run, where the >=2 consensus floor structurally holds every finding,
+        # is not a clean audit; it is a blind one, and its own outcome token
+        # (quorum_degraded) is in the box-side canary's vacuous family. On a
+        # non-final scheduled attempt it is retried next hour WITHOUT posting.
+        # On the final attempt it is still the week's one message, titled as
+        # degraded - never as "clean".
+        if ($okModels -lt 2 -and -not $finalAttempt) {
             Write-AuditLog "ok findings=0 models=$okModels/$($models.Count) duration=${duration}s outcome=quorum_degraded"
             return 0
         }
+        $note = ''
+        if ($okModels -lt 2) { $note = "degraded, only $okModels of $($models.Count) models answered" }
 
-        # Clean run
-        $state = Read-State
-        $today = (Get-Date).ToString('yyyy-MM-dd')
-        if ($state.last_heartbeat_date -ne $today) {
-            $payload = New-DiscordHeartbeatPayload -ModelCount $okModels -SoloCount $soloGroups.Count -MutedCount $mutedGroups.Count
-            if ($DryRun) {
-                ($payload | ConvertTo-Json -Depth 12) | Write-Host
-                Write-AuditLog "ok findings=0 models=$okModels/$($models.Count) duration=${duration}s outcome=dryrun_heartbeat"
-            } else {
-                $ok = Send-Discord -WebhookUrl $webhook -Payload $payload
-                if ($ok) {
-                    $state.last_heartbeat_date = $today
-                    Write-State $state
-                }
-                $outcome = if ($ok) { 'heartbeat' } else { 'discord_post_failed' }
-                Write-AuditLog "ok findings=0 models=$okModels/$($models.Count) duration=${duration}s outcome=$outcome"
+        # THE WEEKLY MESSAGE (QFLX-123). Exactly one per completed audit, clean
+        # or not, [WARN]-styled. Replaces the per-finding [ALERT] page and the
+        # once-a-day [OK] heartbeat of the hourly era.
+        $prev = ''
+        try {
+            $alog = Join-Path $stateDir 'audit.log'
+            if (Test-Path -LiteralPath $alog) {
+                $prev = Get-PreviousAuditStamp -Lines @(Get-Content -LiteralPath $alog -Encoding UTF8 -ErrorAction Stop) -Before $startUtc
             }
-        } else {
-            Write-AuditLog "ok findings=0 models=$okModels/$($models.Count) duration=${duration}s outcome=silent"
+        } catch { $prev = '' }
+        $n = $errorGroups.Count
+        $payload = New-DiscordWeeklyPayload -OperatorId $opId -Groups $errorGroups -OkModels $okModels `
+            -ModelCount $models.Count -DurationSec $duration -FetchedAt ([string]$decodedBlob.fetched_at) `
+            -SoloCount $soloGroups.Count -Note $note -PreviousAudit $prev `
+            -Rollup (Get-WeeklyEventsRollup -Json $blobJson)
+        if ($DryRun) {
+            ($payload | ConvertTo-Json -Depth 12) | Write-Host
+            $outcome = if ($n -gt 0) { 'dryrun_error' } else { 'dryrun_heartbeat' }
+            Write-AuditLog "ok findings=$n models=$okModels/$($models.Count) duration=${duration}s outcome=$outcome"
+            return 0
         }
+        $ok = Send-Discord -WebhookUrl $webhook -Payload $payload
+        $outcome = if (-not $ok) { 'discord_post_failed' }
+                   elseif ($note) { 'quorum_degraded' }
+                   elseif ($n -gt 0) { 'error_post' }
+                   else { 'heartbeat' }
+        Write-AuditLog "ok findings=$n models=$okModels/$($models.Count) duration=${duration}s outcome=$outcome discord_status=$($Script:LastDiscordStatus)"
         return 0
     } finally {
+        # Every return above has already written this run's terminal line.
+        # Publish it only when this run itself reached the box (a run that
+        # never got there must not feed its own watchdog) and never for
+        # -DryRun, which would overwrite a real verdict with a dev run.
+        if ($Script:ReachedBoxThisRun -and -not $DryRun) {
+            try { Publish-ReaHeartbeat } catch {}
+        }
         try { $lock.Dispose() } catch {}
         $lockPath = Join-Path (Get-StateDir) 'state.json.lock'
         if (Test-Path $lockPath) { Remove-Item -Force -LiteralPath $lockPath -ErrorAction SilentlyContinue }
@@ -2889,16 +3275,23 @@ function Get-ReaTaskDefinition {
       assert them without registering anything.
 
       .DESCRIPTION
-      The three triggers are not decoration -- each one is load-bearing, and the
-      previous installer registered only the first, so any -Install silently
-      downgraded a system that audits hourly into one that audits at logon:
+      WEEKLY, Mondays 12:00 LOCAL (operator decision 2026-11-11, QFLX-110). The
+      seedbox's Monday maintenance window is 11:00-15:00 UTC = 04:00-08:00 on
+      this workstation (America/Phoenix, no DST), so noon is after it, and the
+      run exists to catch what the maintenance broke.
 
-        Logon          -- catch up on whatever broke while the box was off.
-        SessionLock    -- StateChange 7. The operator just walked away, which is
-                          exactly when the yield-to-operator gate ($BusyInput /
-                          audible-media) will let a GPU-pinning run proceed.
-        Daily + PT1H   -- the actual cadence. Anchored 01:00, repeats hourly for
-                          P1D, so it re-arms every day.
+      ONE trigger, with an hourly retry tail -- not three triggers. The old
+      Logon / SessionLock / Daily+PT1H set was an hourly audit; any of them left
+      in place would keep firing all week.
+
+        Weekly Mon 12:00 + PT1H for PT12H -- first attempt at noon, then one
+          retry per hour until midnight. A retry only does work while this
+          week has no completed audit (Test-WeeklyAuditDone): the yield-to-
+          operator gate SKIPs a busy noon, and a transient Ollama/SSH failure
+          must not cost a whole week. Once one run lands a verdict, every later
+          retry that day is a logged no-op (`weekly-noop`).
+        StartWhenAvailable -- a PC that was off on Monday afternoon runs the
+          missed start at its next boot; the same guard keeps it to one audit.
     #>
     param([Parameter(Mandatory)][string]$ScriptPath)
     $cmd = Get-HeadlessPsAction -Arguments ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $ScriptPath)
@@ -2909,31 +3302,27 @@ function Get-ReaTaskDefinition {
         Argument = $cmd.Argument
         # 2026-09-14: a 15m limit killed ~22m runs (3 models sequential, measured).
         ExecutionTimeLimitMinutes = 30
-        RepeatMinutes = 60
-        DailyAt = '01:00'
-        SessionStateChange = 7   # TASK_SESSION_LOCK
+        WeeklyDay        = $Script:WeeklyAnchorDay
+        WeeklyAt         = $Script:WeeklyAnchorTime
+        RepeatMinutes    = 60   # retry spacing on Monday, NOT the audit cadence
+        RetryWindowHours = $Script:WeeklyRetryWindowHours
     }
 }
 
 function Install-Task {
-    $d = Get-ReaTaskDefinition -ScriptPath $PSCommandPath
+    # -ScriptPath defaults to this file. It exists so the live task can be
+    # (re)registered from a worktree copy of the installer while still pointing
+    # at the main checkout the workstation actually runs - one definition, so a
+    # later `-Install` from the main checkout is a no-op.
+    param([string]$ScriptPath = $PSCommandPath)
+    $d = Get-ReaTaskDefinition -ScriptPath $ScriptPath
 
     $action = New-ScheduledTaskAction -Execute $d.Execute -Argument $d.Argument
 
-    $daily = New-ScheduledTaskTrigger -Daily -At $d.DailyAt
-    $daily.Repetition = (New-ScheduledTaskTrigger -Once -At $d.DailyAt `
+    $weekly = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $d.WeeklyDay -At $d.WeeklyAt
+    $weekly.Repetition = (New-ScheduledTaskTrigger -Once -At $d.WeeklyAt `
         -RepetitionInterval (New-TimeSpan -Minutes $d.RepeatMinutes) `
-        -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
-    $logon = New-ScheduledTaskTrigger -AtLogOn
-    # No New-ScheduledTaskTrigger switch reaches a session-state-change trigger;
-    # it only exists as a CIM class. -ClientOnly builds it without a server.
-    $lock = New-CimInstance -ClassName MSFT_TaskSessionStateChangeTrigger `
-        -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClientOnly `
-        -Property @{
-            Enabled     = $true
-            StateChange = [uint32]$d.SessionStateChange
-            UserId      = "$env:USERDOMAIN\$env:USERNAME"
-        }
+        -RepetitionDuration (New-TimeSpan -Hours $d.RetryWindowHours)).Repetition
 
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
                     -LogonType Interactive -RunLevel Limited
@@ -2942,9 +3331,9 @@ function Install-Task {
                     -RunOnlyIfNetworkAvailable `
                     -ExecutionTimeLimit (New-TimeSpan -Minutes $d.ExecutionTimeLimitMinutes)
 
-    Remove-ReaTask -Folder $Script:LegacyTaskFolderPath   # sweep the drifted copy
+    $null = Remove-ReaTask -Folder $Script:LegacyTaskFolderPath   # sweep the drifted copy (bool not echoed)
     Register-ScheduledTask -TaskPath $d.TaskPath -TaskName $d.TaskName -Action $action `
-        -Trigger @($logon, $lock, $daily) -Principal $principal -Settings $settings -Force | Out-Null
+        -Trigger @($weekly) -Principal $principal -Settings $settings -Force | Out-Null
 
     Write-Host "Installed task: $($d.TaskPath)$($d.TaskName)" -ForegroundColor Green
 }

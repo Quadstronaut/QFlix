@@ -2,9 +2,8 @@
 Description=Manitoba canary - REA liveness (hourly)
 
 [Timer]
-# Hourly is generous relative to the predicates: P1/P2 carry a 336h cap and P3
-# only changes when REA itself runs (median gap between REA runs is measured in
-# days). The probe is a stat plus a single-line read, so the cheap cadence buys
+# Hourly is generous relative to the predicates: P1/P2 carry a 360h cap and P3
+# only changes when REA itself runs (weekly since 2026-11-11, QFLX-110). The probe is a stat plus a single-line read, so the cheap cadence buys
 # a same-hour surface for P3 at no cost. Persistent=true so a box reboot does
 # not silently skip the window in which REA last failed.
 # PHASE-SHIFTED 2026-09-12: `hourly` means minute :00, and sixteen canaries

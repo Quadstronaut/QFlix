@@ -36,8 +36,8 @@ with real files, real mtimes and real `find`/`awk`/`base64`. The assertions are
 on the decoded blob the models would have been handed.
 
 Requires GIT BASH specifically (see _resolve_git_bash - a bare `bash` on this
-workstation is WSL, which would make every assertion vacuously green) and the
-gitignored qflix-rea.ps1. Skips cleanly when either is absent.
+workstation is WSL, which would make every assertion vacuously green) and
+qflix-rea.ps1 (tracked since 2026-09-27). Skips cleanly when either is absent.
 """
 from __future__ import annotations
 
@@ -88,10 +88,9 @@ def _resolve_git_bash() -> str | None:
 
 BASH = _resolve_git_bash()
 
-# qflix-rea.ps1 is GITIGNORED (.gitignore:61) - REA runs on the workstation, not
-# on the box, and the script is carried by backup-untracked.ps1 rather than by
-# git. So this file is a workstation gate, not a CI gate, and must skip rather
-# than fail anywhere the artifact does not exist.
+# qflix-rea.ps1 is tracked since 2026-09-27, but this suite needs Git Bash, so
+# it is still a workstation gate, not a CI gate, and must skip rather than fail
+# anywhere bash or the artifact is absent (a partial checkout).
 pytestmark = pytest.mark.skipif(
     BASH is None or not REA_PS1.exists(),
     reason="needs Git Bash and the (untracked) qflix-rea.ps1",

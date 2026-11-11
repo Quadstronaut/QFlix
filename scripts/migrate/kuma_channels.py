@@ -3,8 +3,9 @@
 
 Invariant I-1: exactly one side pages a human at any moment. On each box, a
 Kuma monitor pages a human through every DEFAULT notification channel except
-the auto-heal webhook (which POSTs to that box's own maint daemon, not to a
-person, so it stays attached on a muted side and auto-heal keeps working).
+the auto-heal webhook (which targets that box's own maint daemon, not a person,
+so it stays attached on a muted side. It has never actually delivered a POST:
+the Kuma container cannot reach the daemon, and auto-heal runs from the pusher).
 
 Runs ON the box, fed over ssh stdin, so nothing has to be deployed first:
 

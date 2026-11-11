@@ -1,11 +1,11 @@
 # rea-noise-classes.ps1 - the REA noise policy, LOADED from git and MIRRORED back.
 #
-# WHY THIS FILE IS TRACKED AND qflix-rea.ps1 IS NOT
-# -------------------------------------------------
-# qflix-rea.ps1 is gitignored (.gitignore:55): operator-local workstation
-# tooling, public repo. That made it invisible to CI - and it is the ALERTING
-# LAYER. The fix is not to un-ignore a 114KB script; it is to move the POLICY
-# into git and leave the plumbing outside. This loader is that seam.
+# WHY THIS LOADER EXISTS
+# ----------------------
+# qflix-rea.ps1 was gitignored until 2026-09-27 (operator-local workstation
+# tooling; tracked since). That made it invisible to CI - and it is the
+# ALERTING LAYER - so the POLICY moved into git first, through this loader.
+# The seam stays: the yaml is the one policy source either way.
 #
 # WHY THE LOADER ALSO WRITES (added 2026-08-19)
 # ---------------------------------------------
@@ -414,8 +414,8 @@ function Sync-ReaNoiseMirror {
     $e = $text.IndexOf($endMark)
     if ($b -lt 0 -or $e -lt $b) {
         # Refuse rather than guess where the table lives. A sync that writes to
-        # the wrong offset in a 114KB operator-local script is unrecoverable
-        # from origin - the file is gitignored.
+        # the wrong offset in a 114KB script corrupts the alerting layer the
+        # workstation is running right now, whatever git holds.
         $result.reason = 'no-mirror-markers'
         return $result
     }
