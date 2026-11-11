@@ -220,6 +220,41 @@ def test_skew_query_failure_is_red(fake, tmp_path):
     assert r.returncode == 1 and "STAGE=vlti-query-fail" in r.stderr
 
 
+# QFLX-76: Europe/Amsterdam fell back 03:00 CEST -> 02:00 CET at 2025-10-26
+# 01:00Z. A second-pass (CET) 02:30 stamp read as fold=0 (CEST) is stored at
+# 00:30Z, 1h early; its box-local wall time 02:30 is in the repeated hour.
+def _fold_case(fake, tmp_path, now, mtime, stored):
+    import os
+    from datetime import datetime, timezone
+    f = tmp_path / "app.log"
+    f.write_text("x" + chr(10))
+    t = datetime.strptime(mtime, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    os.utime(f, (t, t))
+    fake.latest = [{"app": "radarr", "source_file": str(f), "latest": stored}]
+    return run(fake, tmp_path, QFLIX_LOG_TZ="Europe/Amsterdam", QFLIX_CANARY_VLTI_NOW=now)
+
+
+def test_dst_fold_hour_60m_skew_is_skipped(fake, tmp_path):
+    r = _fold_case(fake, tmp_path, "2025-10-26T01:50:00Z", "2025-10-26T01:30:00Z",
+                   "2025-10-26T00:30:00.000Z")
+    assert r.returncode == 0, r.stderr
+    assert "skewed=0 dst_fold_skipped=1" in r.stdout
+
+
+def test_60m_skew_outside_fold_hour_is_red(fake, tmp_path):
+    r = _fold_case(fake, tmp_path, "2025-10-20T01:50:00Z", "2025-10-20T01:30:00Z",
+                   "2025-10-20T00:30:00.000Z")
+    assert r.returncode == 1
+    assert "STAGE=vlti-time-skew" in r.stderr and "radarr:60m" in r.stderr
+
+
+def test_non_60m_skew_in_fold_hour_is_red(fake, tmp_path):
+    r = _fold_case(fake, tmp_path, "2025-10-26T02:00:00Z", "2025-10-26T01:40:00Z",
+                   "2025-10-26T00:10:00.000Z")                       # 90m lag
+    assert r.returncode == 1
+    assert "STAGE=vlti-time-skew" in r.stderr and "radarr:90m" in r.stderr
+
+
 def test_duplicate_query_keys_on_line_id_not_text(fake, tmp_path):
     """QFLX-51: identical text at different offsets is the app repeating itself."""
     run(fake, tmp_path)
