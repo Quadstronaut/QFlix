@@ -16,6 +16,13 @@ logging). The webhook token is redacted from the audit line.
 
 On failure: ALSO logs to MANITOBA_STATE_DIR/notify-fail.log (failures only,
 for back-compat). Never raises — all errors are swallowed after logging.
+
+QFLX-123 quiet paging: notify() pages Discord ONLY when `source` names a
+member-facing Kuma monitor (manifest `paging:` block, read via lib.paging).
+Everything else is written to notify.log with outcome `weekly` and appended to
+~/.opt/maint/weekly-events.jsonl for the Monday summary; nothing is posted.
+Untagged calls are quiet by default - membership is opt-in, so a new janitor
+can never start paging by accident.
 """
 from __future__ import annotations
 
@@ -308,11 +315,47 @@ def _append_audit_log(level: str, message: str, outcome: str) -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def notify(message: str, level: str = "info") -> bool:
-    """Send a notification to the operator's Discord. Returns False (and
-    logs to notify-fail.log) if the webhook URL is missing or the POST
-    fails — never raises. Every attempt (sent or failed) is recorded to
-    notify.log for an audit trail."""
+# Callers have historically passed "warn" (qflix-entitlement.py). It matched no
+# colour and no mention level, so a tripwire page rendered as a blue, silent
+# "Notification". Normalised here once rather than at every call site.
+_LEVEL_ALIASES = {"warn": "warning", "err": "error", "crit": "critical"}
+
+
+def notify(message: str, level: str = "info", *, source: Optional[str] = None,
+           summary: Optional[str] = None) -> bool:
+    """Send a notification to the operator's Discord — IF it is member-facing.
+
+    `source`: the Kuma monitor name this notification belongs to. It pages
+    Discord only when that name is in the manifest's `paging:` set
+    (lib.paging.should_page; fail-open if the manifest is unreadable). With no
+    source, or a non-member-facing one, nothing is posted: the event goes to
+    notify.log (outcome `weekly`) and weekly-events.jsonl, and True is returned
+    (held for the weekly summary is the intended outcome, not a failure).
+
+    `summary`: the short, member-data-free line written to weekly-events.jsonl
+    instead of the scrubbed first line of `message`. Pass it whenever the
+    message may name a member.
+
+    Returns False (and logs to notify-fail.log) if a PAGE could not be sent —
+    never raises. Every attempt is recorded to notify.log for an audit trail."""
+    level = _LEVEL_ALIASES.get(level, level)
+    try:
+        from lib import paging as _paging  # noqa: PLC0415
+        page = _paging.should_page(source)
+    except Exception as exc:  # noqa: BLE001 - fail OPEN only for a tagged page
+        page = bool(source)
+        sys.stderr.write("notify.py: paging decision failed (" + repr(exc)
+                         + "); paging=" + str(page) + "\n")
+    if not page:
+        _append_audit_log(level, message, "weekly")
+        try:
+            _paging.record_weekly("notify", source, level,
+                                  summary if summary is not None else message)
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write("notify.py: weekly record failed: " + repr(exc) + "\n")
+        log.info("alert held for weekly summary (not member-facing): [%s] %s",
+                 level, message)
+        return True
     webhook_url = _try_read_webhook_url()
     if not webhook_url:
         _append_fail_log(level, message, "no webhook: secrets/discord-webhook.url missing")

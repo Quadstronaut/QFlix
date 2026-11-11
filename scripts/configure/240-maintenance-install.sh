@@ -80,6 +80,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/manifest.py \
     scripts/maint/lib/state.py \
     scripts/maint/lib/notify.py \
+    scripts/maint/lib/paging.py \
     scripts/maint/lib/health.py \
     scripts/maint/lib/lifecycle.py \
     scripts/maint/lib/recovery.py \

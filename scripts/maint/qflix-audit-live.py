@@ -19,6 +19,9 @@ WHY THIS CANNOT BE PART OF qflix-audit.py
       L-06 quota / thread-ceiling headroom
       L-08 listen set of every swapped app vs the one recorded before its swap
            (QFLX-20; the per-minute runtime-parity predicates live in the pusher)
+      L-09 Kuma channel wiring vs the manifest's member-facing `paging:` set
+           (QFLX-123): auto-heal on every active monitor, Discord on EXACTLY
+           the member-facing ones - catches a silent page AND a noisy one
       L-07 stale-green push monitors (Kuma restart resets its push-timeout
            timers, so a monitor whose beat was already overdue at restart
            re-greens before it ever pages -- the missed run is invisible)
@@ -297,6 +300,92 @@ def _push_monitor_beats():
         return None
 
 
+def channel_wiring_findings(rows, paging, discord_name: str, autoheal_name: str,
+                            skip=()) -> list[dict]:
+    """L-09, the pure half (QFLX-123). `rows` = (monitor name, channel name or
+    None) for every ACTIVE monitor x attached channel (a LEFT JOIN, so a monitor
+    with no channel yields one (name, None) row). `paging` = the manifest's
+    member-facing names.
+
+    One finding per monitor that is wired wrong:
+      no-auto-heal         red in silence and lib.recovery never hears of it
+      member-facing-silent a member-facing outage pages nobody
+      pages-not-member     the noise QFLX-123 removed is back (UI-created
+                           monitors inherit Discord as a default channel)
+      paging-monitor-absent a `paging:` name with no live monitor (a typo
+                           pages nobody, silently)
+      paging-block-missing  the manifest declares NO member-facing monitor:
+                           that is a missing policy, never "all clean"
+    Bootstrap reconciles this on demand; L-09 is the continuous guard."""
+    if not paging:
+        return [{"class_id": "L-09", "instance_id": "manifest:paging",
+                 "detail": "paging-block-missing"}]
+    channels: dict = {}
+    for name, chan in rows:
+        if not name or name in skip:
+            continue
+        channels.setdefault(name, set())
+        if chan:
+            channels[name].add(chan)
+    out = []
+    for name in sorted(channels):
+        have = channels[name]
+        if autoheal_name not in have:
+            out.append({"class_id": "L-09", "instance_id": name,
+                        "detail": "no-auto-heal"})
+        if name in paging and discord_name not in have:
+            out.append({"class_id": "L-09", "instance_id": name,
+                        "detail": "member-facing-silent"})
+        elif name not in paging and discord_name in have:
+            out.append({"class_id": "L-09", "instance_id": name,
+                        "detail": "pages-not-member-facing"})
+    for name in sorted(set(paging) - set(channels)):
+        out.append({"class_id": "L-09", "instance_id": name,
+                    "detail": "paging-monitor-absent"})
+    return out
+
+
+def _monitor_channel_rows():
+    """DB half of L-09: (monitor name, channel name|None) per ACTIVE monitor."""
+    if not KUMA_DB.exists():
+        return None
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{KUMA_DB}?mode=ro", uri=True, timeout=3)
+        try:
+            return con.execute(
+                "SELECT m.name, n.name FROM monitor m "
+                "LEFT JOIN monitor_notification mn ON mn.monitor_id = m.id "
+                "LEFT JOIN notification n ON n.id = mn.notification_id "
+                "WHERE m.active = 1").fetchall()
+        finally:
+            con.close()
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"qflix-audit-live: kuma.db unreadable for L-09: {exc}",
+              file=sys.stderr)
+        return None
+
+
+def _channel_wiring_leg(findings: list, coverage: dict) -> None:
+    """L-09: an unreadable manifest or kuma.db is UNAVAILABLE, never clean; a
+    readable manifest with no/empty paging block is a FINDING."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from lib import paging as _paging
+        members = _paging.paging_monitors()
+        rows = _monitor_channel_rows()
+        if rows is None or (members is None and not _paging.manifest_readable()):
+            coverage["L-09"] = "unavailable"
+            return
+        findings.extend(channel_wiring_findings(
+            rows, set(members or ()), _paging.DISCORD_CHANNEL_NAME,
+            _paging.AUTOHEAL_CHANNEL_NAME, skip=_paging.external_monitors()))
+        coverage["L-09"] = "checked"
+    except Exception as exc:                                  # noqa: BLE001
+        coverage["L-09"] = "unavailable"
+        print(f"qflix-audit-live: L-09 unavailable: {exc}", file=sys.stderr)
+
+
 def listen_set_findings(ss_text: str, slugs: list[str], differ) -> list[dict]:
     """L-08 decision logic: one finding per swapped slug whose current listen set
     differs from the one recorded before the swap (minus recorded exceptions).
@@ -433,6 +522,9 @@ def collect(expected_monitors: list[str]) -> dict:
 
     # L-08 ---------------------------------------------------------------
     _listen_set_leg(findings, coverage)
+
+    # L-09 ---------------------------------------------------------------
+    _channel_wiring_leg(findings, coverage)
 
     return {"coverage": coverage, "findings": findings}
 

@@ -13,8 +13,18 @@ Runs ON the box, fed over ssh stdin, so nothing has to be deployed first:
     ssh <box> "python3 - loud"   < scripts/migrate/kuma_channels.py
 
 status prints one JSON object: reachable, monitors, human_ids,
-monitors_with_human, monitors_without_human. mute/loud are idempotent and end
-with the same JSON (re-read after the edit, never trusted from the write).
+monitors_with_human, monitors_without_human, paging_expected. mute/loud are
+idempotent and end with the same JSON (re-read after the edit, never trusted
+from the write).
+
+QFLX-123: "loud" no longer means "every monitor pages a human". Only the
+member-facing set (the `paging:` block of the box's DEPLOYED manifest,
+~/.opt/maint/apps.yaml) carries a human channel; every other monitor keeps only
+auto-heal. So loud attaches humans to exactly that set and strips them from the
+rest, and `paging_expected` lets migrate_manifest.py check the loud side against
+the set instead of "no monitor is quiet". If the manifest is unreadable or has
+no paging block, loud falls back to every monitor (paging_expected null): a
+too-loud side is noisy, a silent one is an outage nobody hears about.
 
 Kuma on the box: port from ~/secrets/uptimekuma.port, login quadstronaut with
 the first readable of ~/secrets/{htpasswd,shared-admin}.password (the same
@@ -26,10 +36,29 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Iterable, List, Set
+from typing import Iterable, List, Optional, Set
 
 AUTOHEAL = "Manitoba auto-heal webhook"
 USER = "quadstronaut"
+# Mirror of scripts/maint/lib/paging.py's reader. This file is fed to the box
+# over ssh stdin and cannot import from the repo; tests/unit/test_paging.py
+# pins that both read the same set from the real manifest.
+DEPLOYED_MANIFEST = Path.home() / ".opt" / "maint" / "apps.yaml"
+
+
+def paging_names(path: Path = DEPLOYED_MANIFEST) -> Optional[Set[str]]:
+    """Member-facing monitor names from the manifest `paging:` block, or None
+    when that cannot be determined (fail loud: the caller pages everything)."""
+    try:
+        import yaml  # system python3 on the box ships pyyaml (lib.manifest needs it)
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write("paging block unreadable (%s): %s\n" % (path, type(exc).__name__))
+        return None
+    block = (data or {}).get("paging") if isinstance(data, dict) else None
+    if not isinstance(block, dict) or not block:
+        return None
+    return {str(k) for k in block}
 
 
 def human_ids(notifications: Iterable[dict]) -> Set[int]:
@@ -45,21 +74,32 @@ def attached(monitor: dict) -> Set[int]:
     return {int(x) for x in raw}
 
 
-def plan(monitors: Iterable[dict], humans: Set[int], action: str) -> List[tuple]:
-    """[(monitor_id, new_id_set)] for monitors that need an edit."""
+def plan(monitors: Iterable[dict], humans: Set[int], action: str,
+         paging: Optional[Set[str]] = None) -> List[tuple]:
+    """[(monitor_id, new_id_set)] for monitors that need an edit.
+
+    loud + `paging`: humans on exactly the member-facing names, off the rest.
+    loud without it: humans on every monitor (the pre-QFLX-123 fallback)."""
     out = []
     for m in monitors:
         cur = attached(m)
-        new = (cur - humans) if action == "mute" else (cur | humans)
+        if action == "mute":
+            new = cur - humans
+        elif paging is not None and m.get("name") not in paging:
+            new = cur - humans
+        else:
+            new = cur | humans
         if new != cur:
             out.append((m["id"], new))
     return out
 
 
-def summary(monitors: List[dict], humans: Set[int]) -> dict:
+def summary(monitors: List[dict], humans: Set[int],
+            paging: Optional[Set[str]] = None) -> dict:
     with_h = sum(1 for m in monitors if attached(m) & humans)
     return {"reachable": True, "monitors": len(monitors), "human_ids": sorted(humans),
-            "monitors_with_human": with_h, "monitors_without_human": len(monitors) - with_h}
+            "monitors_with_human": with_h, "monitors_without_human": len(monitors) - with_h,
+            "paging_expected": (len(paging) if paging is not None else None)}
 
 
 def _secret(name: str) -> str:
@@ -96,10 +136,11 @@ def main(argv: List[str]) -> int:
             print(json.dumps({"reachable": False, "error": "login-failed"}))
             return 2
         humans = human_ids(api.get_notifications())
+        paging = paging_names()
         if action != "status":
-            for mid, ids in plan(api.get_monitors(), humans, action):
+            for mid, ids in plan(api.get_monitors(), humans, action, paging):
                 api.edit_monitor(mid, notificationIDList={str(i): True for i in sorted(ids)})
-        print(json.dumps(summary(api.get_monitors(), humans)))
+        print(json.dumps(summary(api.get_monitors(), humans, paging)))
         return 0
     except Exception as exc:
         print(json.dumps({"reachable": False, "error": "%s:%s" % (type(exc).__name__, exc)}))

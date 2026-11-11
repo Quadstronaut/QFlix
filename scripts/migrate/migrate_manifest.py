@@ -299,6 +299,14 @@ def evaluate_green(apps: Dict[str, dict], status: dict, facts: dict, mode: str =
         loud = int(kuma.get("monitors_with_human") or 0)
         rows.append(("PASS" if loud == 0 else "FAIL", "kuma-muted",
                      "%d monitor(s) still page a human (I-1)" % loud))
+    elif kuma.get("paging_expected") is not None:
+        # QFLX-123: loud = exactly the member-facing set pages a human, not
+        # every monitor. Fewer means a member-facing monitor is deaf on the
+        # live side; more means the quiet-paging policy did not survive.
+        loud = int(kuma.get("monitors_with_human") or 0)
+        want = int(kuma.get("paging_expected") or 0)
+        rows.append(("PASS" if loud == want and want > 0 else "FAIL", "kuma-loud",
+                     "%d monitor(s) page a human, member-facing set is %d" % (loud, want)))
     else:
         quiet = int(kuma.get("monitors_without_human") or 0)
         rows.append(("PASS" if quiet == 0 else "FAIL", "kuma-loud",

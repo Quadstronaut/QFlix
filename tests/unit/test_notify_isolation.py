@@ -17,5 +17,8 @@ def test_notify_cannot_reach_a_real_webhook():
 
     # the autouse fixture must have redirected secrets away from <repo>/secrets
     assert not (secrets.secrets_dir() / "discord-webhook.url").exists()
-    # and notify must therefore no-op (returns False, no HTTP)
-    assert notify.notify("isolation self-test — must never reach Discord") is False
+    # and notify must therefore no-op (returns False, no HTTP). Tagged with a
+    # member-facing monitor (QFLX-123) so this exercises the PAGING path - an
+    # untagged notify never posts at all and would prove nothing here.
+    assert notify.notify("isolation self-test — must never reach Discord",
+                         source="Plex") is False

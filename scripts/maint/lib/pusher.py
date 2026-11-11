@@ -498,13 +498,15 @@ def push_once(
                 msg = (f"⚠ Fleet storm: {down_count}/{total} monitors down at once"
                        f" — {names_str}")
                 try:
-                    notify_mod.notify(msg, level="warning")
+                    # QFLX-123: the storm page is the total-outage signal;
+                    # it pages under the fleet monitor's paging membership.
+                    notify_mod.notify(msg, level="warning", source="QFlix Fleet")
                 except Exception as exc:
                     log.warning("fleet storm notify failed: %s", exc)
             elif edge == "clear":
                 msg = f"Fleet storm cleared ({down_count}/{total} down now)"
                 try:
-                    notify_mod.notify(msg, level="info")
+                    notify_mod.notify(msg, level="info", source="QFlix Fleet")
                 except Exception as exc:
                     log.warning("fleet clear notify failed: %s", exc)
         except Exception as exc:
