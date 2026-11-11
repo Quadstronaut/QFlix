@@ -953,8 +953,8 @@ the new cache path and no further EACCES.
   re-count found **7**, five of them landing the day after that entry was
   written - 145 findings that never reached Discord, not 42. The mechanism
   reading was right; the scale was not.
-- Jade added to the Plex share on 2026-08-22 and exempted. Welcome removed - an
-  exempt household is not being asked to subscribe - and her Seerr account, which
+- A member was added to the Plex share on 2026-08-22 and exempted. Welcome removed - an
+  exempt household is not being asked to subscribe - and their Seerr account, which
   the newPlexLogin path had created at `permissions=0`, was granted the standard
   member set.
 

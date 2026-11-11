@@ -55,13 +55,13 @@
              "red": [{"name": "QFlix Reaper", "msg": "No heartbeat in the time window", "since": "2026-07-15 18:02:11"}]},
   "streams":{"ok": true, "error": null, "streams": 3, "users": 2, "transcodes": 1, "wan_kbps": 12000},
   "top5":   {"ok": true, "error": null,
-             "requests_30d": [{"user": "sarahvanpelt", "count": 12}],
-             "watch_30d":    [{"user": "BAsylum", "hours": 78.2, "plays": 105}]},
+             "requests_30d": [{"user": "user-a", "count": 12}],
+             "watch_30d":    [{"user": "user-b", "hours": 78.2, "plays": 105}]},
   "downloads": {"ok": true, "error": null,
              "qbit": {"total": 12, "active": 1, "stalled_dl": 0, "errored": 0, "seeding": 10},
              "sab":  {"queued": 1, "paused": false, "mb_left": 4203.9, "mb_total": 4801.7, "kbps": 0},
-             "stuck": [{"hash8": "f0a3658d", "name": "…", "hours": 3, "rule": "stalledDL", "acted": true}],
-             "recent_unsticks": [{"ts": "2026-07-15T19:00:39Z", "hash8": "f0a3658d", "result": "qbit-orphan-removed"}]},
+             "stuck": [{"hash8": "aaaa0004", "name": "…", "hours": 3, "rule": "stalledDL", "acted": true}],
+             "recent_unsticks": [{"ts": "2026-07-15T19:00:39Z", "hash8": "aaaa0004", "result": "qbit-orphan-removed"}]},
   "alerts": [{"level": "crit", "text": "Kuma down: QFlix Reaper — No heartbeat in the time window"}]
 }
 ```
@@ -82,7 +82,7 @@ Alert derivation (ordered crit→warn): each Kuma red = crit (except the two `Qu
 **Behavior (idempotent, re-runnable):** deploy `scripts/mcp/` tar-over-ssh (same as 70); on box: `ssh-keygen -t ed25519 -N '' -C qflix-heartbeat-phone -f ~/.ssh/heartbeat_phone_ed25519` only if missing; ensure `authorized_keys` line `command="python3 /home/quadstronaut/scripts/mcp/app_status.py",restrict <pubkey>` via `grep -qF` guard; `chmod 600`; gate: run `ssh -i` self-test from workstation? (gate runs box-side: `python3 ~/scripts/mcp/app_status.py | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["meta"]["version"]==1'` + authorized_keys entry present). Also `rm -f ~/nul` (recon artifact cleanup).
 - [ ] write installer, run it, gate green
 - [ ] workstation verify forced channel: `ssh -i <tmp copy of key> quadstronaut@seedbox.example.com anything` → returns status JSON only (command override proof)
-- [ ] capture live JSON → `tests/fixtures/app_status_live.json` (scrub nothing — no secrets in doc; usernames fine, personal app) for app-side tests
+- [ ] capture live JSON → `tests/fixtures/app_status_live.json` (identifying values replaced with synthetic ones — QFLX-121: the repo is public, member activity never ships) for app-side tests
 - [ ] commit `feat(configure): 71 heartbeat status installer + forced-command phone key`
 
 ### A1 — Android scaffold

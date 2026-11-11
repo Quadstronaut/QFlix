@@ -17,6 +17,7 @@ Every git-TRACKED file is free of:
   * personal email addresses at consumer mail providers
   * the operator's real seedbox FQDN, in any of its forms
   * the seedbox provider's internal host names
+  * in tracked JSON: member activity rows with real usernames, public IPv4s
 
 BOUNDARY IS `git ls-files`, NOT A DIRECTORY WALK
 A walk sees the untracked world -- venvs, caches, the gitignored secrets
@@ -29,6 +30,8 @@ WHEN THIS FAILS
 Do not add an exemption. Move the value into `secrets/` and read it at runtime,
 the way `seedbox.host`, `plex.token` and every API key already work.
 """
+import ipaddress
+import json
 import re
 import subprocess
 import sys
@@ -214,6 +217,106 @@ def test_this_guard_actually_catches_something():
     for bad in ("quadstronaut.%s" % _BOX, "%s-direct" % _BOX,
                 "usernameXY.%s" % _BOX, "hostname.%s" % _BOX):
         assert not VENDOR_ALLOWED.match("%s.%s" % (bad, _TLD)), bad
+
+
+# ---------------------------------------------------------------------------
+# Member activity + public IPs in tracked JSON fixtures (QFLX-121)
+#
+# A live status capture sat in two test fixtures for four months carrying
+# member usernames next to their 30-day watch hours / request counts, plus a
+# public IPv4. Every rule above missed it: usernames are not emails, and an IP
+# is not a seedbox FQDN. Fixtures are where live captures land, so tracked
+# .json/.jsonl files get two structural checks:
+#   * an ACTIVITY ROW -- an object pairing `user` with per-person usage
+#     (`hours` / `plays` / `count`) -- must name a synthetic `user-<x>`;
+#   * no string may contain a globally routable IPv4. RFC 5737 TEST-NET
+#     (192.0.2/24, 198.51.100/24, 203.0.113/24), RFC 1918, loopback and CGNAT
+#     are not global, so they remain usable as placeholders.
+# Findings name the file and JSON path only, never the value.
+# ---------------------------------------------------------------------------
+_ACTIVITY_KEYS = frozenset({"hours", "plays", "count"})
+SYNTHETIC_USER = re.compile(r"^user-[a-z0-9]+$")
+IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+
+
+def _public_ips(s):
+    for m in IPV4.finditer(s):
+        try:
+            if ipaddress.IPv4Address(m.group(0)).is_global:
+                yield m.group(0)
+        except ipaddress.AddressValueError:
+            continue          # 999.1.2.3 etc: not an address at all
+
+
+def json_pii_findings(text, jsonl=False):
+    """Return ["<json path>: <what>", ...] for one JSON (or JSONL) document."""
+    findings = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            user = node.get("user")
+            if (isinstance(user, str) and _ACTIVITY_KEYS & node.keys()
+                    and not SYNTHETIC_USER.match(user)):
+                findings.append("%s: non-synthetic user in an activity row" % path)
+            for k, v in node.items():
+                walk(v, "%s.%s" % (path, k))
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, "%s[%d]" % (path, i))
+        elif isinstance(node, str) and any(_public_ips(node)):
+            findings.append("%s: public IPv4" % path)
+
+    chunks = text.splitlines() if jsonl else [text]
+    for n, chunk in enumerate(chunks, 1):
+        if not chunk.strip():
+            continue
+        where = "line %d $" % n if jsonl else "$"
+        try:
+            walk(json.loads(chunk), where)
+        except ValueError:
+            # Deliberately-malformed fixtures still get the IP check, raw.
+            if any(_public_ips(chunk)):
+                findings.append("%s: public IPv4 (unparsed text)" % where)
+    return findings
+
+
+def test_no_member_activity_or_public_ips_in_json_fixtures(tracked):
+    offenders = []
+    for rel, text in tracked:
+        rel = rel.replace("\\", "/")
+        if rel.endswith((".json", ".jsonl")):
+            offenders += ["%s -> %s" % (rel, f)
+                          for f in json_pii_findings(text, jsonl=rel.endswith(".jsonl"))]
+    assert not offenders, (
+        "member activity or a public IP in tracked JSON:\n  "
+        + "\n  ".join(sorted(set(offenders))[:20])
+        + "\n\nFixtures keep the live SHAPE with synthetic values: users "
+          "user-a/user-b/..., IPs from 203.0.113.0/24.")
+
+
+def test_json_fixture_guard_actually_catches_something():
+    """Non-vacuity, on a document shaped like the leaked status capture."""
+    leaked = json.dumps({
+        "top5": {"watch_30d": [{"user": "Some" "Member", "hours": 9.1, "plays": 3}],
+                 "requests_30d": [{"user": "another" "_member", "count": 4}]},
+        "kuma": {"red": [{"msg": "PING host (" + "8.8" + ".4.4) 56(84) bytes"}]},
+    })
+    found = json_pii_findings(leaked)
+    assert any("watch_30d[0]" in f for f in found), found
+    assert any("requests_30d[0]" in f for f in found), found
+    assert any("public IPv4" in f for f in found), found
+    assert "Member" not in "".join(found)      # paths only, never the value
+
+    clean = json.dumps({
+        "top5": {"watch_30d": [{"user": "user-a", "hours": 9.1, "plays": 3}]},
+        "kuma": {"red": [{"msg": "PING node1.example.com (203.0.113.10)"}]},
+        "provision": {"host": "seedbox.example.com", "user": "quadstronaut"},
+        "versions": "2.6.5.5623 and 10.0.0.1 and 127.0.0.1",
+    })
+    assert json_pii_findings(clean) == []
+    assert json_pii_findings('{"broken": "1.1' + '.1.1"', jsonl=False)
+    assert json_pii_findings('{"user": "x", "count": 1}\n{"user": "user-b", "count": 2}',
+                             jsonl=True) == ["line 1 $: non-synthetic user in an activity row"]
 
 
 def test_the_guard_scans_its_own_source():

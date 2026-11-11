@@ -264,7 +264,7 @@ exit 0
         before = _posix(self.tmp / "ss-before.txt")
         after = _posix(self.tmp / "ss-after.txt")
         (self.tmp / "ss-before.txt").write_text(
-            f"LISTEN 0 65535 169.150.251.170:17024 0.0.0.0:*\n".replace("169.150.251.170:17024", PUBLIC)
+            f"LISTEN 0 65535 203.0.113.10:17024 0.0.0.0:*\n".replace("203.0.113.10:17024", PUBLIC)
             + "LISTEN 0 65535 172.17.0.1:17024 0.0.0.0:*\nLISTEN 0 65535 127.0.0.1:17024 0.0.0.0:*\n")
         (self.tmp / "ss-after.txt").write_text(
             "LISTEN 0 65535 172.17.0.1:17024 0.0.0.0:*\nLISTEN 0 65535 127.0.0.1:17024 0.0.0.0:*\n")

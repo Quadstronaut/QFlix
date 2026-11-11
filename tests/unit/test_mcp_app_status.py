@@ -7,8 +7,8 @@ so a passing test is also a direct check against the documented contract:
   - app-traffic info: available 96.58% -> used_pct 3.42
   - Tautulli get_activity: stream_count=3, 2 distinct user_id, 1 transcode,
     wan_bandwidth=12000 -> streams:3 users:2 transcodes:1 wan_kbps:12000
-  - Tautulli get_home_stats: BAsylum total_duration=281520s -> hours 78.2
-  - stale-state.json hash f0a3658d... -> hash8 "f0a3658d"
+  - Tautulli get_home_stats: user-b total_duration=281520s -> hours 78.2
+  - stale-state.json hash aaaa0004... -> hash8 "aaaa0004"
 """
 from __future__ import annotations
 
@@ -257,16 +257,16 @@ def _seerr_request(rid, days_ago, requested_by):
 SEERR_REQUESTS_JSON = {
     "pageInfo": {"pages": 1, "pageSize": 200, "results": 15, "page": 1},
     "results": (
-        # sarahvanpelt: 12 requests within 30d window
-        [_seerr_request(i, 5, {"id": 5, "displayName": "sarahvanpelt",
-                                "plexUsername": "sarah_vp"})
+        # user-a: 12 requests within 30d window
+        [_seerr_request(i, 5, {"id": 5, "displayName": "user-a",
+                                "plexUsername": "user-a-plex"})
          for i in range(12)]
         # one request just outside the 30d window — excluded
-        + [_seerr_request(100, 31, {"id": 5, "displayName": "sarahvanpelt",
-                                     "plexUsername": "sarah_vp"})]
+        + [_seerr_request(100, 31, {"id": 5, "displayName": "user-a",
+                                     "plexUsername": "user-a-plex"})]
         # a user with no displayName set — falls back to plexUsername
         + [_seerr_request(101, 2, {"id": 9, "displayName": None,
-                                    "plexUsername": "BAsylum"})]
+                                    "plexUsername": "user-b"})]
         # a user missing requestedBy entirely — falls back to "unknown"
         + [dict(id=102, createdAt=(_now() - dt.timedelta(days=1))
                 .strftime("%Y-%m-%dT%H:%M:%S.000Z"))]
@@ -276,14 +276,14 @@ SEERR_REQUESTS_JSON = {
 
 def test_top5_requests_30d_window_and_count():
     out = app_status.top5_requests(SEERR_REQUESTS_JSON, _now())
-    sarah = next(e for e in out if e["user"] == "sarahvanpelt")
-    assert sarah["count"] == 12  # the 31-days-ago one is excluded
+    user_a = next(e for e in out if e["user"] == "user-a")
+    assert user_a["count"] == 12  # the 31-days-ago one is excluded
 
 
 def test_top5_requests_displayname_fallback_to_plexusername():
     out = app_status.top5_requests(SEERR_REQUESTS_JSON, _now())
-    basylum = next(e for e in out if e["user"] == "BAsylum")
-    assert basylum["count"] == 1
+    user_b = next(e for e in out if e["user"] == "user-b")
+    assert user_b["count"] == 1
 
 
 def test_top5_requests_missing_requestedby_falls_back_to_unknown():
@@ -313,8 +313,8 @@ def test_top5_requests_caps_at_five():
 # ---------------------------------------------------------------------------
 
 TAUTULLI_TOP_USERS_ROWS = [
-    {"friendly_name": "BAsylum", "total_plays": 105, "total_duration": 281520},
-    {"friendly_name": "sarahvanpelt", "total_plays": 40, "total_duration": 90000},
+    {"friendly_name": "user-b", "total_plays": 105, "total_duration": 281520},
+    {"friendly_name": "user-a", "total_plays": 40, "total_duration": 90000},
     {"friendly_name": "quiet_user", "total_plays": 1, "total_duration": 300},
 ]
 
@@ -322,7 +322,7 @@ TAUTULLI_TOP_USERS_ROWS = [
 def test_top5_watch_hours_conversion_matches_contract_example():
     out = app_status.top5_watch(TAUTULLI_TOP_USERS_ROWS)
     top = out[0]
-    assert top == {"user": "BAsylum", "hours": 78.2, "plays": 105}
+    assert top == {"user": "user-b", "hours": 78.2, "plays": 105}
 
 
 def test_top5_watch_sorted_desc_by_hours():
@@ -359,9 +359,9 @@ TAUTULLI_ACTIVITY_JSON = {
             "lan_bandwidth": "3000",
             "wan_bandwidth": "12000",
             "sessions": [
-                {"user_id": 101, "user": "sarahvanpelt", "transcode_decision": "direct play"},
-                {"user_id": 202, "user": "BAsylum", "transcode_decision": "transcode"},
-                {"user_id": 202, "user": "BAsylum", "transcode_decision": "direct play"},
+                {"user_id": 101, "user": "user-a", "transcode_decision": "direct play"},
+                {"user_id": 202, "user": "user-b", "transcode_decision": "transcode"},
+                {"user_id": 202, "user": "user-b", "transcode_decision": "direct play"},
             ],
         },
     }
@@ -374,7 +374,7 @@ def test_parse_streams_matches_contract_example():
 
 
 def test_parse_streams_distinct_user_count():
-    """3 sessions, 2 distinct user_id -> users=2 (BAsylum multi-streaming),
+    """3 sessions, 2 distinct user_id -> users=2 (user-b multi-streaming),
     proving this is a set() over user_id, not len(sessions)."""
     out = app_status.parse_streams(TAUTULLI_ACTIVITY_JSON)
     assert out["streams"] == 3
@@ -621,7 +621,7 @@ def test_no_alert_on_zero_sab_failures():
 # build_stuck_list — stale-state.json shape (verbatim from qflix-collect.py)
 # ---------------------------------------------------------------------------
 
-STUCK_HASH = "f0a3658d" + "0" * 32  # 40-char hex-shaped hash
+STUCK_HASH = "aaaa0004" + "0" * 32  # 40-char hex-shaped hash
 
 STALE_STATE_JSON = {
     "hashes": {
@@ -657,7 +657,7 @@ def test_build_stuck_list_matches_contract_example():
     always present (torrent, since this is a 40-char-hex qBit hash)."""
     out = app_status.build_stuck_list(STALE_STATE_JSON, QBIT_TORRENTS_FOR_STUCK)
     assert out == [{
-        "hash8": "f0a3658d",
+        "hash8": "aaaa0004",
         "name": "Some.Movie.2026.1080p",
         "hours": 3,
         "rule": "stalledDL",
@@ -672,7 +672,7 @@ def test_build_stuck_list_excludes_non_candidates():
     not appear even though its torrent is live in qBit."""
     out = app_status.build_stuck_list(STALE_STATE_JSON, QBIT_TORRENTS_FOR_STUCK)
     assert len(out) == 1
-    assert out[0]["hash8"] == "f0a3658d"
+    assert out[0]["hash8"] == "aaaa0004"
 
 
 def test_build_stuck_list_filters_ghost_hashes():
@@ -728,7 +728,7 @@ def test_build_stuck_list_mixed_kinds_both_resolve_no_collision():
     by_kind = {e["kind"]: e for e in out}
     assert set(by_kind) == {"torrent", "usenet"}
     assert by_kind["torrent"]["name"] == "Some.Movie.2026.1080p"
-    assert by_kind["torrent"]["hash8"] == "f0a3658d"
+    assert by_kind["torrent"]["hash8"] == "aaaa0004"
     assert by_kind["usenet"]["name"] == "Some.Show.S01E01"
     assert by_kind["usenet"]["hash8"] == "p6f6zj0e"
     assert by_kind["torrent"]["hash8"] != by_kind["usenet"]["hash8"]
@@ -783,7 +783,7 @@ def _event_line(**overrides):
 def test_recent_unsticks_matches_contract_example():
     lines = [_event_line()]
     out = app_status.recent_unsticks_from_lines(lines)
-    assert out == [{"ts": "2026-07-15T19:00:39Z", "hash8": "f0a3658d",
+    assert out == [{"ts": "2026-07-15T19:00:39Z", "hash8": "aaaa0004",
                      "result": "qbit-orphan-removed", "kind": "torrent"}]
 
 
@@ -930,7 +930,7 @@ def test_derive_alerts_maint_non_failed_event_ignored():
 
 
 def test_derive_alerts_stuck_nonzero_is_warn():
-    doc = _base_doc(downloads={"stuck": [{"hash8": "f0a3658d", "name": "x", "hours": 3,
+    doc = _base_doc(downloads={"stuck": [{"hash8": "aaaa0004", "name": "x", "hours": 3,
                                            "rule": "stalledDL", "acted": True}],
                                 "sab": {"paused": False}})
     out = app_status.derive_alerts(doc)
