@@ -2623,6 +2623,72 @@ Test-Case 'Get-PreviousAuditStamp returns the last completed audit before this r
     Assert-Equal '' (Get-PreviousAuditStamp -Lines @($lines[2]) -Before ([datetime]'2026-11-16T13:00:00')) 'failures are not audits'
 }
 
+Test-Case 'previous-audit stamp keeps the offset it was logged in (CI runs in UTC)' {
+    $l = '2026-11-09T12:21:00-07:00 ok findings=0 models=3/3 duration=900s outcome=heartbeat'
+    Assert-Equal 'Mon 2026-11-09 12:21 -07:00' (Get-PreviousAuditStamp -Lines @($l) -Before ([datetime]'2026-11-16T13:00:00')) 'zone-independent rendering'
+}
+
+Test-Case 'completed-audit regex: whole tokens only, last outcome wins (review fix)' {
+    $now = [datetime]'2026-11-16T15:00:00'
+    $off = ([datetimeoffset]$now).ToString('zzz')
+    $st  = "2026-11-16T13:05:00$off"
+    Assert-True  ([bool](Test-WeeklyAuditDone -Lines @("$st ok findings=0 models=3/3 duration=500s outcome=heartbeat discord_status=204") -Now $now)) 'trailing tokens after the outcome are fine'
+    Assert-True  ([bool](Test-WeeklyAuditDone -Lines @("$st ok findings=2 outcome=error_post") -Now $now)) 'minimal shape'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$st ok findings=0 models=1/3 note=outcome=heartbeat outcome=quorum_degraded") -Now $now) 'outcome= inside another token never settles'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$st ok findings=0 outcome=heartbeat-x") -Now $now) 'heartbeat-x is not heartbeat'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$st ok findings=0 outcome=silent.old") -Now $now) 'silent.old is not silent'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$st ok findings=0 outcome=heartbeat outcome=quorum_degraded") -Now $now) 'a later outcome wins, as in the canary'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$st ok findings=x outcome=heartbeat") -Now $now) 'findings must be a number'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @("garbage ok findings=0 outcome=heartbeat") -Now $now) 'stamp must be an ISO date'
+}
+
+Test-Case 'weekly roll-up: fail-open reader and the "Not paged this week" line' {
+    function New-Blob($we) {
+        $o = [ordered]@{ fetched_at = '2026-11-16T19:05:00Z'; host = 'h'; sources = @{} }
+        if ($null -ne $we) { $o.weekly_events = $we }
+        return ($o | ConvertTo-Json -Compress)
+    }
+    function B64($s) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s)) }
+
+    foreach ($case in @(
+        @{ n = 'field absent (old box / old heredoc)'; j = (New-Blob $null) },
+        @{ n = 'empty field (python3 missing)';       j = (New-Blob '') },
+        @{ n = 'not base64';                          j = (New-Blob '!!!') },
+        @{ n = 'not JSON';                            j = (New-Blob (B64 'nope')) },
+        @{ n = 'ok:false (file absent on box)';       j = (New-Blob (B64 '{"ok": false, "why": "absent"}')) },
+        @{ n = 'whole blob unparseable';              j = 'not json' })) {
+        $r = Get-WeeklyEventsRollup -Json $case.j
+        Assert-False $r.available "fail open: $($case.n)"
+    }
+    Assert-True ((Format-NotPagedLine -Rollup (Get-WeeklyEventsRollup -Json 'x')) -match 'unknown') 'unavailable says unknown, never 0'
+
+    $j = New-Blob (B64 '{"ok": true, "n": 5, "names": [{"name": "Canary Tdarr Scanner", "count": 3}, {"name": "qflix-reaper.py", "count": 2}]}')
+    $r = Get-WeeklyEventsRollup -Json $j
+    Assert-True $r.available 'parsed'
+    Assert-Equal 5 $r.n 'count'
+    Assert-Equal '**Not paged this week:** 5 - Canary Tdarr Scanner (3), qflix-reaper.py (2)' (Format-NotPagedLine -Rollup $r) 'operator-specified line shape'
+    $z = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 0, "names": []}'))
+    Assert-Equal '**Not paged this week:** 0' (Format-NotPagedLine -Rollup $z) 'quiet week says 0'
+    $many = [pscustomobject]@{ available = $true; n = 20; names = @(1..15 | ForEach-Object { [pscustomobject]@{ name = "m$_"; count = 1 } }) }
+    Assert-True ((Format-NotPagedLine -Rollup $many) -match '\+3 more$') 'long lists are clipped and counted'
+
+    $p = New-DiscordWeeklyPayload -OperatorId '1' -OkModels 3 -ModelCount 3 -DurationSec 1 -Rollup $r -Now ([datetime]'2026-11-16T12:20:00')
+    Assert-True ($p.embeds[0].description -match 'Not paged this week:\*\* 5 - Canary Tdarr Scanner') 'weekly message carries the roll-up line'
+    $q = New-DiscordWeeklyPayload -OperatorId '1' -OkModels 3 -ModelCount 3 -DurationSec 1 -Now ([datetime]'2026-11-16T12:20:00')
+    Assert-True ($q.embeds[0].description -match 'Not paged this week:\*\* unknown') 'no roll-up still posts, saying unknown'
+}
+
+Test-Case 'heredoc ships weekly_events OUTSIDE sources, names only, last 7 days, recoveries excluded' {
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('printf '',"weekly_events":"%s"'' "$WE"')) 'top-level weekly_events key'
+    Assert-True ($h.Contains('$HOME/.opt/maint/weekly-events.jsonl')) 'reads the #160 roll-up file'
+    Assert-True ($h.Contains('timedelta(days=7)')) 'last 7 days'
+    Assert-True ($h.Contains('r.get("state") == "up"')) 'recovery edges are not counted'
+    Assert-False ($h -match 'r\.get\("msg"') 'msg text never leaves the box'
+    $i = $h.IndexOf('for k in arr_logs'); $j = $h.IndexOf('"weekly_events"')
+    Assert-True ($i -gt 0 -and $j -gt $i) 'emitted after the sources loop, so models never see it'
+}
+
 Test-Case 'Send-DeadmanAlert defers (logs, never posts) on a non-final weekly attempt' {
     $savedAppData = $env:APPDATA
     $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"

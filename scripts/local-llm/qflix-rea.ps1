@@ -106,6 +106,18 @@ $Script:WeeklyRetryWindowHours = 12   # hourly retries 12:00..23:00, then the we
 $Script:ReachedBoxThisRun = $false
 $Script:DeferFailurePages = $false    # true on a scheduled, non-final attempt
 $Script:LastDiscordStatus = 0         # HTTP status of the last Send-Discord
+# ONE definition of "a completed audit" for the once-a-week guard and the
+# previous-audit stamp. Whole-token match, same reading as the box-side
+# rea-liveness canary (which takes the LAST outcome= on the line):
+#   - stamp must be an ISO date, findings a number;
+#   - outcome= must START a space-separated token, so `note=outcome=heartbeat`
+#     inside another value cannot settle a week;
+#   - the outcome value must END at a space or end of line, so
+#     `outcome=heartbeat-x` / `outcome=silent.old` do not count (the old `\b`
+#     treated - and . as word ends);
+#   - no later outcome= on the line, so the guard and the canary can never
+#     read two different verdicts off the same line.
+$Script:CompletedAuditRx = '^(\d{4}-\d{2}-\d{2}T\S+) ok findings=\d+(?: \S+)*? outcome=(heartbeat|silent|error_post|discord_post_failed)(?=\s|$)(?!.*outcome=)'
 
 # ---------- Noise policy: LOADED FROM GIT, NOT AUTHORED HERE ----------
 # The system prompt ASKS the models to skip known-benign classes, but a prompt is
@@ -1340,7 +1352,43 @@ for k in arr_logs journal_errors cron_mail maint_state nginx_errors plex_errors 
   printf '%s"%s":"%s"' "$sep" "$k" "$v"
   sep=','
 done
-printf '}}'
+printf '}'
+# weekly_events: OUTSIDE "sources" on purpose. It is the QFLX-123 roll-up of
+# what did NOT page this week (lib/paging.py record_weekly), counted for the
+# weekly Discord summary - never handed to the models, which grade logs, not
+# our own alert bookkeeping. Last 7 days, recoveries (kuma state "up")
+# excluded: each counted event is one thing that WOULD have paged before
+# quiet paging. Names only (Kuma monitor, else the emitting program), never
+# msg: the summary must stay member-data-free. ok:false when the file is
+# absent; an empty field (no python3, any error) reads as "unavailable" on
+# the workstation - fail open, the summary still posts.
+WE=$(python3 - "$HOME/.opt/maint/weekly-events.jsonl" <<'PYEOF' 2>/dev/null | base64 -w0
+import collections, json, os, sys
+from datetime import datetime, timedelta, timezone
+p = sys.argv[1]
+if not os.path.exists(p):
+    print(json.dumps({"ok": False, "why": "absent"}))
+    sys.exit(0)
+cut = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+c = collections.Counter()
+n = 0
+with open(p, encoding="utf-8", errors="replace") as fh:
+    for line in fh:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(r, dict) or str(r.get("ts", "")) < cut:
+            continue
+        if r.get("kind") == "kuma" and r.get("state") == "up":
+            continue
+        n += 1
+        c[str(r.get("monitor") or r.get("origin") or "unknown")[:60]] += 1
+print(json.dumps({"ok": True, "n": n, "names": [{"name": k, "count": v} for k, v in c.most_common()]}))
+PYEOF
+)
+printf ',"weekly_events":"%s"' "$WE"
+printf '}'
 printf '\n'
 '@
     $bash = $bash -replace '__SECTION_CAP__', [string]$Script:SectionByteCap
@@ -1915,6 +1963,7 @@ function New-DiscordWeeklyPayload {
         [int]$SoloCount = 0,
         [string]$Note = '',
         [string]$PreviousAudit = '',
+        $Rollup = $null,
         [datetime]$Now = (Get-Date)
     )
     $n = @($Groups).Count
@@ -1931,6 +1980,7 @@ function New-DiscordWeeklyPayload {
         "**Window:** $($from.ToString('ddd yyyy-MM-dd')) -> $($ref.ToString('ddd yyyy-MM-dd HH:mm')) UTC (last $($Script:FreshDays) days: since the previous weekly run, including Monday's 11:00-15:00 UTC maintenance window)"
     )
     if ($PreviousAudit) { $lines += "**Previous audit:** $PreviousAudit" }
+    $lines += (Format-NotPagedLine -Rollup $Rollup)
     $lines += ''
     if ($n -eq 0) {
         $verdict = 'Clean: no finding survived the noise rules and the 2-model consensus floor.'
@@ -1962,6 +2012,42 @@ function New-DiscordWeeklyPayload {
     }
 }
 
+function Get-WeeklyEventsRollup {
+    # Reads the `weekly_events` field the heredoc adds next to `sources` (the
+    # box's QFLX-123 roll-up of everything that did not page this week).
+    # FAILS OPEN: missing field, empty field, bad base64/JSON, ok:false - all
+    # return available=$false and the summary says "unknown" instead of
+    # failing the weekly message. Pure over $Json.
+    param([string]$Json)
+    $none = [pscustomobject]@{ available = $false; n = 0; names = @() }
+    try {
+        $obj = $Json | ConvertFrom-Json
+        if (-not ($obj.PSObject.Properties.Name -contains 'weekly_events')) { return $none }
+        $b64 = [string]$obj.weekly_events
+        if (-not $b64) { return $none }
+        $w = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json
+        if (-not ($w.PSObject.Properties.Name -contains 'ok') -or -not $w.ok) { return $none }
+        $names = @(foreach ($e in @($w.names)) {
+            if ($null -eq $e) { continue }
+            [pscustomobject]@{ name = [string]$e.name; count = [int]$e.count }
+        })
+        return [pscustomobject]@{ available = $true; n = [int]$w.n; names = $names }
+    } catch { return $none }
+}
+
+function Format-NotPagedLine {
+    # "Not paged this week: N - <names>" for the weekly summary. Pure.
+    param($Rollup, [int]$MaxNames = 12)
+    if ($null -eq $Rollup -or -not $Rollup.available) {
+        return '**Not paged this week:** unknown (weekly roll-up not readable from the box)'
+    }
+    if ($Rollup.n -le 0) { return '**Not paged this week:** 0' }
+    $all = @($Rollup.names)
+    $shown = @($all | Select-Object -First $MaxNames | ForEach-Object { "$($_.name) ($($_.count))" })
+    $more = if ($all.Count -gt $MaxNames) { ", +$($all.Count - $MaxNames) more" } else { '' }
+    return "**Not paged this week:** $($Rollup.n) - $($shown -join ', ')$more"
+}
+
 function Get-PreviousAuditStamp {
     # Stamp of the most recent COMPLETED audit in audit.log strictly before
     # $Before, or ''. Same "completed" vocabulary as Test-WeeklyAuditDone.
@@ -1969,10 +2055,13 @@ function Get-PreviousAuditStamp {
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     for ($i = @($Lines).Count - 1; $i -ge 0; $i--) {
         $l = ([string]$Lines[$i]).TrimStart([char]0xFEFF).Trim()
-        if ($l -notmatch '^(\S+) ok findings=\S+ .*\boutcome=(heartbeat|silent|error_post|discord_post_failed)\b') { continue }
+        if ($l -notmatch $Script:CompletedAuditRx) { continue }
         $dto = [datetimeoffset]::MinValue
         if (-not [datetimeoffset]::TryParse($Matches[1], $inv, [System.Globalization.DateTimeStyles]::None, [ref]$dto)) { continue }
-        if ($dto.LocalDateTime -lt $Before) { return $dto.LocalDateTime.ToString('ddd yyyy-MM-dd HH:mm') + ' local' }
+        # Rendered with the offset it was LOGGED in (the workstation's), not
+        # converted to the reader's zone: a UTC CI runner printed 19:21 for a
+        # 12:21 -07:00 audit (CI run 43018145845).
+        if ($dto.LocalDateTime -lt $Before) { return $dto.ToString('ddd yyyy-MM-dd HH:mm zzz', [System.Globalization.CultureInfo]::InvariantCulture) }
     }
     return ''
 }
@@ -2321,7 +2410,7 @@ function Test-WeeklyAuditDone {
     foreach ($raw in @($Lines)) {
         if (-not $raw) { continue }
         $l = $raw.TrimStart([char]0xFEFF).Trim()
-        if ($l -notmatch '^(\S+) ok findings=\S+ .*\boutcome=(heartbeat|silent|error_post|discord_post_failed)\b') { continue }
+        if ($l -notmatch $Script:CompletedAuditRx) { continue }
         $dto = [datetimeoffset]::MinValue
         if (-not [datetimeoffset]::TryParse($Matches[1], $inv, [System.Globalization.DateTimeStyles]::None, [ref]$dto)) { continue }
         if ($dto.LocalDateTime -ge $anchor -and $dto.LocalDateTime -le $Now) { return $l }
@@ -3055,7 +3144,8 @@ function Invoke-Main {
         $n = $errorGroups.Count
         $payload = New-DiscordWeeklyPayload -OperatorId $opId -Groups $errorGroups -OkModels $okModels `
             -ModelCount $models.Count -DurationSec $duration -FetchedAt ([string]$decodedBlob.fetched_at) `
-            -SoloCount $soloGroups.Count -Note $note -PreviousAudit $prev
+            -SoloCount $soloGroups.Count -Note $note -PreviousAudit $prev `
+            -Rollup (Get-WeeklyEventsRollup -Json $blobJson)
         if ($DryRun) {
             ($payload | ConvertTo-Json -Depth 12) | Write-Host
             $outcome = if ($n -gt 0) { 'dryrun_error' } else { 'dryrun_heartbeat' }

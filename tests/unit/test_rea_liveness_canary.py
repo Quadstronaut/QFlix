@@ -150,6 +150,13 @@ OUTCOME_TABLE = [
     # on a fresh streak; a persistent run of these reds at the P5 cap.
     ("ok findings=0 models=1/3 duration=500s outcome=quorum_degraded", 0, None, "quorum_degraded"),
     ("SKIPPED locked", 0, None, "lock-skip"),
+    # QFLX-123: a weekly-REA failure with an hourly retry still pending.
+    # Vacuous WARN, never red - "Canary REA Liveness" pages.
+    ("fail reason=ollama_down outcome=deferred_retry", 0, None, "deferred-retry"),
+    ("fail reason=ssh_fail outcome=deferred_retry msg=connection refused", 0, None,
+     "deferred-retry-with-detail"),
+    # Near-miss: only the exact token defers; anything else is a real failure.
+    ("fail reason=ssh_fail outcome=deferred_retry_x", 1, "rea-not-auditing", "deferred-near-miss"),
     ("suppressed n=2 rules=plex-post-reap-scan,tdarr-express-undefined-includes",
      0, None, "suppression-line"),
 ]
@@ -301,6 +308,21 @@ def test_the_fallback_stops_at_the_next_top_level_key(tmp_path):
     res = _run(hb, mtime_age_h=1.0, reason_table=str(tbl),
                extra_env=_no_pyyaml(tmp_path))
     assert "reason=not_a_deadman_reason(unknown-to-table)" in res.stderr, res.stderr
+
+
+def test_deferred_retry_is_a_counted_warn_checked_before_the_fail_case(tmp_path):
+    """QFLX-123 ordering lock: the deferred_retry branch must sit ABOVE the
+    generic `fail reason=*` branch, or every pending Monday retry reds a
+    canary that is in the manifest paging set."""
+    res = _run(_hb(tmp_path, "2026-08-03T02:00:00+00:00 fail reason=all_models_noop "
+                             "outcome=deferred_retry models=3\n"),
+               extra_env={"QFLIX_CANARY_REA_VACUITY": str(tmp_path / "vac")})
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.startswith("PASS-WARN:"), res.stdout
+    assert "deferred-retry-pending:all_models_noop" in res.stdout, res.stdout
+    body = SCRIPT.read_text(encoding="utf-8").split("set -uo pipefail", 1)[1]
+    assert body.index("outcome=deferred_retry") < body.index("  fail\\ reason=*)"), \
+        "deferred_retry case must precede the generic fail case"
 
 
 def test_warn_states_are_reported_as_warn_not_as_clean(tmp_path):
@@ -601,6 +623,7 @@ def test_reason_table_still_carries_the_five_reasons():
 
 NON_VERDICT = [
     ("SKIPPED another run holds the lock", "SKIPPED"),
+    ("fail reason=all_models_noop outcome=deferred_retry models=3", "deferred_retry"),
     ("ok findings=0 models=3/3 duration=44s outcome=dryrun_heartbeat", "dryrun"),
     ("suppressed n=12", "suppressed"),
 ]

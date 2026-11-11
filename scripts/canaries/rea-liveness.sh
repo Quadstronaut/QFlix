@@ -353,6 +353,21 @@ fi
 # on vocabulary it has never seen is not a watchdog.
 WARN=""
 case "$REST" in
+  fail\ reason=*\ outcome=deferred_retry|fail\ reason=*\ outcome=deferred_retry\ *)
+    # MUST sit above `fail reason=*` (QFLX-123). A WEEKLY REA logs a failure
+    # on a Monday attempt that still has an hourly retry behind it as
+    # outcome=deferred_retry and posts nothing; the next hour tries again. It
+    # is not the week's verdict, so it must not red this canary - "Canary REA
+    # Liveness" is in the manifest paging set, and a red here would page the
+    # operator for a run REA itself is about to retry. It is still not an
+    # audit, so it joins the vacuous family: WARN + the P5 streak clock. If
+    # every retry fails, the 23:00 final attempt records a plain
+    # `fail reason=` line, which reds below exactly as before.
+    R=${REST#fail reason=}; R=${R%% *}
+    skip "deferred-retry-pending:$R"
+    vac_check "deferred_retry:$R"
+    WARN="-WARN" ;;
+
   fail\ reason=*)
     R=${REST#fail reason=}; R=${R%% *}
     # LABEL ONLY — never changes the verdict. The reason table is mirrored from
