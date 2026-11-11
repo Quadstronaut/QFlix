@@ -264,6 +264,15 @@ def test_rules_match_their_canonical_log_lines(ledgers):
          "Exception caught determining whether we could skip 'Law & Order/"
          "Season 5' ~ boost::filesystem::file_size: No such file or "
          "directory"),
+        # QFLX-110. Paged 2026-11-09 15:08 UTC: an empty fake's release folder.
+        ("arr-import-path-missing",
+         "2026-11-09 16:15:00.2|Error|DownloadedEpisodesImportService|Import "
+         "failed, path does not exist or is not accessible by Sonarr: "
+         "/home/(removed)/downloads/qbittorrent/tv-sonarr/Dexter Resurrection "
+         "S02E03 Live Free and Die 1080p WEB H264-CAKES"),
+        ("arr-import-path-missing",
+         "Import failed, path does not exist or is not accessible by Radarr: "
+         "/home/(removed)/downloads/qbittorrent/radarr/Movie 2026 1080p"),
     ]
     for cid, hay in cases:
         assert re.search(by_id[cid], hay), cid + " no longer matches its log line"
