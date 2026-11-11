@@ -36,7 +36,8 @@ $Script:SshTimeoutSec   = 60
 # 240 -> 420 (2026-08-18): with num_ctx=24576 and a storm-fat blob, the two
 # larger models need longer prefill; at 240s they timed out and runs graded
 # models=1/3 (563s run, 2 timeouts + 1 pass, measured live). Worst case is
-# 3 x 420s + fetch = ~22 min, comfortably inside the hourly cadence.
+# 3 x 420s + fetch = ~22 min, comfortably inside the hourly retry spacing
+# (the task is weekly since 2026-11-11; see Get-ReaTaskDefinition).
 $Script:ModelTimeoutSec = 420
 # Yield-to-operator gate (2026-09-13). The model phase pins every core (Ollama
 # launches llama-server at AboveNormal) and 5-7 GB of the 8 GB GPU for up to
@@ -85,6 +86,14 @@ $Script:AuditLogMaxBytes = 10MB
 $Script:TaskFolderPath      = '\QFlix-LLM\'
 $Script:LegacyTaskFolderPath = '\Archangel\QFlix-LLM\'
 $Script:TaskName            = 'QFlix Random Error Audit'
+# WEEKLY CADENCE (operator 2026-11-11, QFLX-110): one audit per week, first
+# attempt Monday 12:00 LOCAL - after the box's Monday 11:00-15:00 UTC
+# maintenance window (04:00-08:00 here, America/Phoenix, no DST) - to look for
+# what the maintenance broke. The task retries hourly until midnight; the
+# anchor below is what Test-WeeklyAuditDone measures "this week" from, so the
+# trigger and the guard cannot disagree about when a week starts.
+$Script:WeeklyAnchorDay  = 'Monday'
+$Script:WeeklyAnchorTime = '12:00'
 
 # ---------- Noise policy: LOADED FROM GIT, NOT AUTHORED HERE ----------
 # The system prompt ASKS the models to skip known-benign classes, but a prompt is
@@ -538,7 +547,7 @@ tailnew() {
     case "$prev" in *[!0-9]*) continue ;; esac   #    unparseable mark: same
     # 1b. THE MARK MUST HAVE ITS OWN AGE. A byte delta is not a time bound: it
     # says the bytes are NEW SINCE THE MARK, and says nothing about how old the
-    # mark is. REA is logon/session triggered with StartWhenAvailable, and this
+    # mark is. REA was logon/session triggered with StartWhenAvailable, and this
     # workstation is routinely off for 50-102h, so on the boot run the mark is
     # a gap old and the delta reaches back across the whole gap - undated, so
     # no line filter can touch it. That boot run is precisely when the operator
@@ -546,9 +555,19 @@ tailnew() {
     # yesterday clears it while the delta still spans days.
     # A mark older than the freshness window is treated as first sight: emit
     # nothing, and the unconditional re-mark above has already re-armed it.
+    # WEEKLY CADENCE (QFLX-110): the mark is now ~7 days old on every
+    # scheduled run, so this branch is the steady state and these undated
+    # legs contribute nothing to the Monday audit - a week of undated stderr
+    # cannot be scoped to the maintenance window, and the law above stands.
+    # It is NAMED, never silent, so an empty section reads as policy, not as
+    # a dead collector. (A same-day retry still ships its small fresh delta.)
     now=$(date +%s)
     case "$ptime" in ''|*[!0-9]*) continue ;; esac
-    [ "$((now - ptime))" -le "$((FRESH_DAYS * 86400))" ] || continue
+    if [ "$((now - ptime))" -gt "$((FRESH_DAYS * 86400))" ]; then
+      printf '# collector-suppressed: %s watermark is %sh old (> FRESH_DAYS); undated bytes since then cannot be dated, re-armed\n' \
+        "$f" "$(( (now - ptime) / 3600 ))"
+      continue
+    fi
     [ "$size" -lt "$prev" ] && prev=0            #    rotated: all of it is new
     [ "$size" -gt "$prev" ] || continue          # 2. nothing appended
     [ -n "$(find "$f" -mtime -"$FRESH_DAYS" -print -quit 2>/dev/null)" ] || continue  # 3.
@@ -885,11 +904,15 @@ collect cron_mail bash -c '
   mboxfresh < "$f" | tail -n 500
 '
 
-# 4. Maint pipeline (state + 6h warnings)
+# 4. Maint pipeline (state + 24h warnings). 6h -> 24h with the WEEKLY cadence
+#    (QFLX-110): the run lands Monday ~19:00 UTC, so 6h reached back only to
+#    13:00 UTC and missed the first half of the 11:00-15:00 UTC maintenance
+#    window it exists to audit. 24h covers the window from every start in the
+#    Monday 12:00-23:00 local retry tail, and matches journal_errors / vlogs.
 collect maint_state bash -c '
   [ -f ~/.opt/maint/state.json ] && cat ~/.opt/maint/state.json
-  echo "----- pusher warnings 6h -----"
-  journalctl --user -u manitoba-maint-pusher --since "6h ago" -p warning --no-pager 2>&1 || true
+  echo "----- pusher warnings 24h -----"
+  journalctl --user -u manitoba-maint-pusher --since "24 hours ago" -p warning --no-pager 2>&1 || true
 '
 
 # 5. nginx errors (last 200 lines; skipped when the error.log is frozen/stale).
@@ -1215,7 +1238,10 @@ collect_cap vlogs 3500 bash -c 'VP=$(cat ~/secrets/vlogs.port 2>/dev/null); [ -n
 #             this instant THIS run has no verdict yet - the one-run lag is by
 #             construction and is what lets the heartbeat report ssh_fail and
 #             tunnel_timeout at all, which an end-of-run write never could
-#             (by definition its SSH is dead).
+#             (by definition its SSH is dead). Since the task went WEEKLY
+#             (QFLX-110) a run that reached the box ALSO overwrites this with
+#             its own line on the way out (Publish-ReaHeartbeat), because a
+#             one-run lag is now a one-WEEK lag.
 #
 # WHY THE ARGUMENT ORDER MATTERS: this sits at the END of collection, not the
 # top. Reaching here means REA reached the box AND the collection ran to
@@ -1881,7 +1907,7 @@ function New-DiscordDeadmanPayload {
     param(
         [string]$OperatorId,
         [string]$Title       = '[WARN] QFlix REA - Ollama appears down',
-        [string]$Description = "Workstation Ollama at $($Script:OllamaBase)/api/tags is not responding. Audit skipped.`n`nNext check: next Windows logon. Manual fix: ``ollama serve`` (or restart the Ollama service)."
+        [string]$Description = "Workstation Ollama at $($Script:OllamaBase)/api/tags is not responding. Audit skipped.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: ``ollama serve`` (or restart the Ollama service)."
     )
     return @{
         content          = "<@$OperatorId>"
@@ -2184,10 +2210,108 @@ function Get-LastTerminalAuditLine {
         $l = $lines[$i].TrimStart([char]0xFEFF).Trim()
         if (-not $l) { continue }
         $body = ($l -split ' ', 2)[-1]
-        if ($body -like 'suppressed n=*' -or $body -like 'model-*') { continue }
+        # `weekly-*` (QFLX-110): the once-a-week guard's no-op line and the
+        # end-of-run heartbeat publish line. Both are bookkeeping written AFTER
+        # a run's verdict, never a verdict themselves.
+        if ($body -like 'suppressed n=*' -or $body -like 'model-*' -or $body -like 'weekly-*') { continue }
         return $l
     }
     return ''
+}
+
+function Get-WeeklyAnchor {
+    # The most recent $WeeklyAnchorDay $WeeklyAnchorTime (LOCAL) at or before
+    # $Now - i.e. when "this week's" audit became due. Pure.
+    param([datetime]$Now = (Get-Date))
+    $day = [System.DayOfWeek]$Script:WeeklyAnchorDay
+    $at  = [timespan]::Parse($Script:WeeklyAnchorTime)
+    $back = (7 + [int]$Now.DayOfWeek - [int]$day) % 7
+    $a = $Now.Date.AddDays(-$back).Add($at)
+    if ($a -gt $Now) { $a = $a.AddDays(-7) }
+    return $a
+}
+
+function Test-WeeklyAuditDone {
+    # Returns the audit line that already settled this week, or '' if none.
+    # "Settled" = a COMPLETED audit stamped at/after the weekly anchor: an
+    # `ok findings=` line whose outcome graded something (heartbeat, silent,
+    # error_post, or discord_post_failed - the audit ran, only the post did
+    # not). NOT settled, so the next hourly retry runs: any `fail reason=`, any
+    # SKIPPED, quorum_degraded (one model graded nothing) and dryrun_* (a dev
+    # run is not a production audit) - the same vacuous family the box-side
+    # rea-liveness canary refuses to count as a verdict. Pure over $Lines.
+    param([string[]]$Lines, [datetime]$Now = (Get-Date))
+    $anchor = Get-WeeklyAnchor -Now $Now
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    foreach ($raw in @($Lines)) {
+        if (-not $raw) { continue }
+        $l = $raw.TrimStart([char]0xFEFF).Trim()
+        if ($l -notmatch '^(\S+) ok findings=\S+ .*\boutcome=(heartbeat|silent|error_post|discord_post_failed)\b') { continue }
+        $dto = [datetimeoffset]::MinValue
+        if (-not [datetimeoffset]::TryParse($Matches[1], $inv, [System.Globalization.DateTimeStyles]::None, [ref]$dto)) { continue }
+        if ($dto.LocalDateTime -ge $anchor -and $dto.LocalDateTime -le $Now) { return $l }
+    }
+    return ''
+}
+
+function Publish-ReaHeartbeat {
+    # END-OF-RUN half of the rea-liveness writer (QFLX-110). The fetch-time
+    # write below in Get-RemoteHeredoc carries the PREVIOUS run's line - a
+    # one-run lag that cost an hour on an hourly task and costs a WEEK on a
+    # weekly one: a noon failure followed by a clean 13:00 retry would leave
+    # the canary red until next Monday, and a clean week would be reported a
+    # week late. So a run that reached the box this time also publishes its
+    # OWN terminal line on the way out. The fetch-time write stays: it is the
+    # only path that can carry ssh_fail / tunnel_timeout / ollama_down, which
+    # never reach the box by definition.
+    #
+    # Same contract and same atomic tmp+rename as the heredoc block; mtime is
+    # still the box's own clock. Best effort: a failed publish leaves the
+    # fetch-time line in place (honest, just lagged) and is logged as a
+    # `weekly-heartbeat` line, which Get-LastTerminalAuditLine skips.
+    param([int]$TimeoutSec = 30)
+    $line = Get-LastTerminalAuditLine
+    if (-not $line) { return }
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($line))
+    $bash = @'
+set -u
+D=$HOME/.opt/maint/rea
+mkdir -p "$D" &&
+printf '%s' '__B64__' | base64 -d > "$D/.heartbeat.$$" &&
+printf '\n' >> "$D/.heartbeat.$$" &&
+mv -f "$D/.heartbeat.$$" "$D/heartbeat" || { rm -f "$D/.heartbeat.$$"; exit 1; }
+'@
+    $bash = $bash.Replace('__B64__', $b64) -replace "`r", ''
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Script:SshExe
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.Arguments = (@('-o','BatchMode=yes','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=2',
+                            '-o','StrictHostKeyChecking=accept-new', (Resolve-SshHost), 'bash','-s') -join ' ')
+        $p = [System.Diagnostics.Process]::Start($psi)
+        try {
+            $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($bash)
+            $p.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+            $p.StandardInput.BaseStream.Flush()
+            $p.StandardInput.Close()
+            $errTask = $p.StandardError.ReadToEndAsync()
+            $null = $p.StandardOutput.ReadToEndAsync()
+            if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+                try { $p.Kill() } catch {}
+                throw "timeout ${TimeoutSec}s"
+            }
+            if ($p.ExitCode -ne 0) { throw "exit $($p.ExitCode): $($errTask.Result)" }
+        } finally { try { $p.Dispose() } catch {} }
+        Write-AuditLog 'weekly-heartbeat publish=ok'
+    } catch {
+        $msg = ($_.Exception.Message -replace '[\r\n]+', ' ')
+        if ($msg.Length -gt 200) { $msg = $msg.Substring(0, 200) }
+        Write-AuditLog "weekly-heartbeat publish=failed err=$msg"
+    }
 }
 
 function Send-DeadmanAlert {
@@ -2510,12 +2634,32 @@ function Test-IsStaleFinding {
 function Invoke-Main {
     $startUtc = Get-Date
 
-    # Phase 0a: yield to the operator (see $Script:BusyInputMinutes). Runs
-    # before anything heavy. The SKIPPED line is a known shape to the box-side
-    # rea-liveness canary: vacuous, cleared by the next real verdict, and only
-    # pages if no real verdict lands for MAX_VACUOUS_H (7 d) - overnight runs
-    # clear it long before that.
+    $Script:ReachedBoxThisRun = $false
+
+    # Phase 0: once a week (QFLX-110). The task fires Monday 12:00 and retries
+    # hourly until midnight; only scheduled runs are gated, so -Once / -DryRun
+    # / -FixturePath always run. A settled week makes every later retry a
+    # logged no-op. `weekly-noop` is skipped by Get-LastTerminalAuditLine, so
+    # it can never displace the real verdict the box-side canary reads.
     $yieldToUser = -not ($Once -or $DryRun -or $FixturePath)
+    if ($yieldToUser) {
+        $auditLog = Join-Path (Get-StateDir) 'audit.log'
+        $done = ''
+        if (Test-Path -LiteralPath $auditLog) {
+            try { $done = Test-WeeklyAuditDone -Lines @(Get-Content -LiteralPath $auditLog -Encoding UTF8 -ErrorAction Stop) }
+            catch { $done = '' }   # unreadable log: fail OPEN - audit rather than skip a week
+        }
+        if ($done) {
+            Write-AuditLog "weekly-noop already_audited since=$((Get-WeeklyAnchor).ToString('yyyy-MM-ddTHH:mm')) by=$(($done -split ' ', 2)[0])"
+            return 0
+        }
+    }
+
+    # Phase 0a: yield to the operator (see $Script:BusyInputMinutes). Runs
+    # before anything heavy. A busy noon is retried by the next hourly start
+    # (Test-WeeklyAuditDone above says the week is not settled yet). The
+    # SKIPPED line is a known shape to the box-side rea-liveness canary:
+    # vacuous, cleared by the next real verdict.
     if ($yieldToUser) {
         $busy = Get-UserBusyReason
         if ($busy) { Write-AuditLog "SKIPPED user_active $busy"; return 0 }
@@ -2550,7 +2694,7 @@ function Invoke-Main {
             if (-not (Wait-ForTunnel)) {
                 Send-DeadmanAlert -Reason 'tunnel_timeout' -Webhook $webhook -OpId $opId `
                     -Title '[WARN] QFlix REA - SSH tunnel never came up' `
-                    -Description "The reverse SSH tunnel to the seedbox did not open port $($Script:TunnelProbePort) within $($Script:TunnelWaitSec)s. Audit skipped.`n`nNext check: next Windows logon. Manual fix: verify the tunnel service is running and SSH connectivity to the seedbox."
+                    -Description "The reverse SSH tunnel to the seedbox did not open port $($Script:TunnelProbePort) within $($Script:TunnelWaitSec)s. Audit skipped.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: verify the tunnel service is running and SSH connectivity to the seedbox."
                 return 0
             }
         }
@@ -2593,7 +2737,7 @@ function Invoke-Main {
         if ($models.Count -eq 0) {
             Send-DeadmanAlert -Reason 'no_models' -Webhook $webhook -OpId $opId `
                 -Title '[WARN] QFlix REA - no code-capable Ollama models found' `
-                -Description "``ollama list`` returned no model matching the include/exclude filters (coder / qwen3, minus -base/-vl/embed). Audit skipped.`n`nNext check: next Windows logon. Manual fix: ``ollama pull`` a coder model, or check the Ollama install."
+                -Description "``ollama list`` returned no model matching the include/exclude filters (coder / qwen3, minus -base/-vl/embed). Audit skipped.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: ``ollama pull`` a coder model, or check the Ollama install."
             return 0
         }
 
@@ -2610,13 +2754,14 @@ function Invoke-Main {
                 $blobJson = Get-Content -Raw -LiteralPath $blobPath
             } else {
                 $blobJson = Invoke-RemoteFetch -OutPath $blobPath
+                $Script:ReachedBoxThisRun = $true
             }
         } catch {
             $msg = ($_.Exception.Message -replace '[\r\n]+',' ')
             if ($msg.Length -gt 200) { $msg = $msg.Substring(0,200) }
             Send-DeadmanAlert -Reason 'ssh_fail' -Webhook $webhook -OpId $opId -Detail "msg=$msg" `
                 -Title '[WARN] QFlix REA - SSH fetch from the seedbox failed' `
-                -Description "The remote log fetch over SSH failed: ``$msg``. Audit skipped.`n`nNext check: next Windows logon. Manual fix: check SSH connectivity / seedbox load."
+                -Description "The remote log fetch over SSH failed: ``$msg``. Audit skipped.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: check SSH connectivity / seedbox load."
             return 0
         }
 
@@ -2631,7 +2776,7 @@ function Invoke-Main {
         } catch {
             Send-DeadmanAlert -Reason 'blob_parse' -Webhook $webhook -OpId $opId `
                 -Title '[WARN] QFlix REA - could not parse the seedbox log blob' `
-                -Description "The JSON blob fetched from the seedbox failed to parse. Audit skipped.`n`nNext check: next Windows logon. Manual fix: run with -FixturePath or -DryRun to inspect the raw fetch."
+                -Description "The JSON blob fetched from the seedbox failed to parse. Audit skipped.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: run with -FixturePath or -DryRun to inspect the raw fetch."
             return 0
         }
 
@@ -2724,7 +2869,7 @@ function Invoke-Main {
         if ($okModels -eq 0) {
             Send-DeadmanAlert -Reason 'all_models_noop' -Webhook $webhook -OpId $opId -Detail "models=$($models.Count)" `
                 -Title '[WARN] QFlix REA - every model no-op''d' `
-                -Description "All $($models.Count) model(s) either timed out, errored, or returned unparseable output. Audit skipped this run.`n`nNext check: next Windows logon. Manual fix: check Ollama load / model health."
+                -Description "All $($models.Count) model(s) either timed out, errored, or returned unparseable output. Audit skipped this run.`n`nNext check: next hourly retry (Mondays until midnight), else next Monday 12:00. Manual fix: check Ollama load / model health."
             return 0
         }
         if ($suppressed.Count -gt 0) {
@@ -2839,6 +2984,13 @@ function Invoke-Main {
         }
         return 0
     } finally {
+        # Every return above has already written this run's terminal line.
+        # Publish it only when this run itself reached the box (a run that
+        # never got there must not feed its own watchdog) and never for
+        # -DryRun, which would overwrite a real verdict with a dev run.
+        if ($Script:ReachedBoxThisRun -and -not $DryRun) {
+            try { Publish-ReaHeartbeat } catch {}
+        }
         try { $lock.Dispose() } catch {}
         $lockPath = Join-Path (Get-StateDir) 'state.json.lock'
         if (Test-Path $lockPath) { Remove-Item -Force -LiteralPath $lockPath -ErrorAction SilentlyContinue }
@@ -2889,16 +3041,23 @@ function Get-ReaTaskDefinition {
       assert them without registering anything.
 
       .DESCRIPTION
-      The three triggers are not decoration -- each one is load-bearing, and the
-      previous installer registered only the first, so any -Install silently
-      downgraded a system that audits hourly into one that audits at logon:
+      WEEKLY, Mondays 12:00 LOCAL (operator decision 2026-11-11, QFLX-110). The
+      seedbox's Monday maintenance window is 11:00-15:00 UTC = 04:00-08:00 on
+      this workstation (America/Phoenix, no DST), so noon is after it, and the
+      run exists to catch what the maintenance broke.
 
-        Logon          -- catch up on whatever broke while the box was off.
-        SessionLock    -- StateChange 7. The operator just walked away, which is
-                          exactly when the yield-to-operator gate ($BusyInput /
-                          audible-media) will let a GPU-pinning run proceed.
-        Daily + PT1H   -- the actual cadence. Anchored 01:00, repeats hourly for
-                          P1D, so it re-arms every day.
+      ONE trigger, with an hourly retry tail -- not three triggers. The old
+      Logon / SessionLock / Daily+PT1H set was an hourly audit; any of them left
+      in place would keep firing all week.
+
+        Weekly Mon 12:00 + PT1H for PT12H -- first attempt at noon, then one
+          retry per hour until midnight. A retry only does work while this
+          week has no completed audit (Test-WeeklyAuditDone): the yield-to-
+          operator gate SKIPs a busy noon, and a transient Ollama/SSH failure
+          must not cost a whole week. Once one run lands a verdict, every later
+          retry that day is a logged no-op (`weekly-noop`).
+        StartWhenAvailable -- a PC that was off on Monday afternoon runs the
+          missed start at its next boot; the same guard keeps it to one audit.
     #>
     param([Parameter(Mandatory)][string]$ScriptPath)
     $cmd = Get-HeadlessPsAction -Arguments ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $ScriptPath)
@@ -2909,9 +3068,10 @@ function Get-ReaTaskDefinition {
         Argument = $cmd.Argument
         # 2026-09-14: a 15m limit killed ~22m runs (3 models sequential, measured).
         ExecutionTimeLimitMinutes = 30
-        RepeatMinutes = 60
-        DailyAt = '01:00'
-        SessionStateChange = 7   # TASK_SESSION_LOCK
+        WeeklyDay        = $Script:WeeklyAnchorDay
+        WeeklyAt         = $Script:WeeklyAnchorTime
+        RepeatMinutes    = 60   # retry spacing on Monday, NOT the audit cadence
+        RetryWindowHours = 12
     }
 }
 
@@ -2920,20 +3080,10 @@ function Install-Task {
 
     $action = New-ScheduledTaskAction -Execute $d.Execute -Argument $d.Argument
 
-    $daily = New-ScheduledTaskTrigger -Daily -At $d.DailyAt
-    $daily.Repetition = (New-ScheduledTaskTrigger -Once -At $d.DailyAt `
+    $weekly = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $d.WeeklyDay -At $d.WeeklyAt
+    $weekly.Repetition = (New-ScheduledTaskTrigger -Once -At $d.WeeklyAt `
         -RepetitionInterval (New-TimeSpan -Minutes $d.RepeatMinutes) `
-        -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
-    $logon = New-ScheduledTaskTrigger -AtLogOn
-    # No New-ScheduledTaskTrigger switch reaches a session-state-change trigger;
-    # it only exists as a CIM class. -ClientOnly builds it without a server.
-    $lock = New-CimInstance -ClassName MSFT_TaskSessionStateChangeTrigger `
-        -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClientOnly `
-        -Property @{
-            Enabled     = $true
-            StateChange = [uint32]$d.SessionStateChange
-            UserId      = "$env:USERDOMAIN\$env:USERNAME"
-        }
+        -RepetitionDuration (New-TimeSpan -Hours $d.RetryWindowHours)).Repetition
 
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
                     -LogonType Interactive -RunLevel Limited
@@ -2944,7 +3094,7 @@ function Install-Task {
 
     Remove-ReaTask -Folder $Script:LegacyTaskFolderPath   # sweep the drifted copy
     Register-ScheduledTask -TaskPath $d.TaskPath -TaskName $d.TaskName -Action $action `
-        -Trigger @($logon, $lock, $daily) -Principal $principal -Settings $settings -Force | Out-Null
+        -Trigger @($weekly) -Principal $principal -Settings $settings -Force | Out-Null
 
     Write-Host "Installed task: $($d.TaskPath)$($d.TaskName)" -ForegroundColor Green
 }

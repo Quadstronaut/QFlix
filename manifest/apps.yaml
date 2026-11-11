@@ -1952,11 +1952,14 @@ canaries:
     # accurate, actionable reason every hour. Preferably land the writer first
     # and deploy into a green state.
     #
-    # Threshold is measured, not guessed. REA is ONLOGON-triggered on a personal
-    # PC, so 71 real inter-run gaps: max 275 h, p95 102 h. False fires over that
-    # history — 72 h: 6, 168 h: 1, 336 h: 0. Default cap is 336 h, which makes
-    # the AGE predicate slow (up to two weeks) and honest; the VERDICT predicate
-    # is the fast one and reds the same hour REA records a failure. An
+    # Threshold follows the cadence. Since 2026-11-11 (QFLX-110) REA is WEEKLY:
+    # Monday 12:00 workstation-local (after the 11:00-15:00 UTC maintenance
+    # window), hourly retries to midnight until one run lands a verdict. Cap is
+    # 360 h = one missed weekly run + a day of drift (336 h sat exactly on two
+    # gaps and would flap); the older ONLOGON history (max gap 275 h) clears it
+    # too. The AGE predicate is slow and honest; the VERDICT predicate is the
+    # fast one — REA now also rewrites the heartbeat with its OWN verdict at the
+    # end of a run that reached the box, so a failure reds that hour. An
     # unrecognised outcome token fails CLOSED (exit 2), because a watchdog that
     # green-lights vocabulary it does not understand is not a watchdog.
     kuma_monitor: "Canary REA Liveness"

@@ -240,10 +240,17 @@ Test-Case 'REA installs the task where the task actually lives' {
     Assert-True ($text -match 'Remove-ReaTask -Folder \$Script:LegacyTaskFolderPath') `
         'install sweeps the drifted copy instead of leaving two hourly audits'
 
-    # All three live triggers, not just the logon one the old installer wrote.
-    Assert-True ($text -match 'New-ScheduledTaskTrigger -AtLogOn')  'logon trigger registered'
-    Assert-True ($text -match 'MSFT_TaskSessionStateChangeTrigger') 'session-lock trigger registered'
-    Assert-True ($text -match 'RepeatMinutes\s*=\s*60')             'hourly repetition registered'
+    # WEEKLY since 2026-11-11 (QFLX-110): one Monday 12:00 trigger with an
+    # hourly retry tail. The old logon / session-lock / daily-hourly triggers
+    # must not come back on a reinstall - any of them is an hourly audit again.
+    Assert-True ($text -match 'New-ScheduledTaskTrigger -Weekly -DaysOfWeek \$d\.WeeklyDay') 'weekly trigger registered'
+    Assert-True ($text -match "WeeklyAnchorDay\s*=\s*'Monday'")       'anchored on Monday'
+    Assert-True ($text -match "WeeklyAnchorTime\s*=\s*'12:00'")       'anchored at 12:00 local'
+    Assert-True ($text -match 'RepeatMinutes\s*=\s*60')               'hourly retry spacing'
+    Assert-True ($text -match 'RetryWindowHours\s*=\s*12')            'retries stop at midnight'
+    Assert-True ($text -match '-Trigger @\(\$weekly\)')               'the weekly trigger is the only one'
+    Assert-True ($text -notmatch 'New-ScheduledTaskTrigger -AtLogOn') 'no logon trigger'
+    Assert-True ($text -notmatch 'MSFT_TaskSessionStateChangeTrigger') 'no session-lock trigger'
 }
 
 Write-Host ''

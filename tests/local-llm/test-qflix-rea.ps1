@@ -2562,6 +2562,74 @@ Test-Case 'Invoke-Model logs model-done / model-noop why=, liveness skips them' 
     }
 }
 
+# QFLX-110: REA went WEEKLY (Monday 12:00 local, hourly retries to midnight).
+# The guard is what turns that retry tail into ONE audit a week.
+Test-Case 'Get-WeeklyAnchor is the most recent Monday 12:00 at or before now' {
+    # 2026-11-16 is a Monday.
+    Assert-Equal ([datetime]'2026-11-16T12:00:00') (Get-WeeklyAnchor -Now ([datetime]'2026-11-16T12:00:00')) 'exactly at the anchor'
+    Assert-Equal ([datetime]'2026-11-16T12:00:00') (Get-WeeklyAnchor -Now ([datetime]'2026-11-16T23:30:00')) 'late Monday'
+    Assert-Equal ([datetime]'2026-11-09T12:00:00') (Get-WeeklyAnchor -Now ([datetime]'2026-11-16T11:59:00')) 'Monday morning belongs to last week'
+    Assert-Equal ([datetime]'2026-11-09T12:00:00') (Get-WeeklyAnchor -Now ([datetime]'2026-11-15T20:00:00')) 'Sunday'
+    Assert-Equal ([datetime]'2026-11-16T12:00:00') (Get-WeeklyAnchor -Now ([datetime]'2026-11-18T08:00:00')) 'Wednesday catch-up'
+}
+
+Test-Case 'Test-WeeklyAuditDone settles only on a completed audit since the anchor' {
+    $now = [datetime]'2026-11-16T15:00:00'
+    $off = ([datetimeoffset]$now).ToString('zzz')
+    $at  = { param($t) "2026-11-16T${t}${off}" }
+    foreach ($o in 'heartbeat','silent','error_post','discord_post_failed') {
+        $l = "$(& $at '13:05:00') ok findings=0 models=3/3 duration=500s outcome=$o"
+        Assert-Equal $l (Test-WeeklyAuditDone -Lines @($l) -Now $now) "outcome=$o settles the week"
+    }
+    foreach ($b in 'ok findings=0 models=1/3 duration=500s outcome=quorum_degraded',
+                   'ok findings=0 models=3/3 duration=500s outcome=dryrun_heartbeat',
+                   'fail reason=all_models_noop models=3',
+                   'SKIPPED user_active reason=input,idle_min=2<10',
+                   'weekly-noop already_audited since=2026-11-16T12:00 by=x') {
+        Assert-Equal '' (Test-WeeklyAuditDone -Lines @("$(& $at '13:05:00') $b") -Now $now) "not settled by: $b"
+    }
+    $last = "2026-11-09T13:05:00$off ok findings=0 models=3/3 duration=500s outcome=heartbeat"
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @($last) -Now $now) 'last week does not settle this week'
+    $early = "$(& $at '11:30:00') ok findings=0 models=3/3 duration=500s outcome=heartbeat"
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @($early) -Now $now) 'a manual run before noon does not settle the post-maintenance audit'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @('garbage', '', "$([char]0xFEFF)") -Now $now) 'junk never settles'
+}
+
+Test-Case 'weekly-* bookkeeping never displaces the verdict the canary reads' {
+    $savedAppData = $env:APPDATA
+    $env:APPDATA = Join-Path $Script:TempRoot "qflix-rea-test-$(Get-Random)"
+    try {
+        Write-AuditLog 'fail reason=all_models_noop models=3'
+        Write-AuditLog 'ok findings=0 models=3/3 duration=500s outcome=heartbeat'
+        Write-AuditLog 'weekly-heartbeat publish=ok'
+        Write-AuditLog 'weekly-noop already_audited since=2026-11-16T12:00 by=x'
+        Write-AuditLog 'weekly-heartbeat publish=failed err=exit 255: x'
+        Assert-True ((Get-LastTerminalAuditLine) -match 'outcome=heartbeat$') 'terminal line skips weekly-*'
+    } finally {
+        if (Test-Path $env:APPDATA) { Remove-Item $env:APPDATA -Recurse -Force }
+        $env:APPDATA = $savedAppData
+    }
+}
+
+Test-Case 'the task definition is weekly Monday 12:00 with an hourly retry tail' {
+    $d = Get-ReaTaskDefinition -ScriptPath 'C:\x\qflix-rea.ps1'
+    Assert-Equal 'Monday' $d.WeeklyDay        'Monday'
+    Assert-Equal '12:00'  $d.WeeklyAt         'noon local, after the 04:00-08:00 local maintenance window'
+    Assert-Equal 60       $d.RepeatMinutes    'retries hourly'
+    Assert-Equal 12       $d.RetryWindowHours 'until midnight'
+    Assert-False ($d.ContainsKey('DailyAt'))  'no daily trigger left'
+    Assert-False ($d.ContainsKey('SessionStateChange')) 'no session-lock trigger left'
+}
+
+Test-Case 'Invoke-Main checks the weekly guard before the busy gate, and publishes only after reaching the box' {
+    $src = (Get-Command Invoke-Main).Definition
+    $g = $src.IndexOf('Test-WeeklyAuditDone')
+    $b = $src.IndexOf('Get-UserBusyReason')
+    Assert-True ($g -ge 0 -and $b -gt $g) 'guard runs before the busy probe'
+    Assert-True ($src -match '\$Script:ReachedBoxThisRun -and -not \$DryRun') 'publish gated on reaching the box, never for -DryRun'
+    Assert-True ($src.IndexOf('$Script:ReachedBoxThisRun = $true') -gt $src.IndexOf('Invoke-RemoteFetch -OutPath')) 'flag set only after a successful fetch'
+}
+
 # Summary
 Write-Host "`n========================================" -F White
 Write-Host "  $Script:Pass passed, $Script:Fail failed, $Script:Skip skipped" -F $(if($Script:Fail){'Red'}else{'Green'})
