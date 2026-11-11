@@ -73,11 +73,13 @@
 #               unit (staged copy + live copy; the live one it replaces is kept
 #               as native/<unit>.prev), daemon-reload, require systemd's loaded
 #               ExecStart to name the sync preload, mute the app + its canaries
-#               (1 h TTL; only names not already muted), restart, verify parity
-#               (status, listen set, login, vhost), then prove the THING: the
-#               running process's cmdline carries the preload AND the unit's
-#               journal since the restart has `QFLX-111 applied` and no
-#               `QFLX-111 ERROR`. Parity failure restores the .prev unit.
+#               (1 h TTL; only names not already muted), wait out an imminent
+#               gate run (as --swap), restart, verify parity (status, listen
+#               set, login, vhost), then prove the THING: the running process's
+#               cmdline carries the preload AND the unit's journal since the
+#               restart has `QFLX-111 applied` and no `QFLX-111 ERROR`. Parity
+#               failure restores .prev only if THIS run wrote it; an idempotent
+#               re-run never restores an older unit.
 #
 # Exit: 0 ok | 1 refused/failed | 10 rollback paused for the manifest revert |
 # 64 usage.
@@ -218,7 +220,7 @@ plan() {
     finish)   info "would verify the native unit, reinstall $GATE_DROPIN and verify the gate's armed state, then lift suppression for ${SUPPRESS[*]}" ;;
     rollback) info "would suppress ${SUPPRESS[*]}, park + mask $UNIT, stop it, wait for the manifest revert, start the container via appctl, reinstall the gate drop-in, unsuppress" ;;
     post-upgrade) info "would check $APPDIR/bin/$UPGRADE_VER is a Seerr $UPGRADE_VER build, flip bin/current, rewrite COMMIT_TAG in $ENV_FILE" ;;
-    refresh-preload) info "would copy $PRELOAD_SRC + $SYNC_PRELOAD_SRC into $APPDIR/native/, re-render $UNIT (live copy kept as $APPDIR/native/$UNIT.prev), daemon-reload, mute ${SUPPRESS[*]} (1 h), restart, verify parity, require '$PRAGMA_OK' in the unit journal + the preload in the running cmdline, unmute" ;;
+    refresh-preload) info "would copy $PRELOAD_SRC + $SYNC_PRELOAD_SRC into $APPDIR/native/, re-render $UNIT (live copy kept as $APPDIR/native/$UNIT.prev), daemon-reload, mute ${SUPPRESS[*]} (1 h), wait out an imminent gate run, restart, verify parity, require '$PRAGMA_OK' in the unit journal + the preload in the running cmdline, unmute" ;;
   esac
   exit 0
 }
@@ -967,9 +969,24 @@ refresh_unmute() {
     || info "WARNING: could not lift the mute on ${REFRESH_MUTED[*]}; it expires within 1 h"
 }
 
+# Set to 1 only when THIS run copied the live unit to .prev and replaced it.
+REFRESH_WROTE_PREV=0
+
 # refresh_restore MSG: put the previous live unit back, restart, verify, die.
+# Only a .prev THIS run wrote is restored: on an idempotent re-run (live unit
+# already current) any .prev on disk is an OLDER unit (e.g. without the sync
+# preload), and restoring it would silently undo the change. Then nothing is
+# restored, the mute is lifted (so the pusher probes, heals and pages Seerr
+# normally again) and the failure is loud.
+# No wait_gate_gap here, deliberately: this is a rollback of a Seerr that just
+# failed parity (maybe DOWN). Waiting up to QFLIX_GATE_GAP_S for the gate timer
+# would stretch a real outage to dodge, at most, one gate page about it.
 refresh_restore() {
   local prev="$APPDIR/native/$UNIT.prev"
+  if [ "$REFRESH_WROTE_PREV" != 1 ]; then
+    refresh_unmute
+    die "$1; this run did not change the unit (it was already current), so nothing was restored; Seerr may be DOWN: check 'systemctl --user status $UNIT', or run --rollback --execute"
+  fi
   [ -f "$prev" ] || { refresh_unmute; die "$1; no $prev to restore"; }
   native_write_secure "$UNIT_DIR/$UNIT" 0644 < "$prev" && sysd daemon-reload && sysd restart "$UNIT" \
     || die "$1; restoring $prev FAILED; still muted (1 h TTL); run --rollback --execute"
@@ -1001,12 +1018,17 @@ do_refresh_preload() {
     { native_write_secure "$live" 0644 < "$staged" && cmp -s "$live" "$staged"; } \
       || { native_write_secure "$live" 0644 < "$prev"; refresh_unmute
            die "cannot install the unit; previous file put back (not reloaded, nothing restarted)"; }
+    REFRESH_WROTE_PREV=1
     info "live unit replaced; previous kept as $prev"
   fi
   sysd daemon-reload || refresh_restore "daemon-reload failed"
   # What systemd will actually exec, not what we wrote.
   sysd show "$UNIT" -p ExecStart --value 2>/dev/null | grep -qF "native/seerr-sqlite-sync.cjs" \
     || refresh_restore "systemd's loaded ExecStart does not name the sync preload"
+  # Same reason as --swap: a gate run inside the restart window pages "Seerr
+  # unavailable" (its Kuma push ignores push-suppress), so restart only when
+  # the next gate timer run is at least QFLIX_GATE_GAP_S away.
+  wait_gate_gap
   t0="$(date -u +%s)"
   sysd restart "$UNIT" || refresh_restore "restart $UNIT failed"
   verify_native || refresh_restore "native seerr fails parity after the refresh"
@@ -1022,7 +1044,11 @@ do_refresh_preload() {
     || { refresh_unmute; die "no '$PRAGMA_OK' in the $UNIT journal since the restart: pragma NOT proven (Seerr is up)"; }
   refresh_unmute
   info "REFRESHED: $(unit_journal_since "$t0" | grep -F "$PRAGMA_OK" | tail -n 1)"
-  info "parity ok (status, listen set, login, vhost); rollback: cp $prev $live && systemctl --user daemon-reload && systemctl --user restart $UNIT"
+  if [ "$REFRESH_WROTE_PREV" = 1 ]; then
+    info "parity ok (status, listen set, login, vhost); rollback: cp $prev $live && systemctl --user daemon-reload && systemctl --user restart $UNIT"
+  else
+    info "parity ok (status, listen set, login, vhost); unit unchanged by this run, so no rollback copy was written"
+  fi
 }
 
 do_post_upgrade() {

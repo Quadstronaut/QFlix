@@ -1306,6 +1306,34 @@ def test_refresh_preload_restores_the_previous_unit_when_parity_fails(box):
     assert box.suppressed() == {}
 
 
+def test_refresh_preload_waits_out_an_imminent_gate_run_before_restarting(box):
+    _pre_qflx111(box)
+    r = box.run("--refresh-preload", "--execute", env={"FAKE_GATE_NEXT_S": "2"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "waiting it out" in r.stdout
+    calls = box.calls_text()
+    assert calls.index("show manitoba-maint-entitlement.timer -p NextElapseUSecRealtime") \
+        < calls.index(f"restart {UNIT}")
+
+
+def test_refresh_preload_rerun_never_restores_a_stale_prev(box):
+    old = _pre_qflx111(box)
+    r = box.run("--refresh-preload", "--execute")
+    assert r.returncode == 0 and "rollback: cp " in r.stdout, r.stdout + r.stderr
+    gold = GOLDEN_UNIT.read_text(encoding="utf-8")
+    # Idempotent re-run: live == staged, .prev (the OLD unit) is not this run's.
+    r = box.run("--refresh-preload", "--execute")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "rollback: cp " not in r.stdout and "no rollback copy was written" in r.stdout
+    # A re-run whose restart fails parity must NOT put the old unit back.
+    r = box.run("--refresh-preload", "--execute", env={"FAKE_SYNC_BREAKS_START": "1"})
+    assert r.returncode != 0 and "nothing was restored" in r.stderr, r.stdout + r.stderr
+    assert (box.unitdir / UNIT).read_text() == gold
+    assert (box.appdir / "native" / f"{UNIT}.prev").read_text() == old
+    assert "rollback: cp " not in r.stdout
+    assert box.suppressed() == {}                       # pusher heals + pages normally again
+
+
 def test_refresh_preload_refuses_a_box_that_is_not_swapped(box):
     box.installed()
     r = box.run("--refresh-preload", "--execute")
