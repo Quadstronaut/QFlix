@@ -316,6 +316,19 @@ def test_webhook_records_non_member_edges_only(fixture_manifest):
     assert all(r["kind"] == "kuma" for r in recs)
 
 
+def test_webhook_ignores_monitors_it_does_not_own(fixture_manifest):
+    """The 240 install smoke POSTs a fake 'InstallSmokeNonExistent' DOWN; the
+    first deploy (2026-11-11) wrote it into the weekly roll-up. Owned
+    non-manifest monitors (daemon + standalone self-pushers) still count."""
+    from lib import kuma
+    m = manifest_mod.load(fixture_manifest)
+    kuma._record_unpaged_edge(m, "InstallSmokeNonExistent", 0,
+                              {"heartbeat": {"msg": "install-smoke"}})
+    kuma._record_unpaged_edge(m, "QFlix Reaper", 0, {"heartbeat": {"msg": "x"}})
+    kuma._record_unpaged_edge(m, "Manitoba Pusher", 0, {"heartbeat": {"msg": "y"}})
+    assert [r["monitor"] for r in _weekly()] == ["QFlix Reaper", "Manitoba Pusher"]
+
+
 def test_webhook_recorder_never_raises():
     from lib import kuma
     kuma._record_unpaged_edge(object(), "X", 0, {"heartbeat": "not-a-dict"})
