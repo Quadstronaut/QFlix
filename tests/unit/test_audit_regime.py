@@ -200,6 +200,38 @@ def test_a_lapsed_residual_review_fails(repo, ledgers):
     assert any("review is DUE" in p for p in problems)
 
 
+@pytest.mark.parametrize("age,expected", [
+    (24, []),               # 6 days left: outside the 5-day window
+    (25, [("R-T", 5)]),     # first warning day
+    (30, [("R-T", 0)]),     # last green day
+    (31, []),               # lapsed: exit 2's job, not a warning
+])
+def test_residual_due_soon_boundaries(age, expected):
+    """QFLX-95: warn inside [0, warn_days] days of lapse, never before/after."""
+    from lib.audit.ledger import residual_reviews_due_soon
+    today = _dt.date(2026, 11, 26)
+    scope = {"residuals": [
+        {"id": "R-T", "review_cadence_days": 30,
+         "last_reviewed": (today - _dt.timedelta(days=age)).isoformat()},
+        {"id": "R-BAD", "review_cadence_days": None, "last_reviewed": "nope"},
+    ]}
+    assert residual_reviews_due_soon(scope, today) == expected
+
+
+def test_residual_due_soon_does_not_touch_meta_checks(repo, ledgers):
+    """Advisory only: on a due-soon day the meta-check still passes (exit 0)."""
+    from lib.audit.ledger import residual_reviews_due_soon
+    r2 = next(r for r in ledgers.scope["residuals"] if r["id"] == "R2")
+    reviewed = r2["last_reviewed"]
+    if isinstance(reviewed, str):
+        reviewed = _dt.date.fromisoformat(reviewed)
+    day = reviewed + _dt.timedelta(days=r2["review_cadence_days"])
+    assert ("R2", 0) in residual_reviews_due_soon(ledgers.scope, day)
+    problems = check_residual_discipline(
+        ledgers.scope, ledgers.classes, repo.read(RESIDUAL_DOC), day)
+    assert not any("R2 was last reviewed" in p for p in problems)
+
+
 def test_a_residual_with_no_row_in_the_register_fails(ledgers):
     scope = copy.deepcopy(ledgers.scope)
     scope["residuals"].append({
