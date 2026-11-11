@@ -67,7 +67,7 @@ forever, against a paid Usenet block account.
 **P-1. Signal = a Sonarr/Radarr tag named `permanent`.**
 Rejected: `monitorNewItems`, which is already `all` on all 37 series and
 therefore discriminates nothing. Existing tags are Seerr requester usernames
-(`quadstronaut`, `jessirigby`, `brintonasylum`, `cupid_rays180`); a series may
+(the operator's plus one per requesting member); a series may
 hold several tags, so there is no collision.
 
 **P-2. It exempts the SERIES RECORD, never the files.** Files always expire at

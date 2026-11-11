@@ -30,7 +30,7 @@ qc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(qc)
 
 
-GHOST = "45e79f57" + "0" * 32   # acted-on, torrent long gone from qBit
+GHOST = "aaaa0003" + "0" * 32   # acted-on, torrent long gone from qBit
 LIVE = "c4962b76" + "0" * 32    # healthy, downloading with progress
 
 

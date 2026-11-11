@@ -34,7 +34,7 @@ INSTALLER = REPO / "scripts" / "configure" / "309-native-tautulli-install.sh"
 GOLDEN_UNIT = REPO / "scripts" / "maint" / "systemd" / "qflix-tautulli.service"
 UNIT = "qflix-tautulli.service"
 PORT = "17014"
-PUBLIC = "169.150.251.170"
+PUBLIC = "203.0.113.10"
 GATEWAY = "172.17.0.1"
 VERSION = "2.18.2"
 
