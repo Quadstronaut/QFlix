@@ -578,7 +578,7 @@ gate_state_line() {
 gate_confirm_report_only() {
   local marker="$SWAPDIR/gate/.run-marker" last
   mkdir -p "$SWAPDIR/gate"
-  wait_until "$GATE_RUN_TIMEOUT" gate_idle || { echo "a gate run is still active" >&2; return 1; }
+  wait_until "$GATE_RUN_TIMEOUT" gate_idle || { echo "a gate run is still active (or its ActiveState is unreadable: busy user manager)" >&2; return 1; }
   : > "$marker"
   sleep 1
   sysd start "$GATE_UNIT" >/dev/null 2>&1 || info "gate run exited non-zero; its log line decides"
@@ -1145,6 +1145,13 @@ do_refresh_preload() {
     || die "cannot stage the listen preload"
   { native_write_secure "$SYNC_PRELOAD" 0644 < "$SYNC_PRELOAD_SRC" && cmp -s "$SYNC_PRELOAD" "$SYNC_PRELOAD_SRC"; } \
     || die "cannot stage the sqlite sync preload"
+  # Same reason as --swap: a gate run inside the restart window pages "Seerr
+  # unavailable" (its Kuma push ignores push-suppress), so restart only when
+  # the next gate timer run is at least QFLIX_GATE_GAP_S away.
+  # QFLX-112: wait BEFORE the unit is touched. A timeout then leaves the live
+  # unit as it was (no un-tested unit loaded, no .prev rollback lost); the
+  # mute + write + daemon-reload below take seconds, which GATE_GAP absorbs.
+  wait_gate_gap || die "gate wait timed out; nothing changed (unit not written, nothing muted or restarted)"
   refresh_mute || die "cannot mute ${SUPPRESS[*]}; refusing to restart unmuted (nothing restarted)"
   native_render_unit "$SLUG" "$FAMILY" "$EXE" "$EXEC_ARGS" "$WORKDIR" \
     | native_write_secure "$staged" 0644 || { refresh_unmute; die "unit staging failed"; }
@@ -1163,10 +1170,6 @@ do_refresh_preload() {
   # What systemd will actually exec, not what we wrote.
   sysd show "$UNIT" -p ExecStart --value 2>/dev/null | grep -qF "native/seerr-sqlite-sync.cjs" \
     || refresh_restore "systemd's loaded ExecStart does not name the sync preload"
-  # Same reason as --swap: a gate run inside the restart window pages "Seerr
-  # unavailable" (its Kuma push ignores push-suppress), so restart only when
-  # the next gate timer run is at least QFLIX_GATE_GAP_S away.
-  wait_gate_gap || refresh_fail "gate wait timed out; NOT restarted (the new unit is loaded, Seerr still runs the old process)"
   t0="$(date -u +%s)"
   sysd restart "$UNIT" || refresh_restore "restart $UNIT failed"
   verify_native || refresh_restore "native seerr fails parity after the refresh"

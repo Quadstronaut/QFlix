@@ -448,6 +448,10 @@ case "$1" in
       *"{GATE_UNIT} -p ActiveState"*) s=inactive
         [ "${{FAKE_GATE_ACTIVE:-0}}" = 1 ] && s=activating
         [ -f "{P}/gate_fired" ] && [ "$(date +%s)" -lt $(( $(cat "{P}/gate_fired") + ${{FAKE_GATE_RUN_S:-0}} )) ] && s=activating
+        # FAKE_GATE_START_LAG: the timer re-armed but the start job is still
+        # queued, so the FIRST read after it fired says inactive.
+        if [ "${{FAKE_GATE_START_LAG:-0}}" = 1 ] && [ -f "{P}/gate_fired" ] && [ ! -f "{P}/gate_lag_seen" ]; then
+          : > "{P}/gate_lag_seen"; s=inactive; fi
         echo "gate-state $s" >> "{C}"; echo "$s" ;;
       *ExecStart*) if [ -f "{DR}" ] && grep -q -- --execute "{DR}"; then
                      echo "{{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 qflix-entitlement.py --execute ; }}"
@@ -1382,12 +1386,30 @@ def test_refresh_preload_waits_for_a_gate_run_that_is_mid_run_when_the_wait_elap
     assert "activating" in states and states[-1] == "inactive", states
 
 
-def test_refresh_preload_never_restarts_into_a_gate_run_that_does_not_finish(box):
+def test_refresh_preload_settle_check_catches_a_queued_gate_start(box):
+    """QFLX-112: right after the timer fires, the start job can be queued while
+    the unit still reads inactive; the GATE_SETTLE re-check must catch the run."""
     _pre_qflx111(box)
+    r = box.run("--refresh-preload", "--execute",
+                env={"FAKE_GATE_NEXT_S": "1", "FAKE_GATE_RUN_S": "2", "FAKE_GATE_START_LAG": "1",
+                     "QFLIX_GATE_RUN_TIMEOUT_S": "15"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    calls = box.calls_text()
+    before = calls[:calls.index(f"restart {UNIT}")]
+    states = re.findall(r"^gate-state (\w+)$", before, re.M)
+    assert states[0] == "inactive" and "activating" in states and states[-1] == "inactive", states
+
+
+def test_refresh_preload_never_restarts_into_a_gate_run_that_does_not_finish(box):
+    old = _pre_qflx111(box)
     r = box.run("--refresh-preload", "--execute", env={"FAKE_GATE_NEXT_S": "1", "FAKE_GATE_RUN_S": "999"})
     assert r.returncode != 0 and "not restarting Seerr into it" in r.stderr, r.stdout + r.stderr
     assert f"restart {UNIT}" not in box.calls_text()
     assert box.suppressed() == {}
+    # The timeout leaves the box as it was: old unit live, no .prev, no reload.
+    assert (box.unitdir / UNIT).read_text() == old
+    assert not (box.appdir / "native" / f"{UNIT}.prev").exists()
+    assert "daemon-reload" not in box.calls_text()
 
 
 def test_swap_aborts_before_the_stop_when_the_gate_run_does_not_finish(box):
