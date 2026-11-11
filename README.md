@@ -482,8 +482,9 @@ contributor can run it from a fresh clone:
 
 ```bash
 git clone https://github.com/Quadstronaut/QFlix.git && cd QFlix
-bash tests/run.sh        # creates tests/.venv, installs pytest/pyyaml/requests/jinja2,
+bash tests/run.sh        # creates tests/.venv, installs pytest/pyyaml/requests/jinja2/tzdata,
                          # runs tests/unit/ — pure-Python, no SSH needed.
+                         # The only entry point: bare `pytest` at repo root fails collection.
 ```
 
 Live integration (smoke tests, canaries, anything under `scripts/install/`
