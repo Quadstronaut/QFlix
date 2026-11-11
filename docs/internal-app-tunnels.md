@@ -61,9 +61,9 @@ Apps without an admin UI:
 ## qBittorrent caveat
 
 qBittorrent is exposed at `https://<fqdn>/qbittorrent/` for the operator's
-casual remote-control use — it's behind htpasswd but its OWN auth is also
-required (qBit user/password). The tunnel form (`localhost:17041`) is the
-no-htpasswd path that the *arr stack uses internally for API calls.
+casual remote-control use — it's protected by qBit's OWN auth
+(user/password); no htpasswd layer sits in front (see below). The tunnel form
+(`localhost:17041`) is the loopback path that the *arr stack uses internally for API calls.
 
 ## Tdarr caveat
 

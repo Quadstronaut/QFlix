@@ -737,7 +737,7 @@ apps:
         source: versions.env
         key: TDARR_VERSION
         max: "2.17.01"
-        max_reason: "GLIBC 2.34 required, host has 2.31"
+        max_reason: "upgrade target must be 2.91.01+ (2.18-2.90 auth gate bypassable); own project, QFLX-97"
 
   tdarr-node:
     class: systemd
@@ -807,7 +807,7 @@ apps:
         source: versions.env
         key: TDARR_VERSION
         max: "2.17.01"
-        max_reason: "GLIBC 2.34 required, host has 2.31"
+        max_reason: "upgrade target must be 2.91.01+ (2.18-2.90 auth gate bypassable); own project, QFLX-97"
 
   # --- cron apps (timer-driven, no lifecycle start/stop) ---
 

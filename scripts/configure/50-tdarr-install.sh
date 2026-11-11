@@ -20,10 +20,10 @@ source "$HERE/../lib/ports.sh"
 #   1. storage.tdarr.io 404s on that version
 #   2. Tdarr_Updater self-updates to whatever is "latest" (currently 2.71.01),
 #      ignoring our pin
-#   3. Tdarr_Server 2.71.01 requires GLIBC_2.34, but Debian 11 (Ultra.cc)
-#      has GLIBC_2.31 — hard runtime incompatibility
-# 2.17.01 is the last version that ships with Server + Node binaries built
-# against an older glibc. We bypass Tdarr_Updater entirely and download the
+#   3. Tdarr 2.18.01-2.90.01 have a bypassable auth gate; any upgrade
+#      target must be 2.91.01+ (own project, QFLX-97 item 4). GLIBC is
+#      not the blocker (box runs glibc 2.41).
+# 2.17.01 stays pinned until that upgrade is planned. We bypass Tdarr_Updater entirely and download the
 # Server.zip + Node.zip artifacts directly.
 TDARR_VER="2.17.01"
 # Hard requirement — placeholder must never reach a live curl/nginx.
@@ -48,7 +48,7 @@ fi
 API_KEY=$(secret_read tdarr.api_key)
 
 # ── Step 3: download Server + Node zips directly (NOT via Tdarr_Updater) ───
-# Tdarr_Updater self-updates to latest (currently incompatible with glibc 2.31).
+# Tdarr_Updater self-updates to latest (ignores our pin).
 # Direct .zip downloads from storage.tdarr.io stay pinned.
 sshm "TDARR_VER='${TDARR_VER}' bash -s" <<'INSTSCRIPT'
 set -euo pipefail

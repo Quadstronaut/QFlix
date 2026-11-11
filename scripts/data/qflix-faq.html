@@ -1069,7 +1069,7 @@ qbittorrent 17041 | listmonk 42014 | uptime-kuma 42005 | tdarr 42018</code></pre
       <article class="card tut" id="q-tdarr-glibc" data-tags="tdarr glibc version pin v2.17 ultra.cc shared seedbox">
         <h3>Why is Tdarr pinned to v2.17.01? <a class="qhash" href="#q-tdarr-glibc">#</a></h3>
         <p>
-          Tdarr &gt; 2.17.x requires a newer GLIBC than what's installed on the Ultra.cc base image. Upgrading would break the binary. Pinned via <code>versions.env</code> &rarr; <code>TDARR_VERSION=2.17.01</code> with <code>max_reason: &quot;GLIBC blocker&quot;</code>. The maintenance window upgrader respects the pin.
+          Tdarr 2.18.01 to 2.90.01 have an auth gate that can be bypassed, so the only safe upgrade target is 2.91.01 or later, and that upgrade is planned as its own project. GLIBC is not the blocker. Pinned via <code>versions.env</code> &rarr; <code>TDARR_VERSION=2.17.01</code> with <code>max_reason</code>. The maintenance window upgrader respects the pin.
         </p>
       </article>
 
