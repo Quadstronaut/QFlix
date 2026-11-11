@@ -176,8 +176,10 @@ PROC="${QFLIX_PROC:-/proc}"
 POLL="${QFLIX_POLL_S:-2}"
 SETTLE="${QFLIX_SETTLE_S:-10}"
 STOP_TIMEOUT="${QFLIX_STOP_TIMEOUT_S:-120}"
-PROOF_TIMEOUT="${QFLIX_PROOF_TIMEOUT_S:-300}"
-STATUS_TIMEOUT="${QFLIX_STATUS_TIMEOUT_S:-180}"
+# QFLX-111: a cold Seerr boot on the slot takes ~3 min 40 s; both budgets are
+# ceilings that end early (on 200, or on a dead process), not fixed waits.
+PROOF_TIMEOUT="${QFLIX_PROOF_TIMEOUT_S:-600}"
+STATUS_TIMEOUT="${QFLIX_STATUS_TIMEOUT_S:-600}"
 GATE_GAP="${QFLIX_GATE_GAP_S:-600}"
 GATE_RUN_TIMEOUT="${QFLIX_GATE_RUN_TIMEOUT_S:-600}"
 WANT_SHA="${QFLIX_SEERR_SHA256:-$ARTIFACT_SHA256}"
@@ -748,6 +750,11 @@ PY
   i=$SECONDS
   until ver="$(status_probe "$pport")" && [ -n "$ver" ]; do
     ver=""
+    # A proof copy that exited will never answer: say so now, not at timeout.
+    if ! kill -0 "$PROOF_PID" 2>/dev/null; then
+      tail -5 "$PROVE/stdout.log" 2>/dev/null >&2
+      die "proof: the Seerr copy exited after $((SECONDS - i))s without answering /api/v1/status"
+    fi
     # SECONDS, not iterations x POLL: POLL may be fractional.
     if [ $((SECONDS - i)) -ge "$PROOF_TIMEOUT" ]; then
       tail -5 "$PROVE/stdout.log" 2>/dev/null >&2
@@ -782,17 +789,109 @@ PY
 # /api/v1/status until it answers 200 (or STATUS_TIMEOUT), THEN compare the
 # listen set, retrying the compare inside the same budget (the preload binds the
 # other addresses moments after the first).
+#
+# QFLX-111 (box 2026-11-11): a COLD boot on the slot's disk takes ~3 min 40 s
+# (node_modules read cold under IO pressure), with or without any preload. The
+# old 180 s budget gave up on a boot still in progress, and the refresh then
+# restarted (killed) it. Now the budget is 600 s (QFLIX_STATUS_TIMEOUT_S), and
+# the wait ends EARLY on a real failure: the unit is definitively inactive /
+# failed, no native process is left, or systemd's NRestarts climbs (crash
+# loop), each needing NATIVE_BAD_STREAK samples in a row (see native_sample;
+# an unreadable sample is "unknown", never failure). The unit cannot
+# fight this: it is Type=simple (active at exec, so no start timeout applies),
+# and StartLimitBurst=5/600 s is far above the 1-2 starts a verify spans.
+# Shared by --swap, --finish and --refresh-preload (and its restore).
+native_restarts() {
+  local n
+  n="$(sysd show "$UNIT" -p NRestarts --value 2>/dev/null)"
+  n="${n%$'\r'}"
+  [[ "$n" =~ ^[0-9]+$ ]] && printf '%s' "$n"
+}
+# native_sample BASE_NRESTARTS: ONE look at the booting unit. Prints
+#   "ok"            alive (or nothing definitive against it),
+#   "unknown WHY"   could not tell (D-Bus timeout, "Failed to connect to bus",
+#                   empty or unparseable answer): keep waiting,
+#   "bad WHY"       a definitive bad state.
+# Only systemd's own words count: is-active's STDOUT `inactive|failed|
+# deactivating`, never its exit status (a busy user manager fails the call
+# without saying anything about the unit). One bad sample decides nothing:
+# verify_native needs NATIVE_BAD_STREAK of them in a row.
+NATIVE_BAD_STREAK=3
+native_sample() {
+  local base="$1" st n
+  st="$(sysd is-active "$UNIT" 2>/dev/null | head -n 1)"
+  st="${st%$'\r'}"
+  case "$st" in
+    inactive|failed|deactivating) echo "bad $UNIT is $st (its process exited)"; return ;;
+    active|activating|reloading) ;;
+    *) echo "unknown is-active answered '${st:-nothing}'"; return ;;
+  esac
+  if [ -z "$(scan_pids native)" ]; then
+    # /proc says no Seerr process; systemd says the unit is up. Usually the
+    # gap of an auto-restart: counts as bad, but only a streak decides.
+    echo "bad no native seerr process is left in $UNIT"; return
+  fi
+  if [ -n "$base" ]; then
+    if ! n="$(native_restarts)"; then
+      echo "unknown NRestarts unreadable"; return
+    fi
+    if [ "$n" -gt "$base" ]; then
+      echo "bad systemd restarted $UNIT $((n - base))x while it booted (crash loop)"; return
+    fi
+  fi
+  echo ok
+}
+
+# retry_check WHAT CMD...: a post-200 check (login, vhost) is retried: a
+# momentary 502 from the panel proxy right after the bind must not restore
+# (restart) a Seerr that already serves. Up to POST_TRIES tries, POST_RETRY_S
+# apart, and only while the verify budget lasts (at least one try always).
+POST_TRIES="${QFLIX_POST_TRIES:-6}"
+POST_RETRY_S="${QFLIX_POST_RETRY_S:-10}"
+retry_check() {
+  local what="$1" i=1; shift
+  while :; do
+    "$@" && return 0
+    if [ "$i" -ge "$POST_TRIES" ] || [ $((SECONDS - VERIFY_START)) -ge "$STATUS_TIMEOUT" ]; then
+      echo "$what failed ($i tries)" >&2; return 1
+    fi
+    info "$what not ok yet (try $i/$POST_TRIES); retrying in ${POST_RETRY_S}s"
+    i=$((i + 1))
+    sleep "$POST_RETRY_S"
+  done
+}
+login_ok() { auth_probe "$SETTINGS" "$PROBE_PORT"; }
+vhost_ok() {
+  local vv
+  vv="$(vhost_probe)" || { echo "the seerr vhost does not answer" >&2; return 1; }
+  [ "$vv" = "$VERSION" ] || { echo "the seerr vhost reports '$vv', want $VERSION" >&2; return 1; }
+}
+
+VERIFY_START=0
 verify_native() {
-  local n ver vv start d
+  local ver start d base s streak=0 last="" tick=0
   sleep "$SETTLE"
-  sysd is-active "$UNIT" >/dev/null 2>&1 || { echo "unit not active" >&2; return 1; }
   [ -z "$(scan_pids container)" ] || { echo "a container process is running" >&2; return 1; }
-  n="$(scan_pids native | wc -l | tr -d ' ')"
-  [ "$n" -ge 1 ] || { echo "no native process" >&2; return 1; }
+  base="$(native_restarts)"
   start=$SECONDS
+  VERIFY_START=$start
   until ver="$(status_probe "$PROBE_PORT")" && [ -n "$ver" ]; do
     ver=""
-    [ $((SECONDS - start)) -ge "$STATUS_TIMEOUT" ] && { echo "/api/v1/status never answered 200 within ${STATUS_TIMEOUT}s" >&2; return 1; }
+    s="$(native_sample "$base")"
+    case "$s" in
+      ok) streak=0 ;;
+      bad\ *)
+        streak=$((streak + 1)); last="${s#bad }"
+        if [ "$streak" -ge "$NATIVE_BAD_STREAK" ]; then
+          echo "seerr died while booting after $((SECONDS - start))s: $last ($streak samples in a row)" >&2; return 1
+        fi ;;
+      *) ;;      # unknown: neither evidence of death nor of life; keep waiting
+    esac
+    [ $((SECONDS - start)) -ge "$STATUS_TIMEOUT" ] && { echo "/api/v1/status never answered 200 within ${STATUS_TIMEOUT}s (process still alive)" >&2; return 1; }
+    if [ $(( (SECONDS - start) / 60 )) -gt "$tick" ]; then
+      tick=$(( (SECONDS - start) / 60 ))
+      info "still booting: no status 200 yet after $((SECONDS - start))s (budget ${STATUS_TIMEOUT}s; a cold boot takes ~4 min)"
+    fi
     sleep "$POLL"
   done
   info "status 200 after $((SECONDS - start))s past settle"
@@ -802,9 +901,8 @@ verify_native() {
     [ $((SECONDS - start)) -ge "$STATUS_TIMEOUT" ] && { echo "listen set differs from listen-set.before: $d" >&2; return 1; }
     sleep "$POLL"
   done
-  auth_probe "$SETTINGS" "$PROBE_PORT" || { echo "login (/api/v1/auth/me) failed" >&2; return 1; }
-  vv="$(vhost_probe)" || { echo "the seerr vhost does not answer" >&2; return 1; }
-  [ "$vv" = "$VERSION" ] || { echo "the seerr vhost reports '$vv', want $VERSION" >&2; return 1; }
+  retry_check "login (/api/v1/auth/me)" login_ok || return 1
+  retry_check "the seerr vhost" vhost_ok || return 1
 }
 
 # Request smoke (plan A12): the movie + anime canaries drive a REAL request
@@ -984,15 +1082,30 @@ REFRESH_WROTE_PREV=0
 refresh_restore() {
   local prev="$APPDIR/native/$UNIT.prev"
   if [ "$REFRESH_WROTE_PREV" != 1 ]; then
-    refresh_unmute
-    die "$1; this run did not change the unit (it was already current), so nothing was restored; Seerr may be DOWN: check 'systemctl --user status $UNIT', or run --rollback --execute"
+    refresh_fail "$1; this run did not change the unit (it was already current), so nothing was restored"
   fi
-  [ -f "$prev" ] || { refresh_unmute; die "$1; no $prev to restore"; }
-  native_write_secure "$UNIT_DIR/$UNIT" 0644 < "$prev" && sysd daemon-reload && sysd restart "$UNIT" \
-    || die "$1; restoring $prev FAILED; still muted (1 h TTL); run --rollback --execute"
-  verify_native || die "$1; $prev restored but parity FAILS; still muted (1 h TTL); run --rollback --execute"
+  [ -f "$prev" ] || refresh_fail "$1; no $prev to restore"
+  { native_write_secure "$UNIT_DIR/$UNIT" 0644 < "$prev" && sysd daemon-reload && sysd restart "$UNIT"; } \
+    || refresh_fail "$1; restoring $prev FAILED (write / daemon-reload / restart)"
+  verify_native || refresh_fail "$1; $prev restored, but it did not pass parity either"
+  refresh_fail "$1; previous unit restored and verified"
+}
+
+# refresh_fail MSG: every refresh failure ends here. Re-check Seerr NOW (a
+# verdict from minutes ago may be stale: the box's restored unit came up
+# 3.5 min after the old script had declared it failed), lift OUR mute either
+# way (healthy: nothing to hide; down: the pusher must heal and page it), and
+# name the right next step. Never --rollback: that returns Seerr to the UCC
+# container, which is not what a failed preload refresh needs.
+refresh_fail() {
+  local ver health
+  if ver="$(status_probe "$PROBE_PORT")" && [ "$ver" = "$VERSION" ]; then
+    health="Seerr is UP now (/api/v1/status 200, $ver) on unit: $(sed -n 's/^ExecStart=//p' "$UNIT_DIR/$UNIT" | tail -n 1)"
+  else
+    health="Seerr is NOT answering /api/v1/status now; the pusher probes, heals and pages it as usual"
+  fi
   refresh_unmute
-  die "$1; previous unit restored and verified"
+  die "$1. $health. Mute lifted. Next: read 'systemctl --user status $UNIT' and 'journalctl --user -u $UNIT', fix the cause, then re-run --refresh-preload --execute (NOT --rollback: that is the return to the UCC container)"
 }
 
 do_refresh_preload() {
@@ -1034,14 +1147,14 @@ do_refresh_preload() {
   verify_native || refresh_restore "native seerr fails parity after the refresh"
   # Parity passed, so Seerr serves: from here a failure is reported, not rolled
   # back (the preload fails open; Seerr runs at upstream FULL at worst).
-  native_runs_sync_preload || { refresh_unmute; die "the running seerr does not carry the sync preload in its cmdline"; }
+  native_runs_sync_preload || refresh_fail "the running seerr does not carry the sync preload in its cmdline"
   # Wait for the preload's verdict line (either one), then judge: an ERROR line
   # is named verbatim; silence is "not proven". Neither is ever a pass.
   wait_until "$PRAGMA_TIMEOUT" pragma_settled "$t0" || true
   errs="$(unit_journal_since "$t0" | grep -F "$PRAGMA_ERR" | head -3)"
-  [ -z "$errs" ] || { refresh_unmute; die "the sync preload reported: $errs"; }
+  [ -z "$errs" ] || refresh_fail "the sync preload reported: $errs"
   pragma_live "$t0" \
-    || { refresh_unmute; die "no '$PRAGMA_OK' in the $UNIT journal since the restart: pragma NOT proven (Seerr is up)"; }
+    || refresh_fail "no '$PRAGMA_OK' in the $UNIT journal since the restart: pragma NOT proven"
   refresh_unmute
   info "REFRESHED: $(unit_journal_since "$t0" | grep -F "$PRAGMA_OK" | tail -n 1)"
   if [ "$REFRESH_WROTE_PREV" = 1 ]; then
