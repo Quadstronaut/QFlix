@@ -338,6 +338,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/configure/310-native-qbittorrent-install.sh \
     scripts/configure/311-native-seerr-install.sh \
     scripts/data/seerr-listen.cjs \
+    scripts/data/seerr-sqlite-sync.cjs \
     manifest/apps.yaml \
     manifest/jobs.yaml \
     manifest/rea-noise-classes.yaml \
@@ -627,13 +628,15 @@ cp -f   "$STG"/scripts/configure/309-native-tautulli-install.sh ~/scripts/config
 chmod +x ~/scripts/configure/309-native-tautulli-install.sh
 cp -f   "$STG"/scripts/configure/310-native-qbittorrent-install.sh ~/scripts/configure/310-native-qbittorrent-install.sh
 chmod +x ~/scripts/configure/310-native-qbittorrent-install.sh
-# QFLX-36 (A12 seerr): same shape, plus the --require preload that reproduces
-# the recorded listen set (the installer copies it into ~/.apps/seerr/native/).
-# Inert without --execute.
+# QFLX-36 (A12 seerr): same shape, plus the --require preloads: the listen set
+# (QFLX-36) and PRAGMA synchronous=NORMAL (QFLX-111). The installer copies them
+# into ~/.apps/seerr/native/ (--install, or --refresh-preload on the live unit);
+# deploying here changes nothing that runs. Inert without --execute.
 cp -f   "$STG"/scripts/configure/311-native-seerr-install.sh ~/scripts/configure/311-native-seerr-install.sh
 chmod +x ~/scripts/configure/311-native-seerr-install.sh
 mkdir -p ~/scripts/data
 cp -f   "$STG"/scripts/data/seerr-listen.cjs ~/scripts/data/seerr-listen.cjs
+cp -f   "$STG"/scripts/data/seerr-sqlite-sync.cjs ~/scripts/data/seerr-sqlite-sync.cjs
 cp -f   "$STG"/manifest/apps.yaml                 ~/.opt/maint/apps.yaml
 # QFLX-29 (A5 radarr2): the proof sanitizes its VACUUM INTO copy with
 # native_sanitize.py, so it is deployed beside the installer (~/scripts/maint).
