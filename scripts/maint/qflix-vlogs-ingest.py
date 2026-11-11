@@ -11,6 +11,8 @@ Exit 0 always (ingest is best-effort; per-app errors are logged, not fatal).
 from __future__ import annotations
 
 import argparse
+import hashlib
+import http.client
 import json
 import os
 import re
@@ -88,7 +90,8 @@ def _save_cursors(path: Path, cursors: dict) -> None:
 
 
 def _read_new_lines(path: str, cur: dict | None, *, tail: int,
-                    ids: list | None = None) -> tuple[list[str] | None, dict]:
+                    ids: list | None = None,
+                    span: dict | None = None) -> tuple[list[str] | None, dict]:
     """Lines appended to `path` since `cur`, plus the advanced cursor.
 
     Returns (None, cur) when there is no cursor yet: the caller falls back to
@@ -101,6 +104,10 @@ def _read_new_lines(path: str, cur: dict | None, *, tail: int,
     parallel to the returned lines, with "<inode>:<byte offset of line start>".
     That pair is unique per physical line, so the time-integrity canary can tell
     a re-shipped line (same id twice) from a line the app genuinely wrote twice.
+
+    `span` (optional out-param, QFLX-116): filled with the consumed byte range
+    {inode, start, end, data} so a failed POST can record exactly WHICH bytes
+    it carried; `data` is the raw bytes and must never be persisted.
     """
     try:
         st = os.stat(path)
@@ -121,6 +128,9 @@ def _read_new_lines(path: str, cur: dict | None, *, tail: int,
     if end < 0:
         return [], new
     new["offset"] = offset + end + 1
+    if span is not None:
+        span.update(inode=st.st_ino, start=offset, end=offset + end + 1,
+                    data=chunk[:end + 1])
     raw_lines = chunk[:end].split(b"\n")
     lines = [ln.decode("utf-8", errors="ignore").rstrip("\r") for ln in raw_lines]
     if ids is not None:
@@ -234,6 +244,176 @@ def _post_jsonline(port: int, app: str, lines: list[dict]) -> tuple[bool, str]:
         return False, str(exc)
 
 
+# ── Retry dedup (QFLX-116) ───────────────────────────────────────────────────
+# A POST that times out is AMBIGUOUS: vlogs may have stored the batch and only
+# the answer was late. The cursor is (correctly) not advanced, so the next cycle
+# re-reads the same bytes, and if the first POST did land, every line is stored
+# twice. Seen 2026-11-11 00:05 UTC: `sonarr: post-failed timed out`, the 00:10
+# run re-sent the same 2 lines, vlogs-time-integrity went red (2 dup groups).
+#
+# So a failed POST stores an `unconfirmed` record on the (un-advanced) cursor
+# naming EXACTLY the bytes it carried: {inode, start, end, sha256, failed_at}.
+# The retry asks vlogs which of those line_ids it already holds and sends only
+# the rest, but ONLY when the same bytes are provably still there.
+#
+# Why the byte proof: a line_id is inode:byte-offset, which names a line only
+# while the file is not rewritten in place. logrotate `copytruncate`
+# (250-logrotate-install.sh) or any non-append writer keeps the inode and
+# reuses the offsets, so new lines would carry the failed batch's ids and a
+# plain id match would DROP them: lost logs, worse than a duplicate. Same
+# inode + same start + same sha256 over [start, end) = same lines; anything
+# else clears the record and the whole batch is sent (at-least-once).
+_DEDUP_CHUNK = 200       # line_ids per query: keeps each LogsQL body small
+_DEDUP_BUDGET_S = 60.0   # whole lookup, all chunks: never stall the cycle
+_DEDUP_PAD = 120         # seconds either side of the batch's time span
+
+
+def _utcnow_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _failed_batch_record(span: dict) -> dict | None:
+    """The persisted description of the bytes a failed POST carried."""
+    if not span or "data" not in span:
+        return None
+    return {"inode": span["inode"], "start": span["start"], "end": span["end"],
+            "sha256": hashlib.sha256(span["data"]).hexdigest(),
+            "failed_at": _utcnow_iso()}
+
+
+def _same_bytes_again(flag, span: dict) -> bool:
+    """True only when this cycle re-read the failed batch's exact bytes: same
+    inode, read started at the same offset, reached at least its end, and the
+    bytes [start, end) hash the same. Anything else (old bool flag, rotation,
+    truncate-and-rewrite, a different read) is False."""
+    if not isinstance(flag, dict) or not span or "data" not in span:
+        return False
+    try:
+        n = int(flag["end"]) - int(flag["start"])
+        if (span["inode"] != flag["inode"] or span["start"] != int(flag["start"])
+                or n <= 0 or span["end"] < int(flag["end"])):
+            return False
+        return hashlib.sha256(span["data"][:n]).hexdigest() == flag["sha256"]
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _logsql_quote(s: str) -> str:
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _time_bounds(stamps: list[str | None],
+                 failed_at: str | None = None) -> tuple[str, str]:
+    """[start, end] for the dedup query, padded 2 min each side. The query
+    MUST be time-bounded: unbounded, vlogs scans the whole index and hits its
+    30 s limit (measured on the box 2026-11-11). A row sent without a usable
+    stamp was stored on vlogs' clock at the failed POST, so it is placed at
+    `failed_at` (the record's failure time); only without one, at now."""
+    from datetime import datetime, timedelta, timezone
+
+    def parse(s):
+        dt = datetime.fromisoformat((s or "").replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    try:
+        fallback = parse(failed_at) if failed_at else datetime.now(timezone.utc)
+    except ValueError:
+        fallback = datetime.now(timezone.utc)
+    parsed = []
+    for s in stamps:
+        try:
+            parsed.append(parse(s))
+        except ValueError:
+            parsed.append(fallback)
+    parsed = parsed or [fallback]
+    pad = timedelta(seconds=_DEDUP_PAD)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (min(parsed) - pad).strftime(fmt), (max(parsed) + pad).strftime(fmt)
+
+
+def _already_stored(port: int, app: str, source_file: str, ids: list[str],
+                    stamps: list[str | None] | None = None,
+                    failed_at: str | None = None,
+                    deadline: float | None = None) -> set[str] | None:
+    """line_ids from `ids` that vlogs already holds for this app + file, looked
+    up inside the time span of the batch (`stamps`, parallel to `ids`).
+    None when any query fails or `deadline` (time.monotonic) passes: the caller
+    cannot tell, and ships everything (at-least-once; the integrity canary
+    still sees a duplicate if one lands). Never raises for a network/HTTP/JSON
+    fault: an escape here would abort ingest for every app after this one."""
+    if deadline is None:
+        deadline = time.monotonic() + _DEDUP_BUDGET_S
+    start, end = _time_bounds(stamps or [], failed_at)
+    found: set[str] = set()
+    for i in range(0, len(ids), _DEDUP_CHUNK):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        chunk = ids[i:i + _DEDUP_CHUNK]
+        q = ("{app=%s} source_file:=%s line_id:in(%s) | uniq by (line_id)"
+             % (_logsql_quote(app), _logsql_quote(source_file),
+                ",".join(_logsql_quote(x) for x in chunk)))
+        body = urllib.parse.urlencode({"query": q, "start": start,
+                                       "end": end}).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/select/logsql/query", data=body, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        try:
+            with urllib.request.urlopen(req, timeout=min(30.0, remaining)) as r:
+                text = r.read().decode("utf-8", "replace")
+            for line in text.splitlines():
+                line = line.strip()
+                if line:
+                    lid = json.loads(line).get("line_id")
+                    if lid:
+                        found.add(lid)
+        except (urllib.error.URLError, OSError, http.client.HTTPException,
+                ValueError, AttributeError):
+            # URLError/TimeoutError are OSErrors; IncompleteRead is an
+            # HTTPException; a non-object JSON row has no .get.
+            return None
+    return found
+
+
+def _id_in_batch(line_id: str, flag: dict) -> bool:
+    """line_id `inode:offset` lies inside the failed batch's [start, end)."""
+    try:
+        ino, off = line_id.rsplit(":", 1)
+        return (int(ino) == int(flag["inode"])
+                and int(flag["start"]) <= int(off) < int(flag["end"]))
+    except (ValueError, KeyError, TypeError):
+        return False
+
+
+def _drop_already_stored(port: int, app: str, lines: list[dict], flag: dict,
+                         lookup=None) -> tuple[list[dict], int | None]:
+    """(lines to send, how many were dropped; None = lookup failed, nothing
+    dropped). Only rows whose line_id lies inside the failed batch `flag`
+    can be dropped; everything else is sent regardless."""
+    lookup = lookup or _already_stored
+    deadline = time.monotonic() + _DEDUP_BUDGET_S
+    by_file: dict[str, tuple[list[str], list]] = {}
+    for ln in lines:
+        if ln.get("line_id") and _id_in_batch(ln["line_id"], flag):
+            ids, stamps = by_file.setdefault(ln.get("source_file") or "", ([], []))
+            ids.append(ln["line_id"])
+            stamps.append(ln.get("ts"))
+    if not by_file:
+        return lines, 0
+    stored: set[tuple[str, str]] = set()
+    for src, (ids, stamps) in by_file.items():
+        got = lookup(port, app, src, ids, stamps,
+                     failed_at=flag.get("failed_at"), deadline=deadline)
+        if got is None:
+            return lines, None
+        stored.update((src, x) for x in got if _id_in_batch(x, flag))
+    keep = [ln for ln in lines
+            if not ln.get("line_id")
+            or ((ln.get("source_file") or ""), ln["line_id"]) not in stored]
+    return keep, len(lines) - len(keep)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--window", default="6m",
@@ -261,6 +441,7 @@ def main() -> int:
     for app in apps:
         plan = logs_mod.route(app)
         new_cur = None          # file cursor to commit once the POST lands
+        span: dict = {}         # bytes this cycle read (QFLX-116 retry proof)
         jcur_file = jcur_prev = None
         try:
             if plan.get("kind") == "file":
@@ -271,7 +452,8 @@ def main() -> int:
                     # offset means nothing in the new file.
                     cur = None
                 line_ids: list = []
-                raw, new_cur = _read_new_lines(path, cur, tail=args.tail, ids=line_ids)
+                raw, new_cur = _read_new_lines(path, cur, tail=args.tail, ids=line_ids,
+                                               span=span)
                 new_cur["path"] = path
                 if raw is None:
                     # First sight of this app: one last window/tail read so the
@@ -302,10 +484,32 @@ def main() -> int:
             print(f"{app}: collect-failed {exc}")
             failures += 1
             continue
+        # The previous POST of these bytes failed, possibly AFTER vlogs stored
+        # them (QFLX-116). The record is consumed either way: it is used only
+        # when this cycle provably re-read the very same bytes.
+        flag = new_cur.pop("unconfirmed", None) if new_cur is not None else None
+        if flag is not None and lines:
+            if _same_bytes_again(flag, span):
+                lines, dropped = _drop_already_stored(port, app, lines, flag)
+                if dropped is None:
+                    print(f"{app}: retry-dedup lookup failed, resending whole batch")
+                elif dropped:
+                    print(f"{app}: retry-dedup skipped {dropped} already-stored lines")
+            else:
+                print(f"{app}: retry-dedup skipped: file changed since the failed "
+                      f"POST, resending whole batch")
         ok, detail = _post_jsonline(port, app, lines)
         if not ok:
             print(f"{app}: post-failed {detail}")
             failures += 1
+            # File cursor stays where it was (the bytes are re-read next
+            # cycle) but records which bytes this POST carried, so the
+            # retry can dedup against vlogs if, and only if, they are
+            # still the same bytes.
+            record = _failed_batch_record(span)
+            if new_cur is not None and cursors.get(app) and record:
+                cursors[app] = {**cursors[app], "unconfirmed": record}
+                _save_cursors(cursors_path, cursors)
             # Un-advance: journalctl already rewrote its cursor file, so put
             # the old one back and these lines are retried next cycle.
             if jcur_file is not None:
