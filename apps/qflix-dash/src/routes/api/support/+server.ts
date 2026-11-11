@@ -1,7 +1,7 @@
-import { AUTH, verifyAuth } from '$lib/server/session';
-import { allow } from '$lib/server/ratelimit';
-import { cfg } from '$lib/server/env';
-import { validateMessage, buildWebhookPayload } from '$lib/server/support';
+import { AUTH, verifyAuth } from '#lib/server/session.js';
+import { allow } from '#lib/server/ratelimit.js';
+import { cfg } from '#lib/server/env.js';
+import { validateMessage, buildWebhookPayload } from '#lib/server/support.js';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ request, cookies }) => {
