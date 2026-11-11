@@ -312,6 +312,20 @@ def audit_monitors(manifest, *, kuma_url: str | None = None,
 
     Read-only: uses Kuma's /metrics endpoint with the API key in
     secrets/uptimekuma.key. No socket.io login needed."""
+    manifest_monitors = expected_monitor_names(manifest)
+
+    # Prefer Kuma's SQLite DB for the authoritative EXISTENCE check (active
+    # monitors), because /metrics omits daily self-pushers between their
+    # once-a-day beats (see _live_monitors_from_db). Fall back to /metrics only
+    # when the DB isn't local — e.g. the audit is run from the workstation.
+    return _audit_against(manifest, manifest_monitors, kuma_url, api_key, timeout_s)
+
+
+def expected_monitor_names(manifest) -> set:
+    """Every monitor this system owns: manifest apps + canaries, the two
+    daemon monitors, and the standalone self-pushers. Shared by the drift
+    audit and the webhook's weekly roll-up filter (QFLX-123), so the two can
+    never disagree about what is "ours"."""
     manifest_monitors = {a.kuma_monitor for a in manifest.apps() if a.kuma_monitor}
     # Include canary monitors in drift audit
     try:
@@ -332,11 +346,10 @@ def audit_monitors(manifest, *, kuma_url: str | None = None,
     # single registration point that keeps `kuma audit` from flagging these
     # self-pushers as orphan drift.
     manifest_monitors.update(STANDALONE_SELF_PUSH_MONITORS)
+    return manifest_monitors
 
-    # Prefer Kuma's SQLite DB for the authoritative EXISTENCE check (active
-    # monitors), because /metrics omits daily self-pushers between their
-    # once-a-day beats (see _live_monitors_from_db). Fall back to /metrics only
-    # when the DB isn't local — e.g. the audit is run from the workstation.
+
+def _audit_against(manifest, manifest_monitors, kuma_url, api_key, timeout_s) -> dict:
     live_monitors = _live_monitors_from_db()
     if live_monitors is None:
         if kuma_url is None:
@@ -419,6 +432,14 @@ def _record_unpaged_edge(manifest, monitor_name: str, status, body: dict) -> Non
             members = paging.paging_monitors() or {}
         if monitor_name in members:
             return  # Kuma paged Discord for this one itself
+        # Only monitors this system owns. The 240 install smoke POSTs a fake
+        # "InstallSmokeNonExistent" DOWN to prove the receiver answers; before
+        # this filter every install added a phantom event to the weekly count
+        # (first deploy, 2026-11-11). An undeclared real monitor is orphan
+        # drift - `kuma audit` / L-03's finding, not a weekly event.
+        if manifest is not None and hasattr(manifest, "apps"):
+            if monitor_name not in expected_monitor_names(manifest):
+                return
         hb = body.get("heartbeat") if isinstance(body.get("heartbeat"), dict) else {}
         paging.record_weekly("kuma", monitor_name, "down" if status == 0 else "up",
                              hb.get("msg") or body.get("msg") or "")
