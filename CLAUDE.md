@@ -27,3 +27,23 @@ When the operator says something was purged, **verify on the box** (`~/.apps/`, 
 
 ## Memory
 Project memory (`~/.claude/projects/G--Documents-GIT-Ultra-cc-QFlix/memory/`) holds ~100 dated incident notes; the memory-router hook surfaces matches per prompt. Dated facts there can be stale — this file and the manifest win.
+
+## Release bar
+
+Ticket, review and scope rules live in the global `~/.claude/CLAUDE.md` (Jira section) and are not repeated here. This section is only this repo's bar: read it before starting, and judge every review finding against it.
+
+**Release:** maintenance (bug fixes and dependency updates only)
+
+**Done means**
+- The pytest, audit and pwsh jobs are green on master.
+- Master, GitHub and the running box are on the same commit.
+- Canaries and monitors are green, member-facing ones included.
+- Dependency update PRs are merged once CI is green, not parked.
+
+**Out of scope (label `parked`, do not ticket)**
+- New apps or features.
+- Restoring retired services.
+- The slot migration (lives on its own branch, starts on the operator's trigger phrase).
+- Audit findings that do not affect members: note them in the weekly summary, no ticket.
+
+**Proof:** `bash tests/run.sh -q`
