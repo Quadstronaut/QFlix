@@ -1,6 +1,6 @@
 {
-  "week_of": "2026-11-09",
-  "generated_at": "2026-11-09T14:16:31Z",
-  "since": "2026-11-02T14:16:31Z",
-  "html": "<p>We fixed a playback hiccup that was keeping a couple of titles from streaming smoothly — they now play perfectly from start to finish. 🎬</p><p>Behind the scenes, a few more reliability tune-ups round things out to keep everything running smoothly for you.</p>"
+  "week_of": "2026-11-16",
+  "generated_at": "2026-11-16T14:09:56Z",
+  "since": "2026-11-09T14:09:56Z",
+  "html": "<p>The request system (where you ask for new movies and shows) got noticeably snappier this week &mdash; pages that used to take several seconds to load now pop up almost instantly. We also ironed out a couple of timing hiccups that could briefly interrupt it during routine behind-the-scenes upkeep, so it should stay rock-solid going forward. A few other reliability tune-ups round things out. 🎬</p>"
 }
