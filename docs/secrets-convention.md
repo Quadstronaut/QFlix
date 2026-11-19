@@ -36,6 +36,7 @@ back-compat).
 | `tautulli.key` / `.port` | Tautulli API | UI → Settings → Web Interface |
 | `tmdb.read_token` | TMDB API v4 read token | https://themoviedb.org → API |
 | `github.repo` (optional) | `owner/name` of the public repo whose weekly commits drive the newsletter's "Behind the scenes" recap. Defaults to `Quadstronaut/QFlix` if absent. | n/a (public repo; no token) |
+| `mail-allowlist.txt` | Optional (QFLX-125). Household ids (one per line, `#` comments) that may receive QFlix email; the gate removes everyone else from the list. Absent = every entitled/exempt share account | operator |
 | `listmonk.api_user` / `.api_token` / `.port` / `.list_id` / `.from_email` / `.smtp_user` / `.smtp_password` | Listmonk admin + SMTP creds | 43-listmonk-install.sh provisions the API user; SMTP/from_email come from the operator |
 | `postgres.port` | Listmonk's Postgres backend | bootstrap |
 | `ucc.probe_app` | App name the UCC maintenance-gate detector probes with `app-<name> start` every 5 min (`scripts/maint/lib/ucc.py`). Currently `sonarr`; was an implicit `kavita` default until the books stack was decommissioned 2026-08-16. Must always name an INSTALLED app — an uninstalled one makes the gate detector permanently `probe-error`. | operator-written; falls back to `_DEFAULT_PROBE_APP` when absent |

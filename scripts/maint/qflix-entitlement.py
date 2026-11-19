@@ -84,6 +84,7 @@ sys.path.insert(0, str(_HERE / "lib"))
 import access_state as ST                                    # noqa: E402
 import entitlement as ENT                                    # noqa: E402
 import hostpolicy as HP                                      # noqa: E402  (QFLX-16)
+import mail_members as MM                                    # noqa: E402  (QFLX-125)
 import members as MEM                                        # noqa: E402
 import oracle_state as OSTATE                                 # noqa: E402
 import payer_oracle as ORACLE                                 # noqa: E402
@@ -1821,6 +1822,33 @@ def main(argv=None) -> int:
             state.save()
     except OSError as e:
         warn("could not persist state (clocks may repeat): %s" % e)
+
+    # ---- mailing list follows entitlement (QFLX-125) ----------------------
+    # Same plans, same run: a member who is not entitled/exempt comes off the
+    # QFlix mailing list now, and one who is re-entitled goes back on. Reversible
+    # (unsubscribe, never delete), sends nothing, fails closed, logs counts only.
+    # Never fatal and never turns the gate red: the mail list is not access.
+    try:
+        by_email_roster = roster.by_email()
+
+        def _tagalong(addr: str) -> bool:
+            hh = by_email_roster.get(addr.lower())
+            return bool(hh and hh.is_plex_only(addr))
+
+        elig = MM.eligibility_from_plans(
+            plans, _tagalong,
+            household_of=lambda a: (by_email_roster[a.lower()].id if a.lower() in by_email_roster else None),
+            allow=MM.read_allowlist(MM._secrets_dir()))
+        if elig.remove_only:
+            warn("mail-sync: allowlist and gate disagree (gate-active-not-listed=%d, listed-not-active=%d); "
+                 "remove-only until the operator rules" % (elig.unlisted_active, elig.listed_inactive))
+        MM.write_eligible(state_dir, elig, now)
+        mres = MM.reconcile(MM.Listmonk.from_secrets(),
+                            int((MM._secrets_dir() / "listmonk.list_id").read_text().strip()),
+                            elig, state_dir, now=now, execute=execute)
+        (log if mres.ok else warn)(mres.line())
+    except Exception as e:                                   # noqa: BLE001
+        warn("mail-sync skipped: %s" % type(e).__name__)
 
     # ---- notify ----------------------------------------------------------
     if not args.no_notify:

@@ -106,6 +106,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/maint/lib/plexshare.py \
     scripts/maint/lib/seerrusers.py \
     scripts/maint/lib/members.py \
+    scripts/maint/lib/mail_members.py \
     scripts/maint/lib/payer_oracle.py \
     scripts/maint/lib/oracle_state.py \
     scripts/maint/lib/regrab_ledger.py \

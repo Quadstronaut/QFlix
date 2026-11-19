@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-11-19 - QFlix mail goes only to entitled members (QFLX-125)
+
+The Listmonk Subscribers list held 17 records (12 confirmed) while only about
+five people are active members. The nightly `listmonk-sync.py` added every Plex
+friend and Seerr user and never removed anyone, so de-entitled and never-paid
+accounts kept receiving the digest and maintenance notices.
+
+- **Fix.** `qflix-entitlement.py` now ends each armed run by reconciling the
+  list from its own plans (`lib/mail_members.py`): entitled or exempt share
+  accounts stay, everyone else is unsubscribed from the list (never deleted,
+  never blocklisted), re-entitled members are re-added. Fails closed, sends
+  nothing, logs counts only, backs up before any change. Optional
+  `secrets/mail-allowlist.txt` (household ids) restricts recipients to the
+  operator's named list; while it disagrees with the gate the sync only removes.
+- **`listmonk-sync.py`** only subscribes people in the gate's snapshot
+  (`~/.opt/maint/entitlement/mail-eligible.json`) and aborts if it is missing or
+  older than 48h.
+- Mail transport (Gmail SMTP) is unchanged.
+
 ## 2026-11-03 - MP4s keep their container; Verity un-parked, Kuma 126 green (QFLX-97)
 
 `Canary Tdarr Transcode Error` (Kuma 126) had been red for ~167h on one file,

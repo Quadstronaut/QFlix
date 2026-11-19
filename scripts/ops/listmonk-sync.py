@@ -6,6 +6,13 @@ Single-list model. Every user lands in the canonical Subscribers list
 on the subscriber via attribs.source ("plex" | "seerr"). Idempotent —
 never removes subscribers (they self-unsubscribe via Listmonk link).
 
+QFLX-125: only people the entitlement gate currently marks entitled/exempt (and
+the operator's allowlist names) are added. The gate writes that set to
+~/.opt/maint/entitlement/mail-eligible.json every 15 minutes and also takes
+everyone else OFF the list (lib/mail_members.py). A missing or stale file
+aborts this run before any subscribe (fail closed). Removal stays out of this
+script.
+
 Secrets live in ~/secrets/<name> on the seedbox (one file per secret,
 gitignored in the source repo). Logs timestamped lines to stderr
 (cron appends to ~/.apps/listmonk/logs/sync.log, ingested into vlogs as
@@ -223,6 +230,18 @@ def plex_only_exclusions():
     return out
 
 
+def eligible_emails():
+    """Lowercased emails allowed to receive mail, from the gate's snapshot.
+    RAISES if the file is missing, unreadable or older than 48h."""
+    path = os.path.join(HOME, ".opt", "maint", "entitlement", "mail-eligible.json")
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)
+    at = datetime.strptime(d["at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    if (datetime.now(timezone.utc) - at).total_seconds() > 48 * 3600:
+        raise RuntimeError("mail-eligible.json is older than 48h")
+    return {str(e).strip().lower() for e in d["emails"]}
+
+
 def main() -> int:
     # Exclusions FIRST, before any source is touched: if they cannot be
     # determined, no upsert may happen this run (see plex_only_exclusions).
@@ -232,6 +251,13 @@ def main() -> int:
         log(f"cannot read plex_only exclusions from members.yaml ({e}); "
             f"ABORTING before any subscribe - this sync never removes, so "
             f"an unfiltered run is permanent", "ERROR")
+        return 1
+
+    try:
+        allowed = eligible_emails()
+    except Exception as e:
+        log(f"cannot read the eligible-member snapshot ({type(e).__name__}); "
+            f"ABORTING before any subscribe (fail closed)", "ERROR")
         return 1
 
     list_id = int(s("listmonk.list_id"))
@@ -254,6 +280,10 @@ def main() -> int:
             continue
         nskip = sum(1 for e2, _ in users if e2.strip().lower() in skip)
         users = [(e2, n) for e2, n in users if e2.strip().lower() not in skip]
+        nnot = sum(1 for e2, _ in users if e2.strip().lower() not in allowed)
+        users = [(e2, n) for e2, n in users if e2.strip().lower() in allowed]
+        if nnot:
+            log(f"{tag}: {nnot} user(s) not currently entitled/allowed, not subscribed")
         log(f"{tag}: {len(users)} users with email" + (f" ({nskip} plex_only tagalong(s) skipped)" if nskip else ""))
         for email, name in users:
             try:
