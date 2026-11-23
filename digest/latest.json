@@ -1,6 +1,6 @@
 {
-  "week_of": "2026-11-16",
-  "generated_at": "2026-11-16T14:09:56Z",
-  "since": "2026-11-09T14:09:56Z",
-  "html": "<p>The request system (where you ask for new movies and shows) got noticeably snappier this week &mdash; pages that used to take several seconds to load now pop up almost instantly. We also ironed out a couple of timing hiccups that could briefly interrupt it during routine behind-the-scenes upkeep, so it should stay rock-solid going forward. A few other reliability tune-ups round things out. 🎬</p>"
+  "week_of": "2026-11-23",
+  "generated_at": "2026-11-23T14:10:12Z",
+  "since": "2026-11-16T14:10:12Z",
+  "html": "<p>Quiet week behind the curtain — nothing new to show off, but we kept everything humming along smoothly so your movies and shows just keep working. 🎬</p>"
 }
