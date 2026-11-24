@@ -283,3 +283,59 @@ def test_bulk_facts_from_bulk_answer_adapter():
 ])
 def test_mask(addr, expected_prefix):
     assert ORACLE.mask(addr) == expected_prefix
+
+
+# --- row 2a: a forgotten payer is paged even while another payer reads YES --
+# QFLX-126. The gate freezes an ever-entitled account the service no longer
+# knows and relies on the oracle to page it. Row 2 returned PROVEN first, so
+# with one other payer entitled the page could never fire.
+
+
+def _payer2a(hid, holder, **kw):
+    reduced = kw.pop("already_reduced", False)
+    p = _payer(hid, holder, **kw)
+    p.already_reduced = reduced
+    return p
+
+
+def test_row2a_one_yes_plus_one_forgotten_holding_access_is_dead():
+    payers = [
+        _payer("h1", "still-paying@example.com", ever_entitled=True, currently_yes=True),
+        _payer2a("h2", "forgotten@example.com", ever_entitled=True,
+                 currently_never_seen=True, already_reduced=False),
+    ]
+    for bulk in (_bulk(ORACLE.BULK_NO_SCOPE),
+                 _bulk(ORACLE.BULK_OK, count=1, entitled=["still-paying@example.com"])):
+        v = ORACLE.judge(declared=payers, bulk=bulk, now=NOW)
+        assert v.verdict == ORACLE.DEAD, "row 2 masked a forgotten payer: %s" % v.detail
+        assert v.is_red is True and v.canary_exit == 1
+        _assert_no_pii(v, "h1", "h2", "forgotten@example.com", "still-paying@example.com")
+
+
+def test_row2a_does_not_page_a_payer_the_gate_already_reduced_to_the_floor():
+    """The one live case on the box: reduced in October, never-seen since
+    November. It holds only the floor; a permanent red there helps nobody."""
+    payers = [
+        _payer("h1", "still-paying@example.com", ever_entitled=True, currently_yes=True),
+        _payer2a("h2", "floored@example.com", ever_entitled=True,
+                 currently_never_seen=True, already_reduced=True),
+    ]
+    v = ORACLE.judge(declared=payers, bulk=_bulk(ORACLE.BULK_NO_SCOPE), now=NOW)
+    assert v.verdict == ORACLE.PROVEN and v.is_red is False
+
+
+def test_row3_still_catches_an_already_reduced_payer_when_nobody_reads_yes():
+    payers = [_payer2a("h2", "floored@example.com", ever_entitled=True,
+                       currently_never_seen=True, already_reduced=True)]
+    v = ORACLE.judge(declared=payers, bulk=_bulk(ORACLE.BULK_NO_SCOPE), now=NOW)
+    assert v.verdict == ORACLE.DEAD
+
+
+def test_row2a_ignores_never_entitled_and_cleanly_lapsed_payers():
+    payers = [
+        _payer("h1", "still-paying@example.com", ever_entitled=True, currently_yes=True),
+        _payer("h2", "never-paid@example.com", ever_entitled=False, currently_never_seen=True),
+        _payer("h3", "lapsed@example.com", ever_entitled=True, currently_never_seen=False),
+    ]
+    v = ORACLE.judge(declared=payers, bulk=_bulk(ORACLE.BULK_NO_SCOPE), now=NOW)
+    assert v.verdict == ORACLE.PROVEN

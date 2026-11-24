@@ -98,6 +98,11 @@ class DeclaredPayer:
     ever_entitled: bool = False          # access_state.AccountState.ever_entitled, for this holder
     currently_yes: bool = False          # THIS run's Answer.grants for this holder
     currently_never_seen: bool = False   # THIS run's Answer.never_seen for this holder
+    # True when the gate's last applied action on every ever-entitled account
+    # of this household was the reduction to the floor (last_action ==
+    # "expired"). A never-seen freeze then holds only the floor: nobody keeps
+    # unpaid access, so it is a stale roster entry, not a leak (row 2a).
+    already_reduced: bool = False
 
 
 @dataclass
@@ -155,6 +160,32 @@ def judge(*, declared: Sequence[DeclaredPayer], bulk: BulkFacts,
         return Verdict(DORMANT,
                        "no declared payers yet (0 households with a billing "
                        "rail and amount_usd > 0) - nothing to prove", False)
+
+    # --- row 2a (QFLX-126) ---------------------------------------------------
+    # MUST sit above row 2. The gate FREEZES an ever-entitled account that the
+    # service has stopped knowing (never-seen): nothing is granted, nothing is
+    # reduced, and its comments say "row 3 pages it". Row 3 could not: row 2
+    # returned PROVEN the moment ANY other payer read entitled, so with two or
+    # more payers one lost payer was never paged and kept whatever access the
+    # share held, for as long as somebody else kept paying. Demonstrated
+    # against this function 2026-11-24 (1 YES + 1 forgotten -> PROVEN).
+    #
+    # Deliberately narrower than row 3: a payer the gate ALREADY reduced to
+    # the floor is excluded. That freeze holds only the floor (the one live
+    # case on the box is exactly this, reduced 2026-10-03), and paging it would
+    # be a permanent red on a state nothing can change. It is still caught by
+    # row 3 below when nobody at all reads entitled.
+    frozen = sorted((d for d in D if d.ever_entitled and d.currently_never_seen
+                     and not d.already_reduced), key=lambda d: d.holder)
+    if frozen:
+        return Verdict(
+            DEAD,
+            "%d ever-entitled declared payer(s) now read as NEVER SEEN by the "
+            "service (e.g. %s) and the gate has frozen their access where it "
+            "was, not reduced it - the sync projection lost them, or the "
+            "member changed address; this is not an ordinary lapse"
+            % (len(frozen), mask(frozen[0].holder)),
+            True)
 
     # --- row 2 ---------------------------------------------------------------
     yes_now = [d for d in D if d.currently_yes]

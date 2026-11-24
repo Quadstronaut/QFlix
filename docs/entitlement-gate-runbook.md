@@ -321,6 +321,7 @@ declaration; `settle_days` = 2.
 | # | Condition (first match wins) | Verdict | Canary |
 |---|---|---|---|
 | 1 | `len(D) == 0` | `DORMANT` | green — nothing to prove |
+| 2a | any member of `E` is now `never_seen` **and** the gate has not already reduced that household to the floor | `DEAD` | **red** — a frozen share that may still hold access |
 | 2 | any `A` is YES | `PROVEN` | green |
 | 3 | `E` non-empty and **any** member of `E` is now `never_seen` | `DEAD` | **red** |
 | 4 | `B.supported` and `B.count > 0` and no declared holder appears in `B.entitled` | `MISMATCH` | **red** — a member may be paying under a different address |
@@ -345,9 +346,17 @@ a verdict recorded before the fix shipped is not evidence. If the key ever
 loses the scope again, `403 {"error": "this key lacks the 'bulk' scope"}`
 grades `no-scope` and row 7 names the fix.
 
-Rows 3 and 4 are deliberately strict: row 3 fires on **any** forgotten
-ever-entitled account, not only when every one is lost at once, because with
-a small number of payers one silent loss is still money lost in silence. Row
+Rows 2a, 3 and 4 are deliberately strict: a forgotten ever-entitled account
+is caught even when it is the only one lost, because with a small number of
+payers one silent loss is still money lost in silence. Row 2a is what makes
+that true while **another payer still reads YES** (QFLX-126): before it, row 2
+returned `PROVEN` first and row 3 could only fire when nobody at all read
+entitled, so a frozen share kept its access unpaged. Row 2a excludes a
+household the gate already reduced to the floor (`last_action = expired` on
+every ever-entitled account): that freeze holds only the floor, and paging it
+would be a permanent red. Such a household is a stale roster entry; clear its
+`billing.rail` or mark it exempt. Row 3 still covers it when no payer reads
+YES. Row
 4 is the highest-value alert in the system once it can fire at all — it
 means the service knows of a paying account that matches nobody's declared
 billing address, i.e. someone is paying under an address the roster does not

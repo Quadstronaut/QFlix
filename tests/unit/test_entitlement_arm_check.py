@@ -340,3 +340,48 @@ def test_plan_outputs_are_identical_across_the_full_verdict_range(
     assert plan.plex_target is None
     assert plan.provision_plex_id == 2
     assert plan.seerr_target is None
+
+
+# --- QFLX-126: household_already_reduced feeds oracle row 2a ----------------
+
+
+def test_household_already_reduced_follows_the_last_applied_action(gate, libs, tmp_path):
+    _, _, _, ST, MEM = libs
+    hh = _hh(MEM, "h1", accounts=["a@example.com", "b@example.com"])
+    state = ST.AccessState(path=tmp_path / "s.json")
+    assert gate.household_already_reduced(hh, state) is False, "no ever-entitled account"
+    state.record_entitled("a@example.com", now=NOW)
+    assert gate.household_already_reduced(hh, state) is False, "entitled, never reduced"
+    state.record_action("a@example.com", gate.S_EXPIRED, now=NOW)
+    assert gate.household_already_reduced(hh, state) is True
+    # A second ever-entitled account that was never reduced may still hold access.
+    state.record_entitled("b@example.com", now=NOW)
+    assert gate.household_already_reduced(hh, state) is False
+
+
+def test_a_frozen_payer_is_paged_even_while_another_payer_is_entitled(gate, libs, tmp_path):
+    """End to end through oracle_verdict(): one household reads YES, another
+    was entitled, is now unknown to the service, and was never reduced."""
+    ENT, ORACLE, _, ST, MEM = libs
+    paying = _hh(MEM, "h1", holder="pay@example.com", accounts=["pay@example.com"])
+    lost = _hh(MEM, "h2", holder="lost@example.com", accounts=["lost@example.com"])
+    roster = MEM.Roster(version=1, armed=False, grace_days=3, paused_sections=[],
+                        households=[paying, lost])
+    state = ST.AccessState(path=tmp_path / "s.json")
+    state.record_entitled("pay@example.com", now=NOW)
+    state.record_entitled("lost@example.com", now=NOW)
+    answers = {
+        "pay@example.com": ENT.Answer(verdict=ENT.YES, email="pay@example.com", http_status=200),
+        "lost@example.com": ENT.Answer(verdict=ENT.NO, email="lost@example.com",
+                                       http_status=200, reason="unknown"),
+    }
+    assert answers["lost@example.com"].never_seen, "fixture must be a MISS, not a clean NO"
+    bulk = ENT.BulkAnswer(state="ok", count=1, entitled=["pay@example.com"])
+    v = gate.oracle_verdict(roster, state, {"h1": NOW, "h2": NOW}, answers, bulk, NOW)
+    assert v.verdict == ORACLE.DEAD and v.is_red, v.detail
+    assert "lost@example.com" not in v.detail
+
+    # Once the gate has reduced that household, the same inputs are green.
+    state.record_action("lost@example.com", gate.S_EXPIRED, now=NOW)
+    v2 = gate.oracle_verdict(roster, state, {"h1": NOW, "h2": NOW}, answers, bulk, NOW)
+    assert v2.verdict == ORACLE.PROVEN and not v2.is_red, v2.detail
