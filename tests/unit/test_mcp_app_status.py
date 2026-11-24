@@ -1067,8 +1067,44 @@ def test_run_dead_tautulli_isolates_to_streams_section(monkeypatch):
     assert doc["streams"]["error"]
     assert doc["quota"]["ok"] is True
     assert doc["kuma"]["ok"] is True
-    assert doc["top5"]["ok"] is True
+    assert doc["top5"] == {"ok": False, "error": "not_requested"}   # opt-in (QFLX-126)
     assert doc["downloads"]["ok"] is True
+
+
+def test_bare_run_never_collects_the_per_member_top5_section(monkeypatch):
+    """QFLX-126. The legacy Heartbeat key's forced command runs this script
+    with NO arguments and cannot add any, so the no-argument default is what
+    that key returns. top5 is per-member by name and must not be in it."""
+    _mock_all_sections(monkeypatch)
+    called = []
+    monkeypatch.setattr(app_status, "_collect_top5",
+                        lambda now: called.append(1) or {
+                            "ok": True, "error": None,
+                            "requests_30d": [{"user": "A Member", "count": 3}],
+                            "watch_30d": [{"user": "A Member", "hours": 9, "plays": 4}]})
+    doc = app_status.run()
+    assert called == [], "the per-member collector ran on a bare invocation"
+    assert doc["top5"] == {"ok": False, "error": "not_requested"}
+    assert "A Member" not in json.dumps(doc, default=str)
+    assert set(doc.keys()) == CONTRACT_TOP_KEYS, "the document shape is unchanged"
+    assert "top5" not in app_status.DEFAULT_SECTIONS
+    assert set(app_status.DEFAULT_SECTIONS) == {"quota", "kuma", "streams", "downloads"}
+
+
+def test_bare_main_passes_no_sections_so_the_default_applies(monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setattr(app_status, "run",
+                        lambda sections=None: seen.setdefault("s", sections) or {
+                            "meta": {"elapsed_ms": 1}})
+    monkeypatch.setattr(sys, "argv", ["app_status.py"])
+    assert app_status.main() == 0
+    assert seen["s"] is None
+
+
+def test_top5_is_still_available_when_asked_for_by_name(monkeypatch):
+    _mock_all_sections(monkeypatch)
+    doc = app_status.run(sections=["top5"])
+    assert doc["top5"]["ok"] is True
 
 
 def test_run_restricted_sections_still_returns_complete_doc(monkeypatch):
