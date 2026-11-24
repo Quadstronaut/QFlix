@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-11-24 - Weekly audit follow-through: one false page, twelve confirmed fixes (QFLX-126)
+
+The 2026-11-23 weekly audit paged one finding, Radarr "Failed to retrieve
+notifications". It is harmless: Radarr polling its vendor's announcement feed,
+which fails on the vendor's side a few times a day. A verified audit pass of the
+automation ran alongside it. Each finding below was confirmed three ways before
+it was fixed, and each fix ships with a test.
+
+- **The page itself.** The log-store source strips the logger name, so the
+  existing rule could not match. New rule `arr-cloud-news-fetch-bare` claims
+  the excerpt only when it is that one message and nothing else.
+- **Weekly summary.** Adds "Currently DOWN (not paged)" from Kuma state, so a
+  monitor red for more than seven days no longer reads "0 ... Clean". Routine
+  info notices are one number, not twelve names.
+- **Failed weekly post.** `discord_post_failed` no longer settles the week; the
+  hourly retry posts again. `rea-liveness` reds (`rea-summary-undelivered`)
+  when the failure still stands after 12 hours.
+- **Secrets in the shared temp dir.** Three canaries wrote a live qBittorrent
+  session cookie and queue files to the box's shared tmpfs, world-readable.
+  They now use a private `mktemp` dir under `~/.opt/maint`, umask 077. The five
+  *arr installers set a private `TMPDIR` so backup staging stays out of it too.
+- **Reaper.** P-4 keeps a series record that still has wanted or in-flight
+  episodes. An unreadable exclude file aborts the run. A movie Radarr cannot
+  vouch for is withheld. Seerr reconciliation refuses over 25 rows
+  (`QFLIX_REAPER_SEERR_MAX_ROWS`) and keeps a movie Radarr is still searching for.
+- **unstick.** Download-client categories map to their *arr (`tv-sonarr`,
+  `sonarr-anime`, `radarr-anime`); any other category is refused, not deleted.
+- **arr-housekeeping.** When one *arr has 5 or more downloads past the import
+  grace at once (`ARR_IMPORT_SYSTEMIC_MIN`), import-mode delete, blocklist and
+  park are held and reported instead of run.
+- **Remux janitors.** Re-stat before the replace; a file that changed or
+  vanished during the remux is skipped, not overwritten or recreated.
+- **Entitlement oracle.** New row 2a pages a payer the service has forgotten
+  even while another payer is entitled, unless the gate already reduced them.
+- **app_status.** The per-member `top5` section is opt-in, so the bare run (the
+  legacy Heartbeat key's forced command) no longer returns it.
+- **audit-live.** Moved from :15 to :45 to sit clear of Kuma's nightly push
+  stall, with a 15-minute retry (twice per slot).
+
+Box steps (env files, leftover temp files) and the operator's decisions
+(rotating the exposed secrets, the legacy phone key) are on the ticket.
+
 ## 2026-11-19 - QFlix mail goes only to entitled members (QFLX-125)
 
 The Listmonk Subscribers list held 17 records (12 confirmed) while only about
