@@ -1441,14 +1441,20 @@ try:
         # window and used to read "0 ... Clean". This is the STATE read: every
         # active non-Discord monitor whose LATEST beat is DOWN, with the time
         # of the edge that took it down. No time window, on purpose.
-        drows = con.execute(
-            "SELECT m.name, (SELECT MAX(h2.time) FROM heartbeat h2 WHERE h2.monitor_id = m.id"
-            " AND h2.important = 1 AND h2.status = 0) FROM monitor m"
-            " WHERE m.active = 1 AND (SELECT h.status FROM heartbeat h WHERE h.monitor_id = m.id"
-            " ORDER BY h.time DESC LIMIT 1) = 0"
-            " AND m.id NOT IN (SELECT mn.monitor_id FROM monitor_notification mn"
-            " JOIN notification n ON n.id = mn.notification_id WHERE n.name = ?)"
-            " ORDER BY m.name", (DISCORD,)).fetchall()
+        # Own try: if this query fails (older schema) the edge counts above
+        # must survive; only the down-now read is marked unavailable.
+        try:
+            drows = con.execute(
+                "SELECT m.name, (SELECT MAX(h2.time) FROM heartbeat h2 WHERE h2.monitor_id = m.id"
+                " AND h2.important = 1 AND h2.status = 0) FROM monitor m"
+                " WHERE m.active = 1 AND (SELECT h.status FROM heartbeat h WHERE h.monitor_id = m.id"
+                " ORDER BY h.time DESC LIMIT 1) = 0"
+                " AND m.id NOT IN (SELECT mn.monitor_id FROM monitor_notification mn"
+                " JOIN notification n ON n.id = mn.notification_id WHERE n.name = ?)"
+                " ORDER BY m.name", (DISCORD,)).fetchall()
+        except Exception:
+            drows = []
+            partial.append("kuma down-now unreadable")
     finally:
         con.close()
     for name, cnt in rows:

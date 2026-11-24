@@ -120,7 +120,7 @@ def test_qbit_stall_keeps_the_session_cookie_private_and_removes_it(tmp_path):
     assert "qbit-flowing" in r.stdout
     jar = (fake / "jar.path").read_text().strip()
     assert "/.opt/maint/tmp.qbit-stall." in jar.replace("\\", "/"), jar
-    assert not jar.startswith("/tmp/"), jar
+    assert jar.replace("\\", "/").startswith(_posix(home).replace("\\", "/") + "/.opt/maint/"), jar
     assert (fake / "umask.seen").read_text().strip().lstrip("0") == "77", \
         "the cookie jar was written under a permissive umask"
     assert not Path(jar).exists(), "session cookie left on disk after the run"

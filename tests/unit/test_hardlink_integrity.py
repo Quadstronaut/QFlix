@@ -106,9 +106,11 @@ def _run(code, tmp_path, torrents, *, max_days="7", min_sample=None):
     payload = tmp_path / "qfh-completed.json"
     payload.write_text(json.dumps(torrents), encoding="utf-8")
 
+    # Check the raw code: after _rehome the pytest tmp_path (/tmp/pytest-of-*
+    # on Linux) is spliced in, which would false-trip the /tmp/ check.
+    assert "/tmp/" not in code, "the canary python must not name a shared /tmp path (QFLX-126)"
     body = _rehome(code, tmp_path)
     assert 'os.environ["QFH_TFILE"]' in body, "payload path no longer comes from QFH_TFILE"
-    assert "/tmp/" not in body, "the canary python must not name a shared /tmp path (QFLX-126)"
 
     env = dict(os.environ)
     env["QFH_TFILE"] = str(payload)
