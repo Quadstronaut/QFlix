@@ -49,8 +49,11 @@ def reaper():
 # ---------------------------------------------------------------------------
 class FakeArr:
     def __init__(self, slug, movies=None, series=None, tags=None,
-                episodefiles=None, episodes=None):
+                episodefiles=None, episodes=None, queue=None):
         self.slug = slug
+        # seriesId(int) -> [queue rows]. P-4 reads /queue/details (QFLX-126).
+        self.queue = {int(k): list(v) for k, v in (queue or {}).items()}
+        self.gets = []               # list of (path, query)
         self.movies = movies or []   # [{id,tmdbId,hasFile}]
         self.series = series or []   # [{id,tvdbId,ended,tags}]
         self.tags = tags if tags is not None else []          # [{id,label}]
@@ -62,12 +65,16 @@ class FakeArr:
         self.puts = []               # list of (path, body)
 
     def get(self, path, query="", timeout=None):
+        self.gets.append((path, query))
         if path == "/movie":
             return 200, self.movies
         if path == "/series":
             return 200, self.series
         if path == "/tag":
             return 200, self.tags
+        if path == "/queue/details":
+            sid = dict(urllib.parse.parse_qsl(query)).get("seriesId")
+            return 200, (list(self.queue.get(int(sid), [])) if sid is not None else [])
         if path == "/episodefile":
             sid = dict(urllib.parse.parse_qsl(query)).get("seriesId")
             return 200, (list(self.episodefiles.get(int(sid), [])) if sid is not None else [])
@@ -691,6 +698,9 @@ def test_seerr_reconcile_deletes_only_orphans(reaper, monkeypatch):
 def test_seerr_reconcile_paginates_past_page_cap(reaper, monkeypatch):
     # Availability spanning multiple pages must ALL be reconciled — no silent cap.
     monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    # This test is about PAGINATION. Since QFLX-126 a mass clear is refused by
+    # default (see test_reaper_qflx126.py); lift the ceiling for this fixture.
+    monkeypatch.setenv("QFLIX_REAPER_SEERR_MAX_ROWS", "100000")
     import urllib.parse as _up
     page = reaper._SEERR_MEDIA_PAGE
     total = page * 2 + 5                      # spans 3 pages (last one short)
@@ -724,6 +734,9 @@ def test_seerr_reconcile_paginates_past_page_cap(reaper, monkeypatch):
 def test_seerr_reconcile_midpagination_failure_reconciles_partial(reaper, monkeypatch):
     # A page failure mid-walk must reconcile what was fetched, not abort to zero.
     monkeypatch.setattr(reaper, "_seerr_creds", lambda: ("42011", "seerrkey"))
+    # This test is about PAGINATION. Since QFLX-126 a mass clear is refused by
+    # default (see test_reaper_qflx126.py); lift the ceiling for this fixture.
+    monkeypatch.setenv("QFLIX_REAPER_SEERR_MAX_ROWS", "100000")
     import urllib.parse as _up
     page = reaper._SEERR_MEDIA_PAGE
 

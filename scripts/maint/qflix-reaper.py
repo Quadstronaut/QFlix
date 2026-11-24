@@ -448,12 +448,25 @@ def _release_run_lock(handle) -> None:
 # ===========================================================================
 # Exclusions
 # ===========================================================================
+class ExcludeFileUnreadable(Exception):
+    """The exclude file EXISTS but could not be read or decoded (QFLX-126)."""
+
+
 def load_exclusions(path: Path):
     """Parse the exclude file into a set of normalized rule strings. Lenient:
     '#' comments + blank lines ignored, whitespace stripped. Forms:
       tmdb:<id> / tvdb:<id> / plex:<ratingKey> / bare title (case-insensitive).
     Missing file -> empty set + WARNING (not an error). Returns a set of rules:
-      "tmdb:123", "tvdb:456", "plex:789", "title:some movie" (title lowercased)."""
+      "tmdb:123", "tvdb:456", "plex:789", "title:some movie" (title lowercased).
+
+    A file that EXISTS but cannot be read raises ExcludeFileUnreadable, and
+    run() aborts on it. It used to warn and return an empty set: one byte in
+    another encoding (a title pasted with a smart quote and saved as Latin-1)
+    or a permission slip silently dropped EVERY rule, and the armed nightly
+    run then deleted the very titles the operator had protected. A protected
+    title is by definition older than the threshold, so it went the same
+    night. "I could not read the list" must never read as "the list is
+    empty" (QFLX-126)."""
     rules = set()
     try:
         text = path.read_text(encoding="utf-8")
@@ -461,8 +474,8 @@ def load_exclusions(path: Path):
         warn("exclude file not found, proceeding with NO exclusions: " + str(path))
         return rules
     except Exception as exc:
-        warn("could not read exclude file (" + str(exc) + "); NO exclusions: " + str(path))
-        return rules
+        raise ExcludeFileUnreadable(
+            type(exc).__name__ + ": " + str(exc) + " (" + str(path) + ")") from exc
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -1554,6 +1567,22 @@ def _seerr_stuck_seasons(port, key, row, info=None):
     return sorted(stuck)
 
 
+SEERR_RECONCILE_MAX_ROWS_DEFAULT = 25
+
+
+def seerr_reconcile_max_rows() -> int:
+    """Ceiling on Seerr media rows one reconciliation pass may clear. Read at
+    call time from QFLIX_REAPER_SEERR_MAX_ROWS so the operator can raise it for
+    a single run; an unparseable or negative value falls back to the default
+    rather than to "no limit"."""
+    raw = os.environ.get("QFLIX_REAPER_SEERR_MAX_ROWS", "")
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return SEERR_RECONCILE_MAX_ROWS_DEFAULT
+    return val if val >= 0 else SEERR_RECONCILE_MAX_ROWS_DEFAULT
+
+
 def reconcile_seerr(execute: bool):
     """After all libraries are reaped, delete Seerr media rows whose backing arr
     item is gone, so the title becomes re-requestable. Returns (deleted, failed).
@@ -1570,6 +1599,8 @@ def reconcile_seerr(execute: bool):
     would_recreate = 0
     recreated = 0
     withheld_rows = 0
+    pending_kept = 0
+    plan = []                     # (row, media_id, media_type, reason, recreate)
     recreated_keys = set()        # (tmdb, userId, seasons, is4k) already re-POSTed this run
     try:
         port, key = _seerr_creds()
@@ -1657,6 +1688,13 @@ def reconcile_seerr(execute: bool):
     # refuse. Same rule as everywhere else here — "I could not look" must never
     # render as "it is gone".
     radarr_with_file = set()
+    # QFLX-126: movies Radarr still HOLDS and is still trying to get
+    # (monitored, no file yet). scripts/maint/qflix-remux-regrab.py deletes a
+    # movie file and searches for a replacement; until the new copy imports,
+    # hasFile is false. Treating that as "gone" deleted the Seerr row and the
+    # member's request history while the replacement was downloading. A reaped
+    # movie leaves Radarr entirely (do_delete_movie), so it is not in this set.
+    radarr_pending = set()
     sonarr_tvdbids = set()
     index_failures = []
     for entry in LIBRARIES:
@@ -1669,8 +1707,12 @@ def reconcile_seerr(execute: bool):
                     index_failures.append(slug + ":http" + str(st))
                     continue
                 for m in mv:
-                    if m.get("hasFile") and m.get("tmdbId") is not None:
+                    if m.get("tmdbId") is None:
+                        continue
+                    if m.get("hasFile"):
                         radarr_with_file.add(m.get("tmdbId"))
+                    elif m.get("monitored") is True:
+                        radarr_pending.add(m.get("tmdbId"))
             else:
                 st, sr = client.get("/series")
                 if st != 200 or not isinstance(sr, list):
@@ -1727,6 +1769,9 @@ def reconcile_seerr(execute: bool):
         if media_type == "movie":
             tmdb = row.get("tmdbId")
             gone = tmdb is not None and tmdb not in radarr_with_file
+            if gone and tmdb in radarr_pending:
+                pending_kept += 1
+                gone = False
         elif media_type == "tv":
             tvdb = row.get("tvdbId")
             gone = tvdb is not None and tvdb not in sonarr_tvdbids
@@ -1783,6 +1828,30 @@ def reconcile_seerr(execute: bool):
                         reason += " live-requests-to-recreate=" + str(len(recreate))
         if not gone:
             continue
+        plan.append((row, media_id, media_type, reason, recreate))
+
+    # BLAST CAP (QFLX-126). Every delete below cascades that title's request
+    # history, and until now nothing bounded how many rows one run could take:
+    # --max-items / --max-pct only ever covered files. The index guard above
+    # catches an *arr that cannot be READ; it does not catch one that answers
+    # 200 with wrong data (root folder briefly away then a disk scan, a
+    # database restored from an old backup or rebuilt in a migration). hasFile
+    # is then false for most movies and every settled movie row looked
+    # orphaned - 39 rows and 37 of 62 requests on the box, measured
+    # 2026-11-24. Normal volume is 1-4 rows a run. Over the ceiling the whole
+    # pass refuses, deletes nothing, and marks the run partial so it pages.
+    # The plan is built first and executed second so the refusal is
+    # all-or-nothing, never "the first 25 of 39".
+    max_rows = seerr_reconcile_max_rows()
+    if len(plan) > max_rows:
+        warn("Seerr reconciliation REFUSED - " + str(len(plan)) + " row(s) would be "
+             "cleared, over the ceiling of " + str(max_rows) + " (normal is 1-4 a "
+             "run). Nothing was deleted. If this is a real backlog, raise "
+             "QFLIX_REAPER_SEERR_MAX_ROWS for one run; if the *arr file index "
+             "looks wrong, fix that first.")
+        return deleted, failed + 1
+
+    for row, media_id, media_type, reason, recreate in plan:
         log("Seerr: media " + str(media_id) + " (" + str(media_type) +
             ", " + reason + ") -> " + ("DELETE" if execute else "would delete"))
         if not execute:
@@ -1838,6 +1907,9 @@ def reconcile_seerr(execute: bool):
         log("Seerr: re-created " + str(recreated) + " live request(s) the clear would have erased")
     if withheld_rows:
         log("Seerr: WITHHELD " + str(withheld_rows) + " stuck row(s) whose requests could not be read")
+    if pending_kept:
+        log("Seerr: kept " + str(pending_kept) + " movie row(s) Radarr still holds "
+            "and is still searching for (monitored, no file yet)")
     if would:
         # A dry run that logs 42 "would delete" lines and then reports nothing
         # tells the operator the change is a no-op. Say the number out loud.
@@ -2171,6 +2243,55 @@ def _series_would_be_removed(row, permanent_tag_id, tag_lookup_ok, remaining_fil
     return True
 
 
+def series_removal_blocker(client, series_id):
+    """P-4 guard (QFLX-126). Returns (reason, read_failed).
+
+    reason is '' when nothing stands in the way of removing the series RECORD,
+    else a short human string. read_failed is True when the answer is "could
+    not look" rather than "looked and found something" - the caller marks the
+    run partial for that, exactly as it does for a failed episodefile re-read.
+
+    WHY. P-4's conditions were zero files + ended + not permanent-tagged, and
+    `ended` is the show's BROADCAST status, not "nothing left to fetch". A
+    member requests season 2 of an ended show whose season 1 files are 45 days
+    old: the nightly run deletes the S1 files, sees zero files, and deleted
+    the whole record - with the monitored S2 episodes and Sonarr's tracking of
+    a download that was still in SABnzbd. The request was dropped silently and
+    the run exited 0. The reaper unmonitors every episode whose file it
+    deletes (R-5), so a monitored episode with no file is one somebody still
+    wants. Two reads, both fail closed:
+      1. GET /episode?seriesId=N       any episode monitored with no file
+      2. GET /queue/details?seriesId=N any download in flight for the series
+    Cost of refusing: an ended show with one never-found monitored episode
+    keeps its Sonarr row. That is a database row, not media."""
+    try:
+        status, eps = client.get("/episode", query="seriesId=" + str(series_id))
+    except Exception as exc:                                    # noqa: BLE001
+        return "episode list unreadable (" + type(exc).__name__ + ")", True
+    if status != 200 or not isinstance(eps, list):
+        return "episode list unreadable (HTTP " + str(status) + ")", True
+    wanted = 0
+    for e in eps:
+        if not isinstance(e, dict):
+            return "episode list unreadable (non-object row)", True
+        has_file = e.get("hasFile")
+        if has_file is None:
+            has_file = bool(e.get("episodeFileId"))
+        if e.get("monitored") is True and not has_file:
+            wanted += 1
+    if wanted:
+        return str(wanted) + " monitored episode(s) still wanted", False
+    try:
+        status, queue = client.get("/queue/details", query="seriesId=" + str(series_id))
+    except Exception as exc:                                    # noqa: BLE001
+        return "queue unreadable (" + type(exc).__name__ + ")", True
+    if status != 200 or not isinstance(queue, list):
+        return "queue unreadable (HTTP " + str(status) + ")", True
+    if queue:
+        return str(len(queue)) + " download(s) in flight", False
+    return "", False
+
+
 # ===========================================================================
 # Main orchestration
 # ===========================================================================
@@ -2204,7 +2325,17 @@ def run(args) -> int:
         exclude_path = Path(args.exclude_file)
     else:
         exclude_path = _HERE / "qflix-reaper.exclude"
-    rules = load_exclusions(exclude_path)
+    try:
+        rules = load_exclusions(exclude_path)
+    except ExcludeFileUnreadable as exc:
+        # FATAL in every mode (QFLX-126). Running without the operator's
+        # protection list is the one thing this script must not do quietly.
+        msg = ("FATAL: exclude file exists but cannot be read (" + str(exc) +
+               ") - refusing to run with NO exclusions; nothing was deleted")
+        warn(msg)
+        _notify(msg, level="error")
+        _push_kuma("down", msg)
+        return EXIT_FATAL
     log("loaded " + str(len(rules)) + " exclusion rule(s) from " + str(exclude_path))
 
     # Plex creds (FATAL if absent — cannot safely enumerate without them)
@@ -2327,6 +2458,30 @@ def run(args) -> int:
                 arr_date_added = None
                 if movie_row:
                     arr_date_added = (movie_row.get("movieFile") or {}).get("dateAdded")
+                # QFLX-126, fail closed. The comment above this loop says the
+                # raw Plex addedAt is NOT safe uncorroborated, yet two inputs
+                # used to fall straight through to it:
+                #   1. GET /movie/<id> failed (timeout, 5xx - this file records
+                #      30-second Radarr stalls). "Could not ask" was graded as
+                #      "Radarr has nothing to add".
+                #   2. Radarr answered and says the movie has NO file. Plex
+                #      still lists one, so the two disagree about what is on
+                #      disk, and DELETE ...deleteFiles=true would remove a
+                #      folder Radarr is not tracking.
+                # Both are now withheld this run. The series path already
+                # fails closed on the same class of read error.
+                if movie_row is None:
+                    warn("WITHHELD " + repr(it.get("title")) + " in '" + title +
+                         "' - Radarr movie record could not be read (GET /movie/" +
+                         str(arr_id) + " failed); not grading on the Plex clock "
+                         "alone (fail closed)")
+                    partial = True
+                    continue
+                if not arr_date_added and movie_row.get("hasFile") is False:
+                    warn("WITHHELD " + repr(it.get("title")) + " in '" + title +
+                         "' - Radarr says this movie has no file but Plex still "
+                         "lists one; not deleting on the Plex clock alone")
+                    continue
                 graded_at, source, disagreement = grade_file_clock(it["addedAt"], arr_date_added)
                 it["gradedAt"] = graded_at
                 it["gradeSource"] = source
@@ -2523,12 +2678,26 @@ def run(args) -> int:
     # this exactly like the file/movie cap above.
     deferred_series_count = 0
     if series_removal_state:
-        eligible_keys = {
-            k for k, st in series_removal_state.items()
-            if _series_would_be_removed(
-                st["row"], st["permanent_tag_id"], st["tag_lookup_ok"],
-                st["total_files_before"] - st["candidate_file_count"])
-        }
+        eligible_keys = set()
+        for k, st in series_removal_state.items():
+            if not _series_would_be_removed(
+                    st["row"], st["permanent_tag_id"], st["tag_lookup_ok"],
+                    st["total_files_before"] - st["candidate_file_count"]):
+                continue
+            # QFLX-126: wanted or in-flight episodes keep the record. Checked
+            # here so the dry-run preview and the shared budget are honest,
+            # and AGAIN, fresh, right before the delete in the execute pass.
+            # Episodes whose files are candidates THIS run are still monitored
+            # now (R-5 unmonitors them at delete time) but they have a file,
+            # so they do not count as wanted.
+            why, read_failed = series_removal_blocker(st["client"], k[1])
+            if why:
+                log("P-4: keeping series record " + repr(st["title"]) +
+                    " (arrId=" + str(k[1]) + ") - " + why)
+                if read_failed:
+                    partial = True
+                continue
+            eligible_keys.add(k)
         if args.force:
             scheduled_keys = set(eligible_keys)
         else:
@@ -2771,6 +2940,15 @@ def run(args) -> int:
             continue
         if _series_would_be_removed(st["row"], st["permanent_tag_id"],
                                     st["tag_lookup_ok"], len(files_now)):
+            # QFLX-126: fresh re-read, same reason as files_now above - a
+            # request can arrive, or a grab can start, during this very run.
+            why, read_failed = series_removal_blocker(st["client"], arr_id)
+            if why:
+                log("P-4: keeping series record " + repr(st["title"]) +
+                    " (arrId=" + str(arr_id) + ") - " + why)
+                if read_failed:
+                    partial = True
+                continue
             if do_delete_series(st["client"], arr_id):
                 records_removed += 1
                 libraries_touched.add(st["library"])
