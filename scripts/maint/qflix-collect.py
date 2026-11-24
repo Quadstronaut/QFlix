@@ -965,7 +965,12 @@ def update_stale_state() -> list[str]:
 # "sab-orphan-removed" is the usenet twin of "qbit-orphan-removed" (C5, SAB
 # stuck-parity spec 2026-07-19) -- mirrors unstick.py's _EFFECTIVE_STATUSES.
 _EFFECTIVE_RESULTS = ("deleted+blocklisted", "qbit-orphan-removed", "sab-orphan-removed")
-_TERMINAL_STATUSES = ("deleted+blocklisted", "qbit-orphan-removed", "sab-orphan-removed", "already-fully-removed")
+# "refused-unknown-category" (QFLX-126): unstick.py refuses a download whose
+# client category maps to no *arr (a manual or personal download). Terminal
+# here so the same hash is not re-offered every hour for a refusal that will
+# never change; it is NOT an effective result and does not use a cap slot.
+_TERMINAL_STATUSES = ("deleted+blocklisted", "qbit-orphan-removed", "sab-orphan-removed", "already-fully-removed",
+                      "refused-unknown-category")
 
 
 def count_todays_actions() -> int:

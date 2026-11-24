@@ -45,6 +45,28 @@ ARR_VERSIONS = {
     "sonarr": "v3", "sonarr2": "v3", "radarr": "v3", "radarr2": "v3",
 }
 
+# Download-client CATEGORY -> *arr slug (QFLX-126). The auto-detect path used
+# to accept a category only when it WAS a slug. Three of the four *arrs do
+# not use their slug as the qBittorrent category (read from each
+# /downloadclient on the box 2026-11-24; the anime names are set by
+# scripts/configure/06-anime-arrs.py):
+#     sonarr  -> tv-sonarr      sonarr2 -> sonarr-anime
+#     radarr  -> radarr         radarr2 -> radarr-anime
+# so every stalled torrent from sonarr, sonarr2 and radarr2 fell through to
+# "no slug" and was deleted WITH ITS FILES straight from qBittorrent: no *arr
+# queue delete, no blocklist, no red-monitor refusal, no daily cap. The *arr
+# then grabbed the same dead release again (64 such events on the box; one
+# title removed 14 times). SABnzbd categories equal the slugs, so the
+# identity rows cover usenet.
+CATEGORY_TO_SLUG = {
+    "sonarr": "sonarr", "sonarr2": "sonarr2", "radarr": "radarr", "radarr2": "radarr2",
+    "tv-sonarr": "sonarr", "sonarr-anime": "sonarr2", "radarr-anime": "radarr2",
+}
+
+
+def _slug_for_category(cat: Optional[str]) -> Optional[str]:
+    return CATEGORY_TO_SLUG.get((cat or "").strip().lower())
+
 # Results that actually consumed an *arr/qBit/SAB action slot. The daily cap
 # counts only these — refusals (cap-hit, arr-red, unknown-slug) are still
 # appended to the events file for audit but must not gate the next attempt,
@@ -182,8 +204,7 @@ def _auto_detect_slug_qbit(hash_: str) -> Optional[str]:
                 if (t.get("hash") or "").lower() == target), None)
     if not hit:
         return None
-    cat = (hit.get("category") or "").strip().lower()
-    return cat if cat in ARR_VERSIONS else None
+    return _slug_for_category(hit.get("category"))
 
 
 def _auto_detect_slug_sab(nzo_id: str) -> Optional[str]:
@@ -203,8 +224,7 @@ def _auto_detect_slug_sab(nzo_id: str) -> Optional[str]:
     hit = next((s for s in slots if s.get("nzo_id") == nzo_id), None)
     if not hit:
         return None
-    cat = (hit.get("cat") or "").strip().lower()
-    return cat if cat in ARR_VERSIONS else None
+    return _slug_for_category(hit.get("cat"))
 
 
 def _auto_detect_slug(hash_: Optional[str]) -> Optional[str]:
@@ -224,6 +244,44 @@ def _auto_detect_slug(hash_: Optional[str]) -> Optional[str]:
     if slug is not None:
         return slug
     return _auto_detect_slug_sab(hash_)
+
+
+def _client_holds(hash_: Optional[str]):
+    """(present, category) for the download with this id, asking the download
+    clients directly. Same id-shape dispatch and probe order as
+    _auto_detect_slug. present=False covers "no client has it" AND "could not
+    ask" (login refused, SAB unreachable): the caller then takes the old
+    orphan path, which reports those states by name and deletes nothing.
+
+    Exists for ONE decision in run() (QFLX-126): a download a client still
+    holds under a category that maps to no *arr is NOT an orphan of ours. It
+    is somebody's manual or personal download and must be refused, never
+    deleted. The torrent janitor already protects non-*arr categories; this
+    path did not."""
+    if not hash_:
+        return False, ""
+    kind = _id_kind(hash_)
+    if kind in ("qbit", "unknown"):
+        c = QbitClient()
+        if c.login():
+            target = hash_.lower()
+            hit = next((t for t in c.list_torrents()
+                        if (t.get("hash") or "").lower() == target), None)
+            if hit:
+                return True, (hit.get("category") or "").strip()
+        if kind == "qbit":
+            return False, ""
+    s = SabClient()
+    if not s.host or not s.apikey:
+        return False, ""
+    try:
+        slots = s.list_slots()
+    except Exception:
+        return False, ""
+    hit = next((x for x in slots if x.get("nzo_id") == hash_), None)
+    if hit:
+        return True, (hit.get("cat") or "").strip()
+    return False, ""
 
 
 def _try_qbit_orphan_cleanup(hash_: Optional[str], *, dry_run: bool) -> dict:
@@ -355,6 +413,16 @@ def run(*, slug: Optional[str] = None, queue_id: Optional[int] = None,
     if slug is None:
         slug = _auto_detect_slug(hash_)
         if slug is None:
+            # A client still HOLDS it, under a category that is not one of
+            # ours: refuse. Nothing is deleted (QFLX-126, see _client_holds).
+            present, cat = _client_holds(hash_)
+            if present:
+                refusal = {"status": "refused-unknown-category",
+                           "category": cat or "(none)"}
+                _record_event(slug="<auto>", queue_id=queue_id, hash_=hash_,
+                               title="?", reason=reason,
+                               result_status=refusal["status"])
+                return refusal
             # No slug, no hit in either client plane. Dispatch by id shape
             # (C5) so a SAB-shaped id gets SAB's own orphan check instead of
             # qBit's qbit-only "not found" answer.
