@@ -1,9 +1,20 @@
 [Unit]
 Description=Manitoba maint - QFlix LIVE audit (what is actually running, not what is in git)
 After=network-online.target
+# Bounds the retry below: at most 3 starts per 5 h, i.e. the scheduled run plus
+# two retries inside one 6 h slot. [Unit] keys (QFLX-57).
+StartLimitIntervalSec=18000
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
+# QFLX-126: retry a failed run after 15 min instead of leaving the unit failed
+# until the next 6-hourly slot. A transient (the nightly Kuma push stall, a
+# network blip) used to latch "last-run-not-success" for ~6 h. A REAL finding
+# still fails every attempt and stays red; it just gets read three times.
+# Restart= on a oneshot needs systemd >= 244 (box: 257, checked 2026-11-24).
+Restart=on-failure
+RestartSec=900
 # Runs on the BOX from the deployed tree, unlike manitoba-maint-audit.service
 # which audits last-pushed master out of ~/.opt/qflix-src. That distinction is
 # the whole point: source being clean says nothing about what systemd is running.

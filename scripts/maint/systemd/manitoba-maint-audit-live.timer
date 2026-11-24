@@ -5,7 +5,15 @@ Description=Manitoba maint - QFlix LIVE audit (every 6h)
 # Deployed state mutates out-of-band (hand-edits, partial installs, panel
 # updates), so this runs far more often than the daily source audit. Residual R2
 # is explicitly "bounded only by how often qflix-audit-live.py runs".
-OnCalendar=*-*-* 02,08,14,20:15:00 UTC
+#
+# :45, not :15 (QFLX-126). Uptime Kuma stops accepting pushes for a while every
+# night from about 02:14 UTC (~/.opt/maint/kuma-push-stalls.jsonl: 50-92 s most
+# nights, 252 s on 2026-11-16, 478 s on 2026-11-18). The 02:15 slot ran INSIDE
+# that stall: the audit read 32 "stale-green" monitors, its own heartbeat push
+# timed out, the unit exited 1, and Timer Liveness stayed red for the 6 hours
+# until the next slot (61 Timer Liveness failures in 8 days, all this unit).
+# Half past the stall's worst observed end, with the 5 min jitter kept.
+OnCalendar=*-*-* 02,08,14,20:45:00 UTC
 RandomizedDelaySec=5min
 Persistent=true
 Unit=manitoba-maint-audit-live.service
