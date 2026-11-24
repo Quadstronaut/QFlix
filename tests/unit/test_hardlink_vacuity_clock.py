@@ -54,12 +54,13 @@ def _run(code, tmp_path, torrents, *, max_days="7", completed_path=None):
     payload = tmp_path / "qfh-completed.json"
     payload.write_text(json.dumps(torrents), encoding="utf-8")
 
-    # The script reads a fixed /tmp path; rewrite it to the fixture's file so the
-    # test never depends on (or pollutes) a real /tmp.
-    body = code.replace('"/tmp/qfh-completed.json"',
-                        json.dumps(str(completed_path or payload)))
+    # The script reads the payload path from QFH_TFILE (QFLX-126: it used to be
+    # a fixed, world-readable /tmp name that this test patched by string).
+    body = code
+    assert 'os.environ["QFH_TFILE"]' in body, "payload path no longer comes from QFH_TFILE"
 
     env = dict(os.environ)
+    env["QFH_TFILE"] = str(completed_path or payload)
     env["HOME"] = str(tmp_path)
     env["USERPROFILE"] = str(tmp_path)          # expanduser on Windows
     env["MAX_VACUOUS_DAYS"] = max_days

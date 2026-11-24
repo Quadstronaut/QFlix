@@ -37,32 +37,44 @@ MIN_QUEUE=${QFLIX_CANARY_QBIT_STALL_MIN_QUEUE:-5}
 STALL_THRESHOLD_SEC=${QFLIX_CANARY_QBIT_STALL_THRESHOLD_SEC:-300}
 mkdir -p "$STATE_DIR"
 
+# PRIVATE scratch dir (QFLX-126). The system temp dir on this box is one tmpfs
+# shared by ~150 tenants and the box umask is 0002, so the old fixed names
+# there (cookie jar, login body, payload) were world-readable: a LIVE
+# qBittorrent session cookie, refreshed every 15 min and never removed. Now:
+# umask 077, a mktemp dir under the 750 home, removed on every exit path.
+# Named files only in the cleanup - no recursive delete, no glob.
+umask 077
+T=$(mktemp -d "$STATE_DIR/tmp.qbit-stall.XXXXXX") \
+  || { printf "STAGE=qbit-up-fail msg=private-tmpdir-failed\n" >&2; exit 1; }
+trap "rm -f -- \"$T/cookie\" \"$T/login.txt\" \"$T/payload.json\"; rmdir -- \"$T\" 2>/dev/null" EXIT
+
 # Auth
-RC=$(curl -s -o /tmp/qbit-canary-login.txt -w "%{http_code}" -m 5 \
-  -c /tmp/qbit-canary.cookie \
+RC=$(curl -s -o "$T/login.txt" -w "%{http_code}" -m 5 \
+  -c "$T/cookie" \
   -X POST "$QB/api/v2/auth/login" \
   -H "Referer: $QB" \
   --data-urlencode "username=quadstronaut" \
   --data-urlencode "password=$(cat "$PWFILE")")
 [ "$RC" = "200" ] || { printf "STAGE=qbit-up-fail msg=login-http-%s\n" "$RC" >&2; exit 1; }
-grep -q "^Ok\.$" /tmp/qbit-canary-login.txt || { printf "STAGE=qbit-auth-fail msg=login-body-%s\n" "$(head -c 40 /tmp/qbit-canary-login.txt)" >&2; exit 1; }
+grep -q "^Ok\.$" "$T/login.txt" || { printf "STAGE=qbit-auth-fail msg=login-body-%s\n" "$(head -c 40 "$T/login.txt")" >&2; exit 1; }
 
 # Transfer info
-TINFO=$(curl -sf -m 5 -b /tmp/qbit-canary.cookie "$QB/api/v2/transfer/info")
+TINFO=$(curl -sf -m 5 -b "$T/cookie" "$QB/api/v2/transfer/info")
 [ -n "$TINFO" ] || { printf "STAGE=qbit-up-fail msg=transfer-info-empty\n" >&2; exit 1; }
 
 # State counts
-STATES_JSON=$(curl -sf -m 8 -b /tmp/qbit-canary.cookie "$QB/api/v2/torrents/info")
+STATES_JSON=$(curl -sf -m 8 -b "$T/cookie" "$QB/api/v2/torrents/info")
 [ -n "$STATES_JSON" ] || { printf "STAGE=qbit-up-fail msg=torrents-info-empty\n" >&2; exit 1; }
 
 # Initialize before the python heredoc so a parse failure leaves them set
 # (set -u would otherwise abort the script with an unbound-variable error
 # that bypasses the STAGE= label and shows up in Kuma as a bare exit-1).
 DL_SPEED=0; UP_SPEED=0; QUEUED_DL=0; DOWNLOADING=0; METADL=0
-printf "%s\n---\n%s" "$TINFO" "$STATES_JSON" > /tmp/qbit-canary-payload.json
-read DL_SPEED UP_SPEED QUEUED_DL DOWNLOADING METADL < <(python3 - <<"PY"
-import json
-data = open("/tmp/qbit-canary-payload.json").read()
+printf "%s\n---\n%s" "$TINFO" "$STATES_JSON" > "$T/payload.json" \
+  || { printf "STAGE=qbit-up-fail msg=payload-tmp-write\n" >&2; exit 1; }
+read DL_SPEED UP_SPEED QUEUED_DL DOWNLOADING METADL < <(python3 - "$T/payload.json" <<"PY"
+import json, sys
+data = open(sys.argv[1]).read()
 ti_str, tors_str = data.split("\n---\n", 1)
 t = json.loads(ti_str)
 tors = json.loads(tors_str)
@@ -71,13 +83,12 @@ dl = sum(1 for x in tors if x.get("state") == "downloading")
 md = sum(1 for x in tors if x.get("state") == "metaDL")
 print(t["dl_info_speed"], t["up_info_speed"], qd, dl, md)
 PY
-) || { rm -f /tmp/qbit-canary-payload.json; printf "STAGE=qbit-up-fail msg=torrents-json-parse\n" >&2; exit 1; }
+) || { printf "STAGE=qbit-up-fail msg=torrents-json-parse\n" >&2; exit 1; }
 # QFLX-79: without the guard above, a non-JSON or stale body made python fail,
 # "read" hit EOF, the zero-initialised counters survived, and the script took
 # the HEALTHY branch (exit 0) on a client it could not read. Same pattern as
 # sab-stall.sh. The zero init stays: it is what keeps set -u from aborting
 # before the STAGE label on a partial read.
-rm -f /tmp/qbit-canary-payload.json
 
 NOW=$(date +%s)
 STALLED=0
