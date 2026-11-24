@@ -117,7 +117,14 @@ $Script:LastDiscordStatus = 0         # HTTP status of the last Send-Discord
 #     treated - and . as word ends);
 #   - no later outcome= on the line, so the guard and the canary can never
 #     read two different verdicts off the same line.
-$Script:CompletedAuditRx = '^(\d{4}-\d{2}-\d{2}T\S+) ok findings=\d+(?: \S+)*? outcome=(heartbeat|silent|error_post|discord_post_failed)(?=\s|$)(?!.*outcome=)'
+# discord_post_failed is NOT in the set (QFLX-126). It used to be, on the
+# reasoning "the audit ran, only the post did not". Under the weekly cadence
+# that post is the only message of the week: one 429 or 15 s timeout at noon
+# settled the week, every retry logged weekly-noop, and the findings reached
+# nobody. Now an undelivered run does not settle, so the next hourly start
+# audits and posts again (worst case 12 runs on a dead webhook, ending 23:00),
+# and the box-side canary reds if the last one still failed.
+$Script:CompletedAuditRx = '^(\d{4}-\d{2}-\d{2}T\S+) ok findings=\d+(?: \S+)*? outcome=(heartbeat|silent|error_post)(?=\s|$)(?!.*outcome=)'
 
 # ---------- Noise policy: LOADED FROM GIT, NOT AUTHORED HERE ----------
 # The system prompt ASKS the models to skip known-benign classes, but a prompt is
@@ -224,6 +231,9 @@ $Script:NoiseFindingRules = @(
        rx = '(?is)\A(?!.*(?:\|\s*(?:Error|Fatal|Critical)\s*\||\[ERROR\]|ERROR\s*[-:]|Traceback \(most recent call last\)))(?!.*webhook: error delivering payload to (?!\S*/1177487639654441000/)\S).*webhook: error delivering payload to \S*/1177487639654441000/' }
     @{ id = 'arr-cloud-news-fetch-timeout'
        rx = '(?i)serversidenotificationservice\|?\s*failed to retrieve notifications' }
+    @{ id = 'arr-cloud-news-fetch-bare'
+       field = 'excerpt'
+       rx = '(?is)\A\W*(?:(?:"(?:app|level)"\s*:\s*"[a-z0-9]{1,12}"\s*,\s*){0,2}"_msg"\s*:\s*")?\W*(?:error\W+)?failed to retrieve notifications(?: from (?:the )?server)?(?:"\s*,\s*"(?:app|level)"\s*:\s*"[a-z0-9]{1,12}(?=")){0,2}\W*(?![\s\S])' }
     @{ id = 'arr-discord-notify-post-failure'
        rx = '(?i)(discordproxy\|\s*unable to post payload|unable to post payload\s+nzbdrone\.core\.notifications\.discord|unable to send on[a-z]+ notification to:\s*discord)' }
     @{ id = 'bazarr-subsync-single-file'
@@ -1382,6 +1392,8 @@ cut_db = cut.strftime("%Y-%m-%d %H:%M:%S")
 kfile = collections.Counter()
 other = collections.Counter()
 kdb = collections.Counter()
+routine = 0
+down_now = []
 partial = []
 file_ok = False
 if os.path.exists(ev_path):
@@ -1398,6 +1410,12 @@ if os.path.exists(ev_path):
                 if r.get("kind") == "kuma":
                     if r.get("state") != "up":
                         kfile[name] += 1
+                elif str(r.get("state", "")).lower() in ("info", "debug", "ok", "success"):
+                    # QFLX-126: routine success/info notices ("N deleted",
+                    # "window opened") are not events. They took the top slots
+                    # of the 2026-11-23 line and pushed real names behind
+                    # "+24 more". Counted apart, shown as one number.
+                    routine += 1
                 else:
                     other[name] += 1
         file_ok = True
@@ -1418,10 +1436,25 @@ try:
             " AND m.id NOT IN (SELECT mn.monitor_id FROM monitor_notification mn"
             " JOIN notification n ON n.id = mn.notification_id WHERE n.name = ?)"
             " GROUP BY m.name", (cut_db, DISCORD)).fetchall()
+        # QFLX-126: the count above is DOWN *edges* in the last 7 days. A
+        # monitor that went red 8+ days ago and stayed red has no edge in the
+        # window and used to read "0 ... Clean". This is the STATE read: every
+        # active non-Discord monitor whose LATEST beat is DOWN, with the time
+        # of the edge that took it down. No time window, on purpose.
+        drows = con.execute(
+            "SELECT m.name, (SELECT MAX(h2.time) FROM heartbeat h2 WHERE h2.monitor_id = m.id"
+            " AND h2.important = 1 AND h2.status = 0) FROM monitor m"
+            " WHERE m.active = 1 AND (SELECT h.status FROM heartbeat h WHERE h.monitor_id = m.id"
+            " ORDER BY h.time DESC LIMIT 1) = 0"
+            " AND m.id NOT IN (SELECT mn.monitor_id FROM monitor_notification mn"
+            " JOIN notification n ON n.id = mn.notification_id WHERE n.name = ?)"
+            " ORDER BY m.name", (DISCORD,)).fetchall()
     finally:
         con.close()
     for name, cnt in rows:
         kdb[str(name)[:60]] += int(cnt)
+    for name, since in drows:
+        down_now.append({"name": str(name)[:60], "since": str(since or "")[:16]})
     kuma_ok = True
 except Exception:
     partial.append("kuma.db unreadable")
@@ -1436,6 +1469,7 @@ for name, cnt in other.items():
 names = sorted(total.items(), key=lambda kv: (-kv[1], kv[0]))
 print(json.dumps({"ok": True, "n": sum(total.values()),
                   "names": [{"name": k, "count": v} for k, v in names],
+                  "routine": routine, "down_now": down_now,
                   "partial": ", ".join(partial)}))
 PYEOF
 )
@@ -2020,6 +2054,8 @@ function New-DiscordWeeklyPayload {
     )
     $n = @($Groups).Count
     $state = if ($Note) { $Note } elseif ($n -gt 0) { "$n finding$(if ($n -ne 1) { 's' })" } else { 'clean' }
+    $dn = @(Get-RollupDownNow -Rollup $Rollup).Count
+    if (-not $Note -and $n -eq 0 -and $dn -gt 0) { $state = "$dn monitor$(if ($dn -ne 1) { 's' }) down" }
     $ref = $Now.ToUniversalTime()
     if ($FetchedAt) {
         $p = [datetimeoffset]::MinValue
@@ -2033,9 +2069,13 @@ function New-DiscordWeeklyPayload {
     )
     if ($PreviousAudit) { $lines += "**Previous audit:** $PreviousAudit" }
     $lines += (Format-NotPagedLine -Rollup $Rollup)
+    $downLine = Format-CurrentlyDownLine -Rollup $Rollup
+    if ($downLine) { $lines += $downLine }
     $lines += ''
     if ($n -eq 0) {
         $verdict = 'Clean: no finding survived the noise rules and the 2-model consensus floor.'
+        # Never "Clean" beside a red monitor (QFLX-126).
+        if ($dn -gt 0) { $verdict = "Not clean: $dn monitor(s) are DOWN right now (listed above). No log finding survived the noise rules and the 2-model consensus floor." }
         if ($Note) { $verdict = '_No findings could be graded this week._' }
         $lines += $verdict
     } else {
@@ -2085,8 +2125,39 @@ function Get-WeeklyEventsRollup {
         })
         $partial = ''
         if ($w.PSObject.Properties.Name -contains 'partial') { $partial = [string]$w.partial }
-        return [pscustomobject]@{ available = $true; n = [int]$w.n; names = $names; partial = $partial }
+        # QFLX-126. Both fields are absent from an older heredoc: read as 0 / none.
+        $routine = 0
+        if ($w.PSObject.Properties.Name -contains 'routine') { $routine = [int]$w.routine }
+        $down = @()
+        if ($w.PSObject.Properties.Name -contains 'down_now') {
+            $down = @(foreach ($e in @($w.down_now)) {
+                if ($null -eq $e) { continue }
+                [pscustomobject]@{ name = [string]$e.name; since = [string]$e.since }
+            })
+        }
+        return [pscustomobject]@{ available = $true; n = [int]$w.n; names = $names; partial = $partial; routine = $routine; down_now = $down }
     } catch { return $none }
+}
+
+function Get-RollupDownNow {
+    # The non-paging monitors that are DOWN right now, or @(). Pure.
+    param($Rollup)
+    if ($null -eq $Rollup -or -not $Rollup.available) { return @() }
+    if (-not ($Rollup.PSObject.Properties.Name -contains 'down_now')) { return @() }
+    return @($Rollup.down_now | Where-Object { $null -ne $_ })
+}
+
+function Format-CurrentlyDownLine {
+    # "Currently DOWN (not paged): name (since <UTC>)" or '' when nothing is
+    # red. Deterministic: it does not depend on any model noticing (QFLX-126).
+    param($Rollup, [int]$MaxNames = 12)
+    $all = @(Get-RollupDownNow -Rollup $Rollup)
+    if ($all.Count -eq 0) { return '' }
+    $shown = @($all | Select-Object -First $MaxNames | ForEach-Object {
+        if ($_.since) { "$($_.name) (since $($_.since) UTC)" } else { "$($_.name)" }
+    })
+    $more = if ($all.Count -gt $MaxNames) { ", +$($all.Count - $MaxNames) more" } else { '' }
+    return "**Currently DOWN (not paged):** $($all.Count) - $($shown -join ', ')$more"
 }
 
 function Format-NotPagedLine {
@@ -2099,11 +2170,14 @@ function Format-NotPagedLine {
     # mistaken for a quiet week (e.g. "kuma.db unreadable").
     $part = ''
     if (($Rollup.PSObject.Properties.Name -contains 'partial') -and $Rollup.partial) { $part = " (partial: $($Rollup.partial))" }
-    if ($Rollup.n -le 0) { return "**Not paged this week:** 0$part" }
+    # Routine info-level notices are one number, never names (QFLX-126).
+    $rt = ''
+    if (($Rollup.PSObject.Properties.Name -contains 'routine') -and [int]$Rollup.routine -gt 0) { $rt = " (plus $([int]$Rollup.routine) routine info notices)" }
+    if ($Rollup.n -le 0) { return "**Not paged this week:** 0$rt$part" }
     $all = @($Rollup.names)
     $shown = @($all | Select-Object -First $MaxNames | ForEach-Object { "$($_.name) ($($_.count))" })
     $more = if ($all.Count -gt $MaxNames) { ", +$($all.Count - $MaxNames) more" } else { '' }
-    return "**Not paged this week:** $($Rollup.n) - $($shown -join ', ')$more$part"
+    return "**Not paged this week:** $($Rollup.n) - $($shown -join ', ')$more$rt$part"
 }
 
 function Get-PreviousAuditStamp {
@@ -2456,9 +2530,10 @@ function Get-WeeklyAnchor {
 function Test-WeeklyAuditDone {
     # Returns the audit line that already settled this week, or '' if none.
     # "Settled" = a COMPLETED audit stamped at/after the weekly anchor: an
-    # `ok findings=` line whose outcome graded something (heartbeat, silent,
-    # error_post, or discord_post_failed - the audit ran, only the post did
-    # not). NOT settled, so the next hourly retry runs: any `fail reason=`, any
+    # `ok findings=` line whose outcome graded something AND was delivered
+    # (heartbeat, silent, error_post). NOT settled, so the next hourly retry
+    # runs: discord_post_failed (the week's only message reached nobody,
+    # QFLX-126), any `fail reason=`, any
     # SKIPPED, quorum_degraded (one model graded nothing) and dryrun_* (a dev
     # run is not a production audit) - the same vacuous family the box-side
     # rea-liveness canary refuses to count as a verdict. Pure over $Lines.
