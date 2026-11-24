@@ -59,7 +59,8 @@ def _kuma_db(path: Path, beats) -> Path:
     'Seerr' carry the Discord channel (member-facing); the rest do not."""
     con = sqlite3.connect(path)
     con.executescript("""
-        CREATE TABLE monitor (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE monitor (id INTEGER PRIMARY KEY, name TEXT,
+                              active INTEGER DEFAULT 1);
         CREATE TABLE heartbeat (id INTEGER PRIMARY KEY, monitor_id INTEGER,
                                 status INTEGER, important INTEGER, time TEXT, msg TEXT);
         CREATE TABLE notification (id INTEGER PRIMARY KEY, name TEXT);
@@ -72,7 +73,7 @@ def _kuma_db(path: Path, beats) -> Path:
     for name, *_ in beats:
         if name not in ids:
             ids[name] = len(ids) + 1
-            con.execute("INSERT INTO monitor VALUES (?, ?)", (ids[name], name))
+            con.execute("INSERT INTO monitor (id, name) VALUES (?, ?)", (ids[name], name))
             con.execute("INSERT INTO monitor_notification (monitor_id, notification_id) "
                         "VALUES (?, 2)", (ids[name],))
             if name in ("Plex", "Seerr"):
@@ -110,9 +111,10 @@ def test_jsonl_alone_still_counts_and_names_the_missing_kuma_db(tmp_path):
              msg="SECRET-MSG-TEXT from a janitor"),
     ])
     r = _run(tmp_path, f, tmp_path / "no-kuma.db")
-    assert r["ok"] is True and r["n"] == 2
+    # "info" notify is routine by design (QFLX-126): counted apart, not an event.
+    assert r["ok"] is True and r["n"] == 1 and r["routine"] == 1
     assert r["partial"] == "kuma.db unreadable"
-    assert {e["name"] for e in r["names"]} == {"qflix-reaper.py", "Canary Quota"}
+    assert {e["name"] for e in r["names"]} == {"qflix-reaper.py"}
     assert "SECRET-MSG-TEXT" not in json.dumps(r), "msg must never leave the box"
 
 

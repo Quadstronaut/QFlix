@@ -733,8 +733,9 @@ def plan_for_share(
     #
     # Two exceptions stay frozen. Inside the deadline (amnesty, new arrival)
     # nothing moves. And an EVER-entitled account going never-seen is the sync
-    # projection dying, not a lapse -- payer_oracle.judge() row 3 pages it and
-    # the gate must hold still. Floor writes here count toward the blast-
+    # projection dying, not a lapse -- payer_oracle.judge() pages it (row 2a
+    # while the share still holds access, even when other payers read
+    # entitled; row 3 when nobody does) and the gate must hold still. Floor writes here count toward the blast-
     # radius tripwire (is_reduction), so a dead projection that turns everyone
     # into a miss is refused, not obeyed.
     if answer.never_seen:
@@ -852,6 +853,24 @@ def household_ever_entitled(hh: "MEM.Household", state: "ST.AccessState") -> boo
     return False
 
 
+def household_already_reduced(hh: "MEM.Household", state: "ST.AccessState") -> bool:
+    """True when every ever-entitled Plex account in this household was last
+    MOVED TO THE FLOOR by the gate (record_action() stores the applied plan
+    state, so last_action == S_EXPIRED). A never-seen freeze on such a
+    household holds only the floor. False when there is no ever-entitled
+    account, or any of them was last granted or never acted on: that share may
+    still hold full access (payer_oracle row 2a, QFLX-126)."""
+    seen = False
+    for email in hh.accounts:
+        acct = state.accounts.get(email.lower())
+        if acct is None or not acct.ever_entitled:
+            continue
+        seen = True
+        if acct.last_action != S_EXPIRED:
+            return False
+    return seen
+
+
 def build_declared_payers(
     roster: "MEM.Roster", state: "ST.AccessState",
     declared_at: Dict[str, dt.datetime],
@@ -871,6 +890,7 @@ def build_declared_payers(
             ever_entitled=household_ever_entitled(hh, state),
             currently_yes=bool(answer and answer.grants),
             currently_never_seen=bool(answer and answer.never_seen),
+            already_reduced=household_already_reduced(hh, state),
         ))
     return out
 

@@ -174,25 +174,39 @@ MAX_VACUOUS_DAYS=${QFLIX_CANARY_HARDLINK_MAX_VACUOUS_DAYS:-60}
 # not refreshed within this many days are pruned — see the ledger code below.
 OBSERVATION_TTL_DAYS=${QFLIX_CANARY_HARDLINK_OBSERVATION_TTL_DAYS:-60}
 
+# PRIVATE scratch dir (QFLX-126), same reason and same shape as
+# qbit-stall.sh: the system temp dir is shared by ~150 tenants under umask
+# 0002, and the old fixed names there (cookie jar, login body, completed
+# list) left a live qBittorrent session cookie and the completed-torrent list
+# world-readable, refreshed every 30 min and never removed.
+umask 077
+mkdir -p "$HOME/.opt/maint"
+T=$(mktemp -d "$HOME/.opt/maint/tmp.hardlink-integrity.XXXXXX") \
+  || { printf "STAGE=qbit-up-fail msg=private-tmpdir-failed\n" >&2; exit 1; }
+trap "rm -f -- \"$T/cookie\" \"$T/login.txt\" \"$T/completed.json\"; rmdir -- \"$T\" 2>/dev/null" EXIT
+
 # Auth — qBit WebUI form-login, same pattern as qbit-stall.sh. Referer
 # header is mandatory on Ultra.cc-flavored qBit or it returns 403.
-RC=$(curl -s -o /tmp/qfh-login.txt -w "%{http_code}" -m 8 \
-  -c /tmp/qfh.cookie \
+RC=$(curl -s -o "$T/login.txt" -w "%{http_code}" -m 8 \
+  -c "$T/cookie" \
   -X POST "$QB/api/v2/auth/login" \
   -H "Referer: $QB" \
   --data-urlencode "username=$QBIT_USER" \
   --data-urlencode "password=$(cat "$PWFILE")")
 [ "$RC" = "200" ] || { printf "STAGE=qbit-up-fail msg=login-http-%s\n" "$RC" >&2; exit 1; }
-grep -q "^Ok\.$" /tmp/qfh-login.txt || { printf "STAGE=qbit-auth-fail msg=login-body-%s\n" "$(head -c 40 /tmp/qfh-login.txt)" >&2; exit 1; }
+grep -q "^Ok\.$" "$T/login.txt" || { printf "STAGE=qbit-auth-fail msg=login-body-%s\n" "$(head -c 40 "$T/login.txt")" >&2; exit 1; }
 
 # Fetch every completed-state torrent. The "completed" filter covers
 # uploading / stalledUP / queuedUP / pausedUP / forcedUP / checkingUP —
 # anything that finished downloading and still has data on disk.
-TFILE=/tmp/qfh-completed.json
-curl -sf -m 12 -b /tmp/qfh.cookie "$QB/api/v2/torrents/info?filter=completed" > "$TFILE"
+TFILE="$T/completed.json"
+curl -sf -m 12 -b "$T/cookie" "$QB/api/v2/torrents/info?filter=completed" > "$TFILE"
 [ -s "$TFILE" ] || { printf "STAGE=qbit-up-fail msg=torrents-info-empty\n" >&2; exit 1; }
 
-export MAX_DETACHED MAX_DETACHED_PCT MIN_SAMPLE MAX_VACUOUS_DAYS OBSERVATION_TTL_DAYS
+# The python below reads the payload path from the environment: the heredoc
+# is quoted, so a shell variable cannot reach it any other way.
+QFH_TFILE="$TFILE"
+export MAX_DETACHED MAX_DETACHED_PCT MIN_SAMPLE MAX_VACUOUS_DAYS OBSERVATION_TTL_DAYS QFH_TFILE
 python3 <<"PYEND"
 import json, os, sys, time
 
@@ -273,7 +287,7 @@ def _vacuous_exit(reason, detail):
     sys.exit(0)
 
 
-with open("/tmp/qfh-completed.json") as f:
+with open(os.environ["QFH_TFILE"]) as f:
     torrents = json.load(f)
 
 # QFLX-89: a torrent whose EVERY file was skipped is "completed" to qBit at

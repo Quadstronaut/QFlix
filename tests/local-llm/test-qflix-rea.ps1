@@ -1621,6 +1621,32 @@ Test-Case 'Test-IsNoiseFinding suppresses the 2026-08-25 seven-field page' {
     }
     Assert-Equal 'arr-cloud-news-fetch-timeout' (Test-IsNoiseFinding $cloudNews) 'cloud-news poll timeout suppressed'
 
+    # QFLX-126 (2026-11-23 weekly page): the log-store source strips the logger
+    # out of _msg, so the logger-anchored rule above cannot fire. The sibling
+    # 'arr-cloud-news-fetch-bare' claims the excerpt ONLY when it is that one
+    # message and nothing else.
+    foreach ($exc in @(
+        'Failed to retrieve notifications',
+        '[error] Failed to retrieve notifications from server',
+        '{"app":"radarr","level":"ERROR","_msg":"Failed to retrieve notifications"}',
+        '{"_msg":"Failed to retrieve notifications","app":"prowlarr","level":"ERROR"}'
+    )) {
+        $bare = @{ signature = 'radarr:failed-to-retrieve-notifications'
+                   summary   = 'Failed to retrieve notifications from server'
+                   excerpt   = $exc }
+        Assert-Equal 'arr-cloud-news-fetch-bare' (Test-IsNoiseFinding $bare) "bare cloud-news shape suppressed: $exc"
+    }
+    foreach ($exc in @(
+        "Failed to retrieve notifications`n2026-11-23 17:40:00.0|Error|DiskSpaceService|Unknown system error -122: Disk quota exceeded",
+        'Failed to retrieve notifications for user 12 from Discord: 401 Unauthorized',
+        '{"app":"radarr","level":"ERROR","_msg":"Failed to retrieve notifications"} {"app":"radarr","level":"ERROR","_msg":"Disk quota exceeded"}'
+    )) {
+        $bundled = @{ signature = 'radarr:failed-to-retrieve-notifications'
+                      summary   = 'Failed to retrieve notifications from server'
+                      excerpt   = $exc }
+        Assert-Equal $null (Test-IsNoiseFinding $bundled) "bare cloud-news rule declines a bundled/other excerpt: $exc"
+    }
+
     $discordFull = @{
         signature = 'sonarr:discord-proxy-post-failure'
         summary   = 'DiscordProxy unable to post payload'
@@ -2529,10 +2555,18 @@ Test-Case 'Test-WeeklyAuditDone settles only on a completed audit since the anch
     $now = [datetime]'2026-11-16T15:00:00'
     $off = ([datetimeoffset]$now).ToString('zzz')
     $at  = { param($t) "2026-11-16T${t}${off}" }
-    foreach ($o in 'heartbeat','silent','error_post','discord_post_failed') {
+    foreach ($o in 'heartbeat','silent','error_post') {
         $l = "$(& $at '13:05:00') ok findings=0 models=3/3 duration=500s outcome=$o"
         Assert-Equal $l (Test-WeeklyAuditDone -Lines @($l) -Now $now) "outcome=$o settles the week"
     }
+    # QFLX-126: an audit whose Discord post failed does NOT settle the week,
+    # so the next hourly retry audits and posts again - including at 23:00.
+    $pf = "$(& $at '12:08:11') ok findings=2 models=3/3 duration=431s outcome=discord_post_failed discord_status=429"
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @($pf) -Now $now) 'a failed post leaves the week open for the retry'
+    Assert-Equal '' (Test-WeeklyAuditDone -Lines @($pf) -Now ([datetime]'2026-11-16T23:00:05')) 'still open at the final attempt'
+    $ok2 = "$(& $at '13:09:00') ok findings=2 models=3/3 duration=431s outcome=error_post discord_status=204"
+    Assert-Equal $ok2 (Test-WeeklyAuditDone -Lines @($pf, $ok2) -Now $now) 'the retry that delivers settles it'
+    Assert-Equal '' (Get-PreviousAuditStamp -Lines @($pf) -Before ([datetime]'2026-11-23T13:00:00')) 'an undelivered run is not a previous audit'
     foreach ($b in 'ok findings=0 models=1/3 duration=500s outcome=quorum_degraded',
                    'ok findings=0 models=3/3 duration=500s outcome=dryrun_heartbeat',
                    'fail reason=all_models_noop models=3',
@@ -2680,6 +2714,47 @@ Test-Case 'weekly roll-up: fail-open reader and the "Not paged this week" line' 
     Assert-True ($p.embeds[0].description -match 'Not paged this week:\*\* 5 - Canary Tdarr Scanner') 'weekly message carries the roll-up line'
     $q = New-DiscordWeeklyPayload -OperatorId '1' -OkModels 3 -ModelCount 3 -DurationSec 1 -Now ([datetime]'2026-11-16T12:20:00')
     Assert-True ($q.embeds[0].description -match 'Not paged this week:\*\* unknown') 'no roll-up still posts, saying unknown'
+}
+
+# QFLX-126: the roll-up counted DOWN *edges* in the last 7 days, so a
+# non-paging monitor that went red 10 days ago and stayed red read
+# "Not paged this week: 0 ... Clean". down_now is the STATE, read from the same
+# kuma.db connection, and it is rendered without any model being involved.
+Test-Case 'weekly summary names monitors that are DOWN right now and never says Clean beside them' {
+    function New-Blob($we) { ([ordered]@{ fetched_at = '2026-11-16T19:05:00Z'; host = 'h'; sources = @{}; weekly_events = $we } | ConvertTo-Json -Compress) }
+    function B64($s) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s)) }
+    $now = [datetime]'2026-11-16T12:20:00'
+
+    # The exact failure: zero edges in the window, one monitor still red.
+    $r = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 0, "names": [], "routine": 0, "down_now": [{"name": "Canary SAB Stall", "since": "2026-11-06 07:33"}], "partial": ""}'))
+    Assert-Equal '**Not paged this week:** 0' (Format-NotPagedLine -Rollup $r) 'edge count is honestly 0'
+    Assert-Equal '**Currently DOWN (not paged):** 1 - Canary SAB Stall (since 2026-11-06 07:33 UTC)' (Format-CurrentlyDownLine -Rollup $r) 'state line names it with its since-time'
+    $p = New-DiscordWeeklyPayload -OperatorId '1' -OkModels 3 -ModelCount 3 -DurationSec 1 -Rollup $r -Now $now
+    Assert-Equal '[WARN] QFlix weekly audit - 1 monitor down' $p.embeds[0].title 'title is not "clean"'
+    Assert-True  ($p.embeds[0].description.Contains('Currently DOWN (not paged):** 1 - Canary SAB Stall')) 'line is in the message'
+    Assert-False ($p.embeds[0].description -match '(?m)^Clean:') 'never Clean beside a red monitor'
+    Assert-True  ($p.embeds[0].description -match 'Not clean: 1 monitor\(s\) are DOWN right now') 'says so plainly'
+
+    # Nothing red: no extra line, still Clean.
+    $z = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 0, "names": [], "routine": 0, "down_now": [], "partial": ""}'))
+    Assert-Equal '' (Format-CurrentlyDownLine -Rollup $z) 'no line when nothing is down'
+    $pz = New-DiscordWeeklyPayload -OperatorId '1' -OkModels 3 -ModelCount 3 -DurationSec 1 -Rollup $z -Now $now
+    Assert-True ($pz.embeds[0].description -match '(?m)^Clean:') 'clean week still says Clean'
+    Assert-Equal '[WARN] QFlix weekly audit - clean' $pz.embeds[0].title 'clean title unchanged'
+
+    # An older box heredoc without the fields: reads as none, never throws.
+    $old = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 1, "names": [{"name": "x", "count": 1}]}'))
+    Assert-Equal 0 @(Get-RollupDownNow -Rollup $old).Count 'field absent = none down'
+    Assert-Equal '' (Format-CurrentlyDownLine -Rollup (Get-WeeklyEventsRollup -Json 'x')) 'unreadable roll-up adds no line'
+
+    # Routine info notices are one number, not twelve names.
+    $n = Get-WeeklyEventsRollup -Json (New-Blob (B64 '{"ok": true, "n": 2, "names": [{"name": "quality_fallback.py", "count": 2}], "routine": 21, "down_now": []}'))
+    Assert-Equal '**Not paged this week:** 2 - quality_fallback.py (2) (plus 21 routine info notices)' (Format-NotPagedLine -Rollup $n) 'info-level notices are counted apart'
+
+    $h = Get-RemoteHeredoc
+    Assert-True ($h.Contains('ORDER BY h.time DESC LIMIT 1) = 0')) 'state read: LATEST beat is DOWN, no time window'
+    Assert-True ($h.Contains('"routine": routine, "down_now": down_now')) 'both fields shipped'
+    Assert-True ($h.Contains('in ("info", "debug", "ok", "success")')) 'info-level notify records are not named events'
 }
 
 Test-Case 'heredoc ships weekly_events OUTSIDE sources, names only, last 7 days, recoveries excluded' {

@@ -176,6 +176,8 @@
 #   rea-not-auditing        P3: last recorded run failed (`fail reason=<x>`)
 #   rea-no-verdict-streak   P5: REA has been running without ever producing a
 #                           verdict for longer than MAX_VACUOUS_H
+#   rea-summary-undelivered P6: the audit ran but its weekly Discord summary
+#                           was never delivered and no retry repaired it
 #   rea-unreached           P1: no REA contact within MAX_SILENCE_H
 #   rea-verdict-stale       P2: REA still reaches the box but its verdict froze
 #   rea-heartbeat-absent    P4: contract file does not exist (writer not wired)
@@ -202,6 +204,7 @@
 #   QFLIX_CANARY_REA_REASON_TABLE   path to rea-noise-classes.yaml (label only)
 #   QFLIX_CANARY_REA_MAX_VACUOUS_H  P5 threshold in hours. default 192 (8 d)
 #   QFLIX_CANARY_REA_VACUITY        P5 streak file. default beside the heartbeat
+#   QFLIX_CANARY_REA_MAX_UNDELIVERED_H  P6 threshold in hours. default 12
 #
 # EXECUTION MODEL — runs LOCALLY on the box, no sshm hop. The subject is a file
 # on the box's own filesystem; `sshm` there is just `bash -c` (scripts/lib/ssh.sh)
@@ -246,6 +249,9 @@ NOW="${QFLIX_CANARY_REA_NOW:-$(date -u +%s)}"
 # Sits BESIDE the heartbeat so the whole contract is one directory.
 MAX_VACUOUS_H="${QFLIX_CANARY_REA_MAX_VACUOUS_H:-192}"
 VACUITY="${QFLIX_CANARY_REA_VACUITY:-$(dirname "$HB")/vacuity}"
+# QFLX-126. How long an `outcome=discord_post_failed` verdict may stand before
+# it is red. See the arm that reads it.
+MAX_UNDELIVERED_H="${QFLIX_CANARY_REA_MAX_UNDELIVERED_H:-12}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -469,10 +475,23 @@ PY
       heartbeat|silent|error_post)
         vac_clear ;;                           # a real, completed audit
       discord_post_failed|deadman_post_failed)
-        # The AUDIT completed; only the notification did not. That is a real
-        # verdict, so it clears the streak.
+        # The AUDIT completed; only the notification did not. QFLX-126: since
+        # REA went weekly that post is the ONLY message of the week, so an
+        # undelivered one is not "degraded but fine". The workstation no
+        # longer treats this outcome as settling the week: every hourly retry
+        # up to the 23:00 final attempt re-audits and re-posts, and each one
+        # rewrites this line with a fresh stamp. So:
+        #   younger than MAX_UNDELIVERED_H  a retry is still coming -> WARN,
+        #                                   and the P5 streak is NOT cleared;
+        #   older                           nothing repaired it; the week's
+        #                                   summary reached nobody -> RED.
+        # 12h = the whole Monday retry tail (12:00..23:00 local + one run).
         skip "notify-failed:$O"
-        vac_clear
+        if [ "$VERDICT_H" -ge "$MAX_UNDELIVERED_H" ]; then
+          die rea-summary-undelivered \
+            "weekly-summary-never-delivered:outcome=$O:verdict-age=${VERDICT_H}h>=cap=${MAX_UNDELIVERED_H}h:check-the-discord-webhook-then-rerun-rea-once" 1
+        fi
+        vac_check "outcome=$O"
         WARN="-WARN" ;;
       dryrun_heartbeat|dryrun_error|dryrun_deadman)
         # A dev run posts nothing and proves nothing about production. 9 of

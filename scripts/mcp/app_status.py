@@ -43,6 +43,17 @@ from lib.secrets import read_secret     # noqa: E402
 
 VERSION = 2
 ALL_SECTIONS = ("quota", "kuma", "streams", "top5", "downloads")
+# `top5` is PER-MEMBER BY NAME (Tautulli friendly names with hours and plays,
+# Seerr display names with request counts). The repo rule is "no per-member
+# activity in any surface", so it is OPT-IN: collected only when a caller
+# names it in --sections. It used to be part of the no-argument default, and
+# the no-argument run is exactly what the legacy Heartbeat phone key's forced
+# command executes (it cannot pass arguments), so whoever held that old key
+# received the rankings. dispatch.py already pins its own section list
+# without top5; this closes the bare run too (QFLX-126). The key itself is
+# the operator's to remove.
+OPT_IN_SECTIONS = ("top5",)
+DEFAULT_SECTIONS = tuple(s for s in ALL_SECTIONS if s not in OPT_IN_SECTIONS)
 
 # --- Config / paths (env-overridable, mirrors collect.py / qflix-collect.py) -
 KUMA_DB = Path(os.environ.get(
@@ -891,13 +902,14 @@ def _collect_maint(now: Optional[dt.datetime] = None) -> dict:
 
 def run(sections: Optional[list] = None) -> dict:
     """Fetch requested sections concurrently, isolate per-section failures,
-    derive alerts, and return the contract dict. sections=None -> all 5.
+    derive alerts, and return the contract dict. sections=None -> the
+    DEFAULT_SECTIONS (everything except the opt-in, per-member `top5`).
     A restricted `sections` list still returns a doc with every contract
     key present -- unrequested sections come back as an explicit
     not-fetched stub rather than being omitted."""
     started = time.time()
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-    want = set(sections) if sections else set(ALL_SECTIONS)
+    want = set(sections) if sections else set(DEFAULT_SECTIONS)
 
     jobs = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
@@ -964,7 +976,8 @@ def main() -> int:
                           "this bare)")
     ap.add_argument("--sections", default=None,
                      help="comma list to restrict collection, e.g. "
-                          "quota,kuma (default: all)")
+                          "quota,kuma (default: all except top5, which "
+                          "is per-member and must be asked for by name)")
     args = ap.parse_args()
     sections = ([s.strip() for s in args.sections.split(",") if s.strip()]
                 if args.sections else None)

@@ -94,8 +94,14 @@ class CaptureArr:
         for prefix, rows in (("/movie/", self.movies), ("/series/", self.series)):
             if path.startswith(prefix):
                 ident = path[len(prefix):]
-                if ident.isdigit() and any(r.get("id") == int(ident) for r in rows):
-                    return 200, None
+                # The ROW is returned, as a real *arr does. This fake used to
+                # answer (200, None); since QFLX-126 an unreadable movie record
+                # WITHHOLDS the movie instead of grading it on the Plex clock
+                # alone, so a body-less 200 would withhold every fixture.
+                if ident.isdigit():
+                    for r in rows:
+                        if r.get("id") == int(ident):
+                            return 200, r
                 return 404, None
         return 404, None
 
@@ -433,9 +439,9 @@ def test_manifest_contents_match_candidate_exactly(reaper, tmp_path, monkeypatch
         "title": "Manifest Movie", "year": 2000, "type": "movie",
         "library": "QFlix - Movies", "ratingKey": "77", "tmdbId": 603,
         "tvdbId": None, "arrId": 555, "sizeGB": 9.75, "addedAt": old_ts,
-        # gradeSource is "plex-leaf": CaptureArr's single-record GET answers a
-        # None body, so radarr_movie_row() finds no movieFile to corroborate
-        # with and the Plex addedAt stands alone as the graded clock.
+        # gradeSource is "plex-leaf": the fixture row carries no movieFile, so
+        # radarr_movie_row() has no dateAdded to corroborate with and the Plex
+        # addedAt stands alone as the graded clock.
         "gradedAt": old_ts, "gradeSource": "plex-leaf", "clockDisagreementSec": None,
     }]
 

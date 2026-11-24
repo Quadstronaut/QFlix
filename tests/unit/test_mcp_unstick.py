@@ -727,3 +727,123 @@ def test_resolve_queue_item_matches_sab_shaped_hash_unchanged(mock_open, tmp_pat
     assert out["status"] == "found"
     assert out["queue_id"] == 7
     assert out["title"] == "Some Episode"
+
+
+# -- QFLX-126: client categories that are not *arr slugs ---------------------
+# Three of the four *arrs use a qBittorrent category that is not their slug.
+# Their stalled torrents used to fall through to "no slug" and be deleted WITH
+# FILES straight from qBittorrent: no *arr queue delete, no blocklist, no
+# red-monitor refusal, no daily cap. An uncategorised or personal torrent was
+# deleted the same way.
+
+class _FakeQbit:
+    instances = []
+
+    def __init__(self, torrents=None):
+        self._torrents = torrents if torrents is not None else []
+        self.deleted = []
+        _FakeQbit.instances.append(self)
+
+    def login(self):
+        return True
+
+    def list_torrents(self):
+        return list(self._torrents)
+
+    def delete_torrent(self, hash_, delete_files=True):
+        self.deleted.append((hash_, delete_files))
+        return True
+
+
+def _qbit_env(tmp_path, monkeypatch, category):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    h = "ab" * 20
+    fake = _FakeQbit([{"hash": h, "category": category, "name": "Some.Release"}])
+    monkeypatch.setattr(unstick, "QbitClient", lambda: fake)
+    monkeypatch.setattr(unstick, "SabClient", lambda: _FakeSabClient(list_raises=True))
+    return h, fake, state, events
+
+
+def test_category_map_covers_the_live_download_client_categories():
+    assert unstick._slug_for_category("tv-sonarr") == "sonarr"
+    assert unstick._slug_for_category("sonarr-anime") == "sonarr2"
+    assert unstick._slug_for_category("radarr-anime") == "radarr2"
+    assert unstick._slug_for_category(" Radarr ") == "radarr"
+    for slug in unstick.ARR_VERSIONS:
+        assert unstick._slug_for_category(slug) == slug
+    assert set(unstick.CATEGORY_TO_SLUG.values()) == set(unstick.ARR_VERSIONS)
+    for none in ("", None, "manual", "books"):
+        assert unstick._slug_for_category(none) is None
+
+
+def test_auto_detect_maps_a_non_slug_category_to_its_arr(tmp_path, monkeypatch):
+    for cat, slug in (("tv-sonarr", "sonarr"), ("sonarr-anime", "sonarr2"),
+                      ("radarr-anime", "radarr2")):
+        h, fake, state, events = _qbit_env(_mk(tmp_path, cat), monkeypatch, cat)
+        assert unstick._auto_detect_slug(h) == slug
+
+
+def _mk(tmp_path, name):
+    d = tmp_path / name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def test_unmapped_category_is_refused_and_nothing_is_deleted(tmp_path, monkeypatch):
+    """The hourly caller's exact shape: --hash only, no slug."""
+    for i, cat in enumerate(("", "manual", "books")):
+        h, fake, state, events = _qbit_env(_mk(tmp_path, "c%d" % i), monkeypatch, cat)
+        res = unstick.run(hash_=h, reason="3h-zero-movement", state_file=state)
+        assert res["status"] == "refused-unknown-category", res
+        assert fake.deleted == [], "a torrent in category %r was deleted with its files" % cat
+        lines = [json.loads(l) for f in events.glob("*.jsonl")
+                 for l in f.read_text().splitlines() if l.strip()]
+        assert lines[-1]["result"] == "refused-unknown-category"
+        assert unstick._count_today() == 0, "a refusal must not use a daily-cap slot"
+
+
+def test_anime_category_goes_through_the_arr_and_is_blocklisted(tmp_path, monkeypatch):
+    """A sonarr-anime torrent now reaches Sonarr2's queue DELETE with
+    blocklist=true, instead of a bare qBittorrent delete."""
+    secrets, state, events = _setup(tmp_path)
+    (secrets / "sonarr2.key").write_text("KEY")
+    (secrets / "sonarr2.port").write_text("17003")
+    (secrets / "sonarr2.urlbase").write_text("sonarr2")
+    state.write_text(json.dumps({"apps": {"sonarr2": {"final_health": "ok", "kuma_status": "up"}}}))
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    h = "cd" * 20
+    fake = _FakeQbit([{"hash": h, "category": "sonarr-anime", "name": "Anime.Release"}])
+    monkeypatch.setattr(unstick, "QbitClient", lambda: fake)
+    with patch("lib.arr_client.urllib.request.urlopen") as mock_open:
+        mock_open.side_effect = [
+            _resp({"records": [{"id": 9, "downloadId": h.upper(), "title": "Anime.Release"}]}),
+            _resp("", status=200),
+        ]
+        res = unstick.run(hash_=h, reason="3h-zero-movement", state_file=state)
+        delete_req = mock_open.call_args_list[-1][0][0]
+    assert res["status"] == "deleted+blocklisted", res
+    assert fake.deleted == [], "the *arr path must do the removal, not a bare client delete"
+    assert "blocklist=true" in delete_req.full_url and "/queue/9" in delete_req.full_url
+    assert delete_req.get_method() == "DELETE"
+
+
+def test_unmapped_category_dry_run_also_refuses(tmp_path, monkeypatch):
+    h, fake, state, events = _qbit_env(tmp_path, monkeypatch, "manual")
+    res = unstick.run(hash_=h, reason="t", dry_run=True, state_file=state)
+    assert res["status"] == "refused-unknown-category" and fake.deleted == []
+
+
+def test_orphan_cleanup_still_runs_when_no_client_holds_the_id(tmp_path, monkeypatch):
+    secrets, state, events = _setup(tmp_path)
+    monkeypatch.setenv("MANITOBA_SECRETS", str(secrets))
+    monkeypatch.setenv("QFLIX_MCP_EVENTS", str(events))
+    import importlib; importlib.reload(unstick)
+    fake = _FakeQbit([])
+    monkeypatch.setattr(unstick, "QbitClient", lambda: fake)
+    res = unstick.run(hash_="ef" * 20, reason="t", state_file=state)
+    assert res["status"] == "already-fully-removed"

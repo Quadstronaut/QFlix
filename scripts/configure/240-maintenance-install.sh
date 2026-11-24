@@ -210,6 +210,7 @@ sshm 'mkdir -p ~/scripts/maint/lib ~/scripts/maint/systemd ~/scripts/ops ~/.opt/
     scripts/mcp/collect.py \
     scripts/mcp/missing.py \
     scripts/mcp/unstick.py \
+    scripts/mcp/app_status.py \
     scripts/mcp/lib/arr_client.py \
     scripts/mcp/lib/maint_state.py \
     scripts/mcp/lib/qbit_client.py \
@@ -492,12 +493,18 @@ mkdir -p ~/scripts/mcp/lib
 cp -f "$STG"/scripts/mcp/collect.py ~/scripts/mcp/collect.py
 cp -f "$STG"/scripts/mcp/missing.py ~/scripts/mcp/missing.py
 cp -f "$STG"/scripts/mcp/unstick.py ~/scripts/mcp/unstick.py
+# QFLX-126: app_status.py used to reach the box only through
+# 74-heartbeat-status-install.sh, so a fix to it (the per-member top5 section
+# going opt-in) never rode a normal deploy. The legacy Heartbeat key's forced
+# command runs whatever copy is here.
+cp -f "$STG"/scripts/mcp/app_status.py ~/scripts/mcp/app_status.py
 cp -f "$STG"/scripts/mcp/lib/arr_client.py ~/scripts/mcp/lib/arr_client.py
 cp -f "$STG"/scripts/mcp/lib/maint_state.py ~/scripts/mcp/lib/maint_state.py
 cp -f "$STG"/scripts/mcp/lib/qbit_client.py ~/scripts/mcp/lib/qbit_client.py
 cp -f "$STG"/scripts/mcp/lib/sab_client.py ~/scripts/mcp/lib/sab_client.py
 chmod 755 ~/scripts/mcp/logs.py ~/scripts/mcp/collect.py ~/scripts/mcp/missing.py \
-          ~/scripts/mcp/unstick.py ~/scripts/mcp/lib/arr_client.py \
+          ~/scripts/mcp/unstick.py ~/scripts/mcp/app_status.py \
+          ~/scripts/mcp/lib/arr_client.py \
           ~/scripts/mcp/lib/maint_state.py ~/scripts/mcp/lib/qbit_client.py \
           ~/scripts/mcp/lib/sab_client.py
 # QFLX-63: nightly Plex/Seerr -> Listmonk subscriber reconcile, run from cron

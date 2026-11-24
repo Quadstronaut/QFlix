@@ -47,20 +47,33 @@ STALL_THRESHOLD_SEC=${QFLIX_CANARY_SAB_STALL_THRESHOLD_SEC:-600}
 PAUSED_THRESHOLD_SEC=${QFLIX_CANARY_SAB_PAUSED_THRESHOLD_SEC:-86400}
 mkdir -p "$STATE_DIR"
 
+# PRIVATE scratch dir (QFLX-126). The old fixed queue-file name sat in the
+# system temp dir, a tmpfs shared by ~150 tenants. With fs.protected_regular=2
+# a file planted there by another user cannot be overwritten by us; the write
+# failed, there is no `set -e`, and python then parsed THEIR file: a planted
+# "kbpersec": 5000 kept this canary green on a dead queue (reproduced
+# 2026-11-24). It also published the SAB queue to every tenant. Now: umask
+# 077, a mktemp dir under the 750 home, and a failed write is fatal.
+umask 077
+T=$(mktemp -d "$STATE_DIR/tmp.sab-stall.XXXXXX") \
+  || { printf "STAGE=sab-up-fail msg=private-tmpdir-failed\n" >&2; exit 1; }
+trap "rm -f -- \"$T/queue.json\" \"$T/pp.json\"; rmdir -- \"$T\" 2>/dev/null" EXIT
+
 Q=$(curl -sf -m 8 "http://127.0.0.1:${PORT}/api?mode=queue&output=json&apikey=${KEY}")
 [ -n "$Q" ] || { printf "STAGE=sab-up-fail msg=queue-api-empty\n" >&2; exit 1; }
 
 # Payload via temp file, NOT a pipe — `python3 -` reads its SCRIPT from
 # stdin, so piping the JSON in as well hands python the heredoc as data
 # (the qbit-stall canary hit the same trap; same fix).
-printf "%s" "$Q" > /tmp/sab-canary-queue.json
+printf "%s" "$Q" > "$T/queue.json" \
+  || { printf "STAGE=sab-up-fail msg=queue-tmp-write\n" >&2; exit 1; }
 # SLOTS counts only ACTIVE work (slot status != Paused). Slot-level-paused
 # jobs are administrative (duplicate hold, operator pause) — they can sit
 # for days legitimately and must not read as a pipeline stall (the 2
 # paused slots present at rollout would have false-fired this canary).
-read KBPS SLOTS PAUSED PAUSED_SLOTS < <(python3 - <<"PY"
-import json
-q = json.load(open("/tmp/sab-canary-queue.json")).get("queue") or {}
+read KBPS SLOTS PAUSED PAUSED_SLOTS < <(python3 - "$T/queue.json" <<"PY"
+import json, sys
+q = json.load(open(sys.argv[1])).get("queue") or {}
 kbps = float(q.get("kbpersec") or 0)
 slots = q.get("slots") or []
 paused_slots = sum(1 for s in slots
@@ -69,13 +82,12 @@ print(int(kbps), len(slots) - paused_slots, 1 if q.get("paused") else 0,
       paused_slots)
 PY
 ) || { printf "STAGE=sab-up-fail msg=queue-json-parse\n" >&2; exit 1; }
-rm -f /tmp/sab-canary-queue.json
 
 # pause_on_post_processing drift leg (QFLX-33, 2026-10-11). The 2026-08-08
 # fix set it to 0 (phantom "SAB paused" while par2/unrar ran), yet the live ini
 # was found back at 1 two months later with NOTHING watching it. Config drift,
 # not a stall, so it has its own stage; any value other than 0 is red.
-PP_FILE=/tmp/sab-canary-pp.$$.json
+PP_FILE="$T/pp.json"
 curl -sf -m 8 "http://127.0.0.1:${PORT}/api?mode=get_config&section=misc&keyword=pause_on_post_processing&output=json&apikey=${KEY}" > "$PP_FILE" \
   || { rm -f "$PP_FILE"; printf "STAGE=sab-up-fail msg=config-api-fail\n" >&2; exit 1; }
 PPV=$(python3 - "$PP_FILE" <<"PY"

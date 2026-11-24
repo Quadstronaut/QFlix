@@ -308,6 +308,36 @@ def scan_files(roots: list):
                 yield p
 
 
+class SourceChangedError(RuntimeError):
+    """The file at `path` is no longer the file this remux was made from."""
+
+
+def assert_source_unchanged(path: Path, st) -> None:
+    """Re-stat `path` and raise SourceChangedError unless it is still the
+    exact file that was stat'ed before ffmpeg started (QFLX-126).
+
+    The remux reads the file, runs ffmpeg for up to an hour, then
+    os.replace()s the result over the path. Nothing used to check that the
+    path still held the bytes that were read. In that window:
+      - the reaper deletes the episode file (its timer starts while this job
+        can still be running): the replace recreated it from the OLD bytes,
+        so a reaped file came back for Sonarr to re-import;
+      - Tdarr swaps a new encode in at the same path, or an *arr upgrade
+        lands there: the replace overwrote the NEWER file with a remux of the
+        old one, and logged FIXED.
+    Both reproduced against the real fix_file on 2026-11-24. Inode, size and
+    mtime_ns together: a same-path swap is a new inode even when size and
+    mtime happen to match, and an in-place rewrite moves size or mtime."""
+    try:
+        now = path.stat()
+    except FileNotFoundError:
+        raise SourceChangedError("source vanished during remux, not recreating it: "
+                                 + str(path))
+    if (now.st_ino, now.st_size, now.st_mtime_ns) != (st.st_ino, st.st_size, st.st_mtime_ns):
+        raise SourceChangedError("source changed during remux, not overwriting it: "
+                                 + str(path))
+
+
 def fix_file(path: Path, bad_indices: list) -> None:
     """Remux `path` in place, dropping bad_indices. Raises on any failure;
     never leaves a partial temp behind."""
@@ -344,6 +374,7 @@ def fix_file(path: Path, bad_indices: list) -> None:
         expect_count = src_count - len(bad_indices)
         if not verify_fixed(ffprobe_streams(str(tmp)), expect_count):
             raise RuntimeError("post-remux verification failed")
+        assert_source_unchanged(path, st)     # the temp is removed by `finally`
         os.utime(tmp, (st.st_atime, st.st_mtime))   # keep *arr/Plex mtime view
         os.replace(tmp, path)                       # atomic; safe for readers
     finally:
@@ -384,6 +415,11 @@ def run(*, roots: list, execute: bool, max_items: int) -> dict:
                 log("FIXED " + str(p) + " (dropped stream index(es) " + str(bad) + ")")
                 if requeue_in_tdarr(str(p)):
                     requeued.append(str(p))
+            except SourceChangedError as exc:
+                # Not a failure and not a fix: someone else changed or removed
+                # the file while we worked. The next run re-evaluates it.
+                skipped.append({"file": str(p), "reason": "source changed during remux"})
+                log("SKIPPED " + str(exc))
             except Exception as exc:
                 failures.append({"file": str(p), "error": str(exc)[:200]})
                 warn("fix failed for " + str(p) + ": " + str(exc)[:200])

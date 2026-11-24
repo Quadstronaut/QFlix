@@ -143,6 +143,9 @@ OUTCOME_TABLE = [
     ("fail reason=no_models", 1, "rea-not-auditing", "no_models"),
     ("fail reason=blob_parse", 1, "rea-not-auditing", "blob_parse"),
     # -- degraded but genuinely audited: WARN, still exit 0 --------------
+    # QFLX-126: the fixture stamp is 10h old, inside the 12h Monday retry tail,
+    # so a retry may still repair it -> WARN. The red side is
+    # test_undelivered_weekly_summary_reds_once_no_retry_can_repair_it.
     ("ok findings=0 models=3/3 duration=44s outcome=discord_post_failed", 0, None, "post_failed"),
     ("ok findings=0 models=3/3 duration=44s outcome=dryrun_heartbeat", 0, None, "dryrun"),
     # quorum_degraded (2026-08-26 council): one model answered, the >=2
@@ -682,8 +685,34 @@ def test_the_streak_is_visible_long_before_it_alerts(tmp_path, tail, label):
     assert "PASS-WARN" in mid.stdout, mid.stdout
 
 
-@pytest.mark.parametrize("outcome", ["heartbeat", "silent", "error_post",
-                                     "discord_post_failed"])
+def test_undelivered_weekly_summary_reds_once_no_retry_can_repair_it(tmp_path):
+    """QFLX-126. The weekly Discord post is the only message of the week. An
+    audit whose post failed used to read PASS-WARN (Kuma UP) for ever, so a
+    revoked webhook lost every week with every dead-man green. Inside the
+    Monday retry tail it is still a WARN (the next hourly run re-posts); past
+    it, with the same line still standing, it is RED."""
+    line = ("2026-08-03T02:00:00+00:00 ok findings=2 models=3/3 duration=431s "
+            "outcome=discord_post_failed discord_status=429\n")
+    stamp = 1785722400                       # 2026-08-03T02:00:00Z
+    vac = tmp_path / "vacuity"
+    env = {"QFLIX_CANARY_REA_VACUITY": str(vac)}
+    fresh = _run(_hb(tmp_path, line), now=stamp + 11 * HOUR, extra_env=env)
+    assert fresh.returncode == 0, fresh.stderr
+    assert fresh.stdout.startswith("PASS-WARN:"), fresh.stdout
+    assert vac.exists(), "an undelivered audit must not clear the no-verdict clock"
+    late = _run(_hb(tmp_path, line), now=stamp + 12 * HOUR, extra_env=env)
+    assert late.returncode == 1, (late.stdout, late.stderr)
+    assert _stage(late) == "rea-summary-undelivered", late.stderr
+    assert "notify-failed:discord_post_failed" in late.stderr, late.stderr
+    # A delivered run afterwards is green again.
+    ok = _run(_hb(tmp_path, line.replace("discord_post_failed discord_status=429",
+                                         "error_post discord_status=204")),
+              now=stamp + 13 * HOUR, extra_env=env)
+    assert ok.returncode == 0 and ok.stdout.startswith("PASS:"), (ok.stdout, ok.stderr)
+    assert not vac.exists()
+
+
+@pytest.mark.parametrize("outcome", ["heartbeat", "silent", "error_post"])
 def test_a_real_verdict_clears_the_streak(tmp_path, outcome):
     """MUTATION PROOF for the clock: the streak must be a STREAK. One genuine
     audit in the middle resets it, so a canary that reds after a week of

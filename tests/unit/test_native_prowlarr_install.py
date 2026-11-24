@@ -479,6 +479,12 @@ def test_install_lays_out_binary_env_and_stages_units_without_enabling(box):
                  "PROWLARR__UPDATE__MECHANISM=External", "PROWLARR__UPDATE__AUTOMATICALLY=false"):
         assert line in env, line
     assert (box.envdir / "prowlarr.env").stat().st_mode & 0o077 == 0 or os.name == "nt"
+    # QFLX-126: the app gets a private temp dir, so its backup staging never
+    # lands in the box's shared temp dir.
+    tmpdir_lines = [l for l in env if l.startswith("TMPDIR=")]
+    assert tmpdir_lines == ["TMPDIR=" + _posix(box.appdir / "tmp")], tmpdir_lines
+    assert (box.appdir / "tmp").is_dir()
+    assert (box.appdir / "tmp").stat().st_mode & 0o077 == 0 or os.name == "nt"
     for name in GOLDEN:
         assert (box.appdir / "native" / name).exists()
         # NOT in the unit dir and never enabled: WantedBy=default.target would

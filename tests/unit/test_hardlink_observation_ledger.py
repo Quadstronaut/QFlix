@@ -119,9 +119,11 @@ def _run(code, tmp_path, torrents, *, min_sample="5", max_detached="2",
     payload = tmp_path / "qfh-completed.json"
     payload.write_text(json.dumps(torrents), encoding="utf-8")
 
-    body = code.replace('"/tmp/qfh-completed.json"', json.dumps(str(payload)))
+    body = code
+    assert 'os.environ["QFH_TFILE"]' in body, "payload path no longer comes from QFH_TFILE"
 
     env = dict(os.environ)
+    env["QFH_TFILE"] = str(payload)
     env["HOME"] = str(tmp_path)
     env["USERPROFILE"] = str(tmp_path)
     env["MIN_SAMPLE"] = min_sample

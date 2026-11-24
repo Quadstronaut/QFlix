@@ -701,6 +701,29 @@ def _cmd_unstick_locked(dry_run: bool, _lock_stack: "contextlib.ExitStack") -> i
     actions_total = 0
     actions_by_slug: dict[str, int] = {}
 
+    # ---- systemic import-failure gate (QFLX-126) ------------------------
+    # MODE_IMPORT judges ONE item: "completed, and the *arr could not import
+    # it for 6h" means a bad release. That stops being true the moment
+    # imports fail for a reason that has nothing to do with the releases: a
+    # root folder that moved or lost write permission (the slot migration),
+    # a full quota. Then EVERY completed download sits in importPending, and
+    # each hourly sweep deleted up to 10 good downloads from the client and
+    # blocklisted them; the *arr re-grabbed, the re-grab failed the same way,
+    # and after 3 rounds the title was unmonitored. Simulated against this
+    # file 2026-11-24 with 80 good downloads: 240 deletes in the first day,
+    # 40 titles parked by hour 48, exit 0 throughout. The cap only spread it
+    # out; "cap hit - systemic issue likely" was printed and then ignored.
+    #
+    # The gate: when one *arr has this many DISTINCT downloads past the
+    # import grace at once, that is not N bad releases, it is one broken
+    # import path. No MODE_IMPORT delete, blocklist or park for that *arr
+    # this sweep; the items stay tracked and the operator is told. Poison,
+    # no-peers and metadata modes are unaffected: they do not depend on the
+    # import path. Counted per downloadId, so one stuck season pack (many
+    # queue rows, one download) is one, not twenty. 0 disables the gate.
+    systemic_min = int(os.environ.get("ARR_IMPORT_SYSTEMIC_MIN", str(max_per_slug)))
+    held_slugs: list[tuple[str, int]] = []
+
     # ---- re-grab loop guard: load the memory --------------------------
     # Every failure here lands on the same branch: no ledger, no guard, and a
     # sweep that behaves exactly as it did before the guard existed (INV-6).
@@ -803,6 +826,24 @@ def _cmd_unstick_locked(dry_run: bool, _lock_stack: "contextlib.ExitStack") -> i
                 return float("inf")
         records = sorted(records, key=_first_seen)
 
+        import_hold = False
+        if systemic_min > 0:
+            import_cutoff = now - (THRESHOLD_HOURS_BY_MODE[MODE_IMPORT] * 3600)
+            aged_imports: set[str] = set()
+            for rec in records:
+                if _classify_stuck(rec, by_downloadId) != MODE_IMPORT:
+                    continue
+                if _first_seen(rec) < import_cutoff:
+                    aged_imports.add((rec.get("downloadId") or "").upper()
+                                     or "id:" + str(rec.get("id")))
+            if len(aged_imports) >= systemic_min:
+                import_hold = True
+                held_slugs.append((slug, len(aged_imports)))
+                print(f"  [import-hold] {slug}: {len(aged_imports)} completed download(s) "
+                      f"past the import grace at once (>= {systemic_min}) — the import "
+                      f"path looks broken, not the releases. No import-mode delete, "
+                      f"blocklist or park for {slug} this sweep.")
+
         for item in records:
             sk = _state_key(slug, item.get("downloadId", ""))
             prev = state.get(sk, {}) or {}
@@ -851,6 +892,13 @@ def _cmd_unstick_locked(dry_run: bool, _lock_stack: "contextlib.ExitStack") -> i
             mode_cutoff = now - (THRESHOLD_HOURS_BY_MODE[mode] * 3600)
             if not (first_sight and mode == MODE_POISON) and first_seen >= mode_cutoff:
                 # Still stuck but hasn't aged out under THIS mode's grace — carry forward.
+                prev["sizeleft_history"] = item["_sizeleft_history"]
+                prev["mode"] = mode
+                new_state[sk] = prev
+                continue
+
+            if import_hold and mode == MODE_IMPORT:
+                # Held by the systemic gate above: keep tracking, touch nothing.
                 prev["sizeleft_history"] = item["_sizeleft_history"]
                 prev["mode"] = mode
                 new_state[sk] = prev
@@ -966,8 +1014,18 @@ def _cmd_unstick_locked(dry_run: bool, _lock_stack: "contextlib.ExitStack") -> i
             f"still_parked={still_parked} unkeyable={unkeyable} "
             f"ledger_keys={len(ledger)}"
         )
-    if actions or cap_hit:
-        body = "arr-unstick swept:\n" + "\n".join(actions) if actions else "arr-unstick: cap hit with zero successful actions"
+    if actions or cap_hit or held_slugs:
+        if actions:
+            body = "arr-unstick swept:\n" + "\n".join(actions)
+        elif cap_hit:
+            body = "arr-unstick: cap hit with zero successful actions"
+        else:
+            body = "arr-unstick: nothing removed"
+        for h_slug, h_n in held_slugs:
+            body += (f"\n⚠ import hold on {h_slug}: {h_n} completed downloads cannot be "
+                     f"imported. Nothing was deleted or blocklisted. Check {h_slug}'s root "
+                     f"folder, permissions and disk quota. To release them anyway, run "
+                     f"once with ARR_IMPORT_SYSTEMIC_MIN=0.")
         if cap_hit:
             body += f"\n⚠ cap hit (run≥{max_per_run} or slug≥{max_per_slug}) — systemic issue likely"
         if dry_run:
@@ -977,7 +1035,7 @@ def _cmd_unstick_locked(dry_run: bool, _lock_stack: "contextlib.ExitStack") -> i
             # channel the operator reads. Print it instead.
             print("[dry-run] would notify (warning):\n" + body)
         else:
-            _notify(body, level="error" if cap_hit else "warning")
+            _notify(body, level="error" if (cap_hit or held_slugs) else "warning")
 
     # ---- park notification, exactly once per park (INV-9) --------------
     # Vocabulary matches quality_fallback.py:579 on purpose: the operator has

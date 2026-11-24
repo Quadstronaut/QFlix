@@ -776,7 +776,8 @@ classes:
     prompt_clause: '*arr ServerSideNotificationService "Failed to retrieve notifications" cloud-news poll timeouts'
     why: >-
       ServerSideNotificationService is the *arr polling ITS VENDOR''S cloud
-      (services.sonarr.tv / services.radarr.video / services.prowlarr.com) for
+      (<app>.servarr.com/v1/notification, e.g. radarr.servarr.com - corrected
+      2026-11-24, QFLX-126; this text used to name services.radarr.video) for
       in-app announcement banners - nothing on this box, nothing a member sees,
       nothing the operator can fix. Verified in the prowlarr debug log
       2026-08-25: the Error is "System.Net.WebException: Http request timed
@@ -788,6 +789,32 @@ classes:
       (a different logger) still pages; a model that paraphrases the logger
       away loses the anchor and pages too - fail open, deliberately.
     added: 2026-08-25
+
+  - id: arr-cloud-news-fetch-bare
+    title: '*arr cloud-news poll failure, log-store row shape (logger stripped)'
+    rx: '(?is)\A\W*(?:(?:"(?:app|level)"\s*:\s*"[a-z0-9]{1,12}"\s*,\s*){0,2}"_msg"\s*:\s*")?\W*(?:error\W+)?failed to retrieve notifications(?: from (?:the )?server)?(?:"\s*,\s*"(?:app|level)"\s*:\s*"[a-z0-9]{1,12}(?=")){0,2}\W*(?![\s\S])'
+    field: excerpt
+    prompt_clause: '*arr ServerSideNotificationService "Failed to retrieve notifications" cloud-news poll timeouts'
+    why: >-
+      Same event as arr-cloud-news-fetch-timeout, second shape. Paged
+      2026-11-23 12:08 local as radarr:failed-to-retrieve-notifications, 2/3
+      (QFLX-126), and on 2026-11-02 for radarr and prowlarr. The log-store
+      source (scripts/mcp/logs.py) ships the row as
+      {"app":"radarr","level":"ERROR","_msg":"Failed to retrieve
+      notifications"} with the logger name stripped out of _msg, so the
+      logger-anchored sibling cannot match it. Measured on the box
+      2026-11-24: the phrase is written only by radarr, radarr2, sonarr,
+      sonarr2 and prowlarr, all from ServerSideNotificationService (file grep
+      plus a 30-day log-store count by app); 91 failures in radarr since
+      2026-08-20, 70 of them Cloudflare 521 from the vendor origin; grabs,
+      imports and the Discord/Plex connections were unaffected. ANCHORED TO
+      THE WHOLE EXCERPT (\A ... end of text, written (?![\s\S]) because
+      Python re before 3.14 has no \z): the excerpt must be this one message
+      and nothing else, with optional level word or JSON framing. An excerpt
+      that bundles the line with any other text still pages - fail open.
+      UNVERIFIED: the exact excerpt the models returned (audit.log keeps
+      signatures only); the shape is taken from the blob the models were fed.
+    added: 2026-11-24
 
   - id: arr-discord-notify-post-failure
     title: '*arr Discord notifier "Unable to post payload" delivery failure'
@@ -1486,7 +1513,7 @@ prompt_segments:
     classes: [plex-orphaned-webhook-delivery]
   - index: 23
     marker: '*arr ServerSideNotificationService "Failed to retrieve notifications" cloud-news poll timeouts'
-    classes: [arr-cloud-news-fetch-timeout]
+    classes: [arr-cloud-news-fetch-timeout, arr-cloud-news-fetch-bare]
   - index: 24
     marker: '*arr Discord notifier "Unable to post payload" delivery failures'
     classes: [arr-discord-notify-post-failure]

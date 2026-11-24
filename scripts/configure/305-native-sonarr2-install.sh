@@ -558,7 +558,14 @@ do_install() {
   chmod 0755 "$stage/x/$EXE"
   rm -rf "$stage/x/Sonarr.Update"        # the self-updater is dead weight: UpdateMechanism=External (I-10)
   NATIVE_PARITY=prefix native_install_versioned "$SLUG" "$VERSION" "$stage/x" || die "install refused (see above)"
-  native_render_env "$SLUG" "$FAMILY" "$VERSION" "$TZ_ENV" "COMPlus_EnableDiagnostics=0" \
+  # QFLX-126: a PRIVATE temp dir. Without TMPDIR the app's built-in backup
+  # stages its database (Plex token, indexer keys, download-client
+  # passwords) in the box's shared temp dir as <app>_backup/, world-readable
+  # under UMask=0002, and the two instances of one app share that one path.
+  # Absolute path: an EnvironmentFile does not expand %h. Same idea as the
+  # qBittorrent installer's TMPDIR.
+  mkdir -p "$APPDIR/tmp" && chmod 0700 "$APPDIR/tmp" || die "cannot create the private temp dir $APPDIR/tmp"
+  native_render_env "$SLUG" "$FAMILY" "$VERSION" "$TZ_ENV" "COMPlus_EnableDiagnostics=0" "TMPDIR=$APPDIR/tmp" \
       "SONARR__SERVER__BINDADDRESS=$BRIDGE" "SONARR__SERVER__PORT=$PORT" \
       "SONARR__UPDATE__MECHANISM=External" "SONARR__UPDATE__AUTOMATICALLY=false" \
     | native_write_secure "$ENV_DIR/$SLUG.env" 0600 || die "env file write failed"
