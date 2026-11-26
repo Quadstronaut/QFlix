@@ -135,6 +135,7 @@ import contextlib
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -530,6 +531,22 @@ def _classify_stuck(item: dict, by_downloadId: dict[str, list[dict]]) -> str | N
             if _cluster_no_progress(history, CLUSTER_NOPROGRESS_DAYS):
                 return MODE_CLUSTER
     return None
+
+
+def _swept_headline(actions: list[str]) -> str:
+    """First line of the arr-unstick notification (QFLX-126).
+
+    The weekly roll-up (lib/paging.record_weekly) keeps the FIRST LINE ONLY, so
+    the old bare "arr-unstick swept:" reached the weekly report as eight
+    identical, contentless warnings. Put the count and the reasons on that line;
+    the per-item detail stays on the lines below it."""
+    reasons: dict[str, int] = {}
+    for a in actions:
+        m = re.search(r"\(([^()]*)\)\s*→", a)
+        reason = m.group(1).rsplit(",", 1)[-1].strip() if m else "other"
+        reasons[reason] = reasons.get(reason, 0) + 1
+    why = ", ".join(f"{r} x{n}" for r, n in sorted(reasons.items()))
+    return f"arr-unstick swept {len(actions)} ({why}):"
 
 
 def _state_key(slug: str, download_id: str) -> str:
@@ -1016,7 +1033,7 @@ def _cmd_unstick_locked(dry_run: bool, _lock_stack: "contextlib.ExitStack") -> i
         )
     if actions or cap_hit or held_slugs:
         if actions:
-            body = "arr-unstick swept:\n" + "\n".join(actions)
+            body = _swept_headline(actions) + "\n" + "\n".join(actions)
         elif cap_hit:
             body = "arr-unstick: cap hit with zero successful actions"
         else:

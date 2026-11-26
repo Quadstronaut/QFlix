@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-26 - Weekly audit: held finding dismissed, roll-up headline fixed (QFLX-126)
+
+The held single-model finding (radarr http2-stream-reset) is the same vendor-feed
+poll (ServerSideNotificationService, radarr.servarr.com) failing with an HTTP/2
+INTERNAL_ERROR instead of a timeout. Harmless, and it never paged. The weekly
+roll-up keeps only the first line of each notification, so every arr-unstick
+sweep showed as a bare "arr-unstick swept:". That first line now carries the
+count and the reasons.
+
 ## 2026-11-24 - Weekly audit follow-through: one false page, twelve confirmed fixes (QFLX-126)
 
 The 2026-11-23 weekly audit paged one finding, Radarr "Failed to retrieve
