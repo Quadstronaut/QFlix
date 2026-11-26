@@ -290,3 +290,17 @@ def test_cmd_unstick_respects_per_run_cap(tmp_path, monkeypatch):
 
     arrhk.cmd_unstick(dry_run=False)
     assert len(deletes) == 4, f"expected 4 DELETEs (per-run cap=4), got {len(deletes)}"
+
+
+def test_swept_headline_carries_count_and_reasons():
+    """QFLX-126: the weekly roll-up keeps only the first line, so it must say
+    what was swept (it used to be a bare 'arr-unstick swept:')."""
+    acts = [
+        "sonarr: A S01E01 [x] (poison-executable-payload) → blocklisted+removed",
+        "sonarr: B S01E02 [y] (poison-executable-payload) → blocklisted+removed",
+        "radarr: C (4.0h, stalled-no-peers) → blocklisted+research",
+    ]
+    head = arrhk._swept_headline(acts)
+    assert head == ("arr-unstick swept 3 (poison-executable-payload x2, "
+                    "stalled-no-peers x1):")
+    assert "\n" not in head and len(head) <= 160
